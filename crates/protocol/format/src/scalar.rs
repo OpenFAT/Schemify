@@ -22,7 +22,7 @@ pub enum CoordError {
 /// (spec §3). The discriminant is `quarter_turns + 4 * mirrored`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
-#[allow(missing_docs)] // variant names are the file words
+#[allow(missing_docs, reason = "variant names are the file words")]
 pub enum Orient {
     R0,
     R90,
@@ -51,11 +51,31 @@ const ORIENTS: [(&str, Orient); 8] = [
     ("MR270", Orient::MR270),
 ];
 
+// `Orient as usize` indexes `ORIENTS`.
+const _: () = {
+    let mut i = 0;
+    while i < ORIENTS.len() {
+        assert!(
+            ORIENTS[i].1 as usize == i,
+            "ORIENTS is in discriminant order"
+        );
+        i += 1;
+    }
+};
+
 /// Returns whether `s` is a file-level number literal: `-?digits(.digits)?`, with no
 /// exponent, no `+` and no SI suffix (those belong to expressions). Any number of
 /// digits is a number, representable as a coordinate or not.
+#[must_use]
 pub fn is_number(s: &str) -> bool {
-    parse_coord(s) != Err(CoordError::NotNumber)
+    let number = parse_coord(s) != Err(CoordError::NotNumber);
+    if number {
+        debug_assert!(
+            s.ends_with(|c: char| c.is_ascii_digit()),
+            "a number ends in a digit, never in `.`"
+        );
+    }
+    number
 }
 
 /// Parses a coordinate into exact i32 milli-units, in one pass over the bytes.
@@ -70,13 +90,18 @@ pub fn is_number(s: &str) -> bool {
 /// when the value needs a fourth fractional digit or falls outside `[-2^31, 2^31 - 1]`
 /// milli-units.
 ///
+/// # Panics
+///
+/// Never: the asserts check the accumulator's bounds.
+///
 /// # Examples
 ///
 /// ```
-/// use schemify_format::{parse_coord, CoordError};
-/// assert_eq!(parse_coord("-12.5"), Ok(-12_500));
-/// assert_eq!(parse_coord("0.0005"), Err(CoordError::NotRepresentable));
-/// assert_eq!(parse_coord("1e3"), Err(CoordError::NotNumber));
+/// use schemify_format as format;
+/// use schemify_format::CoordError;
+/// assert_eq!(format::parse_coord("-12.5"), Ok(-12_500));
+/// assert_eq!(format::parse_coord("0.0005"), Err(CoordError::NotRepresentable));
+/// assert_eq!(format::parse_coord("1e3"), Err(CoordError::NotNumber));
 /// ```
 pub fn parse_coord(s: &str) -> Result<i32, CoordError> {
     let b = s.as_bytes();
@@ -106,6 +131,10 @@ pub fn parse_coord(s: &str) -> Result<i32, CoordError> {
     if !exact || whole > COORD_WHOLE_MAX {
         return Err(CoordError::NotRepresentable);
     }
+    assert!(
+        frac < MILLI_PER_UNIT,
+        "at most 3 fractional digits accumulate"
+    );
     let milli = whole * MILLI_PER_UNIT + frac;
     let value = if negative { -milli } else { milli };
     assert!(value.unsigned_abs() <= (COORD_WHOLE_MAX as u64 + 1) * 1000);
@@ -116,6 +145,10 @@ pub fn parse_coord(s: &str) -> Result<i32, CoordError> {
 ///
 /// The output always parses back to `milli` with [`parse_coord`]. Digit by digit, without
 /// the `fmt` machinery: a save formats ~3 coordinates per object.
+///
+/// # Panics
+///
+/// Never: the asserts check that the text is a non-empty number.
 pub fn format_coord(milli: i32, out: &mut String) {
     let before = out.len();
     if milli < 0 {
@@ -126,6 +159,7 @@ pub fn format_coord(milli: i32, out: &mut String) {
     let mut digits = [0u8; 10];
     let (mut n, mut w) = (0, whole);
     loop {
+        debug_assert!(n < 7, "i32 milli-units have at most 7 whole digits");
         digits[n] = (w % 10) as u8;
         n += 1;
         w /= 10;
@@ -145,11 +179,19 @@ pub fn format_coord(milli: i32, out: &mut String) {
             scale /= 10;
         }
     }
-    assert!(out.len() > before && !out.ends_with('.'));
+    assert!(out.len() > before, "a coordinate has at least one digit");
+    assert!(!out.ends_with('.'), "a fraction has at least one digit");
+    // Pairs the formatter with the parser it must round-trip through.
+    debug_assert_eq!(parse_coord(&out[before..]), Ok(milli));
 }
 
 impl Orient {
     /// Parses a file word; case-sensitive, so `r90` is `None`.
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that the word table is in discriminant order.
+    #[must_use]
     pub fn parse(word: &str) -> Option<Orient> {
         let (_, o) = ORIENTS.iter().find(|(w, _)| *w == word)?;
         assert_eq!(o.as_str(), word, "table order is discriminant order");
@@ -157,16 +199,21 @@ impl Orient {
     }
 
     /// Returns the file word.
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         ORIENTS[self as usize].0
     }
 
     /// Returns whether x is negated before rotating.
+    #[must_use]
     pub fn mirrored(self) -> bool {
-        self as u8 >= 4
+        let mirrored = self as u8 >= 4;
+        debug_assert_eq!(mirrored, self.as_str().starts_with('M'));
+        mirrored
     }
 
     /// Returns the clockwise rotation in quarter turns, `0..=3`.
+    #[must_use]
     pub fn quarter_turns(self) -> u8 {
         self as u8 % 4
     }

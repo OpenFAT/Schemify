@@ -3,8 +3,9 @@
 
 mod common;
 
-use common::{Rng, new_id};
-use schemify_format::{Document, FileKind, RecordKind, merge3, parse, write};
+use common::Rng;
+use schemify_format as format;
+use schemify_format::{Document, FileKind, RecordKind};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ fn design(n: usize, seed: u64) -> String {
     let grid = |rng: &mut Rng| (rng.below(side) as i32 - side as i32 / 2) * 10_000;
     let mut d = Document::new(FileKind::Shbench);
     for i in 0..n {
-        let id = new_id(&mut rng, &mut ids);
+        let id = common::new_id(&mut rng, &mut ids);
         match i * 100 / n {
             0..35 => {
                 d.begin_record(RecordKind::Inst);
@@ -72,7 +73,7 @@ fn design(n: usize, seed: u64) -> String {
             }
         }
     }
-    write(&d)
+    format::write(&d)
 }
 
 fn best_of<T>(runs: u32, mut f: impl FnMut() -> T) -> Duration {
@@ -91,13 +92,13 @@ fn best_of<T>(runs: u32, mut f: impl FnMut() -> T) -> Duration {
 fn parse_100k_objects_within_budget() {
     let text = design(100_000, 1);
     let parse_time = best_of(5, || {
-        parse(text.as_bytes())
+        format::parse(text.as_bytes())
             .expect("generated file parses")
             .record_count()
     });
-    let doc = parse(text.as_bytes()).unwrap();
-    let write_time = best_of(5, || write(&doc).len());
-    let merge_time = best_of(3, || merge3(&doc, &doc, &doc).conflicts);
+    let doc = format::parse(text.as_bytes()).unwrap();
+    let write_time = best_of(5, || format::write(&doc).len());
+    let merge_time = best_of(3, || format::merge3(&doc, &doc, &doc).conflicts);
     println!(
         "100k objects, {} MB: parse {parse_time:?}, write {write_time:?}, merge3 {merge_time:?}",
         text.len() / 1_000_000

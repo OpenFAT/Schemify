@@ -14,7 +14,8 @@
 
 pub mod docgen;
 
-use schemify_format::{IdRng, Orient, fresh_id};
+use schemify_format as format;
+use schemify_format::{IdRng, Orient};
 use std::collections::BTreeSet;
 
 /// splitmix64.
@@ -116,7 +117,7 @@ pub fn comment(rng: &mut Rng) -> String {
 
 pub fn new_id(rng: &mut Rng, used: &mut BTreeSet<String>) -> String {
     let mut ids = IdRng::new(rng.next());
-    let id = fresh_id(&mut ids, |c| used.contains(c))
+    let id = format::fresh_id(&mut ids, |c| used.contains(c))
         .as_str()
         .to_string();
     used.insert(id.clone());

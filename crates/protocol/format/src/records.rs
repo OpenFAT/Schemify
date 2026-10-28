@@ -226,7 +226,11 @@ const fn fixed(fixed: &'static [Ty]) -> Shape {
 }
 
 const fn attr(key: &'static str, values: &'static [Ty]) -> AttrSchema {
-    assert!(!key.is_empty() && key.as_bytes()[0].is_ascii_alphabetic());
+    assert!(!key.is_empty());
+    assert!(
+        key.as_bytes()[0].is_ascii_alphabetic(),
+        "an attribute key is a word"
+    );
     AttrSchema {
         key,
         shape: fixed(values),
@@ -247,7 +251,7 @@ const fn repeat(key: &'static str, values: &'static [Ty]) -> AttrSchema {
 }
 
 const fn required(key: &'static str, values: &'static [Ty]) -> AttrSchema {
-    assert!(!values.is_empty());
+    assert!(!values.is_empty(), "a required line carries a value");
     AttrSchema {
         required: true,
         ..attr(key, values)
@@ -273,7 +277,8 @@ const fn rec(
     fields: Shape,
     attrs: &'static [AttrSchema],
 ) -> RecordSchema {
-    assert!(rank <= RANK_MAX && !word.is_empty());
+    assert!(rank <= RANK_MAX);
+    assert!(!word.is_empty(), "only `Unknown` has no word");
     assert!(
         attrs.len() <= 32,
         "the reader tracks attributes in a u32 bitmask"
@@ -304,8 +309,9 @@ const fn open(r: RecordSchema) -> RecordSchema {
 }
 
 const fn sorted(r: RecordSchema) -> RecordSchema {
+    assert!(!r.sorted);
     assert!(
-        !r.sorted && !matches!(r.key, KeyRule::Position),
+        !matches!(r.key, KeyRule::Position),
         "positional records have no sort key"
     );
     RecordSchema { sorted: true, ..r }

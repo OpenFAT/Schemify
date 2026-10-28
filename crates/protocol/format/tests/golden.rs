@@ -2,7 +2,8 @@
 //! records, bench tables), one per file kind. Each is canonical, so it must be a fixed
 //! point of parse → write; the messy variant must canonicalize to its twin.
 
-use schemify_format::{FileKind, RecordKind, parse, parse_coord, parse_prefix, write};
+use schemify_format as format;
+use schemify_format::{FileKind, RecordKind};
 
 const FIXTURES: &[(&str, &str, FileKind)] = &[
     (
@@ -38,10 +39,10 @@ const FIXTURES: &[(&str, &str, FileKind)] = &[
 #[test]
 fn fixtures_are_canonical_fixed_points() {
     for (name, text, kind) in FIXTURES {
-        let doc = parse(text.as_bytes()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let doc = format::parse(text.as_bytes()).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(doc.kind(), *kind, "{name}");
         assert!(doc.warnings().is_empty(), "{name}");
-        assert_eq!(write(&doc), *text, "{name} is not canonical");
+        assert_eq!(format::write(&doc), *text, "{name} is not canonical");
     }
 }
 
@@ -49,17 +50,26 @@ fn fixtures_are_canonical_fixed_points() {
 fn messy_input_canonicalizes() {
     let canonical = include_str!("fixtures/ota5t.shcomp");
     let messy = include_str!("fixtures/ota5t.messy.shcomp");
-    assert_eq!(write(&parse(messy.as_bytes()).unwrap()), canonical);
+    assert_eq!(
+        format::write(&format::parse(messy.as_bytes()).unwrap()),
+        canonical
+    );
     let crlf = messy.replace('\n', "\r\n");
-    assert_eq!(write(&parse(crlf.as_bytes()).unwrap()), canonical);
+    assert_eq!(
+        format::write(&format::parse(crlf.as_bytes()).unwrap()),
+        canonical
+    );
     let unterminated = messy.trim_end_matches('\n');
-    assert_eq!(write(&parse(unterminated.as_bytes()).unwrap()), canonical);
+    assert_eq!(
+        format::write(&format::parse(unterminated.as_bytes()).unwrap()),
+        canonical
+    );
 }
 
 #[test]
 fn ota_reads_as_expected() {
     let text = include_str!("fixtures/ota5t.shcomp");
-    let parsed = parse(text.as_bytes()).unwrap();
+    let parsed = format::parse(text.as_bytes()).unwrap();
     let doc = &parsed;
     let of = |k: RecordKind| (0..doc.record_count()).filter(move |&r| doc.record_kind(r) == k);
     let pins: Vec<&str> = of(RecordKind::Pin)
@@ -77,7 +87,10 @@ fn ota_reads_as_expected() {
         .find(|&r| doc.find_attr(r, "name").and_then(|a| doc.attr_value(a, 0)) == Some("M2"))
         .unwrap();
     let at = doc.find_attr(m2, "at").unwrap();
-    assert_eq!(doc.attr_value(at, 0).map(parse_coord), Some(Ok(120_000)));
+    assert_eq!(
+        doc.attr_value(at, 0).map(format::parse_coord),
+        Some(Ok(120_000))
+    );
     assert_eq!(doc.attr_value(at, 2), Some("MR0"));
     assert_eq!(doc.comments(1).count(), 2);
     let prose = of(RecordKind::Prose).next().unwrap();
@@ -96,7 +109,7 @@ fn ota_reads_as_expected() {
 #[test]
 fn symbol_interface_reads_without_the_schematic() {
     let text = include_str!("fixtures/ota5t.shcomp");
-    let iface = parse_prefix(text.as_bytes(), 1).unwrap();
+    let iface = format::parse_prefix(text.as_bytes(), 1).unwrap();
     let kinds: Vec<RecordKind> = (1..iface.record_count())
         .map(|r| iface.record_kind(r))
         .collect();
@@ -110,7 +123,7 @@ fn symbol_interface_reads_without_the_schematic() {
 
 #[test]
 fn bench_values_unescape() {
-    let doc = parse(include_str!("fixtures/ota_ac.shbench").as_bytes()).unwrap();
+    let doc = format::parse(include_str!("fixtures/ota_ac.shbench").as_bytes()).unwrap();
     let output = (0..doc.record_count())
         .find(|&r| doc.record_kind(r) == RecordKind::Output)
         .unwrap();

@@ -1,7 +1,8 @@
 //! Negative space: every diagnostic code the reader declares, with its position.
 //! (`E021` is tested in `reader.rs` with a small limit; a 1 GiB fixture is not.)
 
-use schemify_format::{Code, NO_RECORD, parse};
+use schemify_format as format;
+use schemify_format::{Code, NO_RECORD};
 
 const BENCH: &str = "schemify 1 shbench\n";
 
@@ -10,7 +11,7 @@ const BENCH: &str = "schemify 1 shbench\n";
 /// Asserts `text` fails with `code` at `line:col` (col 0 = not checked) and that
 /// every reported diagnostic is an error.
 fn fails(text: &str, code: Code, line: u32, col: u32) {
-    let err = parse(text.as_bytes()).expect_err(text);
+    let err = format::parse(text.as_bytes()).expect_err(text);
     assert!(err.diagnostics.iter().all(|d| !d.code.is_warning()));
     let hit = err
         .diagnostics
@@ -30,7 +31,7 @@ fn stroke_attributes_on_every_graphic() {
     let ok = "schemify 1 shprim\npin A in 0 0\nimpl s spice\nline 0 0 1 0\n  width 2\n  dash 1\nrect 0 0 1 1\n  width 2\n\
               arc 0 0 1 0 90\n  dash 3\ncircle 0 0 1\n  width 3\n  dash 2\n\
               poly 0 0 1 0 1 1\n  width 2\n";
-    assert!(parse(ok.as_bytes()).is_ok());
+    assert!(format::parse(ok.as_bytes()).is_ok());
     fails(
         "schemify 1 shprim\npin A in 0 0\nimpl s spice\ncircle 0 0 1\n  width thick\n",
         Code::E029,
@@ -59,8 +60,8 @@ fn e022_coordinates() {
         3,
         6,
     );
-    assert!(parse(b"schemify 1 shbench\nnoconn 0abc 2147483.647 -2147483.648\n").is_ok());
-    assert!(parse(b"schemify 1 shbench\nnoconn 0abc 1.5000 0\n").is_ok());
+    assert!(format::parse(b"schemify 1 shbench\nnoconn 0abc 2147483.647 -2147483.648\n").is_ok());
+    assert!(format::parse(b"schemify 1 shbench\nnoconn 0abc 1.5000 0\n").is_ok());
 }
 
 #[test]
@@ -73,8 +74,10 @@ fn e023_rank_order() {
     );
     // Any order inside a rank is fine.
     assert!(
-        parse(b"schemify 1 shbench\nwire 1abc 0 0 1 0\ninst 0abc ./x\n  at 0 0 R0\n  name X\n")
-            .is_ok()
+        format::parse(
+            b"schemify 1 shbench\nwire 1abc 0 0 1 0\ninst 0abc ./x\n  at 0 0 R0\n  name X\n"
+        )
+        .is_ok()
     );
 }
 
@@ -100,10 +103,14 @@ fn e024_duplicate_names_and_attributes() {
     );
     // Same name in different kinds, and repeatable attributes, are fine.
     assert!(
-        parse(b"schemify 1 shbench\nvar W 1\noutput W 1\ncorner tt\n  lib m tt\n  lib m ff\n")
-            .is_ok()
+        format::parse(
+            b"schemify 1 shbench\nvar W 1\noutput W 1\ncorner tt\n  lib m tt\n  lib m ff\n"
+        )
+        .is_ok()
     );
-    assert!(parse(b"schemify 1 lock\nlocked lib a git x 0\nlocked plugin a git x 0\n").is_ok());
+    assert!(
+        format::parse(b"schemify 1 lock\nlocked lib a git x 0\nlocked plugin a git x 0\n").is_ok()
+    );
 }
 
 #[test]
@@ -130,10 +137,12 @@ fn e025_kind_rules() {
         1,
     );
     assert!(
-        parse(b"schemify 1 shprim\n  default s\npin A in 0 0\nimpl s spice\nimpl v veriloga\n")
-            .is_ok()
+        format::parse(
+            b"schemify 1 shprim\n  default s\npin A in 0 0\nimpl s spice\nimpl v veriloga\n"
+        )
+        .is_ok()
     );
-    assert!(parse(b"schemify 1 shcomp\nimpl s schematic\nimpl v spice\n  format spice x\n  format cdl y\n  default s\n").is_err());
+    assert!(format::parse(b"schemify 1 shcomp\nimpl s schematic\nimpl v spice\n  format spice x\n  format cdl y\n  default s\n").is_err());
 }
 
 #[test]
@@ -144,7 +153,7 @@ fn e026_zero_length_wire() {
         2,
         1,
     );
-    assert!(parse(b"schemify 1 shbench\nwire 0abc 5 5 5 5.001\n").is_ok());
+    assert!(format::parse(b"schemify 1 shbench\nwire 0abc 5 5 5 5.001\n").is_ok());
 }
 
 #[test]
@@ -160,7 +169,7 @@ fn e027_unknown_record() {
     // D17 as amended: `code` is a component record too; the other bench tables are not,
     // and a primitive has no netlist text of its own.
     let comp = "schemify 1 shcomp\nimpl s schematic\n";
-    assert!(parse(format!("{comp}code m spice\n  | .model d d\n").as_bytes()).is_ok());
+    assert!(format::parse(format!("{comp}code m spice\n  | .model d d\n").as_bytes()).is_ok());
     fails(&format!("{comp}corner tt\n"), Code::E027, 3, 1);
     fails(&format!("{comp}output g 1\n"), Code::E027, 3, 1);
     fails(
@@ -170,9 +179,9 @@ fn e027_unknown_record() {
         1,
     );
     // Its attribute lines are skipped, not reported again or attached elsewhere.
-    let err = parse(b"schemify 1 shbench\nhologram 1 2\n  knob 3\n  | x\n").unwrap_err();
+    let err = format::parse(b"schemify 1 shbench\nhologram 1 2\n  knob 3\n  | x\n").unwrap_err();
     assert_eq!(err.diagnostics.len(), 1);
-    assert!(parse(b"schemify 2 shbench\nhologram 1 2\n  knob 3\n").is_ok());
+    assert!(format::parse(b"schemify 2 shbench\nhologram 1 2\n  knob 3\n").is_ok());
 }
 
 #[test]
@@ -182,7 +191,7 @@ fn journal_files_keep_every_record_at_version_1() {
     let body = "tx 3 17 \"move it\"\n  | set_attr inst 0abc at 1 2 R0\n\n# why\ninverse 3\n  knob 1\n  | put inst 0abc ./x\n\ntx 2 1 b\n";
     fails(&format!("{BENCH}{body}"), Code::E027, 2, 1);
     let text = format!("schemify 1 journal\n\n{body}");
-    let doc = parse(text.as_bytes()).expect("journal records are free-form");
+    let doc = format::parse(text.as_bytes()).expect("journal records are free-form");
     assert_eq!(doc.kind(), schemify_format::FileKind::Journal);
     assert_eq!(doc.record_count(), 4);
     let words: Vec<&str> = (1..4).map(|r| doc.record_word(r)).collect();
@@ -261,7 +270,7 @@ fn e028_lexical() {
         3,
     );
     let invalid = b"schemify 1 shbench\nvar W \xff\n";
-    let err = parse(invalid).unwrap_err();
+    let err = format::parse(invalid).unwrap_err();
     assert_eq!(
         (
             err.diagnostics[0].code,
@@ -272,10 +281,10 @@ fn e028_lexical() {
     );
     assert_eq!(err.diagnostics[0].record, NO_RECORD);
     // Accepted lexical variants.
-    assert!(parse(b"schemify 1 shbench\r\nvar W \"\\u{1F600}\\t\"\r\n").is_ok());
-    assert!(parse(b"schemify\t01\tshbench  \nvar W 1").is_ok());
-    assert!(parse(b"schemify 1 shbench\nprose 0abc\n  |\n  | x\n\t|  y\n").is_ok());
-    assert!(parse(b"schemify 1 shbench\nvar W \"a\\\"b\" c#d e|f\n").is_err()); // arity, not lexing
+    assert!(format::parse(b"schemify 1 shbench\r\nvar W \"\\u{1F600}\\t\"\r\n").is_ok());
+    assert!(format::parse(b"schemify\t01\tshbench  \nvar W 1").is_ok());
+    assert!(format::parse(b"schemify 1 shbench\nprose 0abc\n  |\n  | x\n\t|  y\n").is_ok());
+    assert!(format::parse(b"schemify 1 shbench\nvar W \"a\\\"b\" c#d e|f\n").is_err()); // arity, not lexing
 }
 
 #[test]
@@ -395,7 +404,7 @@ fn e029_shapes() {
     let ok = "schemify 1 shbench\n\nvar R 1k\n  min 1\n  max 9k\n  dist gauss 5 rel\n\n\
               optimize o\n  goal g target 1m weight 2\n  goal h max\n  vary R\n  \
               config a\n  config b\n  corner ff\n  corner ss\n  seed 7\n";
-    let doc = parse(ok.as_bytes()).unwrap();
+    let doc = format::parse(ok.as_bytes()).unwrap();
     assert_eq!(
         schemify_format::write(&doc),
         ok,
@@ -405,19 +414,25 @@ fn e029_shapes() {
     fails("schemify 1 shbench\n  | text\n", Code::E029, 1, 1);
     fails("schemify 1 project\nlib core svn x\n", Code::E029, 2, 10);
     // Unknown attributes are kept, not errors; open records accept any key.
-    assert!(parse(b"schemify 1 shbench\nwire 0abc 0 0 1 0\n  future 1 2 3\ninst 1abc ./x\n  at 0 0 R0\n  name X\n  anything goes here\n").is_ok());
+    assert!(format::parse(b"schemify 1 shbench\nwire 0abc 0 0 1 0\n  future 1 2 3\ninst 1abc ./x\n  at 0 0 R0\n  name X\n  anything goes here\n").is_ok());
 }
 
 #[test]
 fn w001_duplicate_ids_warn_and_point_at_the_later_record() {
     let doc =
-        parse(b"schemify 1 shbench\nwire 0abc 0 0 1 0\nlabel 0abc 0 0 R0 n\nprose 0abc\n").unwrap();
+        format::parse(b"schemify 1 shbench\nwire 0abc 0 0 1 0\nlabel 0abc 0 0 R0 n\nprose 0abc\n")
+            .unwrap();
     let w = doc.warnings();
     assert_eq!(w.len(), 2);
     assert!(w.iter().all(|d| d.code == Code::W001));
     assert_eq!((w[0].line, w[0].record), (3, 2));
     assert_eq!((w[1].line, w[1].record), (4, 3));
-    assert!(parse(BENCH.as_bytes()).unwrap().warnings().is_empty());
+    assert!(
+        format::parse(BENCH.as_bytes())
+            .unwrap()
+            .warnings()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -426,7 +441,7 @@ fn errors_are_collected_in_line_order_and_capped() {
     for i in 0..200 {
         text.push_str(&format!("wire 0a{i} 0 0 0 0\n"));
     }
-    let err = parse(text.as_bytes()).unwrap_err();
+    let err = format::parse(text.as_bytes()).unwrap_err();
     assert_eq!(err.diagnostics.len(), 64);
     assert!(err.diagnostics.windows(2).all(|w| w[0].line <= w[1].line));
     let shown = err.to_string();
@@ -438,7 +453,7 @@ fn errors_are_collected_in_line_order_and_capped() {
 #[test]
 fn shape_forms_and_arity() {
     let ok = "schemify 1 shbench\n\nshape 0abc line 0 0 10 0\n  layer 7\nshape 0abd rect 0 0 10 5\nshape 0abe arc 0 0 5 0 90\nshape 0abf circle 0 0 5\nshape 0abg poly 0 0 10 0 10 10\n  closed true\n";
-    let doc = parse(ok.as_bytes()).expect("every form parses");
+    let doc = format::parse(ok.as_bytes()).expect("every form parses");
     assert_eq!(schemify_format::write(&doc), ok, "canonical round trip");
     for bad in [
         "shape 0abc line 0 0 10\n",
@@ -472,7 +487,7 @@ fn shape_forms_and_arity() {
 #[test]
 fn techmap_records() {
     let ok = "schemify 1 techmap\n  pdk sky130\n  vdd 1.8\n\nclass nmos core\n  cell sky130_fd_pr:nfet_01v8\n  param W w/1u\n  param L l/1u\n  limits l min 0.15u\nclass nmos io\n  cell sky130_fd_pr:nfet_g5v0d10v5\n  vdd 3.3\n";
-    let doc = parse(ok.as_bytes()).expect("a tech map parses");
+    let doc = format::parse(ok.as_bytes()).expect("a tech map parses");
     assert_eq!(schemify_format::write(&doc), ok, "canonical round trip");
     let tm = "schemify 1 techmap\n";
     fails(
@@ -500,6 +515,6 @@ fn techmap_records() {
         0,
     );
     let manifest = "schemify 1 project\nlib tech map .schemify/pdks/sky130/v1/tech.map\n";
-    assert!(parse(manifest.as_bytes()).is_ok());
+    assert!(format::parse(manifest.as_bytes()).is_ok());
     fails("schemify 1 project\nplugin p map x\n", Code::E029, 2, 0);
 }
