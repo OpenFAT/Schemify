@@ -42,6 +42,7 @@ enum Tok {
 
 /// Parses icon data (module docs). `None` on any syntax error, a non-finite number, an empty
 /// icon or more than [`ICON_POINTS_MAX`] points: the caller then shows the label.
+#[must_use]
 pub fn parse(src: &str) -> Option<Icon> {
     let mut icon = Icon::default();
     let mut points = 0usize;

@@ -29,6 +29,17 @@ struct Row {
     props: [Sym; Prop::COUNT],
 }
 
+/// A live row's place among its siblings; sorting by (parent, order, seq) makes every sibling
+/// group contiguous and ordered.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Edge {
+    /// Parent row, or `u32::MAX` for a root.
+    parent: u32,
+    order: i32,
+    seq: u32,
+    row: u32,
+}
+
 /// One style selector as the edits leave it.
 struct Selector {
     name: Sym,
@@ -52,6 +63,7 @@ struct Selector {
 /// # Time complexity
 ///
 /// O(E + N log N) for E edits and N nodes.
+#[must_use]
 pub fn compose(
     strings: &Strings,
     base: &Contribution,
@@ -127,6 +139,15 @@ pub fn compose(
     debug_assert!(keymap.chord.windows(2).all(|w| w[0] < w[1]));
     let mut owners = vec![Sym::NONE];
     owners.extend(plugins.iter().map(|p| p.0));
+    debug_assert_eq!(
+        owners.len(),
+        plugins.len() + 1,
+        "one owner name per contribution"
+    );
+    debug_assert!(
+        nodes.len() <= rows.len(),
+        "every node comes from a live row"
+    );
     UiTables {
         nodes,
         styles,
@@ -144,7 +165,13 @@ pub fn compose(
 /// The result equals `compose` with `new` last: a prop's value is the last `Set` of it, and the
 /// health rows are those of the same edits (oracle: `ui` tests, `patch_last_equals_compose`).
 /// Cost: O(edits × changed props); no allocation when nothing changed.
+///
+/// # Panics
+///
+/// Panics if `tables` were not built by [`compose`] (a prop column out of step with the nodes).
+#[must_use = "false patched nothing: compose instead"]
 pub fn patch_last(tables: &mut UiTables, old: &Contribution, new: &Contribution) -> bool {
+    debug_assert!(!tables.owners.is_empty(), "tables come from `compose`");
     if old.edits.len() != new.edits.len() {
         return false;
     }
@@ -190,6 +217,7 @@ pub fn patch_last(tables: &mut UiTables, old: &Contribution, new: &Contribution)
             values.push((ix, prop, value));
         }
     }
+    debug_assert!(values.len() <= changed.len());
     for (ix, prop, value) in values {
         tables.nodes.props[prop as usize][ix as usize] = value;
     }
@@ -235,6 +263,11 @@ fn declare(
         }
     }
     debug_assert_eq!(rows.len(), by_id.len());
+    debug_assert!(
+        by_id
+            .get(&id)
+            .is_some_and(|&r| rows[r as usize].id == id && rows[r as usize].live)
+    );
 }
 
 /// The live row an edit of `id` targets; a missing or removed one is a health row.
@@ -245,11 +278,14 @@ fn target<'a>(
     id: Sym,
     owner: u8,
 ) -> Option<&'a mut Row> {
-    let r = by_id.get(&id).copied().filter(|&r| rows[r as usize].live);
-    if r.is_none() {
+    let Some(r) = by_id.get(&id).copied().filter(|&r| rows[r as usize].live) else {
         health.push(HealthKind::UnknownTarget, id, owner, owner);
-    }
-    Some(&mut rows[r? as usize])
+        return None;
+    };
+    let row = &mut rows[r as usize];
+    debug_assert_eq!(row.id, id, "the id index points at its row");
+    debug_assert!(row.live);
+    Some(row)
 }
 
 /// `style` edit: sets one prop of `selector`, creating the selector on first sight.
@@ -275,12 +311,14 @@ fn set_style(
         }
     };
     let s = &mut sel[i];
+    debug_assert_eq!(s.name, selector);
     if s.set & (1 << p) != 0 && s.owner[p] != owner {
         health.push(HealthKind::StyleOverridden, selector, owner, s.owner[p]);
     }
     s.value[p] = value;
     s.set |= 1 << p;
     s.owner[p] = owner;
+    debug_assert_ne!(s.set, 0);
 }
 
 /// The style table, with each kind's row and the `*` row resolved once.
@@ -296,6 +334,10 @@ fn build_styles(strings: &Strings, sel: Vec<Selector>) -> UiStyles {
         styles.kind_row[k as usize] = strings.find(k.name()).map_or(NO_STYLE, |s| styles.row(s));
     }
     styles.default_row = strings.find("*").map_or(NO_STYLE, |s| styles.row(s));
+    debug_assert_eq!(styles.value.len(), styles.selector.len());
+    debug_assert!(
+        styles.default_row == NO_STYLE || usize::from(styles.default_row) < styles.selector.len()
+    );
     styles
 }
 
@@ -307,9 +349,12 @@ fn build_tree(
     health: &mut Health,
 ) -> UiNodes {
     const ROOT: u32 = u32::MAX;
-    // (parent row or ROOT, order, seq, row) sorted gives every sibling group contiguous and ordered.
-    let mut edges: Vec<(u32, i32, u32, u32)> = Vec::with_capacity(rows.len());
-    for (r, row) in rows.iter().enumerate().filter(|(_, row)| row.live) {
+    // Sorted edges give every sibling group contiguous and ordered.
+    let mut edges: Vec<Edge> = Vec::with_capacity(rows.len());
+    for (r, row) in rows.iter().enumerate() {
+        if !row.live {
+            continue;
+        }
         let parent = if row.parent.is_none() {
             ROOT
         } else {
@@ -318,19 +363,26 @@ fn build_tree(
                 _ => continue, // reported as orphan below
             }
         };
-        edges.push((parent, row.order, row.seq, r as u32));
+        edges.push(Edge {
+            parent,
+            order: row.order,
+            seq: row.seq,
+            row: r as u32,
+        });
     }
     edges.sort_unstable();
+    debug_assert!(edges.len() <= rows.len());
     let group = |parent: u32| {
-        let lo = edges.partition_point(|e| e.0 < parent);
-        let hi = edges.partition_point(|e| e.0 <= parent);
+        let lo = edges.partition_point(|e| e.parent < parent);
+        let hi = edges.partition_point(|e| e.parent <= parent);
         &edges[lo..hi]
     };
 
     let mut nodes = UiNodes::default();
     let mut visited = vec![false; rows.len()];
     // Explicit stack: (row, parent index); children pushed in reverse to pop in order.
-    let mut stack: Vec<(u32, NodeIx)> = group(ROOT).iter().rev().map(|e| (e.3, NO_NODE)).collect();
+    let mut stack: Vec<(u32, NodeIx)> =
+        group(ROOT).iter().rev().map(|e| (e.row, NO_NODE)).collect();
     while let Some((r, parent)) = stack.pop() {
         assert!(
             nodes.id.len() < UiNodes::CAPACITY,
@@ -354,7 +406,7 @@ fn build_tree(
             col.push(v);
         }
         nodes.index.insert(row.id, ix);
-        stack.extend(group(r).iter().rev().map(|e| (e.3, ix)));
+        stack.extend(group(r).iter().rev().map(|e| (e.row, ix)));
     }
     // Pre-order: every descendant follows its parent, so one reverse pass propagates subtree ends.
     for i in (0..nodes.len()).rev() {
@@ -376,12 +428,21 @@ fn build_tree(
             .enumerate()
             .all(|(i, &p)| p == NO_NODE || (p as usize) < i)
     );
+    debug_assert!(
+        nodes
+            .end
+            .iter()
+            .enumerate()
+            .all(|(i, &e)| e as usize > i && e as usize <= nodes.len()),
+        "every subtree holds its root and ends inside the table"
+    );
     nodes
 }
 
 /// True when some ancestor of `row` (by parent id) was removed. Bounded by the row count, so a
 /// parent cycle ends.
 fn removed_ancestor(rows: &[Row], by_id: &HashMap<Sym, u32>, row: &Row) -> bool {
+    debug_assert!(row.live, "only live rows can be orphans");
     let mut p = row.parent;
     for _ in 0..rows.len() {
         match by_id.get(&p) {

@@ -4,14 +4,18 @@
 //!
 //! Contents:
 //! - `pub(crate) const NO_ROW: u32`
-//! - `pub(crate) struct Pending`, `pub(crate) struct ProseCtx`, `pub(crate) struct Frame`: `shift`
+//! - `pub(crate) struct Pending`, `pub(crate) struct ProseCtx`, `pub(crate) struct Placed`
+//! - `pub(crate) struct Frame`: `shift`
 //! - `pub(crate) struct Builder`: `build`, `float`, `place`
 
-use taffy::prelude::*;
+use taffy::{
+    AlignItems, AvailableSpace, Dimension, FlexDirection, LengthPercentage, LengthPercentageAuto,
+    NodeId, Overflow, Point, Size, Style, TaffyTree,
+};
 
 use crate::kinds::{Kind, Prop, StyleProp};
-use crate::layout::{NO_CLIP, PROSE_W_MAX, Rect, SPLIT_GAP, Shown};
-use crate::paint::row_style;
+use crate::layout::{AREA_EM_MAX, NO_CLIP, PROSE_W_MAX, Rect, SPLIT_GAP, Shown};
+use crate::paint;
 use crate::state::UiState;
 use crate::strings::{Strings, Sym};
 use crate::tables::{NO_NODE, NodeIx, UiTables};
@@ -43,7 +47,18 @@ pub(crate) struct Frame {
     pub(crate) clip: Vec<Rect>,
     pub(crate) scroller: Vec<NodeIx>,
     pub(crate) scrolled: Vec<f32>,
-    pub(crate) scroll_max: Vec<(NodeIx, f32)>,
+    /// Each laid-out `scroll` node, once, parallel to `scroll_max`.
+    pub(crate) scroll_node: Vec<NodeIx>,
+    /// Largest offset of each node in `scroll_node`.
+    pub(crate) scroll_max: Vec<f32>,
+}
+
+/// Where [`Builder::float`] put a root laid out at the origin: its first row and its size.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Placed {
+    pub(crate) start: usize,
+    pub(crate) w: f32,
+    pub(crate) h: f32,
 }
 
 /// The taffy tree of one frame and the rows built into it.
@@ -72,7 +87,14 @@ struct Metrics {
     fixed_w: f32,
     fixed_h: f32,
     min_w: f32,
-    row_dir: bool,
+    direction: FlexDirection,
+}
+
+/// A string shaped for a leaf: its layout ([`NO_TEXT`] for none) and its size.
+struct Shaped {
+    id: TextId,
+    w: f32,
+    h: f32,
 }
 
 /// Width of the arrow of a cascade row or a dropdown.
@@ -82,6 +104,8 @@ impl Frame {
     /// Moves rows `start..` (a popup or dialog placed at the origin) by `(dx, dy)`.
     pub(crate) fn shift(&mut self, start: usize, dx: f32, dy: f32) {
         assert!(start <= self.rect.len(), "rows to shift exist");
+        assert_eq!(self.clip.len(), self.rect.len(), "clips in step with rects");
+        debug_assert!(dx.is_finite() && dy.is_finite(), "a finite move");
         for r in start..self.rect.len() {
             self.rect[r].x += dx;
             self.rect[r].y += dy;
@@ -119,7 +143,11 @@ impl Builder<'_> {
             fixed_w: st(StyleProp::Width),
             fixed_h: st(StyleProp::Height),
             min_w: st(StyleProp::MinWidth),
-            row_dir: st(StyleProp::Dir) != 0.0,
+            direction: if st(StyleProp::Dir) != 0.0 {
+                FlexDirection::Row
+            } else {
+                FlexDirection::Column
+            },
         };
         let style = Style {
             flex_grow: st(StyleProp::Grow),
@@ -149,39 +177,49 @@ impl Builder<'_> {
             self.leaf(row, &m, style)
         };
         self.rows[row as usize].tnode = tnode;
+        debug_assert!(
+            self.rows.len() > row as usize,
+            "the row and its subtree are built"
+        );
         tnode
     }
 
     /// Builds and places `node` as its own root at its content size, at the origin (the
-    /// caller shifts it into place). Returns its first row and its size.
-    pub(crate) fn float(
-        &mut self,
-        node: NodeIx,
-        shown: Shown,
-        out: &mut Frame,
-    ) -> (usize, f32, f32) {
+    /// caller shifts it into place).
+    pub(crate) fn float(&mut self, node: NodeIx, shown: Shown, out: &mut Frame) -> Placed {
         let start = self.rows.len();
         let root = self.build(node, shown, NO_ROW, 0.0);
         let max_content = Size {
             width: AvailableSpace::MaxContent,
             height: AvailableSpace::MaxContent,
         };
-        self.place(start, root, max_content, (0.0, 0.0), out);
+        self.place(start, root, max_content, out);
         let r = out.rect[start];
-        (start, r.w, r.h)
+        debug_assert!(r.w >= 0.0 && r.h >= 0.0, "taffy sizes are not negative");
+        Placed {
+            start,
+            w: r.w,
+            h: r.h,
+        }
     }
 
-    /// Lays out the root built at `start` and writes absolute rects for its rows into `out`:
-    /// children of a `scroll` node shift up by its clamped offset and are clipped to it.
+    /// Lays out the root built at `start` at the origin and writes absolute rects for its rows
+    /// into `out`: children of a `scroll` node shift up by its clamped offset and are clipped
+    /// to it.
     pub(crate) fn place(
         &mut self,
         start: usize,
         root: NodeId,
         avail: Size<AvailableSpace>,
-        at: (f32, f32),
         out: &mut Frame,
     ) {
         assert_eq!(out.rect.len(), start, "rows are placed in order");
+        assert!(start < self.rows.len(), "the root's row is built");
+        debug_assert_eq!(
+            self.rows[start].tnode, root,
+            "the root's row is the first placed"
+        );
+        debug_assert_eq!(out.scroll_node.len(), out.scroll_max.len());
         self.compute(root, avail);
         // Scroll extents first: a child's position depends on its scroll parent's offset.
         let rel: Vec<taffy::Layout> = (start..self.rows.len())
@@ -215,8 +253,9 @@ impl Builder<'_> {
                         .state
                         .scroll_of(self.tables.nodes.id[node as usize])
                         .clamp(0.0, max);
-                    if !out.scroll_max.iter().any(|(n, _)| *n == node) {
-                        out.scroll_max.push((node, max));
+                    if !out.scroll_node.contains(&node) {
+                        out.scroll_node.push(node);
+                        out.scroll_max.push(max);
                     }
                     let clip = out.clip[p].intersect(&pr);
                     (pr.x, pr.y - off, clip, node, out.scrolled[p] + off)
@@ -224,7 +263,7 @@ impl Builder<'_> {
                     (pr.x, pr.y, out.clip[p], out.scroller[p], out.scrolled[p])
                 }
             } else {
-                (at.0, at.1, NO_CLIP, NO_NODE, 0.0)
+                (0.0, 0.0, NO_CLIP, NO_NODE, 0.0)
             };
             out.rect.push(Rect {
                 x: ox + l.location.x,
@@ -240,37 +279,47 @@ impl Builder<'_> {
         self.prose_rows(start, out);
         debug_assert_eq!(out.rect.len(), self.rows.len());
         debug_assert_eq!(out.clip.len(), out.rect.len());
+        debug_assert_eq!(out.scroll_node.len(), out.scroll_max.len());
     }
 }
 
 // ---- private ----
 
 impl Builder<'_> {
-    /// [`row_style`] of a row as a float.
+    /// [`paint::row_style`] of a row as a float.
     fn style(&self, node: NodeIx, shown: Shown, p: StyleProp) -> f32 {
-        row_style(self.tables, self.title_style, node, shown, p) as f32
+        paint::row_style(self.tables, self.title_style, node, shown, p) as f32
     }
 
-    /// Shapes `sym` at `px`: its id, width and height (nothing for an absent string).
-    fn text(&mut self, sym: Sym, px: f32) -> (TextId, f32, f32) {
+    /// Shapes `sym` at `px` (nothing for an absent string).
+    fn text(&mut self, sym: Sym, px: f32) -> Shaped {
         if sym.is_none() {
-            return (NO_TEXT, 0.0, 0.0);
+            return Shaped {
+                id: NO_TEXT,
+                w: 0.0,
+                h: 0.0,
+            };
         }
         let id = self.text.shape(self.strings, sym, px.max(1.0) as u16);
+        debug_assert_ne!(id, NO_TEXT);
         let l = self.text.layout(id);
-        (id, l.width(), l.height())
+        Shaped {
+            id,
+            w: l.width(),
+            h: l.height(),
+        }
     }
 
     /// A flex container row and its children's subtrees.
     fn container(&mut self, row: u32, m: &Metrics, mut style: Style) -> NodeId {
         let Pending { node, shown, .. } = self.rows[row as usize];
         let kind = self.tables.nodes.kind[node as usize];
-        style.flex_direction = if m.row_dir {
-            FlexDirection::Row
-        } else {
-            FlexDirection::Column
-        };
-        if m.row_dir {
+        debug_assert!(
+            kind != Kind::Dialog || self.rows[row as usize].parent == NO_ROW,
+            "a dialog is a root"
+        );
+        style.flex_direction = m.direction;
+        if m.direction == FlexDirection::Row {
             let stretch = self.style(node, shown, StyleProp::Stretch) != 0.0;
             style.align_items = Some(if stretch {
                 AlignItems::STRETCH
@@ -281,32 +330,32 @@ impl Builder<'_> {
         let split = kind == Kind::Split && shown == Shown::Normal;
         let gap = if split { m.gap.max(SPLIT_GAP) } else { m.gap };
         style.gap = Size {
-            width: length(gap),
-            height: length(gap),
+            width: LengthPercentage::length(gap),
+            height: LengthPercentage::length(gap),
         };
         style.padding = padding(m.pad, m.pad_y);
         style.size = Size {
             width: if m.fixed_w > 0.0 {
-                length(m.fixed_w)
+                Dimension::length(m.fixed_w)
             } else {
-                auto()
+                Dimension::auto()
             },
             height: if m.fixed_h > 0.0 {
-                length(m.fixed_h)
+                Dimension::length(m.fixed_h)
             } else {
-                auto()
+                Dimension::auto()
             },
         };
-        style.min_size.width = length(m.min_w);
+        style.min_size.width = LengthPercentageAuto::length(m.min_w);
         if kind == Kind::Scroll && shown == Shown::Normal {
             // A viewport: its own size comes from its parent, never from its content.
-            style.overflow = taffy::Point {
-                x: taffy::Overflow::Hidden,
-                y: taffy::Overflow::Hidden,
+            style.overflow = Point {
+                x: Overflow::Hidden,
+                y: Overflow::Hidden,
             };
             style.align_items = Some(AlignItems::STRETCH);
             // Zero basis: `grow` hands it the parent's free space, never its content's.
-            style.flex_basis = length(0.0);
+            style.flex_basis = Dimension::length(0.0);
         }
         let child_indent = if shown == Shown::Popup {
             self.check_indent(node)
@@ -314,7 +363,7 @@ impl Builder<'_> {
             0.0
         };
         let kids: Vec<NodeIx> = self.tables.nodes.children(node).collect();
-        let mut tkids = Vec::with_capacity(kids.len());
+        let mut tkids: Vec<NodeId> = Vec::with_capacity(kids.len());
         for c in kids {
             let ck = self.tables.nodes.kind[c as usize];
             let cshown = match (ck, shown) {
@@ -331,11 +380,11 @@ impl Builder<'_> {
             && tkids.len() >= 2
             && let Some(px) = self.state.split_of(self.tables.nodes.id[node as usize])
         {
-            self.size_panes(tkids[0], tkids[1], px, m.row_dir);
+            self.size_panes(tkids[0], tkids[1], px, m.direction);
         }
         self.tree
             .new_with_children(style, &tkids)
-            .expect("taffy node")
+            .expect("taffy accepts a fresh node's children")
     }
 
     /// A leaf row: its content (label, icon, accelerator, math) measured into a minimum size;
@@ -353,7 +402,7 @@ impl Builder<'_> {
         if kind == Kind::Prose {
             // Width comes from the parent (stretch); the height is measured at that width.
             style.padding = padding(m.pad, m.pad_y);
-            style.min_size.width = length(m.min_w);
+            style.min_size.width = LengthPercentageAuto::length(m.min_w);
             let ctx = ProseCtx {
                 src: self.tables.nodes.prop(Prop::Value)[i],
                 px: font as u16,
@@ -361,7 +410,7 @@ impl Builder<'_> {
             return self
                 .tree
                 .new_leaf_with_context(style, ctx)
-                .expect("taffy leaf");
+                .expect("taffy accepts a leaf");
         }
         // A text field shows its value in the label slot.
         let label_prop = if matches!(kind, Kind::TextInput | Kind::TextArea) {
@@ -376,25 +425,29 @@ impl Builder<'_> {
         } else {
             None
         };
-        let (label, lw, lh) = match icon {
+        let label = match icon {
             // An icon replaces the label: a square of 1.4 em.
             Some(id) => {
                 self.rows[row as usize].icon = id;
                 let side = (font * 1.4).round();
-                (NO_TEXT, side, side)
+                Shaped {
+                    id: NO_TEXT,
+                    w: side,
+                    h: side,
+                }
             }
             None => self.text(label_sym, font),
         };
-        let (mut w, mut h) = (lw + 2.0 * m.pad, lh + 2.0 * m.pad_y);
+        let (mut w, mut h) = (label.w + 2.0 * m.pad, label.h + 2.0 * m.pad_y);
         match (kind, shown) {
             (_, Shown::Cascade) => w += indent + m.gap + ARROW_W,
             (Kind::Item, _) => {
-                let (accel, aw, _) = self.text(self.tables.nodes.prop(Prop::Accel)[i], font);
-                self.rows[row as usize].accel = accel;
-                w += indent + if aw > 0.0 { m.gap + aw } else { 0.0 };
+                let accel = self.text(self.tables.nodes.prop(Prop::Accel)[i], font);
+                self.rows[row as usize].accel = accel.id;
+                w += indent + if accel.w > 0.0 { m.gap + accel.w } else { 0.0 };
             }
             (Kind::Separator, _) => (w, h) = (0.0, 0.0),
-            (Kind::Checkbox, _) => w += lh + m.gap,
+            (Kind::Checkbox, _) => w += label.h + m.gap,
             (Kind::Dropdown, _) => w += m.gap + ARROW_W,
             (Kind::TextInput, _) => h = h.max(font * 1.4 + 2.0 * m.pad_y),
             (Kind::TextArea, _) => {
@@ -407,9 +460,9 @@ impl Builder<'_> {
                     .filter(|_| editing)
                     .and_then(|e| e.try_layout())
                     .map_or(0.0, |l| l.height());
-                h = (lh.max(eh) + font * 1.4 + 2.0 * m.pad_y)
+                h = (label.h.max(eh) + font * 1.4 + 2.0 * m.pad_y)
                     .max(font * 4.0)
-                    .min(font * crate::layout::AREA_EM_MAX + 2.0 * m.pad_y);
+                    .min(font * AREA_EM_MAX + 2.0 * m.pad_y);
                 // Width comes from the parent (stretch), never from the longest line.
                 w = 2.0 * m.pad + font;
             }
@@ -426,47 +479,62 @@ impl Builder<'_> {
             }
             _ => {}
         }
-        self.rows[row as usize].label = label;
+        self.rows[row as usize].label = label.id;
         if m.fixed_w > 0.0 {
             w = m.fixed_w;
         }
         if m.fixed_h > 0.0 {
             h = m.fixed_h;
         }
+        debug_assert!(w >= 0.0 && h >= 0.0, "a leaf's size is not negative");
         style.min_size = Size {
-            width: length(w.max(m.min_w)),
-            height: length(h),
+            width: LengthPercentageAuto::length(w.max(m.min_w)),
+            height: LengthPercentageAuto::length(h),
         };
         // A canvas fills its parent on both axes (it may sit in a row beside the docs
         // page), so only a styled height pins it.
         if kind != Kind::Canvas || m.fixed_h > 0.0 {
-            style.size.height = length(h);
+            style.size.height = Dimension::length(h);
         }
-        self.tree.new_leaf(style).expect("taffy leaf")
+        self.tree.new_leaf(style).expect("taffy accepts a leaf")
     }
 
     /// Pins the second pane of a dragged `split` to `px` along its axis and lets the first take
     /// the rest (overriding both panes' own sizes and grow factors).
-    fn size_panes(&mut self, first: NodeId, second: NodeId, px: f32, row_dir: bool) {
-        assert!(px.is_finite() && px >= 0.0, "split size");
-        let mut a = self.tree.style(first).expect("pane style").clone();
+    fn size_panes(&mut self, first: NodeId, second: NodeId, px: f32, direction: FlexDirection) {
+        assert!(px.is_finite(), "split size must be finite");
+        assert!(px >= 0.0, "split size must not be negative");
+        debug_assert_ne!(first, second, "two panes");
+        let mut a = self
+            .tree
+            .style(first)
+            .expect("a built pane has a style")
+            .clone();
         a.flex_grow = a.flex_grow.max(1.0);
-        a.flex_basis = length(0.0);
-        let mut b = self.tree.style(second).expect("pane style").clone();
+        a.flex_basis = Dimension::length(0.0);
+        let mut b = self
+            .tree
+            .style(second)
+            .expect("a built pane has a style")
+            .clone();
         b.flex_grow = 0.0;
-        if row_dir {
-            a.min_size.width = length(0.0);
-            a.size.width = auto();
-            b.size.width = length(px);
-            b.min_size.width = length(px);
+        if direction == FlexDirection::Row {
+            a.min_size.width = LengthPercentageAuto::length(0.0);
+            a.size.width = Dimension::auto();
+            b.size.width = Dimension::length(px);
+            b.min_size.width = LengthPercentageAuto::length(px);
         } else {
-            a.min_size.height = length(0.0);
-            a.size.height = auto();
-            b.size.height = length(px);
-            b.min_size.height = length(px);
+            a.min_size.height = LengthPercentageAuto::length(0.0);
+            a.size.height = Dimension::auto();
+            b.size.height = Dimension::length(px);
+            b.min_size.height = LengthPercentageAuto::length(px);
         }
-        self.tree.set_style(first, a).expect("pane style");
-        self.tree.set_style(second, b).expect("pane style");
+        self.tree
+            .set_style(first, a)
+            .expect("a built pane takes a style");
+        self.tree
+            .set_style(second, b)
+            .expect("a built pane takes a style");
     }
 
     /// Indicator inset for a popup: reserved for every row when any row is checkable, so labels
@@ -481,6 +549,9 @@ impl Builder<'_> {
 
     /// Runs taffy over the tree under `root`, measuring `prose` leaves at the width they get.
     fn compute(&mut self, root: NodeId, avail: Size<AvailableSpace>) {
+        if let AvailableSpace::Definite(w) = avail.width {
+            debug_assert!(w > 0.0, "a definite width is positive");
+        }
         let (tree, text, strings) = (&mut self.tree, &mut *self.text, self.strings);
         tree.compute_layout_with_measure(root, avail, |inputs, _, ctx, style| {
             let ctx = ctx.copied();
@@ -507,17 +578,20 @@ impl Builder<'_> {
                 },
             )
         })
-        .expect("taffy layout");
+        .expect("taffy lays out a tree it built");
+        debug_assert!(self.tree.layout(root).is_ok(), "the root is laid out");
     }
 
     /// True when row `r` is a `scroll` node shown as itself.
     fn is_scroll(&self, r: usize) -> bool {
+        debug_assert!(r < self.rows.len());
         self.rows[r].shown == Shown::Normal
             && self.tables.nodes.kind[self.rows[r].node as usize] == Kind::Scroll
     }
 
     /// Prose rows from `start`: the layout at the final content width (cached from measuring).
     fn prose_rows(&mut self, start: usize, out: &Frame) {
+        assert_eq!(out.rect.len(), self.rows.len(), "every row is placed");
         for r in start..self.rows.len() {
             let node = self.rows[r].node;
             let i = node as usize;
@@ -537,10 +611,11 @@ impl Builder<'_> {
 
 /// Taffy padding of `pad` left and right, `pad_y` above and below.
 fn padding(pad: f32, pad_y: f32) -> taffy::Rect<LengthPercentage> {
+    debug_assert!(pad >= 0.0 && pad_y >= 0.0, "style lengths are unsigned");
     taffy::Rect {
-        left: length(pad),
-        right: length(pad),
-        top: length(pad_y),
-        bottom: length(pad_y),
+        left: LengthPercentage::length(pad),
+        right: LengthPercentage::length(pad),
+        top: LengthPercentage::length(pad_y),
+        bottom: LengthPercentage::length(pad_y),
     }
 }

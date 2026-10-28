@@ -89,6 +89,7 @@ pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
 /// Significant digits that tell neighbouring ticks `ts` apart: at least 3, more when the view
 /// is narrow next to its distance from zero (a 50 ps window at 4.2 ms needs 9), at most 15. A
 /// log axis, fewer than two ticks, or ticks not ascending get 3.
+#[must_use]
 pub fn tick_digits(ts: &[f64], log: bool) -> usize {
     let (Some(&a), Some(&b)) = (ts.first(), ts.get(1)) else {
         return 3;

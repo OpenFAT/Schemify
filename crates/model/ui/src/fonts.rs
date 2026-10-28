@@ -51,6 +51,7 @@ pub struct FontGlyph {
 /// under the SIL OFL 1.1, which allows embedding: exporters embed them so printed text uses
 /// the glyphs the canvas draws (PDF `FontFile2`, PostScript Type 42) instead of a base-14
 /// font that only covers ASCII.
+#[must_use]
 pub fn ui_fonts() -> [&'static [u8]; 2] {
     [NOTO_SANS, crate::math::face_bytes("Main-Regular")]
 }
@@ -60,6 +61,7 @@ pub fn ui_fonts() -> [&'static [u8]; 2] {
 /// # Panics
 ///
 /// Panics if `face` is not an index into [`ui_fonts`].
+#[must_use]
 pub fn ui_font_info(face: u8) -> FontInfo {
     use skrifa::MetadataProvider;
     use skrifa::instance::{LocationRef, Size};

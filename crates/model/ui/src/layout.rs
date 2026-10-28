@@ -18,9 +18,9 @@
 //! - `pub fn layout(tables, strings, text, state, viewport) -> UiLayout`
 //! - `pub fn area_scroll_max(tables, layout, text, state, r) -> f32`
 
-use taffy::prelude::*;
+use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
 
-use crate::flex::{Builder, Frame, NO_ROW};
+use crate::flex::{Builder, Frame, NO_ROW, Placed};
 use crate::kinds::{Kind, StyleProp};
 use crate::paint::row_style;
 use crate::state::UiState;
@@ -105,7 +105,10 @@ pub struct UiLayout {
     pub(crate) clip: Vec<Rect>,
     pub(crate) scroller: Vec<NodeIx>,
     pub(crate) scrolled: Vec<f32>,
-    pub(crate) scroll_max: Vec<(NodeIx, f32)>,
+    /// Each laid-out `scroll` node, once, parallel to `scroll_max`.
+    pub(crate) scroll_node: Vec<NodeIx>,
+    /// Largest offset of each node in `scroll_node`.
+    pub(crate) scroll_max: Vec<f32>,
     pub(crate) overlay_start: u32,
     /// First row a modal dialog leaves hittable: the dialog's own (floats sit below it).
     pub(crate) modal_start: u32,
@@ -114,11 +117,13 @@ pub struct UiLayout {
 
 impl Rect {
     /// True when `(px, py)` is inside (left/top inclusive, right/bottom exclusive).
+    #[must_use]
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && py >= self.y && px < self.x + self.w && py < self.y + self.h
     }
 
     /// The overlap of two rectangles (zero-sized when they do not meet).
+    #[must_use]
     pub fn intersect(&self, o: &Rect) -> Rect {
         let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
         let (x1, y1) = (
@@ -136,63 +141,75 @@ impl Rect {
 
 impl UiLayout {
     /// Number of rows.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.node.len()
     }
 
     /// True when nothing is visible.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.node.is_empty()
     }
 
     /// Node of each row.
+    #[must_use]
     pub fn node(&self) -> &[NodeIx] {
         &self.node
     }
 
     /// How each row shows its node.
+    #[must_use]
     pub fn shown(&self) -> &[Shown] {
         &self.shown
     }
 
     /// Rectangle of each row.
+    #[must_use]
     pub fn rect(&self) -> &[Rect] {
         &self.rect
     }
 
     /// Label layout of each row ([`NO_TEXT`] when none).
+    #[must_use]
     pub fn label(&self) -> &[TextId] {
         &self.label
     }
 
     /// Accelerator layout of each row ([`NO_TEXT`] when none).
+    #[must_use]
     pub fn accel(&self) -> &[TextId] {
         &self.accel
     }
 
     /// Math layout id of each row (`u32::MAX` when none).
+    #[must_use]
     pub fn math(&self) -> &[u32] {
         &self.math
     }
 
     /// Prose layout id ([`TextSystem::prose_list`]) of each row (`u32::MAX` when none).
+    #[must_use]
     pub fn prose(&self) -> &[u32] {
         &self.prose
     }
 
     /// Icon id ([`TextSystem::icon_paths`]) of each row (`u32::MAX` when none): a button
     /// with a parsable `icon` shows it instead of its label.
+    #[must_use]
     pub fn icon(&self) -> &[u32] {
         &self.icon
     }
 
     /// Left inset reserved for a check indicator in menu rows.
+    #[must_use]
     pub fn indent(&self) -> &[f32] {
         &self.indent
     }
 
     /// Visible part of each row's area: the intersection of its `scroll` ancestors'
     /// rectangles, [`NO_CLIP`] outside any. Painters clip to it; hit testing ignores the rest.
+    #[must_use]
     pub fn clip(&self) -> &[Rect] {
         &self.clip
     }
@@ -200,24 +217,31 @@ impl UiLayout {
     /// How far each row is scrolled up: the sum of its `scroll` ancestors' offsets (logical px,
     /// 0 outside any). The row's place in its panes' content is its rect moved down by it, so a
     /// painter can keep a scrolled row and move it by its pane's offset alone.
+    #[must_use]
     pub fn scrolled(&self) -> &[f32] {
         &self.scrolled
     }
 
     /// Largest scroll offset of a laid-out `scroll` node (content height minus view height).
+    #[must_use]
     pub fn scroll_max(&self, node: NodeIx) -> Option<f32> {
-        self.scroll_max
-            .iter()
-            .find(|(n, _)| *n == node)
-            .map(|(_, m)| *m)
+        debug_assert_eq!(
+            self.scroll_node.len(),
+            self.scroll_max.len(),
+            "scroll columns in step"
+        );
+        let i = self.scroll_node.iter().position(|&n| n == node)?;
+        Some(self.scroll_max[i])
     }
 
     /// Innermost `scroll` node enclosing row `r` ([`NO_NODE`] when none).
+    #[must_use]
     pub fn scroller(&self, r: usize) -> NodeIx {
         self.scroller[r]
     }
 
     /// Rows of one paint layer.
+    #[must_use]
     pub fn rows(&self, layer: Layer) -> std::ops::Range<usize> {
         match layer {
             Layer::Main => 0..self.overlay_start as usize,
@@ -227,12 +251,14 @@ impl UiLayout {
 
     /// Rows of the canvas's floats: the start of [`Layer::Overlay`], before the dialog and
     /// popups (empty when the canvas has no children).
+    #[must_use]
     pub fn floats(&self) -> std::ops::Range<usize> {
         debug_assert!(self.overlay_start <= self.modal_start);
         self.overlay_start as usize..self.modal_start as usize
     }
 
     /// Style row of the `menu-title` selector ([`NO_STYLE`] if the theme has none).
+    #[must_use]
     pub fn title_style(&self) -> u16 {
         self.title_style
     }
@@ -243,11 +269,13 @@ impl UiLayout {
     }
 
     /// First row showing `node` normally, as a title or as a cascade row (not as a popup).
+    #[must_use]
     pub fn row_of(&self, node: NodeIx) -> Option<usize> {
         (0..self.len()).find(|&r| self.node[r] == node && self.shown[r] != Shown::Popup)
     }
 
     /// Topmost row under `(x, y)`. While a dialog is open only its rows can be hit (modal).
+    #[must_use]
     pub fn hit(&self, x: f32, y: f32, modal: bool) -> Option<usize> {
         let lo = if modal { self.modal_start as usize } else { 0 };
         (lo..self.len())
@@ -299,11 +327,11 @@ pub fn layout(
         };
         let mut s = b.tree.style(root).expect("root style").clone();
         s.size = Size {
-            width: length(viewport.0),
-            height: length(viewport.1),
+            width: Dimension::length(viewport.0),
+            height: Dimension::length(viewport.1),
         };
         b.tree.set_style(root, s).expect("root style");
-        b.place(0, root, avail, (0.0, 0.0), &mut f);
+        b.place(0, root, avail, &mut f);
     }
     let overlay_start = b.rows.len() as u32;
     // Floats: each child of the canvas, laid out at its content size and centred along the
@@ -315,8 +343,12 @@ pub fn layout(
         let c = f.rect[cr];
         let kids: Vec<NodeIx> = nodes.children(b.rows[cr].node).collect();
         for k in kids {
-            let (start, w, _) = b.float(k, Shown::Normal, &mut f);
-            f.shift(start, c.x + ((c.w - w) / 2.0).max(0.0), c.y + FLOAT_INSET);
+            let p = b.float(k, Shown::Normal, &mut f);
+            f.shift(
+                p.start,
+                c.x + ((c.w - p.w) / 2.0).max(0.0),
+                c.y + FLOAT_INSET,
+            );
         }
     }
     let modal_start = b.rows.len() as u32;
@@ -327,7 +359,7 @@ pub fn layout(
         .find(state.dialog)
         .filter(|&d| nodes.kind[d as usize] == Kind::Dialog)
     {
-        let (start, w, h) = b.float(d, Shown::Normal, &mut f);
+        let Placed { start, w, h } = b.float(d, Shown::Normal, &mut f);
         // At a point (a context menu) or where the user dragged it: kept inside the viewport.
         let (dx, dy) = match state.dialog_at.or(state.dialog_pos) {
             Some((x, y)) => (
@@ -352,7 +384,11 @@ pub fn layout(
         // Menubar titles and dropdowns drop down; cascades open to the right.
         let below = b.rows[a].shown == Shown::Title
             || (b.rows[a].shown == Shown::Normal && nodes.kind[m as usize] == Kind::Dropdown);
-        let (start, pw, ph) = b.float(m, Shown::Popup, &mut f);
+        let Placed {
+            start,
+            w: pw,
+            h: ph,
+        } = b.float(m, Shown::Popup, &mut f);
         let mut x = if below { ar.x } else { ar.x + ar.w };
         let mut y = if below { ar.y + ar.h } else { ar.y };
         x = x.min(viewport.0 - pw).max(0.0);
@@ -372,6 +408,7 @@ pub fn layout(
         clip: f.clip,
         scroller: f.scroller,
         scrolled: f.scrolled,
+        scroll_node: f.scroll_node,
         scroll_max: f.scroll_max,
         overlay_start,
         modal_start,

@@ -230,6 +230,7 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
 
 /// A line that is exactly one image, `![alt](path)` (an optional title after the path is
 /// ignored): `(alt, path)`.
+#[must_use]
 pub fn image_line(t: &str) -> Option<(&str, &str)> {
     let (alt, target) = t.strip_prefix("![")?.strip_suffix(')')?.split_once("](")?;
     let path = target.split_whitespace().next()?;
@@ -382,6 +383,7 @@ pub(crate) fn inlines(
 /// prose between fences is dropped.
 ///
 /// Cost: one pass over the lines.
+#[must_use]
 pub fn split_plots(src: &str) -> Vec<Segment<'_>> {
     let mut out = Vec::new();
     let mut from = 0;

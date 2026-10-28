@@ -48,6 +48,7 @@ pub struct ReadoutRow {
 pub const LANE_NAME_CHARS: usize = 9;
 
 /// The prefix of `src` a digital lane shows: its first [`LANE_NAME_CHARS`] chars.
+#[must_use]
 pub fn lane_name(src: &str) -> &str {
     let end = src
         .char_indices()
@@ -192,6 +193,7 @@ pub fn readout_rows(waves: &Waves, max: usize, out: &mut Vec<ReadoutRow>) {
 /// # Panics
 ///
 /// Panics if `geo` has more pane rectangles than `waves` has panes.
+#[must_use]
 pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64, f64)> {
     assert!(
         geo.panes.len() <= waves.panes().len(),
@@ -209,6 +211,7 @@ pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64,
 
 /// The measurement tooltip's text (xschem `m`): `y=…  x=…` of [`measure_at`] in engineering
 /// units, or `None` where it measures nothing.
+#[must_use]
 pub fn measure_label(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<String> {
     let (vx, vy) = measure_at(geo, waves, x, y)?;
     Some(format!("y={}  x={}", format_si(vy, 4), format_si(vx, 4)))

@@ -66,6 +66,15 @@ enum Ctx {
     Style(Sym),
 }
 
+/// Where a parse interns the free text of `label`, `value`, `tooltip` and `accel` props.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TextRegion {
+    /// Interned for the session ([`parse`]).
+    Permanent,
+    /// Interned into the open live generation ([`parse_live`]).
+    Live,
+}
+
 /// Values of a line passed on to the record and attribute parsers (one past the largest
 /// arity, four).
 const TOKENS_SEEN: usize = 5;
@@ -80,7 +89,14 @@ const TOKENS_SEEN: usize = 5;
 /// Panics when the text holds more than [`Contribution::CAPACITY`] edits or more than 2^32
 /// lines.
 pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
-    parse_into(text, strings, false)
+    let live_before = strings.live_len();
+    let out = parse_into(text, strings, TextRegion::Permanent);
+    debug_assert_eq!(
+        strings.live_len(),
+        live_before,
+        "a permanent parse leaves the live region"
+    );
+    out
 }
 
 /// Parses like [`parse`], but interns the free text of `label`, `value`, `tooltip` and `accel`
@@ -97,8 +113,9 @@ pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
 /// As [`parse`]; also when one generation holds more than [`Strings::LIVE_CAPACITY`] strings.
 pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
     strings.begin_live();
-    let out = parse_into(text, strings, true);
+    let out = parse_into(text, strings, TextRegion::Live);
     strings.end_live();
+    debug_assert!(strings.live_len() <= Strings::LIVE_CAPACITY);
     out
 }
 
@@ -111,6 +128,7 @@ pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Rejec
 /// # Panics
 ///
 /// Panics if `pitch` is not positive or `len` is 0.
+#[must_use]
 pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32) {
     assert!(pitch > 0.0, "rows have a pitch");
     assert!(len > 0, "a window shows rows");
@@ -135,6 +153,7 @@ pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32) {
 pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32) {
     use std::fmt::Write as _;
     assert!(gap < LENGTH_MAX, "a gap shorter than a spacer piece");
+    let before = t.len();
     let style = id.replace('.', "-");
     let (full, rest) = (px / LENGTH_MAX, px % LENGTH_MAX);
     assert!(rest == 0 || rest >= gap, "the last piece holds its gap");
@@ -154,12 +173,21 @@ pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32) {
             rest - gap
         );
     }
+    debug_assert_eq!(
+        t.len() == before,
+        px == 0,
+        "text written exactly for a non-empty span"
+    );
 }
 
 // ---- private ----
 
 /// [`parse`] and [`parse_live`]: one pass over the lines, each accepted or rejected alone.
-fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, Vec<Reject>) {
+fn parse_into(
+    text: &str,
+    strings: &mut Strings,
+    region: TextRegion,
+) -> (Contribution, Vec<Reject>) {
     assert!(
         text.len() < u32::MAX as usize,
         "contribution text too large"
@@ -184,10 +212,10 @@ fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, V
             }
             let t = &t[..n.min(TOKENS_SEEN)];
             if indented {
-                attr(t, &ctx, strings, live, &mut out)
+                attr(t, &ctx, strings, region, &mut out)
             } else {
                 ctx = Ctx::None;
-                record(t, strings, live, &mut out).map(|c| ctx = c)
+                record(t, strings, region, &mut out).map(|c| ctx = c)
             }
         });
         if let Err(reason) = result {
@@ -201,6 +229,10 @@ fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, V
             "contribution too large"
         );
     }
+    debug_assert!(
+        rejects.is_sorted_by_key(|r: &Reject| r.line),
+        "rejects in line order"
+    );
     (out, rejects)
 }
 
@@ -208,9 +240,11 @@ fn parse_into(text: &str, strings: &mut Strings, live: bool) -> (Contribution, V
 fn record(
     t: &[&str],
     strings: &mut Strings,
-    live: bool,
+    region: TextRegion,
     out: &mut Contribution,
 ) -> Result<Ctx, RejectReason> {
+    assert!(!t.is_empty(), "the tokenizer rejects an empty line");
+    debug_assert!(t.len() <= TOKENS_SEEN);
     let arity = |n: usize| {
         if t.len() == n {
             Ok(())
@@ -229,7 +263,7 @@ fn record(
         "set" => {
             arity(4)?;
             let id = strings.intern(t[1]);
-            node_attr(id, t[2], t[3], strings, live, out)?;
+            node_attr(id, t[2], t[3], strings, region, out)?;
             Ok(Ctx::None)
         }
         "remove" => {
@@ -261,15 +295,16 @@ fn attr(
     t: &[&str],
     ctx: &Ctx,
     strings: &mut Strings,
-    live: bool,
+    region: TextRegion,
     out: &mut Contribution,
 ) -> Result<(), RejectReason> {
+    debug_assert!(!t.is_empty(), "the tokenizer rejects an empty line");
     if t.len() != 2 {
         return Err(RejectReason::Arity);
     }
     match *ctx {
         Ctx::None => Err(RejectReason::OrphanAttr),
-        Ctx::Node(id) => node_attr(id, t[0], t[1], strings, live, out),
+        Ctx::Node(id) => node_attr(id, t[0], t[1], strings, region, out),
         Ctx::Style(selector) => {
             let prop = StyleProp::parse(t[0]).ok_or(RejectReason::UnknownProp)?;
             let value = prop.parse_value(t[1]).ok_or(RejectReason::BadValue)?;
@@ -289,18 +324,19 @@ fn node_attr(
     name: &str,
     value: &str,
     strings: &mut Strings,
-    live: bool,
+    region: TextRegion,
     out: &mut Contribution,
 ) -> Result<(), RejectReason> {
+    let before = out.edits.len();
     let edit = match name {
         "parent" => Edit::Parent {
             id,
             parent: strings.intern(value),
         },
-        "order" => Edit::Order {
-            id,
-            order: value.parse().map_err(|_| RejectReason::BadValue)?,
-        },
+        "order" => {
+            let order: i32 = value.parse().map_err(|_| RejectReason::BadValue)?;
+            Edit::Order { id, order }
+        }
         _ => {
             let prop = Prop::parse(name).ok_or(RejectReason::UnknownProp)?;
             let text = matches!(
@@ -310,7 +346,7 @@ fn node_attr(
             Edit::Set {
                 id,
                 prop,
-                value: if live && text {
+                value: if region == TextRegion::Live && text {
                     strings.intern_live(value)
                 } else {
                     strings.intern(value)
@@ -319,11 +355,16 @@ fn node_attr(
         }
     };
     out.edits.push(edit);
+    debug_assert_eq!(out.edits.len(), before + 1);
     Ok(())
 }
 
 /// Splits one record or attribute line into values (bare or quoted, escapes resolved).
 fn tokenize(body: &str, out: &mut Vec<String>) -> Result<usize, RejectReason> {
+    debug_assert!(
+        !body.starts_with([' ', '\t']),
+        "the caller strips the indent"
+    );
     let mut n = 0;
     let mut chars = body.chars().peekable();
     // Bounded by the line length: every iteration consumes at least one char.
@@ -387,11 +428,13 @@ fn unicode_escape(
         return Err(RejectReason::Syntax);
     }
     let mut v: u32 = 0;
+    // A brace within seven characters: six hex digits at most, then `}`.
     for i in 0..=6 {
         match chars.next().ok_or(RejectReason::Syntax)? {
             '}' if i > 0 => return char::from_u32(v).ok_or(RejectReason::Syntax),
             h => v = v * 16 + h.to_digit(16).ok_or(RejectReason::Syntax)?,
         }
+        debug_assert!(v < 1 << 28, "at most seven hex digits: no overflow");
     }
     Err(RejectReason::Syntax)
 }

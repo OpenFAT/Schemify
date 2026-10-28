@@ -201,6 +201,7 @@ struct Dialog {
 /// Plot area of a pane: the pane minus room for y tick labels (left), the legend (top) and x
 /// tick labels (bottom). [`WaveUi::route`] and the renderer both use it, so a click lands where
 /// the trace is drawn.
+#[must_use]
 pub fn plot_area(pane: Rect) -> Rect {
     let (l, t, r, b) = (58.0, 18.0, 10.0, 18.0);
     Rect {
@@ -214,6 +215,7 @@ pub fn plot_area(pane: Rect) -> Rect {
 impl Geometry {
     /// Reads the waves window's rectangles from `layout`. A node not laid out gives an empty
     /// rectangle; panes stop at the first missing one.
+    #[must_use]
     pub fn of(tables: &UiTables, layout: &UiLayout, strings: &Strings) -> Geometry {
         let rect = |id: &str| {
             strings
@@ -249,37 +251,44 @@ impl Geometry {
 
 impl WaveUi {
     /// The gesture in progress (the renderer draws the box-zoom rubber band from it).
+    #[must_use]
     pub fn drag(&self) -> Drag {
         self.drag
     }
 
     /// The pane commands act on (the last one hovered or clicked).
+    #[must_use]
     pub fn active_pane(&self) -> u8 {
         self.active_pane
     }
 
     /// The selected trace row, if any.
+    #[must_use]
     pub fn selected_trace(&self) -> Option<u8> {
         self.selected_trace
     }
 
     /// Status-line text (last error, measurement or confirmation).
+    #[must_use]
     pub fn status(&self) -> &str {
         &self.status
     }
 
     /// Dataset the browser lists and new traces use.
+    #[must_use]
     pub fn dataset(&self) -> u8 {
         self.dataset
     }
 
     /// True while the measurement tooltip is on (xschem `m`): the renderer shows `y=`/`x=` at
     /// [`WaveUi::pointer`].
+    #[must_use]
     pub fn measure(&self) -> bool {
         self.measure
     }
 
     /// Last pointer position over the window, `None` after it left.
+    #[must_use]
     pub fn pointer(&self) -> Option<(f32, f32)> {
         self.pointer
     }
@@ -294,6 +303,7 @@ impl WaveUi {
     }
 
     /// Rows of [`ROW_H`] that fit in `r` (a list's rectangle).
+    #[must_use]
     pub fn rows_fit(r: Rect) -> u16 {
         ((r.h - 2.0) / ROW_H).floor().clamp(0.0, 512.0) as u16
     }

@@ -145,6 +145,7 @@ impl std::fmt::Debug for MathFonts {
 
 impl MathFonts {
     /// Wraps the embedded faces (no copy: the blobs borrow the static bytes).
+    #[must_use]
     pub fn new() -> Self {
         let data = FACES
             .iter()
@@ -154,6 +155,7 @@ impl MathFonts {
     }
 
     /// Font for a face index from [`MathList::glyph_face`].
+    #[must_use]
     pub fn face(&self, i: u8) -> &FontData {
         &self.data[i as usize]
     }

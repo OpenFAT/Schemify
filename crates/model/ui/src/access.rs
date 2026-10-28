@@ -24,10 +24,13 @@ use crate::tables::UiTables;
 /// AccessKit node id of public node id `id`; a menu's popup gets a distinct id (high bit set).
 pub(crate) fn access_id(id: Sym, shown: Shown) -> NodeId {
     let popup = if shown == Shown::Popup { 1u64 << 32 } else { 0 };
-    NodeId(u64::from(id.raw()) | popup)
+    let access = NodeId(u64::from(id.raw()) | popup);
+    debug_assert_eq!(sym_of(access), id, "the public id round-trips");
+    access
 }
 
 /// Public node id behind an AccessKit id [`access_tree`] wrote (a popup maps to its menu).
+#[must_use]
 pub fn sym_of(id: NodeId) -> Sym {
     Sym((id.0 & 0xffff_ffff) as u32)
 }
@@ -38,6 +41,7 @@ pub fn sym_of(id: NodeId) -> Sym {
 /// # Panics
 ///
 /// Panics if `layout` was computed from different tables (row nodes out of range).
+#[must_use]
 pub fn access_tree(
     tables: &UiTables,
     layout: &UiLayout,
@@ -137,6 +141,11 @@ pub fn access_tree(
     if root_row.is_none() {
         built.push((root, Node::new(Role::Window)));
     }
+    debug_assert_eq!(
+        built.len(),
+        rows + usize::from(root_row.is_none()),
+        "one node per row"
+    );
     let focus = n
         .find(state.focus)
         .and_then(|f| layout.row_of(f))
@@ -153,6 +162,11 @@ pub fn access_tree(
 
 /// Deterministic text rendering of a tree update for snapshot tests: one line per node,
 /// indented by depth, `Role "label" [x0 y0 x1 y1]` plus toggled/expanded/shortcut markers.
+///
+/// # Panics
+///
+/// Panics if the update's child links form a cycle.
+#[must_use]
 pub fn dump(update: &TreeUpdate) -> String {
     let mut out = String::new();
     let Some(info) = &update.tree else { return out };
@@ -190,6 +204,10 @@ pub fn dump(update: &TreeUpdate) -> String {
         out.push('\n');
         stack.extend(node.children().iter().rev().map(|&c| (depth + 1, c)));
     }
+    debug_assert!(
+        out.lines().count() <= update.nodes.len(),
+        "one line per node at most"
+    );
     out
 }
 

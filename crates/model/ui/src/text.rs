@@ -84,6 +84,7 @@ impl Image {
     /// # Panics
     ///
     /// Panics if a side is 0 or `rgba` is not `width × height × 4` bytes.
+    #[must_use]
     pub fn new(path: &str, width: u32, height: u32, rgba: Vec<u8>) -> Image {
         assert!(width > 0 && height > 0, "an image has pixels");
         assert_eq!(rgba.len() as u64, u64::from(width) * u64::from(height) * 4);
@@ -119,6 +120,7 @@ impl TextSystem {
     /// Creates the system and registers the embedded fonts. UI text asks for the Noto Sans
     /// subset, then KaTeX Main (already embedded for math) for the arrows and relations Noto
     /// Sans lacks (→ ≤ ≥), and only then the system fallback.
+    #[must_use]
     pub fn new() -> Self {
         let mut font_cx = FontContext::default();
         let mut register = |bytes: &'static [u8]| {

@@ -2,53 +2,81 @@
 //! editor (parley's `PlainEditor`, in [`UiState`]) and its `input`/`command` requests out.
 //!
 //! Contents:
+//! - `pub(crate) struct FieldPress`, `pub(crate) enum Lines`
 //! - `pub(crate) fn flush_typed(tables, state, typed, out)`
-//! - `pub(crate) fn focus_field(tables, layout, strings, text, state, r, x, y)`
+//! - `pub(crate) fn focus_field(tables, layout, strings, text, state, press)`
 //! - `pub(crate) fn follow_caret(tables, layout, text, state)`
-//! - `pub(crate) fn edit_key(tables, text, state, chord, area, typed, out)`
+//! - `pub(crate) fn edit_key(tables, text, state, chord, lines, typed, out)`
+
+use std::mem;
 
 use parley::{FontFamily, PlainEditor, StyleProperty};
 
 use crate::input::Routed;
 use crate::keys::{Chord, Key, Mods};
 use crate::kinds::{Kind, Prop, StyleProp};
-use crate::layout::{UiLayout, area_scroll_max};
+use crate::layout;
+use crate::layout::UiLayout;
 use crate::state::UiState;
 use crate::strings::Strings;
 use crate::tables::UiTables;
 use crate::text::TextSystem;
 
+/// A press that focuses a text field: the field's layout row and the pointer, in logical px.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FieldPress {
+    pub(crate) row: usize,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+}
+
+/// What Enter and the vertical arrows do in the focused field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Lines {
+    /// A `text_input`: Enter submits.
+    Single,
+    /// A `text_area`: Enter breaks the line, Ctrl+Enter submits, Up and Down move by lines.
+    Multi,
+}
+
 /// Pushes the focused field's `input` command with its text when an edit changed it since the
 /// last push. Called before anything that blurs the field and once at the end of a frame.
 pub(crate) fn flush_typed(tables: &UiTables, state: &UiState, typed: &mut bool, out: &mut Routed) {
-    if !std::mem::take(typed) {
+    if !mem::take(typed) {
         return;
     }
+    debug_assert!(!*typed);
     let (Some(n), Some(ed)) = (tables.nodes.find(state.focus), state.editor.as_ref()) else {
         return;
     };
+    let before = out.commands.len();
     let cmd = tables.nodes.prop(Prop::Input)[n as usize];
     if !cmd.is_none() {
         out.commands.push(cmd, state.focus, ed.raw_text());
     }
-    debug_assert!(!*typed);
+    debug_assert!(
+        out.commands.len() <= before + 1,
+        "one input command per flush"
+    );
 }
 
-/// Focuses text field at layout row `r` and places the caret under `(x, y)`.
-#[allow(clippy::too_many_arguments)]
+/// Focuses the text field at the press's layout row and places the caret under the pointer.
 pub(crate) fn focus_field(
     tables: &UiTables,
     layout: &UiLayout,
     strings: &Strings,
     text: &mut TextSystem,
     state: &mut UiState,
-    r: usize,
-    x: f32,
-    y: f32,
+    press: FieldPress,
 ) {
-    let n = layout.node[r];
+    assert!(press.row < layout.len(), "a press on a laid-out row");
+    let n = layout.node[press.row];
     let i = n as usize;
-    let rect = layout.rect[r];
+    debug_assert!(
+        matches!(tables.nodes.kind[i], Kind::TextInput | Kind::TextArea),
+        "only text fields take focus"
+    );
+    let rect = layout.rect[press.row];
     let style = |p| layout.style(tables, n, p);
     let (pad, font) = (style(StyleProp::Pad), style(StyleProp::Font).max(8.0));
     let area = tables.nodes.kind[i] == Kind::TextArea;
@@ -70,8 +98,9 @@ pub(crate) fn focus_field(
     let scrolled = if area { state.scroll_of(id) } else { 0.0 };
     let ed = state.editor.as_mut().expect("editor just created");
     let mut d = ed.driver(&mut text.font_cx, &mut text.layout_cx);
-    d.move_to_point(x - rect.x - pad, y - rect.y - top + scrolled);
+    d.move_to_point(press.x - rect.x - pad, press.y - rect.y - top + scrolled);
     d.refresh_layout();
+    debug_assert_eq!(state.focus, id);
 }
 
 /// Scrolls the focused text area inside itself so the caret stays in view (after an edit or
@@ -94,7 +123,7 @@ pub(crate) fn follow_caret(
     };
     let pad_y = layout.style(tables, n, StyleProp::PadY);
     let view = layout.rect[r].h - 2.0 * pad_y;
-    let max = area_scroll_max(tables, layout, text, state, r);
+    let max = layout::area_scroll_max(tables, layout, text, state, r);
     let now = state.scroll_of(state.focus);
     let (top, bottom) = (caret.y0 as f32, caret.y1 as f32);
     let want = if bottom > now + view {
@@ -116,10 +145,15 @@ pub(crate) fn edit_key(
     text: &mut TextSystem,
     state: &mut UiState,
     chord: Chord,
-    area: bool,
+    lines: Lines,
     typed: &mut bool,
     out: &mut Routed,
 ) {
+    assert!(
+        state.editor.is_some(),
+        "keys edit the focused field's editor"
+    );
+    let area = lines == Lines::Multi;
     let mods = chord.mods().0;
     let shift = mods & Mods::SHIFT != 0;
     let word = mods & Mods::CTRL != 0;
@@ -155,6 +189,7 @@ pub(crate) fn edit_key(
             }
         }
         state.blur();
+        debug_assert!(state.editor.is_none(), "submit and cancel end the editing");
         return;
     }
     let ed = state.editor.as_mut().expect("caller checked editor");

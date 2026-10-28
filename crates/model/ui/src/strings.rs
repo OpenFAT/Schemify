@@ -51,17 +51,22 @@ impl Sym {
     pub const NONE: Sym = Sym(0);
 
     /// True for [`Sym::NONE`].
+    #[must_use]
     pub fn is_none(self) -> bool {
-        self.0 == 0
+        let none = self.0 == 0;
+        debug_assert!(!(none && self.is_live()), "the empty string is permanent");
+        none
     }
 
     /// Raw handle value; stable for the session for permanent strings (node ids), so it is
     /// used as the AccessKit node id.
+    #[must_use]
     pub fn raw(self) -> u32 {
         self.0
     }
 
     /// True for a handle of the live region (state-contribution text).
+    #[must_use]
     pub fn is_live(self) -> bool {
         self.0 & LIVE != 0
     }
@@ -80,7 +85,14 @@ impl Strings {
     pub const LIVE_CAPACITY: usize = 1 << 20;
 
     /// Creates an interner holding only the empty string at [`Sym::NONE`].
+    #[must_use]
     pub fn new() -> Self {
+        const {
+            assert!(
+                Strings::CAPACITY < LIVE as usize,
+                "permanent handles stay below the live bit"
+            )
+        };
         let mut s = Strings {
             names: Vec::with_capacity(1024),
             lookup: HashMap::with_capacity(1024),
@@ -115,8 +127,16 @@ impl Strings {
 
     /// Returns the handle for `s` without interning it (permanent, or live in the current
     /// generation).
+    #[must_use]
     pub fn find(&self, s: &str) -> Option<Sym> {
-        self.lookup.get(s).or_else(|| self.live.get(s)).copied()
+        let permanent = self.lookup.get(s).copied();
+        if let Some(sym) = permanent {
+            debug_assert!(
+                !sym.is_live(),
+                "the permanent region holds permanent handles"
+            );
+        }
+        permanent.or_else(|| self.live.get(s).copied())
     }
 
     /// Returns the text of `sym`; a dead live handle reads as the empty string (and fails a
@@ -125,27 +145,43 @@ impl Strings {
     /// # Panics
     ///
     /// Panics if a permanent `sym` came from a different interner and is out of range.
+    #[must_use]
     pub fn get(&self, sym: Sym) -> &str {
         if sym.is_live() {
             let text = self.live_text.get(&sym.0);
             debug_assert!(text.is_some(), "dead live string handle");
             return text.map_or("", |t| t.as_ref());
         }
+        assert!(
+            (sym.0 as usize) < self.names.len(),
+            "string handle {} from another interner",
+            sym.0
+        );
         &self.names[sym.0 as usize]
     }
 
     /// Number of permanent strings, including the empty string.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.lookup.len(), self.names.len());
+        debug_assert!(self.names.len() <= Self::CAPACITY);
         self.names.len()
     }
 
     /// Number of live strings held (the current generation's).
+    #[must_use]
     pub fn live_len(&self) -> usize {
+        debug_assert!(
+            self.live.len() <= self.live_text.len(),
+            "every live string has its text"
+        );
         self.live_text.len()
     }
 
     /// Always false: the empty string is interned at construction.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(&*self.names[0], "", "the empty string sits at `Sym::NONE`");
         false
     }
 
@@ -183,6 +219,7 @@ impl Strings {
         // wrapped index skips handles still alive. A generation tag in the cache key if a
         // session ever gets near the wrap.
         let mut idx = self.live_next;
+        debug_assert_eq!(idx & LIVE, 0, "the live counter is 31 bits");
         // Bounded: at most `live_text.len()` indices are taken.
         for _ in 0..=self.live_text.len() {
             if !self.live_text.contains_key(&(LIVE | idx)) {
@@ -195,18 +232,26 @@ impl Strings {
         assert!(!self.live_text.contains_key(&sym.0), "live handle in use");
         self.live.insert(s.into(), sym);
         self.live_text.insert(sym.0, s.into());
-        debug_assert!(sym.is_live() && !sym.is_none());
+        debug_assert!(sym.is_live());
+        debug_assert!(!sym.is_none());
         sym
     }
 
     /// Closes the live generation opened by [`Strings::begin_live`]: the previous
     /// generation's strings it did not reuse are freed, and their handles die.
     pub(crate) fn end_live(&mut self) {
+        let held = self.live_text.len();
+        debug_assert!(
+            self.live_old.len() <= held,
+            "the open generation's strings are held"
+        );
         // Iteration order does not matter: every entry is removed.
         for (_, sym) in self.live_old.drain() {
             self.live_text.remove(&sym.0);
         }
         assert_eq!(self.live.len(), self.live_text.len(), "live tables agree");
+        debug_assert!(self.live_old.is_empty(), "the generation is closed");
+        debug_assert!(self.live_text.len() <= held);
     }
 }
 
