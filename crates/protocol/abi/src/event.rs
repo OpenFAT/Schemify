@@ -1,11 +1,20 @@
-//! Events (§6): what the host tells a plugin, one per `schemify_on_event` call.
+//! Events (§6): `Event` ↔ the bytes the host passes to `schemify_on_event`, one per call.
 //!
-//! Wire form: one line record `event <kind> <values…>` + LF. `io_done` and `rejected`
-//! carry a binary payload after a single NUL byte (the record text never contains NUL,
-//! because [`crate::text::push_value`] escapes control characters).
+//! Cites: plugin-abi §6 (event kinds and wire form), §5 (`io_done`), §8 (`rejected`). Wire
+//! form: one line record `event <kind> <values…>` + LF. `io_done` and `rejected` carry a
+//! binary payload after a single NUL byte (the record text never contains NUL, because
+//! [`crate::text::push_value`] escapes control characters).
+//!
+//! Contents:
+//! - `pub enum Event<'a>`
+//! - `Event::kind_name(&self) -> &'static str`
+//! - `Event::encode(&self, out: &mut Vec<u8>) -> Result<(), Code>`
+//! - `Event::parse(buf: &'a [u8]) -> Result<Event<'a>, Code>`
+
+use std::io::Write as _;
 
 use crate::Code;
-use crate::text::{self, Values};
+use crate::text;
 
 /// One event. Borrowed from the buffer it was parsed from; identifier fields (`name`,
 /// `dialect`, `bench`, `lang`) are bare values and never need unescaping.
@@ -114,87 +123,28 @@ impl<'a> Event<'a> {
     ///
     /// # Errors
     ///
-    /// [`Code::Parse`] (nothing appended) when an identifier field is not a legal bare value
-    /// or `args` is not one line of well-formed values.
+    /// [`Code::Parse`] when an identifier field is not a legal bare value or `args` is not one
+    /// line of well-formed values; `out` is then left as it was.
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), Code> {
-        let mut s = String::from("event ");
-        s.push_str(self.kind_name());
-        fn ident(s: &mut String, v: &str) -> Result<(), Code> {
-            if !text::is_bare(v) {
-                return Err(Code::Parse);
-            }
-            s.push(' ');
-            s.push_str(v);
-            Ok(())
-        }
-        fn num(s: &mut String, v: i64) {
-            s.push(' ');
-            s.push_str(&v.to_string());
-        }
-        let payload = match *self {
-            Event::Load | Event::Unload | Event::SelectionChanged => None,
-            Event::Command { name, args } => {
-                ident(&mut s, name)?;
-                if args.contains(['\n', '\r', '\0']) || text::values(args).any(|v| v.is_err()) {
-                    return Err(Code::Parse);
+        let start = out.len();
+        match self.encode_line(out) {
+            Ok(payload) => {
+                debug_assert_eq!(out.last(), Some(&b'\n'));
+                debug_assert!(
+                    !out[start..].contains(&0),
+                    "the record text never holds NUL"
+                );
+                if let Some(payload) = payload {
+                    out.push(0);
+                    out.extend_from_slice(payload);
                 }
-                let args = args.trim_matches([' ', '\t']);
-                if !args.is_empty() {
-                    s.push(' ');
-                    s.push_str(args);
-                }
-                None
+                Ok(())
             }
-            Event::DocOpened { doc } | Event::DocClosed { doc } | Event::Saved { doc } => {
-                num(&mut s, doc.into());
-                None
+            Err(code) => {
+                out.truncate(start);
+                Err(code)
             }
-            Event::DocChanged { doc, epoch } => {
-                num(&mut s, doc.into());
-                num(&mut s, epoch.into());
-                None
-            }
-            Event::NetlistRequest { dialect, bench } => {
-                ident(&mut s, dialect)?;
-                ident(&mut s, bench)?;
-                None
-            }
-            Event::RunJob { job, lang } => {
-                num(&mut s, job.into());
-                ident(&mut s, lang)?;
-                None
-            }
-            Event::RunDone { job } => {
-                num(&mut s, job.into());
-                None
-            }
-            Event::Timer { id } => {
-                num(&mut s, id.into());
-                None
-            }
-            Event::IoDone {
-                handle,
-                status,
-                bytes,
-            } => {
-                num(&mut s, handle.into());
-                num(&mut s, status.into());
-                Some(bytes)
-            }
-            Event::Rejected { code, record } => {
-                s.push(' ');
-                s.push_str(code.name());
-                Some(record)
-            }
-        };
-        s.push('\n');
-        debug_assert!(!s.contains('\0'));
-        out.extend_from_slice(s.as_bytes());
-        if let Some(payload) = payload {
-            out.push(0);
-            out.extend_from_slice(payload);
         }
-        Ok(())
     }
 
     /// Parses the wire form produced by [`Event::encode`].
@@ -252,18 +202,95 @@ impl<'a> Event<'a> {
                 bytes,
             },
             ("rejected", Some(record)) => Event::Rejected {
-                code: need_code(&mut v)?,
+                code: Code::parse(v.need_plain()?).ok_or(Code::Parse)?,
                 record,
             },
             _ => return Err(Code::Parse),
         };
         v.end()?;
+        debug_assert_eq!(event.kind_name(), kind);
         Ok(event)
     }
 }
 
-fn need_code(v: &mut Values<'_>) -> Result<Code, Code> {
-    Code::parse(v.need_plain()?).ok_or(Code::Parse)
+// ---- private ----
+
+impl Event<'_> {
+    /// Writes the record line (text and LF) and returns the payload still to append. On
+    /// error `out` may hold a partial line; [`Event::encode`] truncates it.
+    fn encode_line<'p>(&'p self, out: &mut Vec<u8>) -> Result<Option<&'p [u8]>, Code> {
+        out.extend_from_slice(b"event ");
+        out.extend_from_slice(self.kind_name().as_bytes());
+        let payload = match *self {
+            Event::Load | Event::Unload | Event::SelectionChanged => None,
+            Event::Command { name, args } => {
+                push_ident(out, name)?;
+                if args.contains(['\n', '\r', '\0']) || text::values(args).any(|v| v.is_err()) {
+                    return Err(Code::Parse);
+                }
+                let args = args.trim_matches([' ', '\t']);
+                if !args.is_empty() {
+                    out.push(b' ');
+                    out.extend_from_slice(args.as_bytes());
+                }
+                None
+            }
+            Event::DocOpened { doc } | Event::DocClosed { doc } | Event::Saved { doc } => {
+                push_num(out, doc.into());
+                None
+            }
+            Event::DocChanged { doc, epoch } => {
+                push_num(out, doc.into());
+                push_num(out, epoch.into());
+                None
+            }
+            Event::NetlistRequest { dialect, bench } => {
+                push_ident(out, dialect)?;
+                push_ident(out, bench)?;
+                None
+            }
+            Event::RunJob { job, lang } => {
+                push_num(out, job.into());
+                push_ident(out, lang)?;
+                None
+            }
+            Event::RunDone { job } | Event::Timer { id: job } => {
+                push_num(out, job.into());
+                None
+            }
+            Event::IoDone {
+                handle,
+                status,
+                bytes,
+            } => {
+                push_num(out, handle.into());
+                push_num(out, status.into());
+                Some(bytes)
+            }
+            Event::Rejected { code, record } => {
+                out.push(b' ');
+                out.extend_from_slice(code.name().as_bytes());
+                Some(record)
+            }
+        };
+        out.push(b'\n');
+        Ok(payload)
+    }
+}
+
+/// Appends ` <v>` for an identifier field, which must be a bare value.
+fn push_ident(out: &mut Vec<u8>, v: &str) -> Result<(), Code> {
+    if !text::is_bare(v) {
+        return Err(Code::Parse);
+    }
+    out.push(b' ');
+    out.extend_from_slice(v.as_bytes());
+    Ok(())
+}
+
+/// Appends ` <v>` in decimal.
+fn push_num(out: &mut Vec<u8>, v: i64) {
+    write!(out, " {v}").expect("writing to a Vec cannot fail");
 }
 
 #[cfg(test)]
@@ -377,6 +404,51 @@ mod tests {
             Err(Code::Parse)
         );
         assert!(sink.is_empty());
+        // A failed encode after an earlier event leaves the earlier one intact.
+        let mut two = ok.clone();
+        let bad = Event::NetlistRequest {
+            dialect: "spectre",
+            bench: "has space",
+        };
+        assert_eq!(bad.encode(&mut two), Err(Code::Parse));
+        assert_eq!(two, ok);
+    }
+
+    /// Oracle: the spec §6 wire form, byte for byte, for one event of each payload shape.
+    #[test]
+    fn wire_form_is_the_spec_bytes() {
+        let wire = |e: Event<'_>| {
+            let mut buf = Vec::new();
+            e.encode(&mut buf).unwrap();
+            buf
+        };
+        assert_eq!(wire(Event::Load), b"event load\n");
+        assert_eq!(
+            wire(Event::DocChanged { doc: 1, epoch: 9 }),
+            b"event doc_changed 1 9\n"
+        );
+        assert_eq!(
+            wire(Event::Command {
+                name: "x.run",
+                args: "  1 \"a b\"  "
+            }),
+            b"event command x.run 1 \"a b\"\n"
+        );
+        assert_eq!(
+            wire(Event::IoDone {
+                handle: 2,
+                status: -7,
+                bytes: b"ab"
+            }),
+            b"event io_done 2 -7\n\0ab"
+        );
+        assert_eq!(
+            wire(Event::Rejected {
+                code: Code::Gone,
+                record: b""
+            }),
+            b"event rejected E_GONE\n\0"
+        );
     }
 
     proptest! {

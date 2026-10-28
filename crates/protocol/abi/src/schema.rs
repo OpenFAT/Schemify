@@ -1,10 +1,18 @@
-//! Snapshot tables (§4): ids, column ids and column types, fixed per ABI version.
+//! Snapshot tables (§4): table ids, column ids and column types, fixed per ABI version.
 //!
-//! Tables are exposed as their owners store them: fixed-width columns as little-endian
-//! arrays, string columns as UTF-8. New columns may only be appended in a later version.
-//! [`Table::columns`] is the schema; [`col`] names every column id.
-
-use crate::named_enum;
+//! Cites: plugin-abi §4 (the table list and column types), §3 (`read_column` /
+//! `read_strings`). Tables are exposed as their owners store them: fixed-width columns as
+//! little-endian arrays, string columns as UTF-8. New columns may only be appended in a later
+//! version. [`Table::columns`] is the schema; [`col`] names every column id.
+//!
+//! Contents:
+//! - `pub enum ColType` (named enum), `ColType::width(self) -> u8`
+//! - `pub struct ColumnDef { name, ty }`
+//! - `pub trait Scalar` (`u8`, `u16`, `u32`, `i32`; sealed by `sealed::Sealed`): `TY`,
+//!   `put_le`, `get_le`
+//! - `pub enum Table`: `ALL`, `COUNT`, `pub const fn name(self) -> &'static str`,
+//!   `columns(self) -> &'static [ColumnDef]`, `from_raw(raw: u32) -> Option<Table>`
+//! - `pub mod col`: one module per table, one `u32` constant per column
 
 named_enum! {
     /// Column element types. Fixed-width columns are read with `read_column`, strings with
@@ -20,18 +28,6 @@ named_enum! {
         I32 = "i32",
         /// UTF-8 string, variable width.
         Str = "str",
-    }
-}
-
-impl ColType {
-    /// Returns the element width in bytes; 0 for [`ColType::Str`] (variable).
-    pub const fn width(self) -> u8 {
-        match self {
-            ColType::U8 => 1,
-            ColType::U16 => 2,
-            ColType::U32 | ColType::I32 => 4,
-            ColType::Str => 0,
-        }
     }
 }
 
@@ -67,6 +63,7 @@ pub trait Scalar: Copy + Default + sealed::Sealed + 'static {
 macro_rules! scalar {
     ($($t:ty => $ty:ident),*) => {$(
         impl sealed::Sealed for $t {}
+        const _: () = assert!(size_of::<$t>() == ColType::$ty.width() as usize);
         impl Scalar for $t {
             const TY: ColType = ColType::$ty;
             fn put_le(self, out: &mut Vec<u8>) {
@@ -113,7 +110,9 @@ macro_rules! tables {
 
             /// Returns the table with id `raw`; `None` (→ `E_TABLE`) when out of range.
             pub fn from_raw(raw: u32) -> Option<Table> {
-                Table::ALL.get(usize::try_from(raw).ok()?).copied()
+                let table = Table::ALL.get(usize::try_from(raw).ok()?).copied()?;
+                debug_assert_eq!(table as u32, raw);
+                Some(table)
             }
         }
 
@@ -197,6 +196,18 @@ tables! {
     /// The composed UI tree.
     UiNodes = "ui_nodes", ui_nodes {
         ID "id" Str, KIND "kind" U8, PARENT "parent" Str, OWNER "owner" U16,
+    }
+}
+
+impl ColType {
+    /// Returns the element width in bytes; 0 for [`ColType::Str`] (variable).
+    pub const fn width(self) -> u8 {
+        match self {
+            ColType::U8 => 1,
+            ColType::U16 => 2,
+            ColType::U32 | ColType::I32 => 4,
+            ColType::Str => 0,
+        }
     }
 }
 
