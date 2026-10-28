@@ -45,10 +45,16 @@ impl Editor {
                 let ops = self.with_doc(h, edit::delete);
                 self.commit(reqs, h, "delete", ops);
                 self.set_selection(Vec::new());
+                assert!(self.selection().is_empty());
             }
             Cmd::SelectAll => {
                 let all: Vec<ObjKey> = self.scene.objs.key.clone();
                 self.set_selection(all);
+                assert_eq!(
+                    self.selection().len(),
+                    self.scene.objs.len(),
+                    "one key per object"
+                );
             }
             Cmd::Copy | Cmd::Cut => {
                 let base = self.selection_pivot();
@@ -59,10 +65,15 @@ impl Editor {
                         .collect::<Vec<_>>()
                 });
                 let back = Xform::translate(-base.0, -base.1);
+                let copied = recs.len();
                 self.clipboard = recs
                     .into_iter()
                     .filter_map(|mut r| crate::geometry::transform_record(&mut r, back).map(|()| r))
                     .collect();
+                assert!(
+                    self.clipboard.len() <= copied,
+                    "a copy is dropped, never added"
+                );
                 self.session
                     .say(format!("{} object(s) copied", self.clipboard.len()));
                 if self.system_clipboard
@@ -110,6 +121,7 @@ impl Editor {
                     Cmd::MoveKiss => 2,
                     _ => 0,
                 };
+                assert!(stretch <= 2, "plain, stretch or kissing move");
                 let partial = cmd != Cmd::Duplicate && !self.partial_ends().is_empty();
                 if !self.selection().is_empty() || partial {
                     self.tool = Tool::Move {
@@ -189,11 +201,14 @@ impl Editor {
                     pts: vec![ptr],
                     to: ptr,
                 };
-                let _ = view;
             }
             Cmd::CycleManhattan => match self.tool {
                 Tool::Wire { .. } | Tool::Move { .. } | Tool::Shape { .. } => {
                     self.opts.manhattan = (self.opts.manhattan + 1) % 3;
+                    assert!(
+                        self.opts.manhattan < 3,
+                        "straight, horizontal or vertical first"
+                    );
                 }
                 _ => {
                     self.space_pan = true;

@@ -38,6 +38,10 @@ impl Editor {
     /// # Errors
     ///
     /// The project manifest does not parse, or the file given cannot be opened.
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check the one tab shown and the config's positive steps.
     pub fn new(opts: Options) -> Result<Editor, String> {
         let path = opts.path.clone();
         let root = match &path {
@@ -203,6 +207,9 @@ impl Editor {
         if !status.is_empty() {
             ed.session.say(status);
         }
+        assert_eq!(ed.session.tabs().len(), 1, "a new editor shows one tab");
+        assert!(ed.opts.snap > 0, "the config's snap is positive");
+        assert!(ed.opts.grid > 0, "the config's grid is positive");
         Ok(ed)
     }
 }

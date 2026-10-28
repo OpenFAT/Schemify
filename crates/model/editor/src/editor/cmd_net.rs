@@ -173,6 +173,7 @@ impl Editor {
                         )
                     })
                     .collect();
+                assert_eq!(recs.len(), names.len(), "one record per net");
                 self.tool = Tool::Place {
                     what: Placement::Paste(recs),
                     at: ptr,
