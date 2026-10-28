@@ -6,6 +6,8 @@ use schemify_expr::{Code, Error, Mode, Program, Scratch, Span, Value};
 use crate::Owned::{self, Bool, Cnum, Int, Num, Str};
 use crate::{eval, eval_with};
 
+// ---- private ----
+
 fn ok(src: &str) -> Owned {
     eval(src).unwrap_or_else(|e| panic!("`{src}`: {e}"))
 }

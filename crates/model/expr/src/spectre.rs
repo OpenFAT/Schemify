@@ -5,6 +5,9 @@
 //! Numbers are rewritten in canonical text (§7) because the SI suffixes of the
 //! two languages disagree (`1M` is milli in SPICE, mega in Spectre; Spectre has
 //! no `meg`).
+//!
+//! Contents:
+//! - `pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error>`
 
 use core::fmt::Write;
 
@@ -34,42 +37,6 @@ const FUNCS: [(&str, &str, &[&str]); 4] = [
 
 /// Most tokens one specification may hold (a PWL table's points included).
 const TOKENS_MAX: usize = 1 << 16;
-
-fn bad(spec: &str, why: impl core::fmt::Display) -> Error {
-    Error::new(
-        Code::X009,
-        Span::default(),
-        format!("spectre_source: cannot translate {spec:?}: {why}"),
-    )
-}
-
-/// Appends one value: a number in canonical text, or an identifier (a bench
-/// parameter) verbatim.
-fn value(spec: &str, tok: &str, out: &mut String) -> Result<(), Error> {
-    if let Ok(x) = parse_num(tok) {
-        write_num(out, x);
-        return Ok(());
-    }
-    let ident = tok
-        .bytes()
-        .enumerate()
-        .all(|(k, c)| c == b'_' || c.is_ascii_alphabetic() || (k > 0 && c.is_ascii_digit()));
-    if !ident || tok.is_empty() {
-        return Err(bad(spec, format_args!("`{tok}` is not a number")));
-    }
-    out.push_str(tok);
-    Ok(())
-}
-
-fn is_value(tok: &str) -> bool {
-    tok != "(" && tok != ")" && !keyword(tok)
-}
-
-fn keyword(tok: &str) -> bool {
-    tok.eq_ignore_ascii_case("dc")
-        || tok.eq_ignore_ascii_case("ac")
-        || FUNCS.iter().any(|f| tok.eq_ignore_ascii_case(f.0))
-}
 
 /// Translates `spec` (grammar: `[[dc] v] [ac mag [phase]] [fn(args)]`, the
 /// parts in any order, each at most once, keywords case-insensitive, args
@@ -197,6 +164,45 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
     assert!(i == toks.len());
     debug_assert!(!out[start..].contains("  "));
     Ok(())
+}
+
+// ---- private ----
+
+/// `X009` naming `spec` and `why`.
+fn bad(spec: &str, why: impl core::fmt::Display) -> Error {
+    Error::new(
+        Code::X009,
+        Span::default(),
+        format!("spectre_source: cannot translate {spec:?}: {why}"),
+    )
+}
+
+/// Appends one value: a number in canonical text, or an identifier (a bench
+/// parameter) verbatim.
+fn value(spec: &str, tok: &str, out: &mut String) -> Result<(), Error> {
+    if let Ok(x) = parse_num(tok) {
+        write_num(out, x);
+        return Ok(());
+    }
+    let ident = tok
+        .bytes()
+        .enumerate()
+        .all(|(k, c)| c == b'_' || c.is_ascii_alphabetic() || (k > 0 && c.is_ascii_digit()));
+    if !ident || tok.is_empty() {
+        return Err(bad(spec, format_args!("`{tok}` is not a number")));
+    }
+    out.push_str(tok);
+    Ok(())
+}
+
+fn is_value(tok: &str) -> bool {
+    tok != "(" && tok != ")" && !keyword(tok)
+}
+
+fn keyword(tok: &str) -> bool {
+    tok.eq_ignore_ascii_case("dc")
+        || tok.eq_ignore_ascii_case("ac")
+        || FUNCS.iter().any(|f| tok.eq_ignore_ascii_case(f.0))
 }
 
 #[cfg(test)]

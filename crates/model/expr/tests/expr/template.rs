@@ -3,6 +3,8 @@
 
 use schemify_expr::{Code, Scratch, Template, Value};
 
+// ---- private ----
+
 fn render(src: &str, vars: &[(&str, Value<'_>)]) -> Result<String, schemify_expr::Error> {
     let t = Template::parse(src)?;
     let mut inputs = Vec::new();

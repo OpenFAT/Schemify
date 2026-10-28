@@ -7,6 +7,7 @@
 use proptest::prelude::*;
 use schemify_expr::{CalcResult, Code, ColKind, Column, Mode, Plot, Program, Scratch, Value};
 
+use crate::generate;
 use crate::reference::{self, E, RV, VARS};
 
 #[derive(Debug)]
@@ -15,6 +16,8 @@ enum Outcome {
     RunErr(Code),
     Ok(RV),
 }
+
+// ---- private ----
 
 fn to_rv(v: Value<'_>) -> RV {
     match v {
@@ -61,7 +64,7 @@ proptest! {
     /// a compile-time error (a constant subexpression that always runs)
     /// means the reference fails too.
     #[test]
-    fn crate_matches_reference(e in reference::mixed(VARS.len()), env in reference::env()) {
+    fn crate_matches_reference(e in generate::mixed(VARS.len()), env in generate::env()) {
         let src = reference::print(&e, &|i| VARS[i].to_string());
         let want = reference::eval(&e, &env);
         match (crate_eval(&src, &env), &want) {
@@ -77,7 +80,7 @@ proptest! {
 
     /// Element-wise calculator evaluation equals scalar evaluation per point.
     #[test]
-    fn calc_matches_scalar_per_element(e in reference::mixed(1), xs in prop::collection::vec(-100f64..100.0, 1..6)) {
+    fn calc_matches_scalar_per_element(e in generate::mixed(1), xs in prop::collection::vec(-100f64..100.0, 1..6)) {
         // Column elements are nums: int exactness beyond 2^53 is not kept.
         prop_assume!(!has_big_int(&e));
         // `atan2` is IEEE on signed zeros (atan2(-0, -1) = -pi), and column
@@ -149,11 +152,11 @@ fn generator_reaches_values_and_errors() {
     let (mut ok, mut codes) = (0, std::collections::BTreeSet::new());
     let n = 3000;
     for _ in 0..n {
-        let e = reference::mixed(VARS.len())
+        let e = generate::mixed(VARS.len())
             .new_tree(&mut runner)
             .unwrap()
             .current();
-        let env = reference::env().new_tree(&mut runner).unwrap().current();
+        let env = generate::env().new_tree(&mut runner).unwrap().current();
         match reference::eval(&e, &env) {
             Ok(_) => ok += 1,
             Err(c) => {

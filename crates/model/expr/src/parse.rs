@@ -1,11 +1,17 @@
-//! Parser (spec §3): recursive descent over the grammar, one function per
-//! precedence level, into a flat node table.
+//! Parser (spec §3): a byte range of source text → an [`Ast`], a flat node
+//! table. Recursive descent over the grammar, one function per precedence
+//! level.
 //!
 //! The table is SoA with u32 child indices. Children are always created
 //! before their parent, so node order is a valid post-order. Parentheses make
 //! no node. Recursion is bounded by [`MAX_DEPTH`]; long left-associative
 //! chains (`a+b+c+…`) loop instead of recursing, so they are bounded only by
 //! [`MAX_NODES`].
+//!
+//! Contents:
+//! - `pub(crate) enum BinOp`, `pub(crate) enum Node`, `pub(crate) struct Ast`
+//! - `pub(crate) fn parse(src: &str, start: usize, end: usize) -> Result<Ast, Error>`
+//! - `Ast::str_lit(&self, n: usize) -> &str`, `Ast::text<'s>(&self, src: &'s str, n: usize) -> &'s str`
 
 use crate::lex::{Tok, Token, next_token};
 use crate::{Code, Error, MAX_DEPTH, MAX_NODES, Span};
@@ -102,6 +108,24 @@ pub(crate) fn parse(src: &str, start: usize, end: usize) -> Result<Ast, Error> {
     p.ast.root = root;
     Ok(p.ast)
 }
+
+impl Ast {
+    /// The unescaped text of string literal node `n`.
+    pub(crate) fn str_lit(&self, n: usize) -> &str {
+        assert_eq!(self.kind[n], Node::Str, "node {n} is not a string literal");
+        let (start, len) = (self.a[n] as usize, self.b[n] as usize);
+        &self.pool[start..start + len]
+    }
+
+    /// The source text node `n` spans (for an identifier, its name).
+    pub(crate) fn text<'s>(&self, src: &'s str, n: usize) -> &'s str {
+        let span = self.span[n];
+        debug_assert!(span.end as usize <= src.len());
+        &src[span.start as usize..span.end as usize]
+    }
+}
+
+// ---- private ----
 
 impl Parser<'_> {
     fn advance(&mut self) -> Result<(), Error> {

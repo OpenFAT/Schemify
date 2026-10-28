@@ -1,9 +1,16 @@
 //! Oracle-backed tests for `schemify-expr` (docs/dev/testing.md, expr row). One test
 //! binary; one module per oracle.
+//!
+//! Contents:
+//! - `pub(crate) enum Owned`
+//! - `pub(crate) fn eval(src: &str) -> Result<Owned, Error>`
+//! - `pub(crate) fn eval_with(src: &str, vars: &[(&str, Value)]) -> Result<Owned, Error>`
+//! - `pub(crate) fn code(src: &str) -> Code`
 
 mod calc;
 mod differential;
 mod errors;
+mod generate;
 mod graph;
 mod ngspice;
 mod perf;
@@ -14,6 +21,16 @@ mod template;
 mod text;
 
 use schemify_expr::{Code, Mode, Program, Scratch, Value};
+
+/// An owned [`Value`] for assertions.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Owned {
+    Int(i64),
+    Num(f64),
+    Bool(bool),
+    Cnum(f64, f64),
+    Str(String),
+}
 
 /// Compiles and evaluates a closed scalar expression; the value is owned.
 pub(crate) fn eval(src: &str) -> Result<Owned, schemify_expr::Error> {
@@ -40,16 +57,6 @@ pub(crate) fn code(src: &str) -> Code {
         Ok(v) => panic!("`{src}` evaluated to {v:?}, expected an error"),
         Err(e) => e.code,
     }
-}
-
-/// An owned [`Value`] for assertions.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Owned {
-    Int(i64),
-    Num(f64),
-    Bool(bool),
-    Cnum(f64, f64),
-    Str(String),
 }
 
 impl From<Value<'_>> for Owned {

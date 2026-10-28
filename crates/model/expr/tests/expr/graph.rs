@@ -10,6 +10,17 @@ use schemify_expr::{
 /// Deterministic xorshift for structure choices inside one proptest case.
 struct Rng(u64);
 
+/// A random acyclic set of named expressions. Node `k`'s text is
+/// `c + coef*p<j> + …`; storage order is a permutation of generation order,
+/// so index order is not a topological order.
+struct Design {
+    consts: Vec<i64>,
+    /// Per storage index: (coef, storage index of the dependency).
+    terms: Vec<Vec<(i64, usize)>>,
+}
+
+// ---- private ----
+
 impl Rng {
     fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
@@ -20,15 +31,6 @@ impl Rng {
     fn below(&mut self, n: u64) -> u64 {
         self.next() % n
     }
-}
-
-/// A random acyclic set of named expressions. Node `k`'s text is
-/// `c + coef*p<j> + …`; storage order is a permutation of generation order,
-/// so index order is not a topological order.
-struct Design {
-    consts: Vec<i64>,
-    /// Per storage index: (coef, storage index of the dependency).
-    terms: Vec<Vec<(i64, usize)>>,
 }
 
 impl Design {

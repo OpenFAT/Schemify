@@ -1,6 +1,12 @@
-//! Lexer (spec §2). Streams one token at a time: the parser holds the only
-//! lookahead, so there is no token table. String literals are unescaped once,
-//! straight into the caller's pool.
+//! Lexer (spec §2): source text and a byte offset → the next [`Token`].
+//! Streams one token at a time: the parser holds the only lookahead, so there
+//! is no token table. String literals are unescaped once, straight into the
+//! caller's pool.
+//!
+//! Contents:
+//! - `pub(crate) enum Tok`, `pub(crate) struct Token`
+//! - `pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Token, Error>`
+//! - `pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'static str)>`
 
 use crate::{Code, Error, MAX_STR_BYTES, Span};
 
@@ -50,14 +56,14 @@ pub(crate) struct Token {
 
 /// SI suffix scale: a power of ten, or `mil` (25.4e-6, not a power of ten).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Scale {
+enum Scale {
     Pow10(i32),
     Mil,
 }
 
 /// The spec §2 suffix table; lookup is ASCII-case-insensitive. Both micro
 /// signs (U+00B5 and Greek U+03BC) are accepted.
-pub(crate) const SUFFIXES: [(&str, Scale); 12] = [
+const SUFFIXES: [(&str, Scale); 12] = [
     ("f", Scale::Pow10(-15)),
     ("p", Scale::Pow10(-12)),
     ("n", Scale::Pow10(-9)),
@@ -140,52 +146,6 @@ pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Tok
     };
     debug_assert!(tok.span.start as usize == i && tok.span.end > tok.span.start);
     Ok(tok)
-}
-
-fn ident(src: &str, start: usize) -> Token {
-    let b = src.as_bytes();
-    let word_end = |mut i: usize| {
-        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-            i += 1;
-        }
-        i
-    };
-    let end = word_end(start + 1);
-    let ns_name = b
-        .get(end + 1)
-        .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_');
-    if b.get(end) == Some(&b'.') && ns_name {
-        let end2 = word_end(end + 2);
-        return Token {
-            kind: Tok::NsIdent,
-            span: Span::new(start, end2),
-        };
-    }
-    let kind = match &src[start..end] {
-        "true" => Tok::True,
-        "false" => Tok::False,
-        "pi" => Tok::Pi,
-        _ => Tok::Ident,
-    };
-    Token {
-        kind,
-        span: Span::new(start, end),
-    }
-}
-
-fn number_token(src: &str, start: usize) -> Result<Token, Error> {
-    let (kind, end) = number(src, start).map_err(|(end, why)| {
-        let end = end.max(start + 1);
-        Error::new(
-            Code::X001,
-            Span::new(start, end),
-            format!("{why}: `{}`", &src[start..end]),
-        )
-    })?;
-    Ok(Token {
-        kind,
-        span: Span::new(start, end),
-    })
 }
 
 /// Parses the number literal at `start` (spec §2):
@@ -272,6 +232,57 @@ pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'
     }
     debug_assert!(v >= 0.0, "literals are unsigned");
     Ok((Tok::Num(v), i))
+}
+
+// ---- private ----
+
+fn ident(src: &str, start: usize) -> Token {
+    let b = src.as_bytes();
+    debug_assert!(b[start].is_ascii_alphabetic() || b[start] == b'_');
+    let word_end = |mut i: usize| {
+        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+            i += 1;
+        }
+        i
+    };
+    let end = word_end(start + 1);
+    let ns_name = b
+        .get(end + 1)
+        .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_');
+    if b.get(end) == Some(&b'.') && ns_name {
+        let end2 = word_end(end + 2);
+        return Token {
+            kind: Tok::NsIdent,
+            span: Span::new(start, end2),
+        };
+    }
+    debug_assert!(end > start);
+    let kind = match &src[start..end] {
+        "true" => Tok::True,
+        "false" => Tok::False,
+        "pi" => Tok::Pi,
+        _ => Tok::Ident,
+    };
+    Token {
+        kind,
+        span: Span::new(start, end),
+    }
+}
+
+fn number_token(src: &str, start: usize) -> Result<Token, Error> {
+    let (kind, end) = number(src, start).map_err(|(end, why)| {
+        let end = end.max(start + 1);
+        Error::new(
+            Code::X001,
+            Span::new(start, end),
+            format!("{why}: `{}`", &src[start..end]),
+        )
+    })?;
+    debug_assert!(matches!(kind, Tok::Int(_) | Tok::Num(_)));
+    Ok(Token {
+        kind,
+        span: Span::new(start, end),
+    })
 }
 
 /// Correctly rounded `mant × 10^exp` (a power-of-ten suffix is folded into

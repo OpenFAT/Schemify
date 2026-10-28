@@ -4,6 +4,8 @@ use schemify_expr::{Code, Column, Cycle, Mode, Plot, Program, Scratch, Span, Tem
 
 use crate::code;
 
+// ---- private ----
+
 fn compile_err(src: &str, mode: Mode) -> schemify_expr::Error {
     match Program::compile(src, mode) {
         Ok(_) => panic!("`{src}` compiled, expected an error"),

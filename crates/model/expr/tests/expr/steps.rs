@@ -6,6 +6,8 @@ use schemify_expr::{Code, Value};
 
 use super::{Owned, code, eval, eval_with};
 
+// ---- private ----
+
 /// The table's value at `x` by a plain scan, `None` outside `[b0, bn]`.
 fn scan(bounds: &[f64], vals: &[f64], x: f64) -> Option<f64> {
     let last = *bounds.last()?;

@@ -13,6 +13,17 @@ use std::process::Command;
 
 struct Rng(u64);
 
+const SUFFIXES: [&str; 15] = [
+    "", "", "", "f", "p", "n", "u", "m", "k", "meg", "g", "t", "K", "MEG", "Meg",
+];
+
+const FUNCS: [&str; 15] = [
+    "abs", "sqrt", "exp", "ln", "log10", "sin", "cos", "tan", "atan", "sinh", "cosh", "tanh",
+    "floor", "ceil", "int",
+];
+
+// ---- private ----
+
 impl Rng {
     fn below(&mut self, n: u64) -> u64 {
         self.0 ^= self.0 << 13;
@@ -21,14 +32,6 @@ impl Rng {
         self.0 % n
     }
 }
-
-const SUFFIXES: [&str; 15] = [
-    "", "", "", "f", "p", "n", "u", "m", "k", "meg", "g", "t", "K", "MEG", "Meg",
-];
-const FUNCS: [&str; 15] = [
-    "abs", "sqrt", "exp", "ln", "log10", "sin", "cos", "tan", "atan", "sinh", "cosh", "tanh",
-    "floor", "ceil", "int",
-];
 
 fn literal(r: &mut Rng) -> String {
     let m = r.below(100_000);

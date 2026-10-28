@@ -3,6 +3,12 @@
 //! Built only on core's float formatting (shortest round-trip digits, exact
 //! with a precision), which is platform independent, so the bytes are the
 //! same on every target.
+//!
+//! Contents:
+//! - `pub fn write_num(out: &mut String, x: f64)`
+//! - `pub fn write_int(out: &mut String, x: i64)`
+//! - `pub fn parse_num(s: &str) -> Result<f64, Error>`
+//! - `pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32)`
 
 use core::fmt::Write;
 

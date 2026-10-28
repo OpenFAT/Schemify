@@ -7,6 +7,8 @@ include!(concat!(
     "/fuzz/oracles/compile.rs"
 ));
 
+// ---- private ----
+
 #[test]
 fn compile_corpus_passes_the_compiler_oracle() {
     replay("compile", compile_oracle);
