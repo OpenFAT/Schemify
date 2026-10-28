@@ -1,6 +1,8 @@
 //! The user config (D9 and D35 as amended 2026-10-11; normative spec `docs/spec/config.md`):
-//! Neovim-style directories ([`dirs`]), the sandboxed Lua 5.4 runtime that runs `init.lua`,
-//! and the user-config [`Table`] it fills.
+//! the init file and its `lua/` modules → the user-config [`Table`] plus, per Lua call, a
+//! list of [`Request`]s. Neovim-style directories live in [`dirs`], the command lines in
+//! `cli`, the table in `table`, the sandboxed Lua 5.4 state in `lua`, the `schemify.*` API
+//! in `api` and `pack`.
 //!
 //! This crate owns the table and is the only code that touches the Lua state. Both binaries
 //! (`schemify`, `schemify-gui`) read [`Config::table`] and drain [`Request`]s; the editor
@@ -19,491 +21,141 @@
 //! ```
 //!
 //! Data design (six questions):
-//! 1. In: the init file and the `lua/` modules it requires, the startup flags. Out: the
-//!    [`Table`] (options, keymaps, sims, package specs, hooks) and, per Lua call, a list of
-//!    [`Request`]s (queued commands, notifications, errors).
+//! 1. In: the init file, the `lua/` modules it requires, the startup flags. Out: the
+//!    [`Table`] (options, keymaps, sims, package specs, hooks) and, per Lua call, the
+//!    [`Request`]s it queued (commands, notifications, errors).
 //! 2. One config per process. Keymaps ≤ [`KEYMAPS_MAX`], packages ≤ [`PACKS_MAX`], hooks ≤
 //!    [`HOOKS_MAX`], seven programs, eight options; ≤ [`REQUESTS_MAX`] requests per call.
 //! 3. Steps are i32 milli-units (D33) in `[1, 10^9]`; a Lua function is a [`FnId`] (u16:
 //!    keymaps + hooks < 2^13); `fuel` u64 in `[10^6, 10^11]` (plugin ABI §2).
 //! 4. The binaries read the table at startup (the editor re-reads keymaps when they change);
-//!    Lua callbacks append rows during a call. Rows are read whole, so they are AoS.
+//!    Lua callbacks write rows during a call. Rows are read whole, so they are AoS.
 //! 5. Lifetime: the process; requests live for one call.
 //! 6. Not parallel: one Lua state on the caller's thread.
+//!
+//! Contents:
+//! - `pub mod dirs`; re-exports of `cli` ([`Startup`], [`Launch`], [`GUI_USAGE`]) and
+//!   `table` ([`Table`] and its rows, the capacities, [`fn_of_command`])
+//! - `pub const BUDGET: u64`, `pub const MEMORY_MAX: usize`
+//! - `pub type ReadFile = fn(&Path) -> Option<String>`
+//! - `pub struct Config`: `Config::load(start: &Startup)`, `Config::load_with(start, read)`,
+//!   `Config::from_source(src: &str, root: Option<&Path>)`, `Config::table(&self)`,
+//!   `Config::root(&self)`, `Config::call(&mut self, f: FnId)`,
+//!   `Config::fire(&mut self, event: Event, fields: &[(&str, i64)])`
 
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 
+mod api;
+mod cli;
 pub mod dirs;
 mod lua;
+mod pack;
+mod table;
 
-/// Most keymaps in one config.
-pub const KEYMAPS_MAX: usize = 4096;
-/// Most user packages.
-pub const PACKS_MAX: usize = 128;
-/// Most event hooks.
-pub const HOOKS_MAX: usize = 1024;
-/// Most requests one call may queue; later ones are dropped with an error request.
-pub const REQUESTS_MAX: usize = 256;
+pub use cli::{GUI_USAGE, Launch, Startup};
+pub use table::{
+    Event, FnId, HOOKS_MAX, KEYMAPS_MAX, Keymaps, Level, Opts, PACKS_MAX, PackSpec, REQUESTS_MAX,
+    Request, SIM_ENV_MAX, Sim, SimKind, Source, Table, Target, USER_LAYERS, fn_of_command,
+};
+
 /// Lua VM instructions per call (spec §4).
 pub const BUDGET: u64 = 100_000_000;
 /// Bytes the Lua state may hold (spec §4).
 pub const MEMORY_MAX: usize = 64 << 20;
-/// Canvas layers a colour can be set for (`layer_colors`, xschem's 22 `cadlayers`).
-pub const USER_LAYERS: usize = 22;
 
 /// Reads a config file (`init.lua`, a `lua/` module) as text; `None` when it is missing or
-/// not UTF-8. The web build passes one over its storage (web spec §2); native callers use
-/// [`read_std`].
+/// not UTF-8. The web build passes one over its storage (web spec §2); [`Config::load`]
+/// reads through `std::fs`.
 pub type ReadFile = fn(&Path) -> Option<String>;
-
-/// [`ReadFile`] over `std::fs`.
-pub fn read_std(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
-}
-
-/// Where the user config comes from (`--clean`, the default, `-u <file>`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Startup {
-    /// No init file and no user packages (`--clean`). The default, so tests and embedders
-    /// never read the developer's own config by accident.
-    #[default]
-    Clean,
-    /// `<config>/init.lua` when it exists.
-    User,
-    /// `-u <file>`.
-    File(PathBuf),
-}
-
-impl Startup {
-    /// Splits the global flags (`--clean`, `-u <file>`) off the front of `args`; returns the
-    /// startup and the index of the first other argument. A binary with no flags gets
-    /// [`Startup::User`].
-    ///
-    /// # Errors
-    ///
-    /// `-u` without a file, or both `--clean` and `-u`.
-    pub fn parse(args: &[String]) -> Result<(Startup, usize), String> {
-        let mut start = Startup::User;
-        let mut i = 0;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--clean" if start == Startup::User => start = Startup::Clean,
-                "-u" if start == Startup::User => {
-                    let f = args.get(i + 1).ok_or("-u needs a file")?;
-                    start = Startup::File(PathBuf::from(f));
-                    i += 1;
-                }
-                "--clean" | "-u" => return Err("give --clean or -u once".into()),
-                _ => break,
-            }
-            i += 1;
-        }
-        assert!(i <= args.len());
-        Ok((start, i))
-    }
-
-    /// The flags that reproduce this startup (forwarded by `schemify edit` to the editor).
-    pub fn flags(&self) -> Vec<String> {
-        match self {
-            Startup::Clean => vec!["--clean".into()],
-            Startup::User => Vec::new(),
-            Startup::File(p) => vec!["-u".into(), p.display().to_string()],
-        }
-    }
-}
-
-/// `schemify-gui`'s usage text (spec §7): the whole error for a bad editor command line.
-pub const GUI_USAGE: &str = "\
-usage: schemify-gui [--clean | -u <init.lua>] [<project-dir>|<cell-file>] [--no-default-ui]
-                    [--rpc <socket>]
-       schemify-gui [--clean | -u <init.lua>] cmd <project-dir>|<cell-file> <command> [<arg>...]
-  --rpc  serve the JSON-RPC command stream on a socket path or 127.0.0.1:<port>
-  cmd    run one command (core or plugin) without a window and exit (schemify cmd)
-";
-
-/// The editor's command line (spec §7): `[flags] [edit] [<path>] [--no-default-ui]
-/// [--rpc <socket>]`, the words after the flags in any order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Launch {
-    /// The global flags ([`Startup::parse`]).
-    pub startup: Startup,
-    /// The project directory or cell file; `None` when not given.
-    pub path: Option<PathBuf>,
-    /// `--no-default-ui`: the bare core without the default UI plugin (D6).
-    pub no_default_ui: bool,
-    /// `--rpc <socket>`: a socket path or `127.0.0.1:<port>` (rpc spec §3.2).
-    pub rpc: Option<String>,
-}
-
-impl Launch {
-    /// Parses the editor's command line (not `cmd`, which `schemify-gui` checks first).
-    /// The word `edit` right after the flags is optional, so
-    /// `cargo run -p schemify-app -- edit <path>` works.
-    ///
-    /// # Errors
-    ///
-    /// A bad global flag: its message, a newline, then [`GUI_USAGE`]. `--rpc` without a
-    /// socket, a second `--rpc`, an unknown `-` word or a second path: [`GUI_USAGE`] alone.
-    pub fn parse(args: &[String]) -> Result<Launch, String> {
-        let (startup, first) = Startup::parse(args).map_err(|e| format!("{e}\n{GUI_USAGE}"))?;
-        let mut rest = &args[first..];
-        if rest.first().is_some_and(|a| a == "edit") {
-            rest = &rest[1..];
-        }
-        let mut launch = Launch {
-            startup,
-            ..Launch::default()
-        };
-        let mut i = 0;
-        while i < rest.len() {
-            match rest[i].as_str() {
-                "--rpc" if launch.rpc.is_none() => {
-                    // The next word is the socket whatever it looks like.
-                    launch.rpc = Some(rest.get(i + 1).ok_or(GUI_USAGE)?.clone());
-                    i += 1;
-                }
-                "--no-default-ui" => launch.no_default_ui = true,
-                a if a.starts_with('-') => return Err(GUI_USAGE.into()),
-                a if launch.path.is_none() => launch.path = Some(PathBuf::from(a)),
-                _ => return Err(GUI_USAGE.into()),
-            }
-            i += 1;
-        }
-        assert!(i == rest.len());
-        assert!(first <= args.len());
-        Ok(launch)
-    }
-}
-
-/// Options (`schemify.opt.<key>`, spec §3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Opts {
-    /// Snap step, milli-units.
-    pub snap: i32,
-    /// Grid step, milli-units.
-    pub grid: i32,
-    /// Draw the grid.
-    pub show_grid: bool,
-    /// Light canvas colours.
-    pub light: bool,
-    /// Canvas colour `0xRRGGBB` of each layer `[0, USER_LAYERS)` drawn over the theme's
-    /// (`layer_colors`); `None` keeps the theme's colour.
-    pub layer_colors: [Option<u32>; USER_LAYERS],
-    /// Dimming of the canvas toward its background, percent `[0, 100]` (`dim`, a factor in
-    /// `[0, 1]` in Lua).
-    pub dim: u8,
-    /// Canvas line width in tenths of a pixel `[1, 100]` (`line_width`, pixels in Lua).
-    pub line_width_tenths: u8,
-    /// The simulator Simulate and `schemify run` start when neither the request nor the
-    /// PDK names one (`simulator`, run spec §5): one of [`SimKind::SIMULATORS`], never a
-    /// compiler. `None` (unset) lets detection choose.
-    pub simulator: Option<SimKind>,
-}
-
-impl Default for Opts {
-    fn default() -> Self {
-        Opts {
-            snap: 10_000,
-            grid: 20_000,
-            show_grid: true,
-            light: false,
-            layer_colors: [None; USER_LAYERS],
-            dim: 0,
-            line_width_tenths: 10,
-            simulator: None,
-        }
-    }
-}
-
-/// A Lua function kept by the runtime (a keymap target or a hook); valid for the life of the
-/// [`Config`] that returned it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FnId(pub u16);
-
-/// What a keymap runs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Target {
-    /// A command of the D27 table.
-    Command(String),
-    /// A Lua function: the editor runs it through [`Config::call`].
-    Function(FnId),
-}
-
-/// Keymap rows in `set` order; a later `set` of a chord replaced the earlier row in place.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Keymaps {
-    /// Chord in the keymap record syntax (`Ctrl+Shift+N`).
-    pub chord: Vec<String>,
-    /// Bound command or function.
-    pub target: Vec<Target>,
-    /// `opts.desc`, empty when absent.
-    pub desc: Vec<String>,
-}
-
-impl Keymaps {
-    /// The `keymap` contribution text (plugin ABI §7): one `key <chord> <command>` record per
-    /// row; a function row names the command [`fn_command`] of its id.
-    pub fn records(&self) -> String {
-        use std::fmt::Write as _;
-        let mut out = String::new();
-        for (chord, target) in self.chord.iter().zip(&self.target) {
-            let w = match target {
-                Target::Command(c) => writeln!(out, "key {chord} {c}"),
-                Target::Function(f) => writeln!(out, "key {chord} {FN_COMMAND}{}", f.0),
-            };
-            w.expect("writing to a String");
-        }
-        out
-    }
-}
-
-/// Prefix of the command names that stand for Lua-function keymaps (`user.lua.<id>`).
-pub const FN_COMMAND: &str = "user.lua.";
-
-/// The command name a function keymap is bound to.
-pub fn fn_command(f: FnId) -> String {
-    format!("{FN_COMMAND}{}", f.0)
-}
-
-/// The function a `user.lua.<id>` command name stands for.
-pub fn fn_of_command(name: &str) -> Option<FnId> {
-    name.strip_prefix(FN_COMMAND)?.parse().ok().map(FnId)
-}
-
-/// The external programs of run spec §5.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SimKind {
-    /// The ngspice command line.
-    Ngspice,
-    /// The Verilog-A compiler (ngspice's OSDI route).
-    Openvaf,
-    /// The Verilog compiler.
-    Iverilog,
-    /// The ESPice command line (it compiles Verilog-A itself, run spec §5).
-    Espice,
-    /// The Xyce command line.
-    Xyce,
-    /// The LTspice command line (natively or a Wine wrapper).
-    Ltspice,
-    /// The Spectre command line.
-    Spectre,
-}
-
-impl SimKind {
-    /// Every kind, in table order.
-    pub const ALL: [SimKind; 7] = [
-        SimKind::Ngspice,
-        SimKind::Openvaf,
-        SimKind::Iverilog,
-        SimKind::Espice,
-        SimKind::Xyce,
-        SimKind::Ltspice,
-        SimKind::Spectre,
-    ];
-
-    /// The simulators (every kind but the compilers).
-    pub const SIMULATORS: [SimKind; 5] = [
-        SimKind::Ngspice,
-        SimKind::Espice,
-        SimKind::Xyce,
-        SimKind::Ltspice,
-        SimKind::Spectre,
-    ];
-
-    /// The `schemify.sim` name.
-    pub fn word(self) -> &'static str {
-        match self {
-            SimKind::Ngspice => "ngspice",
-            SimKind::Openvaf => "openvaf",
-            SimKind::Iverilog => "iverilog",
-            SimKind::Espice => "espice",
-            SimKind::Xyce => "xyce",
-            SimKind::Ltspice => "ltspice",
-            SimKind::Spectre => "spectre",
-        }
-    }
-}
-
-/// One `schemify.sim` row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Sim {
-    /// Program (on `PATH` when it has no directory part).
-    pub path: String,
-    /// Arguments (`{netlist}`, `{raw}` placeholders for the simulators).
-    pub args: Vec<String>,
-    /// Variables set for the program on top of the inherited environment (ESPice's `ZIG`),
-    /// sorted by name, names unique, at most [`SIM_ENV_MAX`].
-    pub env: Vec<(String, String)>,
-}
-
-/// Most `env` entries of one `schemify.sim` row.
-pub const SIM_ENV_MAX: usize = 64;
-
-/// Where a package comes from (spec §5).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// `src`: a git repository; `rev` from `rev`/`version`, `None` = the default branch.
-    Git {
-        /// Anything `git clone` accepts.
-        url: String,
-        /// Branch, tag or commit.
-        rev: Option<String>,
-    },
-    /// `url` + `sha256`: one `.wasm` file.
-    Url {
-        /// Fetched with `curl`.
-        url: String,
-        /// 64 lowercase hex digits.
-        sha256: String,
-    },
-    /// `path`: a local package directory, used in place.
-    Path(PathBuf),
-}
-
-impl Source {
-    /// The lockfile `kind` word.
-    pub fn word(&self) -> &'static str {
-        match self {
-            Source::Git { .. } => "git",
-            Source::Url { .. } => "url",
-            Source::Path(_) => "path",
-        }
-    }
-}
-
-/// One `schemify.pack.add` spec, validated.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PackSpec {
-    /// One word of `A–Z a–z 0–9 . _ -`.
-    pub name: String,
-    /// Source.
-    pub source: Source,
-    /// Capabilities the user grants (plugin ABI §5).
-    pub grant: Vec<String>,
-    /// Per-event fuel override.
-    pub fuel: Option<u64>,
-    /// Commands that load the plugin on first use; empty with `lazy_event` = eager.
-    pub lazy_cmd: Vec<String>,
-    /// Events that load the plugin on first delivery.
-    pub lazy_event: Vec<Event>,
-}
-
-impl PackSpec {
-    /// Whether the plugin waits for a command or event instead of loading at startup.
-    pub fn is_lazy(&self) -> bool {
-        !self.lazy_cmd.is_empty() || !self.lazy_event.is_empty()
-    }
-}
-
-/// Events a hook or a lazy package can wait for (plugin ABI §6 wire words).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Event {
-    /// The editor is ready.
-    Load,
-    /// A document opened.
-    DocOpened,
-    /// A document closed.
-    DocClosed,
-    /// A document changed.
-    DocChanged,
-    /// The selection changed.
-    SelectionChanged,
-    /// A document was saved.
-    Saved,
-    /// A run job finished.
-    RunDone,
-}
-
-impl Event {
-    /// Every event.
-    pub const ALL: [Event; 7] = [
-        Event::Load,
-        Event::DocOpened,
-        Event::DocClosed,
-        Event::DocChanged,
-        Event::SelectionChanged,
-        Event::Saved,
-        Event::RunDone,
-    ];
-
-    /// The wire word.
-    pub fn word(self) -> &'static str {
-        match self {
-            Event::Load => "load",
-            Event::DocOpened => "doc_opened",
-            Event::DocClosed => "doc_closed",
-            Event::DocChanged => "doc_changed",
-            Event::SelectionChanged => "selection_changed",
-            Event::Saved => "saved",
-            Event::RunDone => "run_done",
-        }
-    }
-
-    /// The event a wire word names.
-    pub fn from_word(w: &str) -> Option<Event> {
-        Event::ALL.into_iter().find(|e| e.word() == w)
-    }
-}
-
-/// The user-config table (spec §6). Written only by this crate's Lua callbacks.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Table {
-    /// Options.
-    pub opts: Opts,
-    /// Keymaps.
-    pub keymaps: Keymaps,
-    /// Program per [`SimKind`] (index = position in [`SimKind::ALL`]); `None` = the default.
-    pub sims: [Option<Sim>; SimKind::ALL.len()],
-    /// Package specs, in declaration order; names unique.
-    pub packs: Vec<PackSpec>,
-    /// Event hooks in registration order.
-    pub hooks: Vec<(Event, FnId)>,
-}
-
-impl Table {
-    /// The configured program of `kind`, if any.
-    pub fn sim(&self, kind: SimKind) -> Option<&Sim> {
-        self.sims[kind as usize].as_ref()
-    }
-}
-
-/// How loud a notification is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Level {
-    /// An error: config errors are reported at this level.
-    Error,
-    /// A warning.
-    Warn,
-    /// Information.
-    Info,
-}
-
-/// What one Lua call asks the binary to do, in call order.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request {
-    /// `schemify.cmd(name, args)`.
-    Command {
-        /// Command name.
-        name: String,
-        /// Argument string.
-        args: String,
-    },
-    /// `schemify.notify`, or an error (`file:line: message`) at [`Level::Error`].
-    Notify {
-        /// Level.
-        level: Level,
-        /// Text.
-        text: String,
-    },
-}
 
 /// The loaded user config: the table plus the Lua state that filled it.
 pub struct Config {
     table: Table,
     root: Option<PathBuf>,
+    /// `None` with no init file, or when the state could not be built.
     lua: Option<lua::Runtime>,
+}
+
+impl Config {
+    /// Runs the init file `start` names (spec §2) and returns the config with the requests
+    /// the run queued; errors are [`Level::Error`] notifications, never fatal. Reads the init
+    /// file and the `lua/` modules it requires through `std::fs`, nothing else.
+    ///
+    /// Cost: one Lua state (a few ms) plus the script, bounded by [`BUDGET`] instructions.
+    pub fn load(start: &Startup) -> (Config, Vec<Request>) {
+        Config::load_with(start, read_std)
+    }
+
+    /// [`Config::load`] reading the init file and its modules through `read` (the web build's
+    /// storage holds `/config/init.lua`). A missing `<config>/init.lua` is no error: the
+    /// config is empty but keeps `<config>` as its [`root`](Config::root).
+    pub fn load_with(start: &Startup, read: ReadFile) -> (Config, Vec<Request>) {
+        // `dir`: the user config directory, where a missing init file is no error.
+        let (file, dir) = match start {
+            Startup::Clean => return (Config::empty(), Vec::new()),
+            Startup::File(p) => (p.clone(), None),
+            Startup::User => match dirs::here(dirs::Dir::Config) {
+                Ok(dir) => (dir.join("init.lua"), Some(dir)),
+                Err(e) => return (Config::empty(), vec![error(format!("user config: {e}"))]),
+            },
+        };
+        match (read(&file), dir) {
+            (Some(src), _) => Config::run(&src, &file, read),
+            (None, Some(dir)) => {
+                let mut c = Config::empty();
+                c.root = Some(dir);
+                (c, Vec::new())
+            }
+            (None, None) => (
+                Config::empty(),
+                vec![error(format!("{}: cannot read the file", file.display()))],
+            ),
+        }
+    }
+
+    /// Runs `src` as the init file of the config root `root` (`require` reads `<root>/lua/`
+    /// through `std::fs`; `None` = no modules). For tests and embedders.
+    pub fn from_source(src: &str, root: Option<&Path>) -> (Config, Vec<Request>) {
+        let file = root.map_or_else(|| PathBuf::from("init.lua"), |r| r.join("init.lua"));
+        let (mut c, out) = Config::run(src, &file, read_std);
+        c.root = root.map(Path::to_path_buf);
+        (c, out)
+    }
+
+    /// The user-config table.
+    pub fn table(&self) -> &Table {
+        &self.table
+    }
+
+    /// The config root (the init file's directory): the package lockfile lives here. `None`
+    /// with `--clean` or when no config directory is defined.
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
+    /// Calls function `f` (a keymap target) with no arguments under a fresh [`BUDGET`].
+    /// Returns its requests; a failure, or an `f` this config never returned, is one
+    /// [`Level::Error`] request. The table may change (a function can set keymaps).
+    pub fn call(&mut self, f: FnId) -> Vec<Request> {
+        self.invoke(f, None, &[])
+    }
+
+    /// Runs every hook registered for `event`, in registration order, each under a fresh
+    /// [`BUDGET`] with a table of `fields` (`ev.doc`, `ev.epoch`, `ev.job`) plus `ev.event`.
+    /// Returns the requests of all of them; one hook's failure does not stop the next.
+    pub fn fire(&mut self, event: Event, fields: &[(&str, i64)]) -> Vec<Request> {
+        let hooks: Vec<FnId> = (self.table.hooks.iter())
+            .filter(|h| h.0 == event)
+            .map(|h| h.1)
+            .collect();
+        let mut out = Vec::new();
+        for f in hooks {
+            out.extend(self.invoke(f, Some(event), fields));
+        }
+        out
+    }
 }
 
 impl std::fmt::Debug for Config {
@@ -515,9 +167,24 @@ impl std::fmt::Debug for Config {
     }
 }
 
+// ---- private ----
+
+/// [`ReadFile`] over `std::fs`.
+fn read_std(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// An error notification.
+fn error(text: String) -> Request {
+    Request::Notify {
+        level: Level::Error,
+        text,
+    }
+}
+
 impl Config {
     /// A config with nothing set (`--clean`).
-    pub fn empty() -> Config {
+    fn empty() -> Config {
         Config {
             table: Table::default(),
             root: None,
@@ -525,120 +192,33 @@ impl Config {
         }
     }
 
-    /// Runs the init file `start` names (spec §2) and returns the config with the requests
-    /// the run queued; errors are [`Level::Error`] notifications, never fatal. Reads the
-    /// init file and the `lua/` modules it requires through `std::fs`; nothing else.
-    ///
-    /// Cost: one Lua state (a few ms) plus the script, bounded by [`BUDGET`] instructions.
-    pub fn load(start: &Startup) -> (Config, Vec<Request>) {
-        Config::load_with(start, read_std)
-    }
-
-    /// [`Config::load`] reading the init file and its modules through `read` (the web
-    /// build's storage holds `/config/init.lua`).
-    pub fn load_with(start: &Startup, read: ReadFile) -> (Config, Vec<Request>) {
-        let file = match start {
-            Startup::Clean => return (Config::empty(), Vec::new()),
-            Startup::File(p) => p.clone(),
-            Startup::User => match dirs::here(dirs::Dir::Config) {
-                Ok(dir) => {
-                    let f = dir.join("init.lua");
-                    let Some(src) = read(&f) else {
-                        let mut c = Config::empty();
-                        c.root = Some(dir);
-                        return (c, Vec::new());
-                    };
-                    return Config::run(&src, &f, read);
-                }
-                Err(e) => return (Config::empty(), vec![error(format!("user config: {e}"))]),
-            },
-        };
-        match read(&file) {
-            Some(src) => Config::run(&src, &file, read),
-            None => (
-                Config::empty(),
-                vec![error(format!("{}: cannot read the file", file.display()))],
-            ),
-        }
-    }
-
-    /// Runs `src` as the init file of the config root `root` (`require` reads `<root>/lua/`;
-    /// `None` = no modules). For tests and embedders; [`Config::load`] reads the file.
-    pub fn from_source(src: &str, root: Option<&Path>) -> (Config, Vec<Request>) {
-        let file = root.map_or_else(|| PathBuf::from("init.lua"), |r| r.join("init.lua"));
-        let (mut c, out) = Config::run(src, &file, read_std);
-        c.root = root.map(Path::to_path_buf);
-        (c, out)
-    }
-
+    /// Runs init file `file` with text `src`; its directory is the config root.
     fn run(src: &str, file: &Path, read: ReadFile) -> (Config, Vec<Request>) {
-        let root = file
-            .parent()
+        let root = (file.parent())
             .filter(|p| !p.as_os_str().is_empty())
             .map(Path::to_path_buf);
         let name = file.file_name().map_or_else(
             || "init.lua".to_owned(),
             |n| n.to_string_lossy().into_owned(),
         );
-        let (rt, table, out) = lua::Runtime::start(src, &name, root.as_deref(), read);
-        let c = Config {
-            table,
-            root,
-            lua: rt,
-        };
-        (c, out)
-    }
-
-    /// The user-config table.
-    pub fn table(&self) -> &Table {
-        &self.table
-    }
-
-    /// The config root (the init file's directory): the package lockfile lives here.
-    /// `None` with `--clean` or when no config directory is defined.
-    pub fn root(&self) -> Option<&Path> {
-        self.root.as_deref()
-    }
-
-    /// Calls function `f` (a keymap target) with no arguments under the per-call budget.
-    /// Returns its requests; a failure is one [`Level::Error`] request. The table may change
-    /// (a function can set keymaps).
-    pub fn call(&mut self, f: FnId) -> Vec<Request> {
-        self.invoke(f, None, &[])
-    }
-
-    /// Runs every hook registered for `event`, in order, passing a table of `fields`
-    /// (`ev.doc`, `ev.epoch`, `ev.job`). Returns the requests of all of them.
-    pub fn fire(&mut self, event: Event, fields: &[(&str, i64)]) -> Vec<Request> {
-        let hooks: Vec<FnId> = self
-            .table
-            .hooks
-            .iter()
-            .filter(|h| h.0 == event)
-            .map(|h| h.1)
-            .collect();
-        let mut out = Vec::new();
-        for f in hooks {
-            out.extend(self.invoke(f, Some(event), fields));
+        let (lua, table, out) = lua::Runtime::start(src, &name, root.as_deref(), read);
+        assert!(out.len() <= REQUESTS_MAX + 1);
+        // No state, nothing ran: the table is empty and the one request says why.
+        if lua.is_none() {
+            assert_eq!(table, Table::default());
         }
-        out
+        (Config { table, root, lua }, out)
     }
 
+    /// Runs kept function `f`, with an event table when `ev` is given.
     fn invoke(&mut self, f: FnId, ev: Option<Event>, fields: &[(&str, i64)]) -> Vec<Request> {
-        let Some(rt) = self.lua.as_mut() else {
+        let Some(lua) = self.lua.as_mut() else {
             return vec![error(format!("function {} called without a config", f.0))];
         };
         let table = std::mem::take(&mut self.table);
-        let (table, out) = rt.call(table, f, ev, fields);
+        let (table, out) = lua.call(table, f, ev, fields);
         self.table = table;
+        assert!(out.len() <= REQUESTS_MAX + 1);
         out
-    }
-}
-
-/// An error notification.
-pub(crate) fn error(text: String) -> Request {
-    Request::Notify {
-        level: Level::Error,
-        text,
     }
 }
