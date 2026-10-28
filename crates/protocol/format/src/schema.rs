@@ -316,9 +316,8 @@ impl Ty {
     /// `E029` with the expected form; `E022` for a coordinate with more than 3
     /// fractional digits or outside i32 milli-units.
     pub fn check(self, v: &str) -> Result<Option<i32>, (Code, &'static str)> {
-        let ok = match self {
-            Ty::Any => true,
-            Ty::Id | Ty::IdRef => is_id(v),
+        let (ok, detail) = match self {
+            Ty::Any => (true, ""),
             Ty::Coord => {
                 return parse_coord(v).map(Some).map_err(|e| match e {
                     CoordError::NotNumber => (Code::E029, "expected a coordinate number"),
@@ -328,25 +327,23 @@ impl Ty {
                     ),
                 });
             }
-            Ty::Number => is_number(v),
-            Ty::Orient => Orient::parse(v).is_some(),
-            Ty::Bool => v == "true" || v == "false",
-            Ty::Choice(words) => words.contains(&v),
+            Ty::Id | Ty::IdRef => (
+                is_id(v),
+                "expected an id (1-13 lowercase Crockford base32 chars)",
+            ),
+            Ty::Number => (is_number(v), "expected a number `-?digits(.digits)?`"),
+            Ty::Orient => (
+                Orient::parse(v).is_some(),
+                "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
+            ),
+            Ty::Bool => (v == "true" || v == "false", "expected true or false"),
+            Ty::Choice(words) => (words.contains(&v), "value not in the allowed set"),
         };
         if ok {
-            return Ok(None);
+            Ok(None)
+        } else {
+            Err((Code::E029, detail))
         }
-        Err((
-            Code::E029,
-            match self {
-                Ty::Id | Ty::IdRef => "expected an id (1-13 lowercase Crockford base32 chars)",
-                Ty::Number => "expected a number `-?digits(.digits)?`",
-                Ty::Orient => "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
-                Ty::Bool => "expected true or false",
-                // `Any` always passes and `Coord` returned above.
-                Ty::Choice(_) | Ty::Any | Ty::Coord => "value not in the allowed set",
-            },
-        ))
     }
 }
 

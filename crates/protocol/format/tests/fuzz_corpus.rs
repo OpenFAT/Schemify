@@ -11,6 +11,8 @@ include!(concat!(
     "/fuzz/oracles/merge3.rs"
 ));
 
+// ---- private ----
+
 #[test]
 fn parse_corpus_passes_the_reader_oracle() {
     replay("parse", parse_oracle);
