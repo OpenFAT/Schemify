@@ -103,8 +103,7 @@ pub(super) fn remove(path: &Path) -> Result<(), String> {
 
 pub(super) fn remove_tree(path: &Path) -> Result<(), String> {
     // `symlink_metadata`: a link is removed itself, never followed out of the tree.
-    let meta =
-        std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if meta.is_dir() {
         std::fs::remove_dir_all(path)
     } else {

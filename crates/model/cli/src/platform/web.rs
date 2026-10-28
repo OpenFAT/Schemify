@@ -21,10 +21,10 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::FileSystemDirectoryHandle;
 use web_sys::js_sys::{self, Uint8Array};
 use web_sys::wasm_bindgen::closure::Closure;
 use web_sys::wasm_bindgen::{JsCast, JsValue};
-use web_sys::FileSystemDirectoryHandle;
 
 pub(super) use super::opfs::mount_then;
 use super::opfs::{flush, pending};

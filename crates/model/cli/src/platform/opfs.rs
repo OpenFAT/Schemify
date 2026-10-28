@@ -283,7 +283,6 @@ async fn opfs_remove(key: &str) -> Result<(), String> {
     }
 }
 
-
 /// The `DOMException` name of a JS error, if it is one.
 fn dom_error(e: &JsValue) -> Option<String> {
     e.dyn_ref::<web_sys::DomException>()

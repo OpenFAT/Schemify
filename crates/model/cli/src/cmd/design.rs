@@ -167,7 +167,11 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
     let spec_fail = (0..r.jobs.len()).any(|j| {
         (0..r.results.specs()).any(|s| matches!(r.results.pass(j, s as u16), run::Pass::Fail))
     });
-    Ok(if failed || spec_fail { DESIGN_ERROR } else { OK })
+    Ok(if failed || spec_fail {
+        DESIGN_ERROR
+    } else {
+        OK
+    })
 }
 
 /// `run` on the web: no native simulator (D16: a runner plugin simulates there).

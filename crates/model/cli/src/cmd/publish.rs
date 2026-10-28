@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use schemify_cli::{hosted, spines};
 
+use crate::Exit;
 #[cfg(target_arch = "wasm32")]
 use crate::USAGE_ERROR;
-use crate::Exit;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{OK, USAGE_ERROR, usage};
 
@@ -109,7 +109,10 @@ fn publish_one(
             .and_then(|()| std::fs::write(&to, bytes));
         fail(&to, written)?;
     }
-    fail(&dest, std::fs::write(dest.join(hosted::MANIFEST), &manifest))?;
+    fail(
+        &dest,
+        std::fs::write(dest.join(hosted::MANIFEST), &manifest),
+    )?;
     let benches: Vec<hosted::Bench> = files
         .iter()
         .filter(|(rel, _)| rel.ends_with(".shbench") && !rel.starts_with(".schemify/"))
@@ -158,9 +161,7 @@ fn newest_run_jobs(root: &Path, bench: &Path) -> Option<(u32, u32)> {
     let (_, results) = runs
         .flatten()
         .map(|e| e.path())
-        .filter(|d| {
-            std::fs::read_to_string(d.join(spines::BENCH)).is_ok_and(|s| s.trim() == name)
-        })
+        .filter(|d| std::fs::read_to_string(d.join(spines::BENCH)).is_ok_and(|s| s.trim() == name))
         .filter_map(|d| {
             let results = d.join(schemify_run::RESULTS);
             let t = std::fs::metadata(&results)

@@ -92,12 +92,20 @@ pub fn diff(args: &[String]) -> Exit {
             out.push_str(k);
         }
         if c.kind == format::ChangeKind::Changed {
-            push_changed_parts(&mut out, c.parts, &d.keys[c.keys.start as usize..c.keys.end as usize]);
+            push_changed_parts(
+                &mut out,
+                c.parts,
+                &d.keys[c.keys.start as usize..c.keys.end as usize],
+            );
         }
         out.push('\n');
     }
     print!("{out}");
-    Ok(if d.changes.is_empty() { OK } else { DESIGN_ERROR })
+    Ok(if d.changes.is_empty() {
+        OK
+    } else {
+        DESIGN_ERROR
+    })
 }
 
 /// `git-setup`: configures this clone's merge driver (git never reads driver commands from
