@@ -1,5 +1,9 @@
-//! Rust guest SDK (feature `guest`, `wasm32` only): the §2 exports via [`export!`], typed
-//! reads over the §3 imports via [`Host`], and the input arena behind `schemify_alloc`.
+//! Rust guest SDK (feature `guest`, `wasm32` only): a plugin's event handler and pure
+//! functions → the §2 exports via [`export!`]; typed reads over the §3 imports via [`Host`];
+//! the input arena behind `schemify_alloc`.
+//!
+//! Cites: plugin-abi §2 (exports, packed returns, one `schemify_alloc` per call), §3 and §5
+//! (imports and their capabilities), D20 (pure `schemify_call`: every import denied).
 //!
 //! ```ignore
 //! use schemify_abi::guest::{self, Host};
@@ -15,8 +19,16 @@
 //! }
 //! ```
 //!
-//! This is the crate's only module with unsafe code: the extern import block and the calls
-//! into it that hand the host a pointer into our own memory.
+//! This is the crate's only module with unsafe code: the extern import block (`sys`:
+//! `table_len`, `table_epoch`, `read_column`, `read_strings`, `eval`, `log`, `fs_read`,
+//! `fs_list`, `fs_write`, `fs_remove`, `spawn`, `fetch`, `clipboard_get`, `clipboard_set`)
+//! and the calls into it that hand the host a pointer into our own memory.
+//!
+//! Contents:
+//! - `pub struct Host`: `len`, `epoch`, `column`, `strings`, `eval`, `log`, `fs_read`,
+//!   `fs_list`, `fs_write`, `fs_remove`, `spawn`, `fetch`, `clipboard_get`, `clipboard_set`
+//! - `export!` (re-exported), `pub fn no_functions(..) -> Result<(), Code>`
+//! - hidden, for `export!`: `__alloc`, `__on_event`, `__call`
 
 #![allow(unsafe_code)]
 
@@ -47,22 +59,6 @@ mod sys {
     }
 }
 
-/// Guest-memory address of a slice the host only reads, as the ABI's `u32` pointer.
-fn addr<T>(s: &[T]) -> u32 {
-    s.as_ptr() as u32
-}
-
-/// Guest-memory address of a buffer the host writes into; derived from a unique borrow so
-/// the write is permitted.
-fn addr_mut<T>(s: &mut [T]) -> u32 {
-    s.as_mut_ptr() as u32
-}
-
-/// Byte length of a slice as the ABI's `u32` length (guest memory is below 4 GiB).
-fn len32<T>(s: &[T]) -> u32 {
-    u32::try_from(std::mem::size_of_val(s)).expect("wasm32 slices fit u32")
-}
-
 /// Reads through the host imports. Exists only inside an event handler: the SDK passes
 /// `&Host` to the function given to [`export!`]; pure `schemify_call` functions get none,
 /// because every import is denied there (D20).
@@ -72,6 +68,50 @@ pub struct Host {
 }
 
 const HOST: Host = Host { _private: () };
+
+/// Host-written input of the current call. `schemify_alloc` resets it (one input per call),
+/// so it behaves as an arena with call lifetime.
+// ponytail: a one-slot arena, because the host writes exactly one buffer per call; grow it
+// into a chunked bump arena if a future ABI writes several inputs per call.
+static INPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+/// Output of the last call; must outlive the export's return until the host copies it.
+static OUTPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// Emits the §2 exports for a plugin crate (`crate-type = ["cdylib"]`).
+///
+/// `export!(on_event)` or `export!(on_event, call)` where
+/// `on_event: fn(Event<'_>, &Host, &mut Out)` and
+/// `call: fn(fn_id: u32, args: &str, result: &mut String) -> Result<(), Code>`.
+/// `args` is line-record values text (iterate with [`crate::text::values`]); `result` must
+/// receive one canonical value. Use once per crate.
+#[macro_export]
+macro_rules! export {
+    ($on_event:path) => {
+        $crate::export!($on_event, $crate::guest::no_functions);
+    };
+    ($on_event:path, $call:path) => {
+        #[allow(unsafe_code)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn schemify_abi() -> u32 {
+            $crate::ABI_VERSION
+        }
+        #[allow(unsafe_code)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn schemify_alloc(len: u32) -> u32 {
+            $crate::guest::__alloc(len)
+        }
+        #[allow(unsafe_code)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn schemify_on_event(ptr: u32, len: u32) -> u64 {
+            $crate::guest::__on_event(ptr, len, $on_event)
+        }
+        #[allow(unsafe_code)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn schemify_call(fn_id: u32, ptr: u32, len: u32) -> u64 {
+            $crate::guest::__call(fn_id, ptr, len, $call)
+        }
+    };
+}
 
 impl Host {
     /// Returns the row count of `table`.
@@ -208,8 +248,8 @@ impl Host {
 
     /// Requests the files under a directory, paths as [`Host::fs_read`] takes them. The
     /// `Event::IoDone` bytes are one path relative to the directory per line, recursive in
-    /// path order (each directory's entries by name), hidden entries and `target` left out (at most 65 536; `-E_GONE` for a
-    /// missing directory or an unset variable).
+    /// path order (each directory's entries by name), hidden entries and `target` left out,
+    /// at most 65 536 (`-E_GONE` for a missing directory or an unset variable).
     ///
     /// # Errors
     ///
@@ -295,37 +335,6 @@ impl Host {
     }
 }
 
-/// Calls a variable-size read; on `-E_SPACE` the host put the needed size in the first
-/// four bytes, so grow once and retry.
-fn fill_retrying(guess: usize, mut read: impl FnMut(&mut [u8]) -> i32) -> Result<Vec<u8>, Code> {
-    let mut buf = vec![0u8; guess.max(4)];
-    for _ in 0..2 {
-        match Code::check(read(&mut buf)) {
-            Ok(n) => {
-                buf.truncate(n as usize);
-                return Ok(buf);
-            }
-            Err(Code::Space) => {
-                let need = u32::from_le_bytes(buf[..4].try_into().expect("4 bytes")) as usize;
-                if need <= buf.len() {
-                    return Err(Code::Space);
-                }
-                buf = vec![0u8; need];
-            }
-            Err(code) => return Err(code),
-        }
-    }
-    Err(Code::Space)
-}
-
-/// Host-written input of the current call. `schemify_alloc` resets it (one input per call),
-/// so it behaves as an arena with call lifetime.
-// ponytail: a one-slot arena, because the host writes exactly one buffer per call; grow it
-// into a chunked bump arena if a future ABI writes several inputs per call.
-static INPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-/// Output of the last call; must outlive the export's return until the host copies it.
-static OUTPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-
 #[doc(hidden)]
 pub fn __alloc(len: u32) -> u32 {
     let mut input = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
@@ -337,23 +346,6 @@ pub fn __alloc(len: u32) -> u32 {
     let ptr = input.as_mut_ptr() as u32;
     debug_assert!(ptr != 0 && input.len() == len as usize);
     ptr
-}
-
-/// Takes the input buffer if `(ptr, len)` is what `__alloc` handed out; `None` otherwise.
-fn take_input(ptr: u32, len: u32) -> Option<Vec<u8>> {
-    let mut input = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
-    let ok = input.as_ptr() as u32 == ptr && input.len() == len as usize;
-    ok.then(|| std::mem::take(&mut *input))
-}
-
-/// Parks `bytes` as the call's output and returns the packed pointer; 0 for no output.
-fn publish(bytes: Vec<u8>) -> u64 {
-    if bytes.is_empty() {
-        return 0;
-    }
-    let mut output = OUTPUT.lock().unwrap_or_else(PoisonError::into_inner);
-    *output = bytes;
-    pack(output.as_ptr() as u32, len32(&output))
 }
 
 #[doc(hidden)]
@@ -399,38 +391,60 @@ pub fn no_functions(_fn_id: u32, _args: &str, _result: &mut String) -> Result<()
     Err(Code::Range)
 }
 
-/// Emits the §2 exports for a plugin crate (`crate-type = ["cdylib"]`).
-///
-/// `export!(on_event)` or `export!(on_event, call)` where
-/// `on_event: fn(Event<'_>, &Host, &mut Out)` and
-/// `call: fn(fn_id: u32, args: &str, result: &mut String) -> Result<(), Code>`.
-/// `args` is line-record values text (iterate with [`crate::text::values`]); `result` must
-/// receive one canonical value. Use once per crate.
-#[macro_export]
-macro_rules! export {
-    ($on_event:path) => {
-        $crate::export!($on_event, $crate::guest::no_functions);
-    };
-    ($on_event:path, $call:path) => {
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn schemify_abi() -> u32 {
-            $crate::ABI_VERSION
+// ---- private ----
+
+/// Calls a variable-size read; on `-E_SPACE` the host put the needed size in the first
+/// four bytes, so grow once and retry.
+fn fill_retrying(guess: usize, mut read: impl FnMut(&mut [u8]) -> i32) -> Result<Vec<u8>, Code> {
+    let mut buf = vec![0u8; guess.max(4)];
+    for _ in 0..2 {
+        match Code::check(read(&mut buf)) {
+            Ok(n) => {
+                buf.truncate(n as usize);
+                return Ok(buf);
+            }
+            Err(Code::Space) => {
+                let need = u32::from_le_bytes(buf[..4].try_into().expect("4 bytes")) as usize;
+                if need <= buf.len() {
+                    return Err(Code::Space);
+                }
+                buf = vec![0u8; need];
+            }
+            Err(code) => return Err(code),
         }
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn schemify_alloc(len: u32) -> u32 {
-            $crate::guest::__alloc(len)
-        }
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn schemify_on_event(ptr: u32, len: u32) -> u64 {
-            $crate::guest::__on_event(ptr, len, $on_event)
-        }
-        #[allow(unsafe_code)]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn schemify_call(fn_id: u32, ptr: u32, len: u32) -> u64 {
-            $crate::guest::__call(fn_id, ptr, len, $call)
-        }
-    };
+    }
+    Err(Code::Space)
+}
+
+/// Takes the input buffer if `(ptr, len)` is what `__alloc` handed out; `None` otherwise.
+fn take_input(ptr: u32, len: u32) -> Option<Vec<u8>> {
+    let mut input = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
+    let ok = input.as_ptr() as u32 == ptr && input.len() == len as usize;
+    ok.then(|| std::mem::take(&mut *input))
+}
+
+/// Parks `bytes` as the call's output and returns the packed pointer; 0 for no output.
+fn publish(bytes: Vec<u8>) -> u64 {
+    if bytes.is_empty() {
+        return 0;
+    }
+    let mut output = OUTPUT.lock().unwrap_or_else(PoisonError::into_inner);
+    *output = bytes;
+    pack(output.as_ptr() as u32, len32(&output))
+}
+
+/// Guest-memory address of a slice the host only reads, as the ABI's `u32` pointer.
+fn addr<T>(s: &[T]) -> u32 {
+    s.as_ptr() as u32
+}
+
+/// Guest-memory address of a buffer the host writes into; derived from a unique borrow so
+/// the write is permitted.
+fn addr_mut<T>(s: &mut [T]) -> u32 {
+    s.as_mut_ptr() as u32
+}
+
+/// Byte length of a slice as the ABI's `u32` length (guest memory is below 4 GiB).
+fn len32<T>(s: &[T]) -> u32 {
+    u32::try_from(std::mem::size_of_val(s)).expect("wasm32 slices fit u32")
 }

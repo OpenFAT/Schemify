@@ -1,8 +1,22 @@
-//! The subset of the line-record syntax (format spec §2) that events and outputs use:
-//! words, bare and quoted values, indented attribute lines, `|` verbatim lines and
-//! whole-line comments.
+//! Line-record text ↔ words, values, body lines and record chunks: the subset of the
+//! line-record syntax that events and outputs use (bare and quoted values, indented attribute
+//! lines, `|` verbatim lines, whole-line comments).
 //!
-//! Lexing never panics on any input; every failure is [`Code::Parse`].
+//! Cites: format spec §2 (lexical syntax), expr spec §7 (canonical number text, for
+//! [`push_num`]), plugin-abi §6–§7 (where events and outputs use it). Lexing never panics on
+//! any input; every failure is [`Code::Parse`].
+//!
+//! Contents:
+//! - `pub fn is_word(s: &str) -> bool`, `pub fn is_bare(s: &str) -> bool`
+//! - `pub fn split_word(line: &str) -> Result<(&str, &str), Code>`
+//! - `pub fn values(s: &str) -> Values<'_>`; `pub struct Values`: `rest`, `need`,
+//!   `need_plain`, `need_num`, `end`, `Iterator<Item = Result<Cow<str>, Code>>`
+//! - `pub fn push_value(out: &mut String, v: &str)`, `pub fn push_num(out: &mut String, x: f64)`,
+//!   `pub fn push_verbatim(out: &mut String, body: &str)`
+//! - `pub enum BodyLine`, `pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code>`
+//! - `pub fn lines(body: &str) -> impl Iterator<Item = &str>`
+//! - `pub fn verbatim_body(body: &str) -> Result<String, Code>`
+//! - `pub fn chunks(bytes: &[u8]) -> Chunks<'_>`; `pub struct Chunks`: `Iterator<Item = &[u8]>`
 
 // ponytail: a subset of the format codec kept here so `abi` stays a dependency-free leaf for
 // guests (every plugin links it). The host validates contribution sets and spawn argv with
@@ -14,12 +28,33 @@ use std::fmt::Write as _;
 
 use crate::Code;
 
-const fn is_bchar(c: char) -> bool {
-    !matches!(
-        c,
-        ' ' | '\t' | '\r' | '\n' | '"' | '\\' | '\u{0}'..='\u{1f}' | '\u{7f}'
-    )
+/// Iterator returned by [`values`]. Stops after the first error.
+#[derive(Clone, Debug)]
+pub struct Values<'a> {
+    rest: &'a str,
 }
+
+/// One line after a record's first line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyLine<'a> {
+    /// Only whitespace.
+    Blank,
+    /// `# …`, ignored.
+    Comment,
+    /// An indented attribute: its word and the values after it.
+    Attr(&'a str, &'a str),
+    /// A `|` line's content.
+    Verbatim(&'a str),
+}
+
+/// Iterator returned by [`chunks`]; every chunk it yields is non-empty.
+#[derive(Clone, Debug)]
+pub struct Chunks<'a> {
+    rest: &'a [u8],
+}
+
+/// Longest `\u{…}` escape, in hex digits (format spec §2).
+const UNICODE_DIGITS_MAX: u32 = 6;
 
 /// Returns whether `s` is a legal word: `ALPHA *(ALPHA / DIGIT / "_" / "-" / "." / ":")`.
 pub fn is_word(s: &str) -> bool {
@@ -31,7 +66,8 @@ pub fn is_word(s: &str) -> bool {
             .all(|&c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b':'))
 }
 
-/// Returns whether `s` can be written as a bare (unquoted) value.
+/// Returns whether `s` can be written as a bare (unquoted) value: non-empty, no whitespace,
+/// quote, backslash or control character, and not starting with `#` or `|`.
 pub fn is_bare(s: &str) -> bool {
     let mut cs = s.chars();
     match cs.next() {
@@ -40,7 +76,8 @@ pub fn is_bare(s: &str) -> bool {
     }
 }
 
-/// Splits `line` (no leading whitespace) into its leading word and the text after it.
+/// Splits `line` (no leading whitespace) into its leading word and the text after it, with
+/// the whitespace between them dropped.
 ///
 /// # Errors
 ///
@@ -51,20 +88,151 @@ pub fn split_word(line: &str) -> Result<(&str, &str), Code> {
     if !is_word(word) {
         return Err(Code::Parse);
     }
-    Ok((word, rest.trim_start_matches([' ', '\t'])))
+    let rest = rest.trim_start_matches([' ', '\t']);
+    debug_assert!(word.len() + rest.len() <= line.len());
+    Ok((word, rest))
 }
 
 /// Iterates the whitespace-separated values of `s`, unescaping quoted ones.
 ///
-/// Bare values and quoted values without escapes borrow from `s`.
+/// Bare values and quoted values without escapes borrow from `s`; only a quoted value with
+/// an escape allocates.
 pub fn values(s: &str) -> Values<'_> {
     Values { rest: s }
 }
 
-/// Iterator returned by [`values`]. Stops after the first error.
-#[derive(Clone, Debug)]
-pub struct Values<'a> {
-    rest: &'a str,
+/// Appends `v` as one value: bare when legal, otherwise quoted with escapes. Control
+/// characters are always escaped, so the output never contains CR, LF or NUL.
+pub fn push_value(out: &mut String, v: &str) {
+    if is_bare(v) {
+        out.push_str(v);
+        return;
+    }
+    let before = out.len();
+    out.push('"');
+    for c in v.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\u{0}'..='\u{1f}' | '\u{7f}' => {
+                write!(out, "\\u{{{:x}}}", c as u32).expect("writing to a String");
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    debug_assert!(!out[before..].contains(['\n', '\r', '\0']));
+}
+
+/// Appends the canonical number text of `x` (expr spec §7), byte-identical to
+/// `schemify_expr::write_num`: what a guest function returns so the host reads the
+/// same value back. An integer when `x` is integral with |x| < 1e15 (`-0` is `0`),
+/// the shortest round-trip decimal when 1e-4 ≤ |x| < 1e15, else the shortest
+/// round-trip mantissa with an exponent (`2.5e-15`).
+///
+/// # Panics
+///
+/// If `x` is NaN or infinite (never an expression value).
+pub fn push_num(out: &mut String, x: f64) {
+    // ponytail: a copy of expr's `write_num` so guests need not link expr; the abi test
+    // `push_num_matches_expr` is the differential that keeps the two identical.
+    assert!(x.is_finite(), "canonical text of a non-finite number");
+    let a = x.abs();
+    let r = if x.fract() == 0.0 && a < 1e15 {
+        write!(out, "{}", x as i64)
+    } else if (1e-4..1e15).contains(&a) {
+        write!(out, "{x}")
+    } else {
+        write!(out, "{x:e}")
+    };
+    r.expect("writing to a String");
+}
+
+/// Appends `body` as verbatim lines (`  | text`, or `  |` for an empty line). A trailing
+/// newline in `body` adds no extra line; a lone `\r` before a newline is dropped.
+pub fn push_verbatim(out: &mut String, body: &str) {
+    for line in body.lines() {
+        if line.is_empty() {
+            out.push_str("  |\n");
+        } else {
+            out.push_str("  | ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+}
+
+/// Classifies one body line (no line terminator).
+///
+/// # Errors
+///
+/// [`Code::Parse`] for a non-blank line in column 0, a `|` not followed by a space or end,
+/// or an attribute that does not start with a word.
+pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code> {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    if trimmed.is_empty() {
+        return Ok(BodyLine::Blank);
+    }
+    if trimmed.len() == line.len() {
+        return Err(Code::Parse);
+    }
+    if trimmed.starts_with('#') {
+        return Ok(BodyLine::Comment);
+    }
+    if let Some(v) = trimmed.strip_prefix('|') {
+        return match v.strip_prefix(' ') {
+            Some(content) => Ok(BodyLine::Verbatim(content)),
+            None if v.is_empty() => Ok(BodyLine::Verbatim("")),
+            None => Err(Code::Parse),
+        };
+    }
+    let (word, rest) = split_word(trimmed)?;
+    Ok(BodyLine::Attr(word, rest))
+}
+
+/// Iterates the non-empty lines of `body`, splitting on LF and dropping one trailing CR per
+/// line.
+pub fn lines(body: &str) -> impl Iterator<Item = &str> {
+    body.split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .filter(|l| !l.is_empty())
+}
+
+/// Joins the verbatim lines of `body` with `\n` (blank and comment lines are skipped).
+///
+/// # Errors
+///
+/// [`Code::Parse`] if any line is an attribute or malformed.
+pub fn verbatim_body(body: &str) -> Result<String, Code> {
+    let mut out = String::with_capacity(body.len());
+    let mut first = true;
+    for line in lines(body) {
+        match body_line(line)? {
+            BodyLine::Blank | BodyLine::Comment => {}
+            BodyLine::Attr(..) => return Err(Code::Parse),
+            BodyLine::Verbatim(content) => {
+                if !first {
+                    out.push('\n');
+                }
+                first = false;
+                out.push_str(content);
+            }
+        }
+    }
+    debug_assert!(out.len() <= body.len());
+    Ok(out)
+}
+
+/// Splits a byte stream into top-level records: each chunk is a column-0 line plus the
+/// indented or blank lines after it, without the final line terminator. Column-0 comment
+/// and blank lines between records are skipped. A chunk starting with whitespace is an
+/// orphan attribute and fails to parse downstream.
+///
+/// Works on bytes so one invalid UTF-8 record cannot poison its neighbours.
+pub fn chunks(bytes: &[u8]) -> Chunks<'_> {
+    Chunks { rest: bytes }
 }
 
 impl<'a> Values<'a> {
@@ -95,7 +263,7 @@ impl<'a> Values<'a> {
         }
     }
 
-    /// Returns the next value parsed as a number (`u32`, `i32`, …).
+    /// Returns the next value parsed as a number (`u32`, `i32`, `f64`, …) with `FromStr`.
     ///
     /// # Errors
     ///
@@ -122,8 +290,8 @@ impl<'a> Iterator for Values<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let s = self.rest();
+        self.rest = s;
         if s.is_empty() {
-            self.rest = s;
             return None;
         }
         let lexed = lex_value(s).and_then(|(v, after)| {
@@ -135,7 +303,7 @@ impl<'a> Iterator for Values<'a> {
         });
         match lexed {
             Ok((v, after)) => {
-                debug_assert!(after.len() < s.len());
+                debug_assert!(after.len() < s.len(), "a value consumes input");
                 self.rest = after;
                 Some(Ok(v))
             }
@@ -147,6 +315,55 @@ impl<'a> Iterator for Values<'a> {
     }
 }
 
+impl<'a> Iterator for Chunks<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        let all = self.rest;
+        // Skip column-0 blank and comment lines; each pass consumes one line.
+        let (line, after) = loop {
+            if self.rest.is_empty() {
+                return None;
+            }
+            let (line, after) = split_line(self.rest);
+            if is_blank(line) || line[0] == b'#' {
+                self.rest = after;
+                continue;
+            }
+            break (line, after);
+        };
+        let start = all.len() - self.rest.len();
+        let mut end = start + line.len();
+        self.rest = after;
+        // Absorb indented and blank lines; the chunk ends at the last non-blank one.
+        while !self.rest.is_empty() {
+            let (next, after) = split_line(self.rest);
+            if !(is_blank(next) || matches!(next[0], b' ' | b'\t')) {
+                break;
+            }
+            if !is_blank(next) {
+                end = all.len() - self.rest.len() + next.len();
+            }
+            self.rest = after;
+        }
+        debug_assert!(start < end, "a chunk is never empty");
+        debug_assert!(end <= all.len());
+        Some(&all[start..end])
+    }
+}
+
+// ---- private ----
+
+/// Whether `c` may appear in a bare value (format spec §2 `bchar`).
+const fn is_bchar(c: char) -> bool {
+    !matches!(
+        c,
+        ' ' | '\t' | '\r' | '\n' | '"' | '\\' | '\u{0}'..='\u{1f}' | '\u{7f}'
+    )
+}
+
+/// Lexes one value at the start of `s` (non-empty, no leading whitespace); returns it and
+/// the text after it.
 fn lex_value(s: &str) -> Result<(Cow<'_, str>, &str), Code> {
     debug_assert!(!s.is_empty());
     if let Some(quoted) = s.strip_prefix('"') {
@@ -204,168 +421,19 @@ fn lex_unicode(chars: &mut std::str::CharIndices<'_>) -> Result<char, Code> {
         return Err(Code::Parse);
     }
     let mut value = 0u32;
-    for digits in 0..=6 {
+    for digits in 0..=UNICODE_DIGITS_MAX {
         match chars.next().map(|(_, c)| c) {
             Some('}') if digits > 0 => return char::from_u32(value).ok_or(Code::Parse),
-            Some(c) if digits < 6 => value = value * 16 + c.to_digit(16).ok_or(Code::Parse)?,
+            Some(c) if digits < UNICODE_DIGITS_MAX => {
+                value = value * 16 + c.to_digit(16).ok_or(Code::Parse)?;
+            }
             _ => return Err(Code::Parse),
         }
     }
     Err(Code::Parse)
 }
 
-/// Appends `v` as one value: bare when legal, otherwise quoted with escapes. Control
-/// characters are always escaped, so the output never contains CR, LF or NUL.
-pub fn push_value(out: &mut String, v: &str) {
-    let before = out.len();
-    if is_bare(v) {
-        out.push_str(v);
-        return;
-    }
-    out.push('"');
-    for c in v.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\u{0}'..='\u{1f}' | '\u{7f}' => {
-                write!(out, "\\u{{{:x}}}", c as u32).expect("writing to a String");
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    debug_assert!(!out[before..].contains(['\n', '\r', '\0']));
-}
-
-/// Appends the canonical number text of `x` (expr spec §7), byte-identical to
-/// `schemify_expr::write_num`: what a guest function returns so the host reads the
-/// same value back. An integer when `x` is integral with |x| < 1e15 (`-0` is `0`),
-/// the shortest round-trip decimal when 1e-4 ≤ |x| < 1e15, else the shortest
-/// round-trip mantissa with an exponent (`2.5e-15`).
-///
-/// # Panics
-///
-/// If `x` is NaN or infinite (never an expression value).
-pub fn push_num(out: &mut String, x: f64) {
-    // ponytail: a copy of expr's `write_num` so guests need not link expr; the abi test
-    // `push_num_matches_expr` is the differential that keeps the two identical.
-    assert!(x.is_finite(), "canonical text of a non-finite number");
-    let a = x.abs();
-    let r = if x.fract() == 0.0 && a < 1e15 {
-        write!(out, "{}", x as i64)
-    } else if (1e-4..1e15).contains(&a) {
-        write!(out, "{x}")
-    } else {
-        write!(out, "{x:e}")
-    };
-    r.expect("writing to a String");
-}
-
-/// Appends `body` as verbatim lines (`  | text`, or `  |` for an empty line). A trailing
-/// newline in `body` adds no extra line; a lone `\r` before a newline is dropped.
-pub fn push_verbatim(out: &mut String, body: &str) {
-    for line in body.lines() {
-        if line.is_empty() {
-            out.push_str("  |\n");
-        } else {
-            out.push_str("  | ");
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-}
-
-/// One line after a record's first line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BodyLine<'a> {
-    /// Only whitespace.
-    Blank,
-    /// `# …`, ignored.
-    Comment,
-    /// An indented attribute: its word and the values after it.
-    Attr(&'a str, &'a str),
-    /// A `|` line's content.
-    Verbatim(&'a str),
-}
-
-/// Classifies one body line (no line terminator).
-///
-/// # Errors
-///
-/// [`Code::Parse`] for a non-blank line in column 0, a `|` not followed by a space or end,
-/// or an attribute that does not start with a word.
-pub fn body_line(line: &str) -> Result<BodyLine<'_>, Code> {
-    let trimmed = line.trim_start_matches([' ', '\t']);
-    if trimmed.is_empty() {
-        return Ok(BodyLine::Blank);
-    }
-    if trimmed.len() == line.len() {
-        return Err(Code::Parse);
-    }
-    if trimmed.starts_with('#') {
-        return Ok(BodyLine::Comment);
-    }
-    if let Some(v) = trimmed.strip_prefix('|') {
-        return match v.strip_prefix(' ') {
-            Some(content) => Ok(BodyLine::Verbatim(content)),
-            None if v.is_empty() => Ok(BodyLine::Verbatim("")),
-            None => Err(Code::Parse),
-        };
-    }
-    let (word, rest) = split_word(trimmed)?;
-    Ok(BodyLine::Attr(word, rest))
-}
-
-/// Iterates the lines of `body`, splitting on LF and dropping one trailing CR per line.
-pub fn lines(body: &str) -> impl Iterator<Item = &str> {
-    body.split('\n')
-        .map(|l| l.strip_suffix('\r').unwrap_or(l))
-        .filter(|l| !l.is_empty())
-}
-
-/// Joins the verbatim lines of `body` with `\n` (blank and comment lines are skipped).
-///
-/// # Errors
-///
-/// [`Code::Parse`] if any line is an attribute or malformed.
-pub fn verbatim_body(body: &str) -> Result<String, Code> {
-    let mut out = String::with_capacity(body.len());
-    let mut first = true;
-    for line in lines(body) {
-        match body_line(line)? {
-            BodyLine::Blank | BodyLine::Comment => {}
-            BodyLine::Attr(..) => return Err(Code::Parse),
-            BodyLine::Verbatim(content) => {
-                if !first {
-                    out.push('\n');
-                }
-                first = false;
-                out.push_str(content);
-            }
-        }
-    }
-    debug_assert!(out.len() <= body.len());
-    Ok(out)
-}
-
-/// Splits a byte stream into top-level records: each chunk is a column-0 line plus the
-/// indented or blank lines after it, without the final line terminator. Column-0 comment
-/// and blank lines between records are skipped. A chunk starting with whitespace is an
-/// orphan attribute and fails to parse downstream.
-///
-/// Works on bytes so one invalid UTF-8 record cannot poison its neighbours.
-pub fn chunks(bytes: &[u8]) -> Chunks<'_> {
-    Chunks { rest: bytes }
-}
-
-/// Iterator returned by [`chunks`].
-#[derive(Clone, Debug)]
-pub struct Chunks<'a> {
-    rest: &'a [u8],
-}
-
+/// Splits `b` at its first LF: the line without it, and the bytes after it.
 fn split_line(b: &[u8]) -> (&[u8], &[u8]) {
     match b.iter().position(|&c| c == b'\n') {
         Some(i) => (&b[..i], &b[i + 1..]),
@@ -375,39 +443,6 @@ fn split_line(b: &[u8]) -> (&[u8], &[u8]) {
 
 fn is_blank(line: &[u8]) -> bool {
     line.iter().all(|&c| matches!(c, b' ' | b'\t' | b'\r'))
-}
-
-impl<'a> Iterator for Chunks<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<&'a [u8]> {
-        let all = self.rest;
-        loop {
-            if self.rest.is_empty() {
-                return None;
-            }
-            let (line, after) = split_line(self.rest);
-            if is_blank(line) || line[0] == b'#' {
-                self.rest = after;
-                continue;
-            }
-            let start = all.len() - self.rest.len();
-            let mut end = start + line.len();
-            self.rest = after;
-            while !self.rest.is_empty() {
-                let (next, after) = split_line(self.rest);
-                if !(is_blank(next) || matches!(next[0], b' ' | b'\t')) {
-                    break;
-                }
-                if !is_blank(next) {
-                    end = all.len() - self.rest.len() + next.len();
-                }
-                self.rest = after;
-            }
-            debug_assert!(start < end && end <= all.len());
-            return Some(&all[start..end]);
-        }
-    }
 }
 
 #[cfg(test)]

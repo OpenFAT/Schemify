@@ -1,10 +1,18 @@
-//! Output records (§7): what a plugin returns from `schemify_on_event`.
+//! Output records (§7): `Out` → the text a plugin returns from `schemify_on_event`, and one
+//! record chunk → `Output` for the host.
 //!
+//! Cites: plugin-abi §7 (record forms), §1 (contribution kinds), edits spec §1 (`edit` ops).
 //! Contributions are immediate-mode sets (each `contribute` replaces the plugin's previous
 //! set of that kind and scope); everything else is a one-shot request validated by its
 //! owner. [`Out`] writes them; [`Output::parse`] reads one record back.
+//!
+//! Contents:
+//! - `pub enum Output<'a>`, `Output::parse(chunk: &'a str) -> Result<Output<'a>, Code>`
+//! - `pub struct Out`: `new`, `as_str`, `into_string`, `contribute`, `contribute_scoped`,
+//!   `contribute_ui`, `contribute_commands`, `edit`, `stage`, `run`, `timer`, `log`, `log_at`
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 
 use crate::text::{self, BodyLine};
 use crate::{Code, EditMode, Kind, Level};
@@ -59,8 +67,34 @@ pub enum Output<'a> {
     },
 }
 
+/// Output builder: appends well-formed records to one buffer.
+///
+/// Immediate mode: call `contribute*` with the *whole* current set every time it changes;
+/// the host replaces the previous set and diffs. Values are quoted as needed, so any string
+/// is safe to pass; bodies are line-record text written as verbatim lines.
+///
+/// # Examples
+///
+/// ```
+/// use schemify_abi::{Out, Output, Kind, text};
+///
+/// let mut out = Out::new();
+/// out.contribute_commands("command count_nets.run \"Count nets\"\n");
+/// out.log("3 single-connection nets");
+/// let records: Vec<Output> = text::chunks(out.as_str().as_bytes())
+///     .map(|c| Output::parse(std::str::from_utf8(c).unwrap()))
+///     .collect::<Result<_, _>>()?;
+/// assert!(matches!(&records[0], Output::Contribute { kind: Kind::Commands, .. }));
+/// # Ok::<(), schemify_abi::Code>(())
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Out {
+    text: String,
+}
+
 impl<'a> Output<'a> {
-    /// Parses one record chunk (as split by [`text::chunks`]).
+    /// Parses one record chunk (as split by [`text::chunks`]). Values borrow from `chunk`
+    /// unless they needed unescaping; bodies are copied.
     ///
     /// # Errors
     ///
@@ -110,17 +144,14 @@ impl<'a> Output<'a> {
                 let (bench, config, corner) = (v.need()?, v.need()?, v.need()?);
                 v.end()?;
                 let mut vary = Vec::new();
-                for line in text::lines(body) {
-                    match text::body_line(line)? {
-                        BodyLine::Blank | BodyLine::Comment => {}
-                        BodyLine::Attr("vary", rest) => {
-                            let mut a = text::values(rest);
-                            vary.push((a.need()?, a.need()?));
-                            a.end()?;
-                        }
-                        BodyLine::Attr(..) | BodyLine::Verbatim(_) => return Err(Code::Parse),
+                each_attr(body, |word, rest| {
+                    if word != "vary" {
+                        return Err(Code::Parse);
                     }
-                }
+                    let mut a = text::values(rest);
+                    vary.push((a.need()?, a.need()?));
+                    a.end()
+                })?;
                 Output::Run {
                     bench,
                     config,
@@ -131,55 +162,20 @@ impl<'a> Output<'a> {
             "timer" => {
                 let (id, ms) = (v.need_num()?, v.need_num()?);
                 v.end()?;
-                no_body(body)?;
+                each_attr(body, |_, _| Err(Code::Parse))?;
                 Output::Timer { id, ms }
             }
             "log" => {
                 let level = Level::parse(v.need_plain()?).ok_or(Code::Parse)?;
                 let text = v.need()?;
                 v.end()?;
-                no_body(body)?;
+                each_attr(body, |_, _| Err(Code::Parse))?;
                 Output::Log { level, text }
             }
             _ => return Err(Code::Parse),
         };
         Ok(out)
     }
-}
-
-fn no_body(body: &str) -> Result<(), Code> {
-    for line in text::lines(body) {
-        match text::body_line(line)? {
-            BodyLine::Blank | BodyLine::Comment => {}
-            BodyLine::Attr(..) | BodyLine::Verbatim(_) => return Err(Code::Parse),
-        }
-    }
-    Ok(())
-}
-
-/// Output builder: appends well-formed records to one buffer.
-///
-/// Immediate mode: call `contribute*` with the *whole* current set every time it changes;
-/// the host replaces the previous set and diffs. Values are quoted as needed, so any string
-/// is safe to pass; bodies are line-record text written as verbatim lines.
-///
-/// # Examples
-///
-/// ```
-/// use schemify_abi::{Out, Output, Kind, text};
-///
-/// let mut out = Out::new();
-/// out.contribute_commands("command count_nets.run \"Count nets\"\n");
-/// out.log("3 single-connection nets");
-/// let records: Vec<Output> = text::chunks(out.as_str().as_bytes())
-///     .map(|c| Output::parse(std::str::from_utf8(c).unwrap()))
-///     .collect::<Result<_, _>>()?;
-/// assert!(matches!(&records[0], Output::Contribute { kind: Kind::Commands, .. }));
-/// # Ok::<(), schemify_abi::Code>(())
-/// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Out {
-    text: String,
 }
 
 impl Out {
@@ -205,10 +201,7 @@ impl Out {
     /// Panics if `kind` is scoped ([`Kind::Annotations`]); use [`Out::contribute_scoped`].
     pub fn contribute(&mut self, kind: Kind, body: &str) {
         assert!(!kind.scoped(), "{} needs a scope", kind.name());
-        self.text.push_str("contribute ");
-        self.text.push_str(kind.name());
-        self.text.push('\n');
-        text::push_verbatim(&mut self.text, body);
+        self.contribution(kind, None, body);
     }
 
     /// Replaces this plugin's set of a scoped kind for `scope`.
@@ -218,12 +211,7 @@ impl Out {
     /// Panics if `kind` is not scoped.
     pub fn contribute_scoped(&mut self, kind: Kind, scope: &str, body: &str) {
         assert!(kind.scoped(), "{} takes no scope", kind.name());
-        self.text.push_str("contribute ");
-        self.text.push_str(kind.name());
-        self.text.push(' ');
-        text::push_value(&mut self.text, scope);
-        self.text.push('\n');
-        text::push_verbatim(&mut self.text, body);
+        self.contribution(kind, Some(scope), body);
     }
 
     /// Shortcut for `contribute(Kind::Ui, body)`.
@@ -236,13 +224,10 @@ impl Out {
         self.contribute(Kind::Commands, body);
     }
 
-    /// Requests an edit transaction on `doc`; `ops` are edits-spec §1 op lines.
+    /// Requests an edit transaction on `doc`; `ops` are edits-spec §1 op lines. Empty `ops`
+    /// writes a record the host rejects (`E_PARSE`).
     pub fn edit(&mut self, doc: u32, mode: EditMode, label: &str, ops: &str) {
-        self.text.push_str("edit ");
-        self.text.push_str(&doc.to_string());
-        self.text.push(' ');
-        self.text.push_str(mode.name());
-        self.text.push(' ');
+        self.line(format_args!("edit {doc} {} ", mode.name()));
         text::push_value(&mut self.text, label);
         self.text.push('\n');
         text::push_verbatim(&mut self.text, ops);
@@ -254,7 +239,7 @@ impl Out {
         self.edit(doc, EditMode::Stage, label, ops);
     }
 
-    /// Requests a simulation job.
+    /// Requests a simulation job; `vary` overrides variables in order.
     pub fn run(&mut self, bench: &str, config: &str, corner: &str, vary: &[(&str, &str)]) {
         self.text.push_str("run");
         for v in [bench, config, corner] {
@@ -273,7 +258,7 @@ impl Out {
 
     /// Requests `Event::Timer { id }` after `ms` milliseconds.
     pub fn timer(&mut self, id: u32, ms: u32) {
-        self.text.push_str(&format!("timer {id} {ms}\n"));
+        self.line(format_args!("timer {id} {ms}\n"));
     }
 
     /// Logs `text` at [`Level::Info`].
@@ -281,14 +266,54 @@ impl Out {
         self.log_at(Level::Info, text);
     }
 
-    /// Logs `text` at `level`.
+    /// Logs `text` at `level`; any string is safe (quoted and escaped as needed).
     pub fn log_at(&mut self, level: Level, text: &str) {
-        self.text.push_str("log ");
-        self.text.push_str(level.name());
-        self.text.push(' ');
+        self.line(format_args!("log {} ", level.name()));
         text::push_value(&mut self.text, text);
         self.text.push('\n');
     }
+}
+
+// ---- private ----
+
+impl Out {
+    /// Writes `contribute <kind> [<scope>]` and `body` as verbatim lines.
+    fn contribution(&mut self, kind: Kind, scope: Option<&str>, body: &str) {
+        debug_assert_eq!(kind.scoped(), scope.is_some());
+        self.line(format_args!("contribute {}", kind.name()));
+        if let Some(scope) = scope {
+            self.text.push(' ');
+            text::push_value(&mut self.text, scope);
+        }
+        self.text.push('\n');
+        text::push_verbatim(&mut self.text, body);
+        debug_assert!(self.text.ends_with('\n'));
+    }
+
+    /// Appends preformatted record text (words and numbers only, never a value to escape).
+    fn line(&mut self, args: std::fmt::Arguments<'_>) {
+        self.text.write_fmt(args).expect("writing to a String");
+    }
+}
+
+/// Calls `each(word, values)` for every attribute line of a record body; blank and comment
+/// lines are skipped.
+///
+/// # Errors
+///
+/// [`Code::Parse`] for a verbatim or malformed line, or the first error `each` returns.
+fn each_attr<'b>(
+    body: &'b str,
+    mut each: impl FnMut(&'b str, &'b str) -> Result<(), Code>,
+) -> Result<(), Code> {
+    for line in text::lines(body) {
+        match text::body_line(line)? {
+            BodyLine::Blank | BodyLine::Comment => {}
+            BodyLine::Attr(word, rest) => each(word, rest)?,
+            BodyLine::Verbatim(_) => return Err(Code::Parse),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
