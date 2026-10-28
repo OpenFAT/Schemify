@@ -9,30 +9,43 @@
 //! Contents:
 //! - `pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error>`
 
-use core::fmt::Write;
+use core::fmt::Display;
 
-use crate::text::{parse_num, write_num};
+use crate::text;
 use crate::{Code, Error, Span};
 
-/// Transient functions: SPICE name, Spectre `type`, Spectre names of the
-/// positional arguments (at most this many; at least two).
-const FUNCS: [(&str, &str, &[&str]); 4] = [
-    (
-        "pulse",
-        "pulse",
-        &["val0", "val1", "delay", "rise", "fall", "width", "period"],
-    ),
-    (
-        "sin",
-        "sine",
-        &["sinedc", "ampl", "freq", "delay", "damp", "sinephase"],
-    ),
-    (
-        "exp",
-        "exp",
-        &["val0", "val1", "td1", "tau1", "td2", "tau2"],
-    ),
-    ("pwl", "pwl", &[]),
+/// A SPICE transient function and its Spectre spelling.
+struct TransientFn {
+    spice: &'static str,
+    /// Spectre's `type=` value.
+    spectre_type: &'static str,
+    /// Spectre names of the positional arguments (at most this many; at
+    /// least two); empty for `pwl`, whose arguments are time-value pairs.
+    params: &'static [&'static str],
+}
+
+/// The transient functions Spectre can say.
+const FUNCS: [TransientFn; 4] = [
+    TransientFn {
+        spice: "pulse",
+        spectre_type: "pulse",
+        params: &["val0", "val1", "delay", "rise", "fall", "width", "period"],
+    },
+    TransientFn {
+        spice: "sin",
+        spectre_type: "sine",
+        params: &["sinedc", "ampl", "freq", "delay", "damp", "sinephase"],
+    },
+    TransientFn {
+        spice: "exp",
+        spectre_type: "exp",
+        params: &["val0", "val1", "td1", "tau1", "td2", "tau2"],
+    },
+    TransientFn {
+        spice: "pwl",
+        spectre_type: "pwl",
+        params: &[],
+    },
 ];
 
 /// Most tokens one specification may hold (a PWL table's points included).
@@ -50,16 +63,18 @@ const TOKENS_MAX: usize = 1 << 16;
 /// two, an odd PWL table, a repeated part, a token that is neither a number
 /// nor an identifier. `out` is then unspecified past its length at entry.
 pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
-    let mut toks: Vec<&str> = Vec::new();
+    use core::fmt::Write;
+
+    let mut tokens: Vec<&str> = Vec::new();
     for word in spec.split(|c: char| c.is_whitespace() || c == ',') {
         let mut rest = word;
         while !rest.is_empty() {
             let cut = rest.find(['(', ')']).unwrap_or(rest.len());
             let (head, tail) = rest.split_at(if cut == 0 { 1 } else { cut });
-            toks.push(head);
+            tokens.push(head);
             rest = tail;
         }
-        if toks.len() > TOKENS_MAX {
+        if tokens.len() > TOKENS_MAX {
             return Err(bad(spec, "too long"));
         }
     }
@@ -71,15 +86,15 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
             out.push(' ');
         }
     };
-    while i < toks.len() {
-        let t = toks[i];
+    while i < tokens.len() {
+        let t = tokens[i];
         if t.eq_ignore_ascii_case("dc") || (is_value(t) && !dc && i == 0) {
             let v = if t.eq_ignore_ascii_case("dc") {
                 i + 1
             } else {
                 i
             };
-            let Some(tok) = toks.get(v).copied().filter(|t| is_value(t)) else {
+            let Some(tok) = tokens.get(v).copied().filter(|t| is_value(t)) else {
                 return Err(bad(spec, "dc needs a value"));
             };
             if dc {
@@ -95,44 +110,45 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
                 return Err(bad(spec, "two ac parts"));
             }
             ac = true;
-            let Some(mag) = toks.get(i + 1).copied().filter(|t| is_value(t)) else {
+            let Some(mag) = tokens.get(i + 1).copied().filter(|t| is_value(t)) else {
                 return Err(bad(spec, "ac needs a magnitude"));
             };
             sep(out);
             out.push_str("mag=");
             value(spec, mag, out)?;
             i += 2;
-            if let Some(ph) = toks.get(i).copied().filter(|t| is_value(t)) {
+            if let Some(ph) = tokens.get(i).copied().filter(|t| is_value(t)) {
                 out.push_str(" phase=");
                 value(spec, ph, out)?;
                 i += 1;
             }
-        } else if let Some(&(_, ty, names)) = FUNCS.iter().find(|f| t.eq_ignore_ascii_case(f.0)) {
+        } else if let Some(func) = FUNCS.iter().find(|f| t.eq_ignore_ascii_case(f.spice)) {
+            let (spectre_type, names) = (func.spectre_type, func.params);
             if tran {
                 return Err(bad(spec, "two transient functions"));
             }
             tran = true;
-            if toks.get(i + 1) != Some(&"(") {
+            if tokens.get(i + 1) != Some(&"(") {
                 return Err(bad(
                     spec,
                     format_args!("`{t}` needs its arguments in parentheses"),
                 ));
             }
-            let close = toks[i + 2..]
+            let close = tokens[i + 2..]
                 .iter()
                 .position(|t| *t == ")")
                 .map(|k| i + 2 + k)
                 .ok_or_else(|| bad(spec, "unclosed `(`"))?;
-            let args = &toks[i + 2..close];
+            let args = &tokens[i + 2..close];
             if let Some(a) = args.iter().find(|a| !is_value(a)) {
                 return Err(bad(spec, format_args!("`{a}` inside `{t}(…)`")));
             }
             let n = args.len();
             if n < 2
-                || (ty == "pwl" && !n.is_multiple_of(2))
+                || (spectre_type == "pwl" && !n.is_multiple_of(2))
                 || (!names.is_empty() && n > names.len())
             {
-                let want = if ty == "pwl" {
+                let want = if spectre_type == "pwl" {
                     "time-value pairs".to_owned()
                 } else {
                     format!("2 to {} arguments", names.len())
@@ -140,8 +156,8 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
                 return Err(bad(spec, format_args!("`{t}` takes {want}, got {n}")));
             }
             sep(out);
-            write!(out, "type={ty}").map_err(|_| bad(spec, "write"))?;
-            if ty == "pwl" {
+            write!(out, "type={spectre_type}").map_err(|_| bad(spec, "write"))?;
+            if spectre_type == "pwl" {
                 out.push_str(" wave=[");
                 for (k, a) in args.iter().enumerate() {
                     if k > 0 {
@@ -161,15 +177,19 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
             return Err(bad(spec, format_args!("unexpected `{t}`")));
         }
     }
-    assert!(i == toks.len());
-    debug_assert!(!out[start..].contains("  "));
+    assert_eq!(i, tokens.len(), "every token consumed exactly once");
+    debug_assert!(!out[start..].contains("  "), "parameters are single-spaced");
+    debug_assert!(
+        tokens.is_empty() || out.len() > start,
+        "every part writes a parameter"
+    );
     Ok(())
 }
 
 // ---- private ----
 
 /// `X009` naming `spec` and `why`.
-fn bad(spec: &str, why: impl core::fmt::Display) -> Error {
+fn bad(spec: &str, why: impl Display) -> Error {
     Error::new(
         Code::X009,
         Span::default(),
@@ -180,8 +200,9 @@ fn bad(spec: &str, why: impl core::fmt::Display) -> Error {
 /// Appends one value: a number in canonical text, or an identifier (a bench
 /// parameter) verbatim.
 fn value(spec: &str, tok: &str, out: &mut String) -> Result<(), Error> {
-    if let Ok(x) = parse_num(tok) {
-        write_num(out, x);
+    debug_assert!(is_value(tok), "only value tokens are written");
+    if let Ok(x) = text::parse_num(tok) {
+        text::write_num(out, x);
         return Ok(());
     }
     let ident = tok
@@ -191,6 +212,10 @@ fn value(spec: &str, tok: &str, out: &mut String) -> Result<(), Error> {
     if !ident || tok.is_empty() {
         return Err(bad(spec, format_args!("`{tok}` is not a number")));
     }
+    debug_assert!(
+        !tok.contains(char::is_whitespace),
+        "tokens are split on blanks"
+    );
     out.push_str(tok);
     Ok(())
 }
@@ -202,7 +227,7 @@ fn is_value(tok: &str) -> bool {
 fn keyword(tok: &str) -> bool {
     tok.eq_ignore_ascii_case("dc")
         || tok.eq_ignore_ascii_case("ac")
-        || FUNCS.iter().any(|f| tok.eq_ignore_ascii_case(f.0))
+        || FUNCS.iter().any(|f| tok.eq_ignore_ascii_case(f.spice))
 }
 
 #[cfg(test)]

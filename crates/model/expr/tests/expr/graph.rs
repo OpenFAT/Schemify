@@ -63,7 +63,9 @@ impl Design {
 
     fn programs(&self) -> Vec<Program> {
         (0..self.consts.len())
-            .map(|k| Program::compile(&self.text(k), Mode::Scalar).unwrap())
+            .map(|k| {
+                Program::compile(&self.text(k), Mode::Scalar).expect("generated chain compiles")
+            })
             .collect()
     }
 }
@@ -73,7 +75,10 @@ fn deps_of(progs: &[Program]) -> (Vec<u32>, Vec<u32>) {
     let mut offsets = vec![0u32];
     let mut targets = Vec::new();
     for p in progs {
-        targets.extend(p.idents().map(|n| n[1..].parse::<u32>().unwrap()));
+        targets.extend(
+            p.idents()
+                .map(|n| n[1..].parse::<u32>().expect("identifier is p<index>")),
+        );
         offsets.push(targets.len() as u32);
     }
     (offsets, targets)
@@ -84,9 +89,9 @@ fn deps_of(progs: &[Program]) -> (Vec<u32>, Vec<u32>) {
 fn eval_node(p: &Program, values: &[Value<'static>], s: &mut Scratch) -> Value<'static> {
     let inputs: Vec<Value> = p
         .idents()
-        .map(|n| values[n[1..].parse::<usize>().unwrap()])
+        .map(|n| values[n[1..].parse::<usize>().expect("identifier is p<index>")])
         .collect();
-    match p.eval(&inputs, s).unwrap() {
+    match p.eval(&inputs, s).expect("chain node evaluates") {
         Value::Int(v) => Value::Int(v),
         Value::Num(v) => Value::Num(v),
         v => panic!("{v:?}"),

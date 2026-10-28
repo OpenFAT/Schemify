@@ -6,19 +6,30 @@
 //! its source; an `fft`'s on one frequency axis per source axis (D23).
 //!
 //! Contents:
-//! - `pub(crate) fn call_cv(b: Builtin, args: Vec<CV>, axes: &mut Vec<Axis>, strs: &mut String) -> Result<CV, Error>`
+//! - `pub(crate) fn call(builtin: Builtin, args: Vec<CalcValue>, axes: &mut Vec<Axis>,
+//!   strings: &mut String) -> Result<CalcValue, Error>`
 
 use core::ops::Range;
 
 use crate::builtin::Builtin;
-use crate::calc::{Axis, AxisKind, CV, Col, ColKind, x011};
-use crate::column::{check_finite, elementwise, first_nonfinite, scalars};
+use crate::calc::{self, Axis, AxisKind, CalcValue, ColKind, ColumnValue};
+use crate::column;
 use crate::dmath::{self, Complex};
-use crate::eval::V;
-use crate::kernel::{call, type_name};
+use crate::eval::Scalar;
+use crate::fft;
+use crate::kernel;
 use crate::{Code, Error};
 
-/// Calls builtin `b`: the scalar kernel when every argument is a scalar, per
+/// Which crossing [`margin`] measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Margin {
+    /// Gain margin (dB) at the first -180° phase crossing.
+    Gain,
+    /// Phase margin (°) at the first unity-gain crossing.
+    Phase,
+}
+
+/// Calls `builtin`: the scalar kernel when every argument is a scalar, per
 /// element for a scalar builtin, else the column function.
 ///
 /// # Errors
@@ -26,27 +37,34 @@ use crate::{Code, Error};
 /// where a real one is, or an argument out of range; `X011` for unrelated
 /// axes or an `fft` step without two increasing points; `X010` for a
 /// non-finite result or a measurement with no answer.
-pub(crate) fn call_cv(
-    b: Builtin,
-    mut args: Vec<CV>,
+pub(crate) fn call(
+    builtin: Builtin,
+    mut args: Vec<CalcValue>,
     axes: &mut Vec<Axis>,
-    strs: &mut String,
-) -> Result<CV, Error> {
-    let name = b.name();
-    if let Some(vs) = scalars(&args) {
-        return Ok(CV::S(call(b, &vs, strs)?));
+    strings: &mut String,
+) -> Result<CalcValue, Error> {
+    assert!(!axes.is_empty(), "the plot axis is set up first");
+    let name = builtin.name();
+    if let Some(vs) = column::scalars(&args) {
+        return Ok(CalcValue::Scalar(kernel::call(builtin, &vs, strings)?));
     }
-    if !b.calc_only() {
-        let col = elementwise(&args, axes, strs, |v, strs| call(b, v, strs))?;
-        return Ok(CV::C(col));
+    if !builtin.calc_only() {
+        let col = column::elementwise(&args, axes, strings, |v, strings| {
+            kernel::call(builtin, v, strings)
+        })?;
+        return Ok(CalcValue::Column(col));
     }
     assert!(!args.is_empty(), "calc builtins take a column first");
     let rest = args.split_off(1);
-    let y = want_col(args.pop().expect("one argument left"), name)?;
-    let col = match b {
+    let Some(first) = args.pop() else {
+        unreachable!("one argument left after the split")
+    };
+    let y = want_column(first, name)?;
+    let axes_before = axes.len();
+    let col = match builtin {
         Builtin::Deriv | Builtin::Integ => {
             no_bool(&y, name)?;
-            let f = if b == Builtin::Deriv {
+            let f = if builtin == Builtin::Deriv {
                 deriv_step
             } else {
                 integ_step
@@ -60,13 +78,13 @@ pub(crate) fn call_cv(
                     f(&ax.x[r.clone()], &y.im[r.clone()], &mut im[r]);
                 }
             }
-            check_finite(&re, name)?;
-            check_finite(&im, name)?;
-            Col { re, im, ..y }
+            column::check_finite(&re, name)?;
+            column::check_finite(&im, name)?;
+            ColumnValue { re, im, ..y }
         }
         Builtin::Avg | Builtin::Rms | Builtin::Ymax | Builtin::Ymin | Builtin::Pp => {
             want_real(&y, name)?;
-            per_step(axes, &y, name, |x, v| Ok(reduce(b, x, v)))?
+            per_step(axes, &y, name, |x, v| Ok(reduce(builtin, x, v)))?
         }
         Builtin::At => at(axes, y, &rest[0], name)?,
         Builtin::Cross => {
@@ -84,11 +102,13 @@ pub(crate) fn call_cv(
             want_real(&y, name)?;
             let l1 = want_num(&rest[0], name)?;
             let l2 = want_num(&rest[2], name)?;
-            let [_, y2, _] = <[CV; 3]>::try_from(rest).expect("arity checked at compile time");
-            let y2 = want_col(y2, name)?;
+            let Ok([_, y2, _]) = <[CalcValue; 3]>::try_from(rest) else {
+                unreachable!("`delay` arity checked at compile time")
+            };
+            let y2 = want_column(y2, name)?;
             want_real(&y2, name)?;
             if y2.axis != y.axis {
-                return Err(x011(
+                return Err(calc::x011(
                     "`delay` signals are on different sweep axes".to_string(),
                 ));
             }
@@ -99,7 +119,7 @@ pub(crate) fn call_cv(
                     cross(x, &y2.re[r.clone()], l2, 0, 1) - cross(x, &y.re[r], l1, 0, 1)
                 })
                 .collect();
-            check_finite(&re, name)?;
+            column::check_finite(&re, name)?;
             real_col(re, per_step_axis(axes, y.axis))
         }
         Builtin::Settle => {
@@ -124,27 +144,46 @@ pub(crate) fn call_cv(
                     } else {
                         &y.im[r.clone()]
                     };
-                    margin(b == Builtin::GainMargin, &y.re[r], im)
+                    let which = if builtin == Builtin::GainMargin {
+                        Margin::Gain
+                    } else {
+                        Margin::Phase
+                    };
+                    margin(which, &y.re[r], im)
                 })
                 .collect();
-            check_finite(&out, name)?;
+            column::check_finite(&out, name)?;
             real_col(out, per_step_axis(axes, y.axis))
         }
         _ => unreachable!("`{name}` is not a column function"),
     };
-    Ok(CV::C(col))
+    // Calculator functions only ever append derived axes.
+    debug_assert!(axes.len() >= axes_before, "axes are never removed");
+    debug_assert!(
+        (col.axis as usize) < axes.len(),
+        "result axis {} exists",
+        col.axis
+    );
+    Ok(CalcValue::Column(col))
 }
 
 // ---- private ----
 
 /// `at(y, x0)`: x0 is a number, or one value per sweep step of `y` (a
 /// reduction such as `cross(...)` or `ymax(...)`): step k is read at its own x.
-fn at(axes: &mut Vec<Axis>, y: Col, x0: &CV, name: &str) -> Result<Col, Error> {
+fn at(
+    axes: &mut Vec<Axis>,
+    y: ColumnValue,
+    x0: &CalcValue,
+    name: &str,
+) -> Result<ColumnValue, Error> {
     no_bool(&y, name)?;
     let per_step_ax = find_axis(axes, AxisKind::PerStep, y.axis);
     let xs: Vec<f64> = match x0 {
-        CV::C(c) if c.kind == ColKind::Real && per_step_ax == Some(c.axis) => c.re.clone(),
-        CV::C(_) => {
+        CalcValue::Column(c) if c.kind == ColKind::Real && per_step_ax == Some(c.axis) => {
+            c.re.clone()
+        }
+        CalcValue::Column(_) => {
             return Err(Error::bare(
                 Code::X003,
                 format!(
@@ -156,7 +195,11 @@ fn at(axes: &mut Vec<Axis>, y: Col, x0: &CV, name: &str) -> Result<Col, Error> {
         v => vec![want_num(v, name)?],
     };
     let steps = axes[y.axis as usize].steps.len();
-    assert!(xs.len() == 1 || xs.len() == steps, "one x per sweep step");
+    assert!(
+        xs.len() == 1 || xs.len() == steps,
+        "{} x values for {steps} sweep steps",
+        xs.len()
+    );
     let x_of = |k: usize| if xs.len() == 1 { xs[0] } else { xs[k] };
     // Each part (real, then imaginary) is read step by step at its own x.
     let part = |axes: &mut Vec<Axis>, re: Vec<f64>| {
@@ -172,24 +215,24 @@ fn at(axes: &mut Vec<Axis>, y: Col, x0: &CV, name: &str) -> Result<Col, Error> {
         return Ok(re);
     }
     let im = part(axes, y.im)?;
-    Ok(Col {
+    Ok(ColumnValue {
         kind: ColKind::Complex,
         im: im.re,
         ..re
     })
 }
 
-fn want_col(v: CV, name: &str) -> Result<Col, Error> {
+fn want_column(v: CalcValue, name: &str) -> Result<ColumnValue, Error> {
     match v {
-        CV::C(c) => Ok(c),
-        CV::S(v) => Err(Error::bare(
+        CalcValue::Column(c) => Ok(c),
+        CalcValue::Scalar(v) => Err(Error::bare(
             Code::X003,
-            format!("`{name}` needs a column, got {}", type_name(v)),
+            format!("`{name}` needs a column, got {}", kernel::type_name(v)),
         )),
     }
 }
 
-fn want_real(c: &Col, name: &str) -> Result<(), Error> {
+fn want_real(c: &ColumnValue, name: &str) -> Result<(), Error> {
     if c.kind == ColKind::Real {
         return Ok(());
     }
@@ -200,31 +243,31 @@ fn want_real(c: &Col, name: &str) -> Result<(), Error> {
 }
 
 /// Functions that take complex columns still refuse bool ones.
-fn no_bool(c: &Col, name: &str) -> Result<(), Error> {
+fn no_bool(c: &ColumnValue, name: &str) -> Result<(), Error> {
     if c.kind == ColKind::Bool {
         want_real(c, name)?;
     }
     Ok(())
 }
 
-fn want_num(v: &CV, name: &str) -> Result<f64, Error> {
+fn want_num(v: &CalcValue, name: &str) -> Result<f64, Error> {
     match v {
-        CV::S(V::Int(x)) => Ok(*x as f64),
-        CV::S(V::Num(x)) => Ok(*x),
-        CV::S(v) => Err(Error::bare(
+        CalcValue::Scalar(Scalar::Int(x)) => Ok(*x as f64),
+        CalcValue::Scalar(Scalar::Num(x)) => Ok(*x),
+        CalcValue::Scalar(v) => Err(Error::bare(
             Code::X003,
-            format!("`{name}` needs a number, got {}", type_name(*v)),
+            format!("`{name}` needs a number, got {}", kernel::type_name(*v)),
         )),
-        CV::C(_) => Err(Error::bare(
+        CalcValue::Column(_) => Err(Error::bare(
             Code::X003,
             format!("`{name}` needs a scalar here, got a column"),
         )),
     }
 }
 
-fn want_int(v: &CV, name: &str, ok: impl Fn(i64) -> bool) -> Result<i64, Error> {
+fn want_int(v: &CalcValue, name: &str, ok: impl Fn(i64) -> bool) -> Result<i64, Error> {
     match v {
-        CV::S(V::Int(x)) if ok(*x) => Ok(*x),
+        CalcValue::Scalar(Scalar::Int(x)) if ok(*x) => Ok(*x),
         _ => Err(Error::bare(
             Code::X003,
             format!("`{name}`: argument out of range or not an int"),
@@ -233,12 +276,18 @@ fn want_int(v: &CV, name: &str, ok: impl Fn(i64) -> bool) -> Result<i64, Error> 
 }
 
 /// The steps of `ax` as index ranges.
-fn ranges(ax: &Axis) -> impl Iterator<Item = core::ops::Range<usize>> + '_ {
+fn ranges(ax: &Axis) -> impl Iterator<Item = Range<usize>> + '_ {
+    debug_assert!(
+        ax.steps
+            .last()
+            .is_none_or(|step| step.end as usize == ax.x.len()),
+        "an axis's steps cover its points"
+    );
     ax.steps.iter().map(|s| s.start as usize..s.end as usize)
 }
 
-fn real_col(re: Vec<f64>, axis: u32) -> Col {
-    Col {
+fn real_col(re: Vec<f64>, axis: u32) -> ColumnValue {
+    ColumnValue {
         kind: ColKind::Real,
         re,
         im: Vec::new(),
@@ -248,7 +297,14 @@ fn real_col(re: Vec<f64>, axis: u32) -> Col {
 
 /// The derived axis of `kind` over `parent`, if one exists yet.
 fn find_axis(axes: &[Axis], kind: AxisKind, parent: u32) -> Option<u32> {
-    debug_assert!(kind != AxisKind::Plot);
+    debug_assert!(
+        kind != AxisKind::Plot,
+        "the plot axis is axis 0, never derived"
+    );
+    debug_assert!(
+        (parent as usize) < axes.len(),
+        "parent axis {parent} exists"
+    );
     axes.iter()
         .position(|a| a.kind == kind && a.parent == parent)
         .map(|i| i as u32)
@@ -260,8 +316,9 @@ fn per_step_axis(axes: &mut Vec<Axis>, parent: u32) -> u32 {
         return i;
     }
     let n = axes[parent as usize].steps.len();
+    let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
     axes.push(Axis {
-        x: (0..n).map(|i| i as f64).collect(),
+        x,
         steps: vec![Range {
             start: 0,
             end: n as u32,
@@ -269,23 +326,27 @@ fn per_step_axis(axes: &mut Vec<Axis>, parent: u32) -> u32 {
         parent,
         kind: AxisKind::PerStep,
     });
-    axes.len() as u32 - 1
+    let index = axes.len() as u32 - 1;
+    debug_assert_eq!(find_axis(axes, AxisKind::PerStep, parent), Some(index));
+    index
 }
 
 /// One value per step of `y`'s axis; NaN (no answer) is `X010`.
 fn per_step(
     axes: &mut Vec<Axis>,
-    y: &Col,
+    y: &ColumnValue,
     name: &str,
     mut f: impl FnMut(&[f64], &[f64]) -> Result<f64, Error>,
-) -> Result<Col, Error> {
+) -> Result<ColumnValue, Error> {
     debug_assert_eq!(y.kind, ColKind::Real);
     let ax = &axes[y.axis as usize];
+    assert_eq!(y.re.len(), ax.x.len(), "a column covers its axis");
     let mut re = Vec::with_capacity(ax.steps.len());
     for r in ranges(ax) {
         re.push(f(&ax.x[r.clone()], &y.re[r])?);
     }
-    if let Some(i) = first_nonfinite(&re) {
+    debug_assert_eq!(re.len(), ax.steps.len(), "one value per step");
+    if let Some(i) = column::first_nonfinite(&re) {
         return Err(Error::bare(
             Code::X010,
             format!("`{name}` has no answer in sweep step {i}"),
@@ -300,7 +361,7 @@ fn deriv_step(x: &[f64], y: &[f64], out: &mut [f64]) {
     assert_eq!(y.len(), out.len());
     let n = y.len();
     if n < 2 {
-        out.iter_mut().for_each(|d| *d = 0.0);
+        out.fill(0.0);
         return;
     }
     out[0] = (y[1] - y[0]) / (x[1] - x[0]);
@@ -321,18 +382,24 @@ fn integ_step(x: &[f64], y: &[f64], out: &mut [f64]) {
         }
         out[i] = acc;
     }
+    // The integral starts at zero at the step start.
+    debug_assert!(out.first().is_none_or(|&first| first == 0.0));
 }
 
 /// `avg rms ymax ymin pp` of one step; NaN for an empty step.
-fn reduce(b: Builtin, x: &[f64], y: &[f64]) -> f64 {
+fn reduce(builtin: Builtin, x: &[f64], y: &[f64]) -> f64 {
     debug_assert_eq!(x.len(), y.len());
+    debug_assert!(matches!(
+        builtin,
+        Builtin::Avg | Builtin::Rms | Builtin::Ymax | Builtin::Ymin | Builtin::Pp
+    ));
     if y.is_empty() {
         return f64::NAN;
     }
     let span = x[x.len() - 1] - x[0];
     let max = || y.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let min = || y.iter().copied().fold(f64::INFINITY, f64::min);
-    match b {
+    match builtin {
         Builtin::Avg if y.len() == 1 => y[0],
         Builtin::Avg => trapz(x, y, |v| v) / span,
         Builtin::Rms if y.len() == 1 => y[0].abs(),
@@ -346,6 +413,7 @@ fn reduce(b: Builtin, x: &[f64], y: &[f64]) -> f64 {
 /// Trapezoid integral of `g(y)` over the step.
 fn trapz(x: &[f64], y: &[f64], g: impl Fn(f64) -> f64) -> f64 {
     debug_assert_eq!(x.len(), y.len());
+    debug_assert!(y.len() >= 2, "single points are handled by the caller");
     (1..y.len())
         .map(|i| (x[i] - x[i - 1]) * (g(y[i]) + g(y[i - 1])) * 0.5)
         .sum()
@@ -354,6 +422,7 @@ fn trapz(x: &[f64], y: &[f64], g: impl Fn(f64) -> f64) -> f64 {
 /// Linear interpolation at `x0` on the first segment containing it; NaN outside.
 fn interp(x: &[f64], y: &[f64], x0: f64) -> f64 {
     debug_assert_eq!(x.len(), y.len());
+    debug_assert!(x0.is_finite(), "x values are finite");
     if x.len() == 1 && x[0] == x0 {
         return y[0];
     }
@@ -376,6 +445,7 @@ fn interp(x: &[f64], y: &[f64], x0: f64) -> f64 {
 fn cross(x: &[f64], y: &[f64], level: f64, edge: i64, nth: i64) -> f64 {
     debug_assert!(nth >= 1);
     debug_assert!((-1..=1).contains(&edge));
+    debug_assert_eq!(x.len(), y.len());
     let mut seen = 0;
     for k in 0..y.len().saturating_sub(1) {
         let (s0, s1) = (y[k] - level, y[k + 1] - level);
@@ -399,6 +469,7 @@ fn cross(x: &[f64], y: &[f64], level: f64, edge: i64, nth: i64) -> f64 {
 /// First x after which `|y - y_final| <= tol` holds to the end of the step.
 fn settle(x: &[f64], y: &[f64], tol: f64) -> f64 {
     debug_assert!(tol >= 0.0);
+    debug_assert_eq!(x.len(), y.len());
     let Some(&last) = y.last() else {
         return f64::NAN;
     };
@@ -411,7 +482,7 @@ fn settle(x: &[f64], y: &[f64], tol: f64) -> f64 {
 /// Gain margin (dB) at the first -180° phase crossing, or phase margin (°)
 /// at the first unity-gain crossing, of a loop gain whose phase starts near
 /// 0°. NaN when the crossing does not exist.
-fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
+fn margin(which: Margin, re: &[f64], im: &[f64]) -> f64 {
     debug_assert!(im.is_empty() || im.len() == re.len());
     let n = re.len();
     let z = |i: usize| Complex::new(re[i], if im.is_empty() { 0.0 } else { im[i] });
@@ -426,8 +497,9 @@ fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
         phase.push(p);
         prev_ph = p;
     }
+    debug_assert_eq!(phase.len(), n);
     for i in 0..n.saturating_sub(1) {
-        if gain {
+        if which == Margin::Gain {
             let (p0, p1) = (phase[i] + 180.0, phase[i + 1] + 180.0);
             if p0 > 0.0 && p1 <= 0.0 {
                 let t = p0 / (p0 - p1);
@@ -447,23 +519,25 @@ fn margin(gain: bool, re: &[f64], im: &[f64]) -> f64 {
 /// Single-sided spectrum per step: resample the step uniformly onto the next
 /// power of two of its length (transient steps are not uniform), transform,
 /// keep bins `0..m/2` scaled to amplitude. Bin k is at `k / span`.
-fn fft(axes: &mut Vec<Axis>, y: &Col) -> Result<Col, Error> {
+fn fft(axes: &mut Vec<Axis>, y: &ColumnValue) -> Result<ColumnValue, Error> {
     let src = &axes[y.axis as usize];
+    assert_eq!(y.re.len(), src.x.len(), "a column covers its axis");
     let (mut re, mut im, mut fx, mut steps) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for r in ranges(src) {
         let (xs, ys) = (&src.x[r.clone()], &y.re[r]);
         let n = xs.len();
         let span = if n >= 2 { xs[n - 1] - xs[0] } else { 0.0 };
         if n < 2 || span <= 0.0 || span.is_nan() {
-            return Err(x011(
+            return Err(calc::x011(
                 "`fft` needs at least 2 points and an increasing axis per step".to_string(),
             ));
         }
         let m = n.next_power_of_two();
         let mut buf = resample(xs, ys, m);
-        crate::fft::forward(&mut buf);
+        fft::forward(&mut buf);
         let start = re.len() as u32;
-        for (k, v) in buf.iter().take(m / 2).enumerate() {
+        let bins = buf.iter().take(m / 2);
+        for (k, v) in bins.enumerate() {
             let scale = if k == 0 { 1.0 } else { 2.0 } / m as f64;
             fx.push(k as f64 / span);
             re.push(v.re * scale);
@@ -471,8 +545,10 @@ fn fft(axes: &mut Vec<Axis>, y: &Col) -> Result<Col, Error> {
         }
         steps.push(start..re.len() as u32);
     }
-    check_finite(&re, "fft")?;
-    check_finite(&im, "fft")?;
+    debug_assert_eq!(re.len(), im.len());
+    debug_assert_eq!(re.len(), fx.len(), "one frequency per bin");
+    column::check_finite(&re, "fft")?;
+    column::check_finite(&im, "fft")?;
     // One fft axis per source axis, so fft(a) and fft(b) of one plot combine.
     let axis = match find_axis(axes, AxisKind::Fft, y.axis) {
         Some(i) => i,
@@ -486,7 +562,7 @@ fn fft(axes: &mut Vec<Axis>, y: &Col) -> Result<Col, Error> {
             axes.len() as u32 - 1
         }
     };
-    Ok(Col {
+    Ok(ColumnValue {
         kind: ColKind::Complex,
         re,
         im,

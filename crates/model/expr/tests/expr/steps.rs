@@ -24,7 +24,10 @@ fn call(bounds: &[f64], vals: &[f64]) -> String {
     for (b, v) in bounds.iter().zip(vals) {
         s.push_str(&format!(", {b:e}, {v:e}"));
     }
-    s.push_str(&format!(", {:e})", bounds.last().unwrap()));
+    s.push_str(&format!(
+        ", {:e})",
+        bounds.last().expect("steps has at least one bound")
+    ));
     s
 }
 
