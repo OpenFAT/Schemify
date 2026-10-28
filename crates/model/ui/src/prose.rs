@@ -287,7 +287,10 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
 
 /// Padding around a fenced code block's text (each side) at prose font `px`.
 fn code_pad(px: f32) -> f32 {
-    (px * 0.5).round()
+    debug_assert!(px > 0.0, "a font size");
+    let pad = (px * 0.5).round();
+    debug_assert!(pad >= 0.0);
+    pad
 }
 
 /// Lays out one inline run in `slot`; returns its height.
@@ -300,8 +303,12 @@ fn rich(
     slot: Slot,
     notes: &[&str],
 ) -> f32 {
+    debug_assert!(slot.width > 0.0, "a run wraps at a positive width");
+    let texts = p.text_id.len();
     let (layout, inl) = shape_rich(ts, src, px, style, notes);
-    place(ts, p, layout, &inl, slot)
+    let h = place(ts, p, layout, &inl, slot);
+    debug_assert_eq!(p.text_id.len(), texts + 1, "one layout per run");
+    h
 }
 
 /// Parses and shapes one inline run at `px` (lines not broken yet), its formulas laid out.
@@ -312,6 +319,8 @@ fn shape_rich(
     style: u8,
     notes: &[&str],
 ) -> (Layout<()>, Inline) {
+    assert!(px > 0.0, "prose size must be positive");
+    debug_assert_eq!(style & CODE, 0, "a whole run is never a code span");
     let inl = markdown::inlines(src, notes, &mut |m| ts.math_uncached(m, px));
     // Math boxes first: the builder below borrows the text system's contexts mutably.
     let boxes: Vec<(u32, f32, f32, f32)> = inl
@@ -366,6 +375,7 @@ fn shape_rich(
         }
         b.build_into(&mut layout, &inl.text);
     }
+    debug_assert_eq!(boxes.len(), inl.maths.len(), "one inline box per formula");
     (layout, inl)
 }
 
@@ -378,6 +388,9 @@ fn place(
     inl: &Inline,
     slot: Slot,
 ) -> f32 {
+    debug_assert_eq!(p.math_id.len(), p.math_x.len(), "math columns in step");
+    debug_assert_eq!(p.math_id.len(), p.math_y.len(), "math columns in step");
+    let maths = p.math_id.len();
     layout.break_all_lines(Some(slot.width.max(1.0)));
     layout.align(Alignment::Start, AlignmentOptions::default());
     for line in layout.lines() {
@@ -389,6 +402,10 @@ fn place(
             }
         }
     }
+    debug_assert!(
+        p.math_id.len() - maths <= inl.maths.len(),
+        "each formula placed once"
+    );
     let id = ts.push_layout(layout);
     push_text(p, ts, id, slot.x, slot.y)
 }
@@ -396,6 +413,8 @@ fn place(
 /// Shapes verbatim monospace text (code blocks, formulas outside the subset), wrapping at
 /// `width`.
 fn shape(ts: &mut TextSystem, text: &str, px: f32, width: f32) -> TextId {
+    assert!(px > 0.0, "code size must be positive");
+    debug_assert!(width > 0.0, "code wraps at a positive width");
     let mono = ts.mono().to_owned();
     let mut layout: Layout<()> = Layout::new();
     {
@@ -412,11 +431,14 @@ fn shape(ts: &mut TextSystem, text: &str, px: f32, width: f32) -> TextId {
 
 /// Records text layout `id` at `(x, y)`; returns its height.
 fn push_text(p: &mut ProseList, ts: &TextSystem, id: TextId, x: f32, y: f32) -> f32 {
+    debug_assert!(x >= 0.0, "runs sit inside the block");
     let l = ts.layout(id);
     p.text_id.push(id);
     p.text_x.push(x);
     p.text_y.push(y);
     p.width = p.width.max(x + l.width());
+    debug_assert_eq!(p.text_id.len(), p.text_x.len(), "text columns in step");
+    debug_assert_eq!(p.text_id.len(), p.text_y.len(), "text columns in step");
     l.height()
 }
 
@@ -466,6 +488,7 @@ fn table(
     for w in &widths {
         xs.push(xs[xs.len() - 1] + w);
     }
+    debug_assert_eq!(xs.len(), cols + 1, "one edge per column and a closing one");
     let total = xs[cols];
     let mut y = y0;
     p.rules.push([0.0, y0, total, 1.0]);
@@ -489,6 +512,7 @@ fn table(
         p.rules.push([x, y0, 1.0, y - y0]);
     }
     p.width = p.width.max(total);
+    debug_assert!(y >= y0, "rows stack downward");
     y - y0 + 1.0
 }
 
@@ -503,7 +527,8 @@ fn table(
 /// Panics on no columns or more than [`COLUMNS_MAX`].
 fn column_widths(natural: &[f32], width: f32, min: f32) -> Vec<f32> {
     let n = natural.len();
-    assert!(n > 0 && n <= COLUMNS_MAX, "1..=COLUMNS_MAX columns");
+    assert!(n > 0, "a table has a column");
+    assert!(n <= COLUMNS_MAX, "at most COLUMNS_MAX columns");
     if natural.iter().sum::<f32>() <= width {
         return natural.iter().map(|w| w.ceil()).collect();
     }
@@ -529,7 +554,7 @@ fn column_widths(natural: &[f32], width: f32, min: f32) -> Vec<f32> {
     assert!(flex_n > 0, "the columns overflow, so one stays flexible");
     let flex_sum: f32 = (0..n).filter(|&c| !fixed[c]).map(|c| natural[c]).sum();
     let left = (width - used).max(0.0);
-    (0..n)
+    let widths: Vec<f32> = (0..n)
         .map(|c| {
             if fixed[c] {
                 natural[c].ceil()
@@ -539,7 +564,10 @@ fn column_widths(natural: &[f32], width: f32, min: f32) -> Vec<f32> {
                 (left / flex_n as f32).floor().max(min)
             }
         })
-        .collect()
+        .collect();
+    debug_assert_eq!(widths.len(), n, "one width per column");
+    debug_assert!(widths.iter().all(|w| w.fract() == 0.0), "whole pixels");
+    widths
 }
 
 #[cfg(test)]

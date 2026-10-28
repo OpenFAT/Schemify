@@ -248,7 +248,12 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
 pub fn image_line(t: &str) -> Option<(&str, &str)> {
     let (alt, target) = t.strip_prefix("![")?.strip_suffix(')')?.split_once("](")?;
     let path = target.split_whitespace().next()?;
-    (!alt.contains(']') && !target.contains(')')).then_some((alt, path))
+    if alt.contains(']') || target.contains(')') {
+        return None;
+    }
+    debug_assert!(!path.is_empty(), "a path is a whitespace-free word");
+    debug_assert!(t.contains(path));
+    Some((alt, path))
 }
 
 /// Parses inline markup. `notes` are the block's footnote labels in number order: `[^label]`
@@ -441,11 +446,16 @@ pub fn split_plots(src: &str) -> Vec<Segment<'_>> {
 fn heading(t: &str) -> Option<(u8, &str)> {
     let level = t.bytes().take_while(|&b| b == b'#').count();
     let rest = &t[level..];
-    ((1..=6).contains(&level) && (rest.is_empty() || rest.starts_with(' ')))
-        .then(|| (level as u8, rest.trim().trim_end_matches('#').trim_end()))
+    if !(1..=6).contains(&level) || !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    let text = rest.trim().trim_end_matches('#').trim_end();
+    debug_assert!(text.len() < t.len(), "the markers are dropped");
+    Some((level as u8, text))
 }
 
 fn is_rule(t: &str) -> bool {
+    assert!(!t.is_empty(), "blank lines are skipped before a rule test");
     let c = t.as_bytes()[0];
     matches!(c, b'-' | b'*' | b'_')
         && t.bytes().filter(|&b| b != b' ').all(|b| b == c)
@@ -453,6 +463,11 @@ fn is_rule(t: &str) -> bool {
 }
 
 fn starts_block(t: &str) -> bool {
+    debug_assert!(
+        !t.is_empty(),
+        "blank lines end a paragraph before this test"
+    );
+    debug_assert_eq!(t, t.trim(), "the caller trims");
     t.starts_with("```")
         || t.starts_with("~~~")
         || t.starts_with("$$")
@@ -468,7 +483,11 @@ fn starts_block(t: &str) -> bool {
 fn note_def(t: &str) -> Option<NoteDef<'_>> {
     let (label, text) = t.strip_prefix("[^")?.split_once("]:")?;
     let ok = !label.is_empty() && !label.contains(|c: char| c.is_whitespace() || c == '[');
-    ok.then(|| NoteDef {
+    if !ok {
+        return None;
+    }
+    debug_assert!(!label.contains(']'), "the first `]:` ends the label");
+    Some(NoteDef {
         label,
         text: text.trim(),
     })
@@ -478,6 +497,7 @@ fn note_def(t: &str) -> Option<NoteDef<'_>> {
 fn item(line: &str) -> Option<(u8, String, &str)> {
     let t = line.trim_start();
     let depth = ((line.len() - t.len()) / 2).min(7) as u8;
+    debug_assert!(depth <= 7, "nesting is capped");
     for b in ["- ", "* ", "+ "] {
         if let Some(rest) = t.strip_prefix(b) {
             return Some((depth, "\u{2022}".to_owned(), rest.trim()));
@@ -486,7 +506,9 @@ fn item(line: &str) -> Option<(u8, String, &str)> {
     let digits = t.bytes().take_while(u8::is_ascii_digit).count();
     let rest = &t[digits..];
     if (1..=9).contains(&digits) && (rest.starts_with(". ") || rest.starts_with(") ")) {
-        return Some((depth, format!("{}.", &t[..digits]), rest[2..].trim()));
+        let marker = format!("{}.", &t[..digits]);
+        debug_assert!(marker.len() <= 10, "at most nine digits and a dot");
+        return Some((depth, marker, rest[2..].trim()));
     }
     None
 }
@@ -494,14 +516,18 @@ fn item(line: &str) -> Option<(u8, String, &str)> {
 fn cells(t: &str) -> Vec<String> {
     let inner = t.trim_start_matches('|');
     let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner
+    let row: Vec<String> = inner
         .split('|')
         .take(COLUMNS_MAX)
         .map(|c| c.trim().to_owned())
-        .collect()
+        .collect();
+    debug_assert!(!row.is_empty(), "a split yields at least one cell");
+    debug_assert!(row.len() <= COLUMNS_MAX, "extra cells are dropped");
+    row
 }
 
 fn is_separator(c: &str) -> bool {
+    debug_assert!(!c.contains('|'), "one cell");
     let c = c.trim_matches(':');
     !c.is_empty() && c.bytes().all(|b| b == b'-')
 }
@@ -531,18 +557,24 @@ fn push_superscript(out: &mut String, n: usize) {
 /// Closes the span styled `from` at the current end and starts one styled `to`.
 fn restyle(out: &mut Inline, start: &mut u32, from: u8, to: u8) {
     let end = out.text.len() as u32;
+    assert!(*start <= end, "a span starts inside the text");
     if from != 0 && end > *start {
         out.spans.push((*start, end, from));
     }
     if from != to {
         *start = end;
     }
+    if let Some(&(s, e, _)) = out.spans.last() {
+        debug_assert!(s < e, "no empty span");
+    }
 }
 
 fn push_prose<'src>(out: &mut Vec<Segment<'src>>, s: &'src str) {
+    let before = out.len();
     if !s.trim().is_empty() {
         out.push(Segment::Prose(s));
     }
+    debug_assert!(out.len() - before <= 1, "one segment at most");
 }
 
 #[cfg(test)]

@@ -127,8 +127,11 @@ const FACES: [(&str, &[u8]); 19] = [
 ///
 /// `name` is not one of the embedded faces.
 pub(crate) fn face_bytes(name: &str) -> &'static [u8] {
+    debug_assert!(!name.is_empty(), "a face name");
     let face = FACES.iter().find(|f| f.0 == name);
-    face.expect("an embedded KaTeX face").1
+    let bytes = face.expect("an embedded KaTeX face").1;
+    debug_assert!(!bytes.is_empty(), "an embedded face has bytes");
+    bytes
 }
 
 impl Default for MathFonts {
@@ -154,12 +157,18 @@ impl MathFonts {
             .iter()
             .map(|(_, b)| FontData::new(Blob::new(Arc::new(*b)), 0))
             .collect();
+        debug_assert_eq!(data.len(), FACES.len(), "one font per embedded face");
         MathFonts { data }
     }
 
     /// Font for a face index from [`MathList::glyph_face`].
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not a face index.
     #[must_use]
     pub fn face(&self, i: u8) -> &FontData {
+        assert!(usize::from(i) < self.data.len(), "face {i} is not embedded");
         &self.data[i as usize]
     }
 }
@@ -172,8 +181,13 @@ impl MathFonts {
 pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String> {
     use skrifa::MetadataProvider;
 
-    assert!(px > 0.0 && px.is_finite(), "math size must be positive");
-    assert_eq!(fonts.data.len(), FACES.len());
+    assert!(px.is_finite(), "math size must be finite");
+    assert!(px > 0.0, "math size must be positive");
+    assert_eq!(
+        fonts.data.len(),
+        FACES.len(),
+        "the fonts are the embedded faces"
+    );
     let ast = ratex_parser::parse(src).map_err(|e| e.to_string())?;
     let display =
         ratex_layout::to_display_list(&ratex_layout::layout(&ast, &LayoutOptions::default()));
@@ -279,6 +293,26 @@ pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathL
         }
     }
     debug_assert_eq!(out.glyph_id.len(), out.glyph_px.len());
+    debug_assert_eq!(
+        out.glyph_face.len(),
+        out.glyph_x.len(),
+        "glyph columns in step"
+    );
+    debug_assert_eq!(
+        out.glyph_face.len(),
+        out.glyph_y.len(),
+        "glyph columns in step"
+    );
+    debug_assert_eq!(
+        out.fills.verb_end.last().copied().unwrap_or(0) as usize,
+        out.fills.verb.len(),
+        "every fill path closed off"
+    );
+    debug_assert_eq!(
+        out.strokes.verb_end.last().copied().unwrap_or(0) as usize,
+        out.strokes.verb.len(),
+        "every stroke path closed off"
+    );
     Ok(out)
 }
 

@@ -73,6 +73,11 @@ pub fn parse(src: &str) -> Option<Icon> {
         icon.fill.verb_end.last().copied().unwrap_or(0) as usize,
         icon.fill.verb.len()
     );
+    debug_assert_eq!(
+        icon.stroke.verb_end.last().copied().unwrap_or(0) as usize,
+        icon.stroke.verb.len()
+    );
+    debug_assert!(points <= ICON_POINTS_MAX);
     (!empty).then_some(icon)
 }
 
@@ -108,11 +113,18 @@ fn tokens(data: &str) -> Option<Vec<Tok>> {
             return None;
         }
     }
+    debug_assert_eq!(i, b.len(), "every byte consumed");
+    debug_assert!(out.len() <= b.len(), "a token takes at least one byte");
     Some(out)
 }
 
 /// Appends one path's verbs and absolute points to `out`.
 fn path(data: &str, out: &mut MathPaths) -> Option<()> {
+    debug_assert_eq!(
+        out.verb_end.last().copied().unwrap_or(0) as usize,
+        out.verb.len(),
+        "the previous path is closed off"
+    );
     let toks = tokens(data)?;
     let mut k = 0;
     let (mut cur, mut start) = ([0.0f32; 2], [0.0f32; 2]);
