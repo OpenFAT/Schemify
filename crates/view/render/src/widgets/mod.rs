@@ -1,7 +1,7 @@
 //! UI rows: the `ui` crate's tables and one frame's layout in, painter calls out, row by row
 //! through [`Painter::ui_row`] so a painter that keeps rows repaints only the rows whose
 //! [`RowKey`] (their paint inputs) changed. Each row paints its background, border, text,
-//! indicators and widget; text, prose, math and icons are drawn by [`text`]. Reads the UI
+//! indicators and widget; text, prose, math and icons are drawn by `text`. Reads the UI
 //! tables; writes only painter calls.
 //!
 //! Contents:
@@ -17,7 +17,7 @@ use kurbo::{Affine, BezPath, Rect};
 use vello_cpu::Glyph;
 
 use schemify_ui::{
-    Kind, Layer, NO_NODE, NO_TEXT, Prop, RowPaint, Shown, StyleProp, Strings, Sym, TextSystem,
+    Kind, Layer, NO_NODE, NO_TEXT, Prop, RowPaint, Shown, Strings, StyleProp, Sym, TextSystem,
     UiLayout, UiState, UiTables, row_paint, row_style,
 };
 

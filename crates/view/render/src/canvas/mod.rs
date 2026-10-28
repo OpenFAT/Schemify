@@ -1,7 +1,7 @@
 //! The canvas layer on the CPU: schematic primitives in `i32` world milli-units (D33) in,
 //! painter calls through a pan/zoom [`Camera`] out, from the same instance rows the GPU
-//! pipelines draw ([`crate::gpu::InstanceRows`]). The rows are drawn in [`rows`], the labels in
-//! [`text`]; this file holds the diagonal route ([`draw_canvas`]) and the grid.
+//! pipelines draw ([`crate::gpu::InstanceRows`]). The rows are drawn in `rows`, the labels in
+//! `text`; this file holds the diagonal route ([`draw_canvas`]) and the grid.
 //!
 //! # Data design
 //!
@@ -46,7 +46,6 @@ use rows::pixel;
 pub use rows::{Paths, draw_rows};
 pub use text::draw_texts;
 
-
 /// Reused per-frame buffers, the rows of the tables drawn through it, and the shaped-label
 /// cache (glyphs per distinct string, shared by every primitive table drawn through it). Keep
 /// one per canvas.
@@ -61,7 +60,6 @@ pub struct CanvasScratch {
     pub(super) text_glyphs: Vec<Glyph>,
     pub(super) text_layout: schemify_ui::parley::Layout<()>,
 }
-
 
 /// Primitives whose screen box is at most this many logical px each way are drawn as the whole
 /// pixels that box touches (level of detail, D39): below two pixels a stroke and a block look
@@ -79,7 +77,6 @@ impl std::fmt::Debug for CanvasScratch {
             .finish()
     }
 }
-
 
 /// Draws background, grid, primitives, overlay primitives and marks into `view`, clipped.
 /// The diagonal route for the common case; each step is also public.
@@ -159,7 +156,6 @@ pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<(f64, i64, i64, 
     assert!(s >= f64::from(step));
     Some((s, i0, i1, j0, j1))
 }
-
 
 /// Draws the primitives of `prims` (packed into `scratch`'s rows, then [`draw_rows`]) and their
 /// labels ([`draw_texts`]), culled to `view`: the immediate route (the gesture overlay, PNG

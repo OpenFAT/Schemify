@@ -124,7 +124,9 @@ impl GpuPainter<'_> {
                 let Some(p) = self.raster_glyph(key, font, px, coords, g, shift, cell) else {
                     return;
                 };
-                self.batch.latest.insert(same, (key, run.em as f32, [qx, qy]));
+                self.batch
+                    .latest
+                    .insert(same, (key, run.em as f32, [qx, qy]));
                 p
             }
         };
@@ -424,7 +426,11 @@ mod tests {
     #[test]
     fn a_glyph_is_rasterized_once_per_phase() {
         let (font, id) = shaped("e");
-        let glyph = Glyph { id, x: 0.0, y: 12.0 };
+        let glyph = Glyph {
+            id,
+            x: 0.0,
+            y: 12.0,
+        };
         let mut batch = Batch::default();
         batch.begin_frame();
         let mut p = GpuPainter {

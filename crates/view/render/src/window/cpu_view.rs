@@ -19,8 +19,8 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 use winit::platform::web::WindowExtWebSys;
 use winit::window::Window;
 
-use crate::CpuPainter;
 use super::App;
+use crate::CpuPainter;
 
 /// The overlay and the painter that fills it.
 pub(crate) struct CpuView {

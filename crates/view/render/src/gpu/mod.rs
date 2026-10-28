@@ -4,7 +4,7 @@
 //! under one camera uniform (`shaders/canvas/`). A pan or zoom writes the uniform only; an
 //! edit rewrites the rows it changed. Every frame is complete: there is no tile cache.
 //!
-//! One producer, two consumers: the pack ([`rows`]) is the one place a per-row decision is
+//! One producer, two consumers: the pack (`rows`) is the one place a per-row decision is
 //! made (dead and hidden rows draw nothing, colour and stroke width from the palette, fills,
 //! the marks' recolouring, the drawing order). The pipelines consume the rows on the GPU;
 //! [`crate::canvas::draw_rows`] consumes the same rows on the CPU ([`crate::CpuPainter`], the

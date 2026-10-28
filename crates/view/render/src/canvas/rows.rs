@@ -17,7 +17,6 @@ use super::LOD_PX;
 use crate::gpu::{self, ARC, CLOSED, EDGE, FILL, FIRST, InstanceRows, LINE, PARITY, RECT};
 use crate::painter::{Chains, Painter, push_rect, rgba};
 
-
 /// The paths [`draw_rows`] batches one layer into (reused, so a frame allocates nothing once
 /// they have grown), and the grid's dots.
 #[derive(Debug, Default)]
@@ -41,13 +40,12 @@ pub struct Paths {
     pub(super) dots: Chains,
 }
 
-
 /// Draws source `src` of `rows` (a canvas table, or [`gpu::MARKS`]) into `view` through `cam`
 /// as the CPU paints the canvas: layer by layer, each layer batched into a few paths drawn in
 /// turn (fills; plain closed, open and curved strokes; each stroke style; the far-zoom pixel
 /// boxes), the marks as one stroke per colour run. Rows off the view (2 px of slack) are
 /// culled; a row, or a whole polyline or polygon, whose screen box is at most [`LOD_PX`] each
-/// way is the whole pixels it touches (marks excepted). Texts are not rows ([`draw_texts`]).
+/// way is the whole pixels it touches (marks excepted). Texts are not rows ([`super::draw_texts`]).
 ///
 /// Cost: O(rows of `src`); allocation-free once `paths` has grown.
 ///
@@ -307,7 +305,6 @@ pub fn draw_rows<P: Painter>(
     }
 }
 
-
 /// The pixel `v` falls in, with [`snap`]'s bias.
 #[inline]
 pub(super) fn pixel(v: f64) -> f64 {
@@ -373,7 +370,6 @@ impl Paths {
     }
 }
 
-
 /// Millidegrees in radians.
 #[inline]
 fn radians(m: u32) -> f64 {
@@ -409,7 +405,6 @@ fn push_arc(path: &mut BezPath, cx: f64, cy: f64, r: f64, start: f64, sweep: f64
     }
 }
 
-
 /// Snaps a coordinate to the pixel center so 1 px strokes stay crisp. The 1e-6 px bias keeps a
 /// coordinate that lands on a pixel edge on the same side however its camera origin was
 /// rounded (two derivations differ by ~1e-9 px).
@@ -417,7 +412,6 @@ fn push_arc(path: &mut BezPath, cx: f64, cy: f64, r: f64, start: f64, sweep: f64
 fn snap(v: f64) -> f64 {
     pixel(v) + 0.5
 }
-
 
 /// [`pixel`] as an integer. A truncating cast and a compare: `f64::floor` is a libm call on
 /// baseline x86-64 (no SSE4.1), which cost ~10% of a far-zoom frame. Exact for |v| < 2^63

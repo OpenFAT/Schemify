@@ -17,62 +17,62 @@ impl<A: App> Shell<A> {
         let s = self.scale;
         let at = self.pointer;
         match event {
-        WindowEvent::ModifiersChanged(m) => {
-            self.mods = mods_of(m.state());
-            self.events.push(InputEvent::Mods {
-                mods: Mods(self.mods),
-            });
-        }
-        WindowEvent::CursorMoved { position, .. } => {
-            self.pointer = ((position.x / s) as f32, (position.y / s) as f32);
-            self.events.push(InputEvent::PointerMove {
-                x: self.pointer.0,
-                y: self.pointer.1,
-            });
-        }
-        WindowEvent::CursorLeft { .. } => {
-            self.events.push(InputEvent::PointerLeave);
-        }
-        WindowEvent::MouseInput { state, button, .. } => {
-            let button = match button {
-                MouseButton::Left => Button::Left,
-                MouseButton::Middle => Button::Middle,
-                MouseButton::Right => Button::Right,
-                _ => return,
-            };
-            let (x, y) = at;
-            self.events.push(match state {
-                ElementState::Pressed => InputEvent::PointerDown { x, y, button },
-                ElementState::Released => InputEvent::PointerUp { x, y, button },
-            });
-        }
-        WindowEvent::MouseWheel { delta, .. } => {
-            let (dx, dy) = match delta {
-                MouseScrollDelta::LineDelta(x, y) => (x, y),
-                // ~20 px per wheel line on every platform we target.
-                MouseScrollDelta::PixelDelta(p) => ((p.x / 20.0) as f32, (p.y / 20.0) as f32),
-            };
-            self.events.push(InputEvent::Wheel {
-                x: at.0,
-                y: at.1,
-                dx,
-                dy,
-            });
-        }
-        WindowEvent::KeyboardInput {
-            event,
-            is_synthetic: false,
-            ..
-        } if event.state == ElementState::Pressed => {
-            self.push_key(&event.logical_key, event.text.as_deref());
-        }
-        WindowEvent::Ime(Ime::Preedit(text, _)) => {
-            self.events.push_preedit(&text);
-        }
-        WindowEvent::Ime(Ime::Commit(text)) => {
-            self.events.push_preedit("");
-            self.events.push_text(&text);
-        }
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = mods_of(m.state());
+                self.events.push(InputEvent::Mods {
+                    mods: Mods(self.mods),
+                });
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = ((position.x / s) as f32, (position.y / s) as f32);
+                self.events.push(InputEvent::PointerMove {
+                    x: self.pointer.0,
+                    y: self.pointer.1,
+                });
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.events.push(InputEvent::PointerLeave);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    MouseButton::Left => Button::Left,
+                    MouseButton::Middle => Button::Middle,
+                    MouseButton::Right => Button::Right,
+                    _ => return,
+                };
+                let (x, y) = at;
+                self.events.push(match state {
+                    ElementState::Pressed => InputEvent::PointerDown { x, y, button },
+                    ElementState::Released => InputEvent::PointerUp { x, y, button },
+                });
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    // ~20 px per wheel line on every platform we target.
+                    MouseScrollDelta::PixelDelta(p) => ((p.x / 20.0) as f32, (p.y / 20.0) as f32),
+                };
+                self.events.push(InputEvent::Wheel {
+                    x: at.0,
+                    y: at.1,
+                    dx,
+                    dy,
+                });
+            }
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } if event.state == ElementState::Pressed => {
+                self.push_key(&event.logical_key, event.text.as_deref());
+            }
+            WindowEvent::Ime(Ime::Preedit(text, _)) => {
+                self.events.push_preedit(&text);
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                self.events.push_preedit("");
+                self.events.push_text(&text);
+            }
             _ => {}
         }
     }

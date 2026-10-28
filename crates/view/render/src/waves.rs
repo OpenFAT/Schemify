@@ -13,7 +13,6 @@
 //! - `pub fn draw_window<P: Painter>(p, geo, waves, ui, look, text, s)`
 //! - `pub fn draw_pane<P: Painter>(p, area, waves, k, active, drag, look, text, s)`
 
-
 use kurbo::{BezPath, Rect};
 use peniko::Color;
 

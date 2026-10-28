@@ -22,7 +22,6 @@ const TEXT_REF_PX: f32 = 64.0;
 /// text cache).
 const TEXT_RUNS_MAX: usize = 1 << 16;
 
-
 /// Draws the labels of `t` (the rows `rows` lists, or all), culled to `view` and skipping any
 /// under [`TEXT_MIN_PX`] on screen; returns the labels drawn. Text is not an instance row: the
 /// painter draws it after each table's rows until the glyph atlas lands.
@@ -74,13 +73,11 @@ pub fn draw_texts<P: Painter>(
 
 // ---- private ----
 
-
 /// Every row `0..n`, or the listed ones.
 fn each(n: usize, rows: Option<&[u32]>) -> impl Iterator<Item = usize> + '_ {
     let all = rows.is_none().then_some(0..n).into_iter().flatten();
     all.chain(rows.into_iter().flatten().map(|&i| i as usize))
 }
-
 
 /// The glyph range of `s` shaped at [`TEXT_REF_PX`] (positions relative to its top-left),
 /// shaping it on first use: a string is shaped once per cache lifetime, however many labels or

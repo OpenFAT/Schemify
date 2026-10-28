@@ -59,23 +59,62 @@ pub(super) const UI_UNIFORM_BYTES: usize = 16 + ui_rows::PANES * 32;
 /// as per-instance vertex attributes. Draw order is the pack's: rows grouped by palette layer,
 /// each source's layers in turn, so antialiased edges blend as the CPU painter blends them.
 const CANVAS_WGSL: &str = concat!(
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/instance.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/area.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/camera.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/style.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/distance.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/background.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/segment.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/rect.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/arc.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/canvas/fill.wgsl")),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/instance.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/area.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/camera.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/style.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/distance.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/background.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/segment.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/rect.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/arc.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/canvas/fill.wgsl"
+    )),
 );
 /// The batch pipeline's WGSL module, as `Pipelines::new` hands it to wgpu: the shared helpers,
 /// then the batch's one pipeline.
 const UI_WGSL: &str = concat!(
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/instance.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/area.wgsl")),
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/batch.wgsl")),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/instance.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/area.wgsl"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/shaders/batch.wgsl"
+    )),
 );
 
 const SEG_ATTRS: [wgpu::VertexAttribute; 4] =

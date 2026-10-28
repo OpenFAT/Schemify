@@ -183,7 +183,10 @@ impl InstanceRows {
             t.polylines.end.len(),
             t.polygons.end.len(),
         ];
-        assert!(n.iter().all(|&c| c <= CanvasPrims::CAPACITY), "tables in capacity");
+        assert!(
+            n.iter().all(|&c| c <= CanvasPrims::CAPACITY),
+            "tables in capacity"
+        );
         self.pens.use_palette(palette);
         let was = self.counts[src];
         let whole = !self.packed[src] || matches!(change, Change::All | Change::Edits(_));
@@ -304,8 +307,12 @@ impl InstanceRows {
     /// Repacks 1:1 column `c` (0 lines, 1 rects, 2 arcs) of source `src` whole.
     fn repack(&mut self, src: usize, c: usize, t: &CanvasPrims) {
         match c {
-            0 => self.repack_with(src, c, t.lines.x0.len(), |i, p| seg_row(&t.lines, i, false, p)),
-            1 => self.repack_with(src, c, t.rects.x0.len(), |i, p| seg_row(&t.rects, i, true, p)),
+            0 => self.repack_with(src, c, t.lines.x0.len(), |i, p| {
+                seg_row(&t.lines, i, false, p)
+            }),
+            1 => self.repack_with(src, c, t.rects.x0.len(), |i, p| {
+                seg_row(&t.rects, i, true, p)
+            }),
             _ => self.repack_with(src, c, t.arcs.cx.len(), |i, p| arc_row(&t.arcs, i, p)),
         }
     }
@@ -420,7 +427,12 @@ impl InstanceRows {
             let l = usize::from(p.layer[k]);
             for j in 0..edges_of(p, k, closed) {
                 let at = edge.take(l).expect("laid out") as usize;
-                row(&mut edge.bytes, STRIDE[EDGE], at, &edge_fields(p, k, j, closed, c, s));
+                row(
+                    &mut edge.bytes,
+                    STRIDE[EDGE],
+                    at,
+                    &edge_fields(p, k, j, closed, c, s),
+                );
             }
             let pts = chain(&p.end, k);
             if closed && s & (FILL << 20) != 0 && pts.len() >= 3 {
@@ -476,8 +488,8 @@ fn arc_row(a: &Arcs, i: usize, pens: &mut Pens) -> Option<Packed> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::pens::pen;
     use super::super::PARITY;
+    use super::super::pens::pen;
     use super::*;
     use schemify_canvas::{CanvasDiff, LineStyle, Marks, Palette, TableChange};
 
@@ -522,7 +534,6 @@ mod tests {
 
     /// Counts and bytes of every kind match a hand computation; rows are grouped by layer
     /// with an eighth plus 16 free slots after each; a row's fields sit where the canvas shaders
-
     /// read them: coordinates, colour bytes R G B A, width in 1/16 px, dash, flags.
     #[test]
     fn rows_match_a_hand_computation() {

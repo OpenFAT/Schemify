@@ -241,6 +241,10 @@ pub(crate) fn image_data(cache: &mut Vec<ImageData>, image: &schemify_ui::Image)
         height: image.height,
     };
     cache.push(d.clone());
-    debug_assert_eq!(d.data.data().as_ptr(), key, "the blob shares the image's pixels");
+    debug_assert_eq!(
+        d.data.data().as_ptr(),
+        key,
+        "the blob shares the image's pixels"
+    );
     d
 }

@@ -65,7 +65,7 @@ pub struct Placed {
 
 /// The atlas: shelves of height classes, the entries placed in them, and the bytes written
 /// since the GPU last copied them. Owner: the GPU painter's batch (`batch::Batch`); the
-/// retained UI rows pin the shelves they sample ([`Atlas::pin`]).
+/// retained UI rows pin the shelves they sample (`Atlas::pin`).
 #[derive(Debug)]
 pub struct Atlas {
     side: u16,
@@ -91,7 +91,10 @@ const CLASS: u16 = 4;
 const NO_SHELF: u16 = u16::MAX;
 
 const _: () = assert!(ATLAS_SIDE.is_multiple_of(CLASS), "shelves tile the side");
-const _: () = assert!(ATLAS_SIDE / CLASS < NO_SHELF, "a shelf index is never NO_SHELF");
+const _: () = assert!(
+    ATLAS_SIDE / CLASS < NO_SHELF,
+    "a shelf index is never NO_SHELF"
+);
 
 /// Multiply-rotate hashing (fxhash's mix) for the map's keys, which are hashes and ids
 /// already: SipHash per glyph drawn cost more than the rest of its lookup.
@@ -113,7 +116,7 @@ struct Shelf {
     x: u16,
     /// The last frame a mask of this shelf was drawn in.
     used: u32,
-    /// Retained UI instances that sample this shelf ([`Atlas::pin`]): never evicted while any.
+    /// Retained UI instances that sample this shelf (`Atlas::pin`): never evicted while any.
     pins: u32,
 }
 
@@ -218,7 +221,11 @@ impl Atlas {
         coverage: &[u8],
     ) -> Option<Placed> {
         assert!(!self.map.contains_key(&key), "a key is placed once");
-        assert_eq!(coverage.len(), usize::from(w) * usize::from(h), "a whole mask");
+        assert_eq!(
+            coverage.len(),
+            usize::from(w) * usize::from(h),
+            "a whole mask"
+        );
         assert!(w <= self.side, "a mask fits the atlas");
         assert!(h <= self.side, "a mask fits the atlas");
         if w == 0 || h == 0 {

@@ -140,7 +140,10 @@ const LATEST_MAX: usize = 1 << 16;
 const AUX_AT: usize = 16;
 const KIND_AT: usize = 52;
 
-const _: () = assert!(STRIDE == 4 * (4 + 4 + 4 + 1 + 1), "three vec4s and two words");
+const _: () = assert!(
+    STRIDE == 4 * (4 + 4 + 4 + 1 + 1),
+    "three vec4s and two words"
+);
 const _: () = assert!(KIND_AT + 4 == STRIDE, "the kind is the last word");
 
 /// `vello_cpu` state reused for every mask: the context, its resources, the target.

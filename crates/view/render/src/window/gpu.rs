@@ -16,9 +16,9 @@ use kurbo::Affine;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-use super::{App, Shell, UserEvent, logical};
 #[cfg(not(target_arch = "wasm32"))]
 use super::block_on;
+use super::{App, Shell, UserEvent, logical};
 use crate::batch::GpuPainter;
 use crate::gpu::Pipelines;
 
@@ -271,7 +271,6 @@ impl<A: App> Shell<A> {
         }
     }
 }
-
 
 /// The native GPU ladder: `open(false)` (the fastest hardware adapter), then `open(true)`
 /// (wgpu's software adapter: WARP, lavapipe or llvmpipe). The error names both failures.

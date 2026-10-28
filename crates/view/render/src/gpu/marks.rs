@@ -113,7 +113,6 @@ mod tests {
             .collect()
     }
 
-
     /// Marks copy the marked rows' geometry in the mark colour, 2 px wide, unfilled, skipping
     /// dead rows; polygon marks are edges; unchanged marks write nothing.
     #[test]
@@ -150,5 +149,4 @@ mod tests {
         r.pack_marks(&t, &m, false);
         assert_eq!(r.dirty_bytes(), 0, "unchanged marks write nothing");
     }
-
 }

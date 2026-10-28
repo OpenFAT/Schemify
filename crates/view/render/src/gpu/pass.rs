@@ -283,7 +283,6 @@ impl Pipelines {
             pass.draw(0..6, d.range.clone());
         }
     }
-
 }
 
 // ---- private ----

@@ -72,10 +72,10 @@ pub use painter::{Chains, Painter, rgba};
 pub use window::block_on;
 pub use window::{App, RunError, Waker, run};
 
-/// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).
-pub use vello_cpu::Pixmap;
 /// Re-exported so callers name the same geometry, colour, glyph and GPU types.
 pub use vello_cpu::Glyph;
+/// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).
+pub use vello_cpu::Pixmap;
 pub use {kurbo, peniko, wgpu};
 
 /// Re-exported for [`App::access`]'s return type.

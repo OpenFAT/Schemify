@@ -89,7 +89,10 @@ const SEARCH: usize = 64;
 /// A pane slot's uniform entry with no offset and no clip.
 const NO_PANE: [f32; 8] = [0.0, 0.0, 0.0, 0.0, -1.0e9, -1.0e9, 1.0e9, 1.0e9];
 
-const _: () = assert!(PANES <= 256, "a pane slot fits the key's u8 and the kind word");
+const _: () = assert!(
+    PANES <= 256,
+    "a pane slot fits the key's u8 and the kind word"
+);
 const _: () = assert!(INSTANCES_MAX < u32::MAX as usize, "slots are u32");
 
 /// Rows in layout order (SoA, equal lengths): key, first slot, instances, slots reserved.
