@@ -51,6 +51,8 @@ pub struct Caches {
 struct Shifted<'painter, P: Painter> {
     painter: &'painter mut P,
     dy: f64,
+    /// Clips pushed and not yet popped: each `pop_clip` matches a `push_clip`.
+    clips: u32,
 }
 
 /// Paints the editor's next frame and hands back what its canvas diff took
@@ -59,7 +61,8 @@ struct Shifted<'painter, P: Painter> {
 /// # Panics
 ///
 /// The editor's waves dock sits above its top (a negative `DockPicture::dy`), or a graph's
-/// clip rectangle has a negative size: both are bugs in `Editor::picture`.
+/// clip rectangle has a negative size: both are bugs in `Editor::picture`. The dock's drawing
+/// pops a clip it did not push, or leaves one pushed: a bug in `schemify_render::waves`.
 pub fn frame<P: Painter>(editor: &mut Editor, caches: &mut Caches, painter: &mut P) {
     let Picture {
         mut ui,
@@ -75,7 +78,13 @@ pub fn frame<P: Painter>(editor: &mut Editor, caches: &mut Caches, painter: &mut
     if let Some(dock) = dock {
         let dy = dock.dy;
         assert!(dy >= 0.0, "the dock sits below the editor, got dy {dy}");
-        paint_dock(&mut Shifted { painter, dy }, dock, caches);
+        let mut shifted = Shifted {
+            painter,
+            dy,
+            clips: 0,
+        };
+        paint_dock(&mut shifted, dock, caches);
+        assert_eq!(shifted.clips, 0, "the dock pops every clip it pushes");
     }
     editor.painted(took);
 }
@@ -132,10 +141,13 @@ impl<P: Painter> Painter for Shifted<'_, P> {
     fn push_clip(&mut self, rect: KRect) {
         let rect = self.rect(rect);
         self.painter.push_clip(rect);
+        self.clips += 1;
     }
 
     fn pop_clip(&mut self) {
+        assert!(self.clips > 0, "a pop_clip matches a push_clip of the dock");
         self.painter.pop_clip();
+        self.clips -= 1;
     }
 }
 

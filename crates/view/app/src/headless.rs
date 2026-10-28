@@ -79,6 +79,10 @@ pub fn command(options: Options, name: &str, args: &[String]) -> u8 {
         sleep(ms);
         run.frame(&mut editor);
     }
+    assert!(
+        editor.wake_ms().is_none() || run.timed_out(),
+        "the editor settled before the command, or the hour ran out"
+    );
     let params: Vec<Json> = args.iter().map(|arg| Json::Str(arg.clone())).collect();
     let ticket = match rpc::dispatch(&mut editor, name, &Json::Arr(params)) {
         Dispatched::Queued(ticket) => ticket,

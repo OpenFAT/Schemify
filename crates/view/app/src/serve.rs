@@ -244,6 +244,10 @@ impl Pump {
         let lines: Vec<String> = host.notes_since(self.seen).map(event).collect();
         self.seen = host.notes_seq();
         assert!(self.seen >= seen_before, "the event sequence only grows");
+        assert!(
+            u64::try_from(lines.len()).is_ok_and(|sent| sent <= self.seen - seen_before),
+            "one notification per event recorded since the last call"
+        );
         self.clients.retain(|client| {
             lines.iter().all(|line| send(client, line)) && Arc::strong_count(client) > 1
         });
@@ -325,8 +329,10 @@ fn event(note: &Note) -> String {
         .iter()
         .map(|value| Json::Str(value.to_string()))
         .collect();
+    let kind = note.event.word();
+    assert!(!kind.is_empty(), "an event kind is a word of the rpc spec");
     let params = Json::obj(vec![
-        ("kind", Json::Str(note.event.word().to_owned())),
+        ("kind", Json::Str(kind.to_owned())),
         ("values", Json::Arr(values)),
     ]);
     let line = rpc::notification("event", &params);
@@ -420,10 +426,16 @@ fn read_client(
                 Message::Reply(Arc::clone(&connection), reply)
             }
             Ok(Frame::Line) if line.iter().all(u8::is_ascii_whitespace) => continue,
-            Ok(Frame::Line) => match rpc::decode(&line) {
-                Err(reply) => Message::Reply(Arc::clone(&connection), reply),
-                Ok(request) => Message::Call(Arc::clone(&connection), request),
-            },
+            Ok(Frame::Line) => {
+                assert!(
+                    line.len() <= rpc::LINE_MAX + 1,
+                    "`read_frame` caps a line at LINE_MAX bytes and its newline"
+                );
+                match rpc::decode(&line) {
+                    Err(reply) => Message::Reply(Arc::clone(&connection), reply),
+                    Ok(request) => Message::Call(Arc::clone(&connection), request),
+                }
+            }
         };
         if sender.send(message).is_err() {
             return;
