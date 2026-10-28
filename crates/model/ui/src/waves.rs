@@ -1,7 +1,8 @@
 //! The waveform window (D23, D26, spec `docs/spec/waves.md`), built from UI tables: a static
 //! skeleton ([`WAVES_UI`]), the rows that follow the viewer tables ([`WaveUi::contribute`]),
-//! pointer input over the graph panes turned into viewer [`Request`]s ([`WaveUi::route`]), and
-//! the graph properties dialog ([`PROPS_DIALOG`]). The same pane input drives an embedded graph
+//! pointer input over the graph panes turned into viewer requests
+//! ([`schemify_wave::Request`], [`WaveUi::route`]), and the graph properties dialog
+//! ([`PROPS_DIALOG`]). The same pane input drives an embedded graph
 //! (D23: one pane, no browser) given just that pane's rectangle.
 //!
 //! One frame of the window, in spine order (the caller owns the loop):

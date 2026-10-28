@@ -56,7 +56,7 @@ pub struct Reject {
     pub reason: RejectReason,
 }
 
-/// Longest length a style value holds, in px ([`StyleProp::parse_value`]).
+/// Longest length a style value holds, in px (`StyleProp::parse_value`).
 pub const LENGTH_MAX: u32 = 1 << 14;
 
 /// The record whose indented attributes follow.
@@ -84,7 +84,7 @@ pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
 }
 
 /// Parses like [`parse`], but interns the free text of `label`, `value`, `tooltip` and `accel`
-/// props into the live region of `strings` as one generation ([`Strings::begin_live`]): the
+/// props into the live region of `strings` as one generation (`Strings::begin_live`): the
 /// previous call's handles for text this one no longer uses die. Ids, commands, classes and
 /// every other value stay permanent, so interaction state keyed by node id survives.
 ///

@@ -20,7 +20,7 @@ use std::collections::HashMap;
 ///
 /// `Sym::NONE` is the empty string and doubles as "absent" in every column that holds a `Sym`.
 /// A permanent handle is stable for the life of its [`Strings`]; a live one until the
-/// generation after the last one that used its text ([`Strings::end_live`]).
+/// generation after the last one that used its text (`Strings::end_live`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 pub struct Sym(pub(crate) u32);
 

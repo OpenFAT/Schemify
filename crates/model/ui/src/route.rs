@@ -241,7 +241,8 @@ impl Router<'_> {
         let i = n as usize;
         let id = nodes.id[i];
         let field = matches!(nodes.kind[i], Kind::TextInput | Kind::TextArea);
-        if !(field && self.state.focus == id) && !self.state.focus.is_none() {
+        let refocus = field && self.state.focus == id;
+        if !refocus && !self.state.focus.is_none() {
             self.blur();
             self.out.relayout = true; // a text_area shrinks back to its value
         }

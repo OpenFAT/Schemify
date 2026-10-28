@@ -1,8 +1,9 @@
 //! The `prose` widget (D19, D21): markdown with inline `$…$` and display `$$…$$` LaTeX math
-//! ([`crate::markdown`] parses it), laid out at a given width into positioned parley layouts,
-//! math boxes, rules, shades and images. The docs page renders every `prose` doc block through
-//! it. Rules: `docs/spec/docs-page.md` §2. Pipe-table columns are sized by their content
-//! ([`column_widths`]); an image not registered in the [`TextSystem`] shows its alt text.
+//! (parsed by the private `markdown` module), laid out at a given width into positioned
+//! parley layouts, math boxes, rules, shades and images. The docs page renders every `prose`
+//! doc block through it. Rules: `docs/spec/docs-page.md` §2. Pipe-table columns are sized by
+//! their content (`column_widths`); an image not registered in the [`TextSystem`] shows its
+//! alt text.
 //!
 //! Data design:
 //! 1. In: markdown text, font px, width. Out: [`ProseList`] (layout ids + offsets, math ids +
@@ -15,7 +16,7 @@
 //! 6. Parallel: no; shaping shares the font context.
 //!
 //! Contents:
-//! - `pub use` [`Segment`], [`split_plots`], [`image_line`] (parsed in [`crate::markdown`])
+//! - `pub use` [`Segment`], [`split_plots`], [`image_line`] (from the private `markdown`)
 //! - `pub const CODE_PX: RangeInclusive<u16>`
 //! - `pub struct CodeMetrics { pad, line, advance }`, `pub struct ProseList`
 //! - `pub fn code_metrics(ts, px) -> Option<CodeMetrics>`

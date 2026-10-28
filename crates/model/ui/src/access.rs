@@ -27,7 +27,7 @@ pub(crate) fn access_id(id: Sym, shown: Shown) -> NodeId {
     NodeId(u64::from(id.raw()) | popup)
 }
 
-/// Public node id behind an AccessKit id from [`access_id`] (a popup maps to its menu).
+/// Public node id behind an AccessKit id [`access_tree`] wrote (a popup maps to its menu).
 pub fn sym_of(id: NodeId) -> Sym {
     Sym((id.0 & 0xffff_ffff) as u32)
 }

@@ -118,7 +118,7 @@ pub struct CommandRequests {
     pub args: String,
 }
 
-/// Everything [`route_input`] produces for one frame.
+/// Everything [`route_input`](crate::route_input) produces for one frame.
 #[derive(Clone, Debug, Default)]
 pub struct Routed {
     /// Commands to dispatch.

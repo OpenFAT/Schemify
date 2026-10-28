@@ -142,7 +142,8 @@ impl UiState {
         self.focus
     }
 
-    /// The focused text field's editor; its layout is fresh after [`route_input`].
+    /// The focused text field's editor; its layout is fresh after
+    /// [`route_input`](crate::route_input).
     pub fn editor(&self) -> Option<&PlainEditor<()>> {
         self.editor.as_ref()
     }

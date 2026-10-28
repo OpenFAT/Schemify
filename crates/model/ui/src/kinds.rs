@@ -103,7 +103,7 @@ named_enum!(
 
 named_enum!(
     /// Node property with a string value (`set <id> <prop> <value>`). `parent` and `order` are
-    /// structural and have their own [`Edit`] variants.
+    /// structural and have their own [`Edit`](crate::Edit) variants.
     Prop {
         /// Visible text.
         Label = "label",
