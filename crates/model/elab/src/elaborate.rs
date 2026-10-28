@@ -32,7 +32,7 @@ pub use tables::{
     Bench, COMPUTED, CornerLine, DEFAULT, Defs, Dialect, Elab, Impls, Insts, OVERRIDDEN, Target,
 };
 
-use crate::cells;
+use crate::cells::{self, CellName};
 use crate::eval::Work;
 use crate::graph::Graph;
 use crate::iface::{Held, Iface};
@@ -249,10 +249,10 @@ pub fn elaborate<F: Funcs>(
         req.corner.or(header("corner")),
     );
     let top_row = cells::row_of(project, doc);
-    let (top_name, top_stem) = match top_row {
-        Some(r) => cells::display(project, r),
-        None => ("top".to_owned(), "top".to_owned()),
-    };
+    let CellName {
+        cell: top_name,
+        stem: top_stem,
+    } = top_row.map_or_else(CellName::top, |r| cells::display(project, r));
     let top_cell = e.names.intern(&top_name);
     if let Some(c) = config {
         e.read_config(doc, c, top_cell);

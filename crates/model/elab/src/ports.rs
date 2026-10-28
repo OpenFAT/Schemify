@@ -76,6 +76,7 @@ pub fn impl_ports(lang: &str, text: &str) -> Result<Vec<(String, PinDir)>, PortE
 // ---- private ----
 
 fn err(line: u32, why: impl Into<String>) -> PortError {
+    assert!(line >= 1, "lines are 1-based");
     PortError {
         line,
         why: why.into(),
@@ -185,6 +186,7 @@ fn verilog_ports(text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
             push(&mut ports, format!("{}{range}", name.text), dir, name.line)?;
             ansi.push(declared);
         }
+        assert!(j <= toks.len(), "a closed list ends inside the tokens");
         i = j;
     }
     // Non-ANSI declarations after the header, up to `endmodule`.
@@ -322,6 +324,11 @@ fn items<'toks, 'text>(toks: &'toks [Tok<'text>]) -> Vec<&'toks [Tok<'text>]> {
         }
     }
     out.push(&toks[from..]);
+    // Only the separating commas are dropped.
+    debug_assert_eq!(
+        out.iter().map(|item| item.len()).sum::<usize>() + out.len() - 1,
+        toks.len()
+    );
     out
 }
 

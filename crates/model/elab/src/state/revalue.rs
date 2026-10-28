@@ -13,9 +13,21 @@ use crate::values::{NONE, Syntax, VAR};
 use schemify_doc::{Document, ObjId, Sym};
 use schemify_format::RecordKind;
 
-/// A node's new program source: own-scope text and syntax, or `None` (back to the cell's
-/// default in the child scope).
-type Text = Option<(Sym, Syntax)>;
+/// A node whose program source changed.
+struct Retext {
+    node: u32,
+    /// Own-scope text, or `None` (back to the cell's default in the child scope).
+    text: Option<Source>,
+    /// Instance row and param index of an override node (both 0 for a var).
+    inst: usize,
+    param: usize,
+}
+
+/// An own-scope program source: its text and how it is read.
+struct Source {
+    sym: Sym,
+    syntax: Syntax,
+}
 
 impl CellState {
     /// Recompiles the expressions whose text changed, and points a node whose override was
@@ -34,8 +46,7 @@ impl CellState {
             // Cycle nodes had their edges cut; any edit may break or move the cycle.
             return false;
         }
-        // (node, new text, instance row, param index).
-        let mut nodes: Vec<(u32, Text, usize, usize)> = Vec::new();
+        let mut nodes: Vec<Retext> = Vec::new();
         for id in insts {
             let Some(loc) = doc.find_id(*id) else {
                 return false;
@@ -47,12 +58,21 @@ impl CellState {
         }
         let s = doc.strings();
         let g = &mut self.graph;
+        assert_eq!(g.prog.len(), g.len(), "node columns in step");
+        assert_eq!(g.src.len(), g.len(), "node columns in step");
         let me = &self.ifaces[0];
         let mut new_deps: Vec<u32> = Vec::new();
-        for (n, text, i, k) in nodes {
+        for Retext {
+            node: n,
+            text,
+            inst: i,
+            param: k,
+        } in nodes
+        {
+            assert!((n as usize) < g.len(), "node {n} exists");
             new_deps.clear();
             let (table, prog, src) = match text {
-                Some((sym, syntax)) => {
+                Some(Source { sym, syntax }) => {
                     let names = &self.names;
                     let lookup = |name: &str| own_ref(names, &me.param_name, &g.var_name, name);
                     let prog = g.progs.push(s.get(sym), syntax, None, lookup);
@@ -113,6 +133,8 @@ impl CellState {
         let s = doc.strings();
         let (blocks, prows) = (doc.doc_blocks(), doc.params());
         let g = &mut self.graph;
+        assert_eq!(g.unverified.len(), g.len(), "node columns in step");
+        assert_eq!(g.vals.len(), g.len(), "node columns in step");
         let names = vars.iter().map(|&v| (false, v));
         for (is_param, name) in names.chain(params.iter().map(|&p| (true, p))) {
             let Some(n) = self.names.find(name) else {
@@ -144,6 +166,7 @@ impl CellState {
                 );
                 &mut self.ifaces[g.own as usize].progs
             };
+            assert!(prog < progs.cached.len(), "node {node}'s program exists");
             progs.cached[prog] = cached;
             if g.unverified[node as usize] || g.vals[node as usize].is_err() {
                 dirty.push(node);
@@ -160,12 +183,17 @@ impl CellState {
     /// Appends the param nodes of instance row `i` whose source changed (an override set,
     /// changed or removed); none for an unresolved row. Override keys the cell lacks
     /// change nothing but `W007` (rechecked by the caller).
-    fn inst_texts(&self, doc: &Document, i: usize, out: &mut Vec<(u32, Text, usize, usize)>) {
+    fn inst_texts(&self, doc: &Document, i: usize, out: &mut Vec<Retext>) {
         let g = &self.graph;
+        assert!(i < self.inst_iface.len(), "instance row {i} exists");
         let Some(c) = self.ifaces.get(self.inst_iface[i] as usize) else {
             return;
         };
         let first = g.inst_first[i];
+        assert!(
+            first as usize + c.param_name.len() <= g.len(),
+            "instance {i}'s param nodes exist"
+        );
         for k in 0..c.param_name.len() {
             let n = first + k as u32;
             let now = if c.param_computed[k] {
@@ -174,18 +202,27 @@ impl CellState {
                 override_of(doc, i, self.names.get(c.param_name[k]))
             };
             let was = (g.table[n as usize] == OWN).then_some(g.src[n as usize]);
-            match (was, now) {
-                (None, None) => {}
-                (Some(a), Some(b)) if a == b => {}
-                (_, Some(b)) => out.push((n, Some((b, c.param_kind[k].syntax())), i, k)),
-                (Some(_), None) => out.push((n, None, i, k)),
-            }
+            let text = match (was, now) {
+                (None, None) => continue,
+                (Some(a), Some(b)) if a == b => continue,
+                (_, Some(sym)) => Some(Source {
+                    sym,
+                    syntax: c.param_kind[k].syntax(),
+                }),
+                (Some(_), None) => None,
+            };
+            out.push(Retext {
+                node: n,
+                text,
+                inst: i,
+                param: k,
+            });
         }
     }
 
     /// Appends the own var nodes whose expression text changed. `false` when a var was
     /// added or removed (structural).
-    fn var_texts(&self, doc: &Document, out: &mut Vec<(u32, Text, usize, usize)>) -> bool {
+    fn var_texts(&self, doc: &Document, out: &mut Vec<Retext>) -> bool {
         let (g, blocks) = (&self.graph, doc.doc_blocks());
         let rows: Vec<usize> = (0..blocks.kind.len())
             .filter(|&r| blocks.kind[r] == RecordKind::Var)
@@ -193,10 +230,23 @@ impl CellState {
         if rows.len() != self.ifaces[0].var_name.len() {
             return false;
         }
+        assert!(
+            g.params as usize + rows.len() <= g.len(),
+            "every own var has a node after the own params"
+        );
         for (v, r) in rows.into_iter().enumerate() {
             let n = g.params + v as u32;
-            if g.src[n as usize] != blocks.fields[r][1] {
-                out.push((n, Some((blocks.fields[r][1], Syntax::Expr)), 0, 0));
+            let sym = blocks.fields[r][1];
+            if g.src[n as usize] != sym {
+                out.push(Retext {
+                    node: n,
+                    text: Some(Source {
+                        sym,
+                        syntax: Syntax::Expr,
+                    }),
+                    inst: 0,
+                    param: 0,
+                });
             }
         }
         true

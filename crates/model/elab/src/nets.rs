@@ -247,7 +247,12 @@ impl CellNets {
         assert!(c < self.net_width.len(), "component {c} out of range");
         assert_eq!(self.net_bit_start.len(), self.net_width.len());
         let start = self.net_bit_start[c] as usize;
-        &self.net_bits[start..start + usize::from(self.net_width[c])]
+        let end = start + usize::from(self.net_width[c]);
+        assert!(
+            end <= self.net_bits.len(),
+            "component {c}'s bits are in the column"
+        );
+        &self.net_bits[start..end]
     }
 }
 
@@ -280,12 +285,14 @@ pub fn place(x: i32, y: i32, mirrored: bool, turns: u8, at_x: i32, at_y: i32) ->
 /// they are global in the whole elaborated hierarchy.
 pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>) {
     let (s, labels) = (doc.strings(), doc.labels());
+    let before = out.len();
     let mut buf = String::new();
     let global_rows = (0..labels.id.len()).filter(|&l| label_is_global(doc, l));
     for l in global_rows {
         // An over-wide expression is reported by `connect` as E011.
         let _ = netexpr::expand(s.get(labels.text[l]), names, out, &mut buf);
     }
+    debug_assert!(out[before..].iter().all(|&n| n != Name::NONE));
 }
 
 /// Whether label row `l` carries `global true`.
@@ -385,7 +392,13 @@ pub(crate) fn union(parent: &mut [u32], a: u32, b: u32) {
 /// Compares ids by their text (bytewise), the order `net_<id>` names use.
 pub(crate) fn id_cmp(a: ObjId, b: ObjId, s: &Strings) -> Ordering {
     if !a.is_alias() && !b.is_alias() {
-        return a.0.cmp(&b.0); // 6-char ids order like their text
+        let order = a.0.cmp(&b.0);
+        debug_assert_eq!(
+            order,
+            a.text(s).cmp(&b.text(s)),
+            "6-char ids order like their text"
+        );
+        return order;
     }
     a.text(s).cmp(&b.text(s))
 }

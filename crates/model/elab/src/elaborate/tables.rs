@@ -224,9 +224,14 @@ impl Dialect {
     /// Returns the dialect word (`ngspice`, …).
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        [
+        const WORDS: [&str; 8] = [
             "ngspice", "xyce", "cdl", "spectre", "verilog", "espice", "hspice", "ltspice",
-        ][self as usize]
+        ];
+        const _: () = assert!(
+            WORDS.len() == Dialect::Ltspice as usize + 1,
+            "one word per dialect"
+        );
+        WORDS[self as usize]
     }
 
     /// `format <dialect>` words an impl may use for this dialect, most specific first
@@ -311,8 +316,13 @@ impl Elab {
 
     /// Counts leaf instances of the flattened hierarchy under definition `d` (ignored
     /// instances excluded). Cost: O(definitions + rows) with memoization.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `d` is not a definition row.
     #[must_use]
     pub fn flat_leaves(&self, d: u32) -> u64 {
+        assert!((d as usize) < self.defs.cell.len(), "a definition row");
         let mut memo = vec![u64::MAX; self.defs.cell.len()];
         self.leaves(d, &mut memo)
     }
@@ -322,6 +332,11 @@ impl Elab {
 
 impl Elab {
     fn leaves(&self, d: u32, memo: &mut [u64]) -> u64 {
+        assert_eq!(
+            memo.len(),
+            self.defs.cell.len(),
+            "one memo slot per definition"
+        );
         if memo[d as usize] != u64::MAX {
             return memo[d as usize];
         }
@@ -339,6 +354,7 @@ impl Elab {
                 }
             };
         }
+        assert!(n != u64::MAX, "a count never reads as unvisited");
         memo[d as usize] = n;
         n
     }

@@ -8,7 +8,7 @@
 //!   prepare_eval, defaults}` (`pub(super)`)
 
 use super::{CellData, CellRule, Elaborator, InstRule, defs, record};
-use crate::cells;
+use crate::cells::{self, CellName};
 use crate::check::{self, CellCtx};
 use crate::connect;
 use crate::graph::{self, Graph};
@@ -312,7 +312,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
             .project
             .interface(row)
             .expect("resolution checked the interface");
-        let (cell, stem) = cells::display(self.project, row);
+        let CellName { cell, stem } = cells::display(self.project, row);
         // A derived `tech` cell has no file: its interface is the whole cell (pdk spec §5).
         let derived = self.project.libs().name[self.project.cells().lib[row] as usize]
             == schemify_doc::TECH_LIB;

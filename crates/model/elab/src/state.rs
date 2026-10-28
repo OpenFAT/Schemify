@@ -18,7 +18,7 @@
 mod findings;
 mod revalue;
 
-use crate::cells;
+use crate::cells::{self, CellName};
 use crate::connect::{self, Cx};
 use crate::eval::Work;
 use crate::graph::Graph;
@@ -135,10 +135,8 @@ impl CellState {
     pub fn build<F: Funcs>(project: &Project, h: DocHandle, funcs: &mut F) -> Option<CellState> {
         let doc = project.doc(h)?;
         let mut st = CellState::default();
-        let (cell, stem) = cells::row_of(project, doc)
-            .map_or(("top".to_owned(), "top".to_owned()), |r| {
-                cells::display(project, r)
-            });
+        let CellName { cell, stem } =
+            cells::row_of(project, doc).map_or_else(CellName::top, |r| cells::display(project, r));
         let own = Iface::from_doc(doc, &cell, &stem, NONE, Held::Open, &mut st.names);
         st.ifaces.push(own);
         let s = doc.strings();
@@ -152,7 +150,7 @@ impl CellState {
                     let at = *by_row.entry(row).or_insert(next);
                     if at == next {
                         let iface_doc = project.interface(row).expect("readable");
-                        let (cell, stem) = cells::display(project, row);
+                        let CellName { cell, stem } = cells::display(project, row);
                         let held = if project.open_handle(row).is_some() {
                             Held::Open
                         } else {

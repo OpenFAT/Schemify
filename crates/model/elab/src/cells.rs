@@ -3,16 +3,34 @@
 //! Cites netlist spec §1 (resolution) and pdk spec §5 (`tech:` cells).
 //!
 //! Contents:
-//! - `pub(crate) fn display(project: &Project, row: usize) -> (String, String)`
+//! - `pub(crate) struct CellName`: `top`
+//! - `pub(crate) fn display(project: &Project, row: usize) -> CellName`
 //! - `pub(crate) fn readable(project, found, cellref) -> Result<usize, String>`
 //! - `pub(crate) fn row_of(project: &Project, doc: &Document) -> Option<usize>`
 
 use schemify_doc::{Document, Project};
 
-/// Returns `(display name, stem)` of cell `row`: `lib:dir/stem`, without `lib:` for
-/// the project's own cells and without `dir/` at a library root.
-pub(crate) fn display(project: &Project, row: usize) -> (String, String) {
+/// A cell's display name (`lib:dir/stem`) and its stem.
+pub(crate) struct CellName {
+    pub(crate) cell: String,
+    pub(crate) stem: String,
+}
+
+impl CellName {
+    /// The name of a document that is no project cell (an unsaved or foreign file).
+    pub(crate) fn top() -> CellName {
+        CellName {
+            cell: "top".to_owned(),
+            stem: "top".to_owned(),
+        }
+    }
+}
+
+/// Returns the names of cell `row`: `lib:dir/stem`, without `lib:` for the project's own
+/// cells and without `dir/` at a library root.
+pub(crate) fn display(project: &Project, row: usize) -> CellName {
     let (c, s) = (project.cells(), project.strings());
+    assert!(row < c.lib.len(), "cell row {row} exists");
     let lib = &project.libs().name[c.lib[row] as usize];
     let (dir, stem) = (s.get(c.dir[row]), s.get(c.stem[row]));
     let path = if dir.is_empty() {
@@ -25,8 +43,12 @@ pub(crate) fn display(project: &Project, row: usize) -> (String, String) {
     } else {
         format!("{lib}:{path}")
     };
-    assert!(!stem.is_empty());
-    (cell, stem.to_owned())
+    assert!(!stem.is_empty(), "every cell file has a stem");
+    assert!(cell.ends_with(stem));
+    CellName {
+        cell,
+        stem: stem.to_owned(),
+    }
 }
 
 /// Checks a resolution of `cellref` (`Project::resolve` or `Project::resolve_in`, netlist
