@@ -21,11 +21,11 @@ use crate::journal::{self, Analysis, Entry, JournalRecord};
 use crate::ops::{Mode, Op, Target, Transaction};
 use crate::project::Project;
 use crate::requests::{Stage, UNDO_MAX};
+use crate::schematic::Instances;
 use crate::sha256;
 use crate::sidecar::{self, DiskHash, JournalOut};
 use crate::strings::{ObjId, Sym};
 use crate::sync::{Conflict, PendingSave};
-use crate::tables::Instances;
 use crate::{Code, Diag};
 use schemify_format::{FileKind, ParseError, RecordKind};
 use std::collections::VecDeque;
@@ -114,6 +114,12 @@ pub(crate) struct Open {
     pub(crate) fixups: bool,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct Slot {
+    pub(crate) generation: u32,
+    pub(crate) open: Option<Box<Open>>,
+}
+
 /// Where the bytes handed to `open_with` come from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bytes {
@@ -123,10 +129,10 @@ enum Bytes {
     Read,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct Slot {
-    pub(crate) generation: u32,
-    pub(crate) open: Option<Box<Open>>,
+/// A file's directory and stem within its library.
+struct FilePath<'path> {
+    dir: &'path str,
+    stem: &'path str,
 }
 
 impl Open {
@@ -509,12 +515,6 @@ impl Project {
             .get_mut(h.index as usize)
             .filter(|s| s.generation == h.generation && s.open.is_some())
     }
-}
-
-/// A file's directory and stem within its library.
-struct FilePath<'path> {
-    dir: &'path str,
-    stem: &'path str,
 }
 
 fn split_path(relpath: &str) -> FilePath<'_> {

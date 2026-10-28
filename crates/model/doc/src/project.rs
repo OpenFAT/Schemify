@@ -11,7 +11,7 @@
 //!   `cells`, `strings`, `index_library`, `techmap`, `resolve_tech`, `explain_tech`,
 //!   `tech_source`, `lock_library`, `write_lock`, `resolve`, `resolve_in`, `open_handle`,
 //!   `interface`; crate: `resolve_at`, `find_open`
-//! - `pub enum ReloadError`
+//! - `pub enum ReloadError`, `pub(crate) struct TechProblem`
 
 use crate::document::Document;
 use crate::library::{

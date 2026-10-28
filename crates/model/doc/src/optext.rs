@@ -270,6 +270,11 @@ fn payload(d: &FormatDoc<'_>, r: u32, kind: RecordKind, fields: &[&str]) -> Reco
         comments: d.comments(r).map(str::to_owned).collect(),
     };
     assert_eq!(rec.fields.len(), fields.len());
+    assert_eq!(
+        rec.attrs.len(),
+        d.attrs(r).len(),
+        "every attribute line copied"
+    );
     rec
 }
 

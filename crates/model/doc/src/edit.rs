@@ -23,9 +23,9 @@ use crate::document::{Document, Loc};
 use crate::ops::{NEW_ID, OPS_MAX, Op, OpError, Target};
 use crate::record::{Attr, RecordBuf};
 use crate::rows::Dangling;
+use crate::schematic::Instances;
 use crate::snap::ParamMap;
 use crate::strings::ObjId;
-use crate::tables::Instances;
 use schemify_format::{IdRng, KeyRule, RecordKind};
 
 /// Which override values of an instance an op writes, so only those are snapped:

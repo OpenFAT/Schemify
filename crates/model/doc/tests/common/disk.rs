@@ -63,12 +63,7 @@ pub fn session(seed: u64, steps: usize, saves: bool) -> Vec<Snap> {
         match rng.below(10) {
             0..=5 => {
                 let ops: Vec<Op> = (0..1 + rng.below(2))
-                    .map(|_| {
-                        super::gen_op(
-                            &mut rng,
-                            p.doc(h).expect("the handle names an open document"),
-                        )
-                    })
+                    .map(|_| super::gen_op(&mut rng, super::doc(&p, h)))
                     .collect();
                 let edit = Edit::Tx(Transaction {
                     label: format!("step {step}"),

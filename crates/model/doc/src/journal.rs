@@ -74,6 +74,10 @@ const TORN_RETRIES_MAX: u32 = 4;
 
 /// Appends journal records (no header) to `out`.
 pub(crate) fn encode_records<E: Borrow<Entry>>(out: &mut String, recs: &[JournalRecord<E>]) {
+    assert!(
+        out.is_empty() || out.ends_with('\n'),
+        "records append at a line start"
+    );
     let before = out.len();
     let mut buf = String::new();
     optext::encode_into(out, |d| {
@@ -241,6 +245,10 @@ fn push_entry(d: &mut FormatDoc<'static>, word: &str, e: &Entry, buf: &mut Strin
 /// Decodes journal records from `d`, stopping at the first record that is incomplete
 /// or malformed (a torn tail: everything after it is dropped).
 fn decode_records(d: &FormatDoc<'_>, file: FileKind) -> Vec<JournalRecord> {
+    assert!(
+        d.record_count() >= 1,
+        "record 0 is the header the lexer adds"
+    );
     let mut out = Vec::new();
     let mut r = 1;
     while r < d.record_count() {

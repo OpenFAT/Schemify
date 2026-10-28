@@ -6,7 +6,8 @@
 //! Contents:
 //! - fixtures `OTA`, `NFET`, `BENCH`, `MANIFEST`, `LOCK`, `MESSY`, `SEED_DOC`
 //! - `pub struct Mix`: `new`, `next`, `below`, `chance`, `pick`, `word`
-//! - `pub fn coord`, `pub fn open`, `pub fn tx`, `pub fn req`, `pub fn run`, `pub fn canon`
+//! - `pub fn coord`, `pub fn open`, `pub fn tx`, `pub fn req`, `pub fn run`, `pub fn doc`,
+//!   `pub fn canon`
 //! - `pub fn gen_record`, `pub fn gen_op`
 
 #![allow(dead_code)] // each test binary uses a subset
@@ -118,10 +119,13 @@ pub fn run(p: &mut Project, h: DocHandle, edit: Edit) -> Outcome {
     schemify_doc::apply_edits(p, &[req(h, edit)]).remove(0)
 }
 
+/// The tables of open document `h`.
+pub fn doc(p: &Project, h: DocHandle) -> &Document {
+    p.doc(h).expect("the handle names an open document")
+}
+
 pub fn canon(p: &Project, h: DocHandle) -> String {
-    p.doc(h)
-        .expect("the handle names an open document")
-        .canonical()
+    doc(p, h).canonical()
 }
 
 pub fn gen_record(rng: &mut Mix, doc: &Document) -> RecordBuf {

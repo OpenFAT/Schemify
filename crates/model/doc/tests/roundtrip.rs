@@ -387,7 +387,7 @@ fn round_trip(seed: u64) {
             "load(save(x)) != x, seed {seed}"
         );
         // Every record reads back as the same record through the table read path.
-        let d = p.doc(h).expect("the handle names an open document");
+        let d = common::doc(&p, h);
         let rows: usize = schemify_doc::TableId::ALL
             .iter()
             .map(|t| d.table_len(*t))

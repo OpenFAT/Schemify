@@ -23,8 +23,9 @@ use crate::Diag;
 use crate::changes::{Change, ChangeLog, Cursor};
 use crate::pool::{self, Pool, Span};
 use crate::record::RecordBuf;
+use crate::schematic::{Instances, Noconns, Placed, Shapes, Wires};
 use crate::strings::{FastMap, ObjId, Strings, Sym};
-use crate::tables::{Graphics, Instances, Noconns, Pins, Placed, Records, Shapes, Table, Wires};
+use crate::tables::{Graphics, Pins, Records, Table};
 use schemify_format::{FileKind, RecordKind, VERSION};
 
 /// Identifies one table of a [`Document`]. Declaration order is rank order, so emitting
