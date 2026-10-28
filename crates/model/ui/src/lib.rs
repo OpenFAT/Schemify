@@ -46,6 +46,7 @@ mod input;
 mod keys;
 mod kinds;
 mod layout;
+mod markdown;
 pub mod math;
 mod menu;
 mod paint;

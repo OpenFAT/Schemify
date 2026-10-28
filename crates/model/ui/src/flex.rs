@@ -154,7 +154,12 @@ impl Builder<'_> {
 
     /// Builds and places `node` as its own root at its content size, at the origin (the
     /// caller shifts it into place). Returns its first row and its size.
-    pub(crate) fn float(&mut self, node: NodeIx, shown: Shown, out: &mut Frame) -> (usize, f32, f32) {
+    pub(crate) fn float(
+        &mut self,
+        node: NodeIx,
+        shown: Shown,
+        out: &mut Frame,
+    ) -> (usize, f32, f32) {
         let start = self.rows.len();
         let root = self.build(node, shown, NO_ROW, 0.0);
         let max_content = Size {

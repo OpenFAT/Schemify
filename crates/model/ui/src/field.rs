@@ -76,7 +76,12 @@ pub(crate) fn focus_field(
 
 /// Scrolls the focused text area inside itself so the caret stays in view (after an edit or
 /// a caret move). Uses the area's last laid-out box.
-pub(crate) fn follow_caret(tables: &UiTables, layout: &UiLayout, text: &TextSystem, state: &mut UiState) {
+pub(crate) fn follow_caret(
+    tables: &UiTables,
+    layout: &UiLayout,
+    text: &TextSystem,
+    state: &mut UiState,
+) {
     let Some(n) = tables.nodes.find(state.focus) else {
         return;
     };

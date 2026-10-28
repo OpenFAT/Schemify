@@ -36,8 +36,8 @@
 
 use std::collections::HashMap;
 
-use crate::kinds::{Kind, Prop, StyleProp};
 use crate::keys::Chord;
+use crate::kinds::{Kind, Prop, StyleProp};
 use crate::strings::{Strings, Sym};
 
 /// Index of a node in [`UiNodes`]; valid until the next [`crate::compose`].

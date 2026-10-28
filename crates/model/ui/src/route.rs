@@ -124,7 +124,8 @@ impl Router<'_> {
     /// The topmost row under `(x, y)`: (row, node, how it is shown).
     fn hit(&self, x: f32, y: f32) -> Option<(usize, NodeIx, Shown)> {
         let l = self.layout;
-        l.hit(x, y, self.modal()).map(|r| (r, l.node[r], l.shown[r]))
+        l.hit(x, y, self.modal())
+            .map(|r| (r, l.node[r], l.shown[r]))
     }
 
     /// True when a hit is the canvas shown as itself.
@@ -295,7 +296,16 @@ impl Router<'_> {
                 out.redraw = true;
             }
             (Kind::TextInput | Kind::TextArea, _) => {
-                focus_field(self.tables, self.layout, self.strings, self.text, state, r, x, y);
+                focus_field(
+                    self.tables,
+                    self.layout,
+                    self.strings,
+                    self.text,
+                    state,
+                    r,
+                    x,
+                    y,
+                );
                 out.redraw = true;
             }
             (
@@ -377,7 +387,15 @@ impl Router<'_> {
         if self.state.editor.is_some() {
             let area = self.focused_area();
             let (tables, out) = (self.tables, &mut *self.out);
-            edit_key(tables, self.text, self.state, chord, area, &mut self.typed, out);
+            edit_key(
+                tables,
+                self.text,
+                self.state,
+                chord,
+                area,
+                &mut self.typed,
+                out,
+            );
             out.redraw = true;
             out.relayout |= area; // the field grows and shrinks with its lines
             if area {

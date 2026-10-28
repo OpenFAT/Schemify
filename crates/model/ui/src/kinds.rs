@@ -203,8 +203,6 @@ impl StyleProp {
                 _ => None,
             };
         }
-        s.parse::<u32>()
-            .ok()
-            .filter(|&v| v <= LENGTH_MAX)
+        s.parse::<u32>().ok().filter(|&v| v <= LENGTH_MAX)
     }
 }

@@ -73,7 +73,9 @@ pub fn compose(
         );
         for &edit in &contribution.edits {
             match edit {
-                Edit::Node { id, kind } => declare(&mut rows, &mut by_id, &mut health, id, kind, owner),
+                Edit::Node { id, kind } => {
+                    declare(&mut rows, &mut by_id, &mut health, id, kind, owner)
+                }
                 Edit::Set { id, .. } | Edit::Parent { id, .. } | Edit::Order { id, .. } => {
                     let Some(row) = target(&mut rows, &by_id, &mut health, id, owner) else {
                         continue;
