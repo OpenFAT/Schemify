@@ -10,6 +10,8 @@ use schemify_wave::{
 
 use crate::fixture;
 
+// ---- private ----
+
 fn var(name: &str, kind: VarKind) -> Variable {
     Variable {
         name: name.into(),

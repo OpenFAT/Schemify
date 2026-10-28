@@ -13,7 +13,7 @@
 //! logic_runs / bin_counts     -> digital lanes / histogram bars (per pane mode)
 //! ```
 //!
-//! The calculator is `schemify_expr` in [`Mode::Calc`](schemify_expr::Mode::Calc): [`calc::bind`]
+//! The calculator is `schemify_expr` in [`Mode::Calc`](schemify_expr::Mode::Calc): [`calc::eval`]
 //! hands it borrowed columns, so `v(out)` reads the file's storage directly.
 //!
 //! ```
@@ -28,24 +28,36 @@
 //! assert_eq!(w.value_at(0, 1.5), Some(8.0));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! Contents: the re-exports below; `pub mod calc`.
 
 #![forbid(unsafe_code)]
 
+mod apply;
+mod axis;
 pub mod calc;
-mod data;
 mod decimate;
+mod digital;
+mod pane;
+mod plot;
 mod raw;
+mod request;
 mod si;
-mod view;
+mod trace;
+mod waves;
 
-pub use data::{RawPlot, VarKind, Variable, group_datasets};
-pub use decimate::{Run, Scale, bin_counts, decimate, logic, logic_runs, minmax, minmax_scalar};
+pub use axis::{Axis, Scale};
+pub use decimate::decimate;
+pub use digital::{Run, bin_counts, logic, logic_runs};
+pub use pane::{
+    Cursor, LineStyle, MAX_BINS, MAX_BUS_BITS, MAX_DATASETS, MAX_PANES, MAX_TRACES, PALETTE,
+    PaneMode, PaneProps, Radix, TRACE_COLORS,
+};
+pub use plot::{RawPlot, VarKind, Variable, group_datasets};
 pub use raw::{RawError, parse_raw};
+pub use request::{Applied, Request, ViewError};
 // The number text of typed axis ranges and cursor positions (spec waves §8): canonical out, SI
 // suffixes in, so an unchanged field reads back the same value.
 pub use schemify_expr::{parse_num, write_num};
 pub use si::format_si;
-pub use view::{
-    Applied, Axis, Cursor, LineStyle, MAX_BINS, MAX_BUS_BITS, MAX_DATASETS, MAX_PANES, MAX_TRACES,
-    PALETTE, PaneMode, PaneProps, Radix, Request, TRACE_COLORS, ViewError, Waves,
-};
+pub use waves::Waves;

@@ -10,6 +10,8 @@ use schemify_wave::{
 
 use crate::fixture;
 
+// ---- private ----
+
 fn add(w: &mut Waves, src: &str, pane: u8) -> Result<Applied, ViewError> {
     w.apply(&Request::AddTrace {
         src: src.into(),

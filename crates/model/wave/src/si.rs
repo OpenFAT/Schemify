@@ -2,10 +2,27 @@
 //!
 //! Display-only: the prefixes are the SI ones (`M` is mega), unlike SPICE input where `M` is
 //! milli. Parsing user input goes through `schemify_expr::parse_num` (spec expr §2).
+//!
+//! Contents:
+//! - `pub fn format_si(value: f64, digits: usize) -> String`
 
-/// Formats `value` with `digits` significant digits and an engineering prefix: `3.3e-9` →
-/// `"3.3n"`, `1.2e4` → `"12k"`, `999.96e3` → `"1M"` (rounding carries into the next prefix).
-/// Zero (either sign) is `"0"`; NaN and infinities print as Rust does (`"NaN"`, `"inf"`).
+/// Prefixes from the largest down; values under `p` fall through to `f` (femto).
+const PREFIXES: [(f64, &str); 9] = [
+    (1e12, "T"),
+    (1e9, "G"),
+    (1e6, "M"),
+    (1e3, "k"),
+    (1.0, ""),
+    (1e-3, "m"),
+    (1e-6, "µ"),
+    (1e-9, "n"),
+    (1e-12, "p"),
+];
+
+/// Formats `value` with `digits` significant digits (clamped to 1..=17) and an engineering
+/// prefix: `3.3e-9` → `"3.3n"`, `1.2e4` → `"12k"`, `999.96e3` → `"1M"` (rounding carries into
+/// the next prefix). Zero (either sign) is `"0"`; NaN and infinities print as Rust does
+/// (`"NaN"`, `"inf"`).
 pub fn format_si(value: f64, digits: usize) -> String {
     if value == 0.0 {
         return "0".to_owned();
@@ -13,17 +30,6 @@ pub fn format_si(value: f64, digits: usize) -> String {
     if !value.is_finite() {
         return format!("{value}");
     }
-    const PREFIXES: [(f64, &str); 9] = [
-        (1e12, "T"),
-        (1e9, "G"),
-        (1e6, "M"),
-        (1e3, "k"),
-        (1.0, ""),
-        (1e-3, "m"),
-        (1e-6, "µ"),
-        (1e-9, "n"),
-        (1e-12, "p"),
-    ];
     let digits = digits.clamp(1, 17);
     let mut k = PREFIXES
         .iter()
@@ -41,17 +47,20 @@ pub fn format_si(value: f64, digits: usize) -> String {
             k -= 1;
             continue;
         }
-        return format!("{}{}", trim_zeros(&s), prefix);
+        return format!("{}{prefix}", trim_zeros(&s));
     }
     unreachable!("a carry moves up one prefix, then fits")
 }
 
-/// Strip trailing fractional zeros ("1.500" → "1.5", "2.000" → "2").
-fn trim_zeros(s: &str) -> String {
-    if !s.contains('.') {
-        return s.to_string();
+// ---- private ----
+
+/// Strips trailing fractional zeros ("1.500" → "1.5", "2.000" → "2").
+fn trim_zeros(s: &str) -> &str {
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        s
     }
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 #[cfg(test)]
@@ -69,5 +78,9 @@ mod tests {
         assert_eq!(format_si(999.96e3, 3), "1M");
         assert_eq!(format_si(-0.0, 3), "0");
         assert_eq!(format_si(4e-16, 2), "0.4f");
+        assert_eq!(format_si(1.5e15, 3), "1500T", "nothing above tera");
+        assert_eq!(format_si(f64::NAN, 3), "NaN");
+        assert_eq!(format_si(f64::NEG_INFINITY, 3), "-inf");
+        assert_eq!(format_si(1234.5, 0), "1k", "digits clamp to at least one");
     }
 }

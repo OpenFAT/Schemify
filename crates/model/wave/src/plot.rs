@@ -4,6 +4,14 @@
 //! occupies `re[v*n .. (v+1)*n]`. A column is therefore a plain contiguous slice, which is what
 //! the calculator ([`schemify_expr::Column`]) and the decimator read without copying. Sweep steps
 //! are index ranges into the columns.
+//!
+//! Contents:
+//! - `pub enum VarKind`, `VarKind::unit(self) -> &'static str`,
+//!   `pub(crate) VarKind::from_type_str(&str) -> VarKind`
+//! - `pub struct Variable`
+//! - `pub struct RawPlot`: `from_columns`, `name`, `is_complex`, `vars`, `len`, `is_empty`,
+//!   `col`, `col_im`, `scale`, `steps`, `find_var`, `find_signal`
+//! - `pub fn group_datasets(plots: Vec<RawPlot>) -> Vec<RawPlot>`
 
 use core::ops::Range;
 
@@ -27,37 +35,6 @@ pub enum VarKind {
     Other,
 }
 
-impl VarKind {
-    pub(crate) fn from_type_str(s: &str) -> Self {
-        let s = s.trim();
-        if s.eq_ignore_ascii_case("time") {
-            VarKind::Time
-        } else if s.eq_ignore_ascii_case("frequency") {
-            VarKind::Frequency
-        } else if s.eq_ignore_ascii_case("voltage") {
-            VarKind::Voltage
-        } else if s.eq_ignore_ascii_case("current")
-            || s.eq_ignore_ascii_case("device_current")
-            || s.eq_ignore_ascii_case("subckt_current")
-        {
-            VarKind::Current
-        } else {
-            VarKind::Other
-        }
-    }
-
-    /// Display unit (`"V"`, `"A"`, `"s"`, `"Hz"`, or `""`).
-    pub fn unit(self) -> &'static str {
-        match self {
-            VarKind::Time => "s",
-            VarKind::Frequency => "Hz",
-            VarKind::Voltage => "V",
-            VarKind::Current => "A",
-            VarKind::Other => "",
-        }
-    }
-}
-
 /// One `Variables:` entry. Cold data: read when listing signals and resolving names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Variable {
@@ -69,18 +46,73 @@ pub struct Variable {
 
 /// One analysis block of a `.raw` file (or several blocks merged by [`group_datasets`]).
 ///
-/// Invariants (checked at construction): at least one variable and one point; `re` holds
+/// Invariants (asserted by every constructor): at least one variable and one point; `re` holds
 /// `vars × points` samples, `im` the same when complex and nothing otherwise; `steps` partitions
 /// `0..points` into non-empty ranges. Column 0 is the scale (sweep axis).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawPlot {
-    pub(crate) name: String,
-    pub(crate) complex: bool,
-    pub(crate) vars: Vec<Variable>,
-    pub(crate) n: u32,
-    pub(crate) re: Vec<f64>,
-    pub(crate) im: Vec<f64>,
-    pub(crate) steps: Vec<Range<u32>>,
+    name: String,
+    complex: bool,
+    vars: Vec<Variable>,
+    n: u32,
+    re: Vec<f64>,
+    im: Vec<f64>,
+    steps: Vec<Range<u32>>,
+}
+
+/// Merges runs of consecutive blocks that hold the same variables (names ignoring case, kinds,
+/// real/complex) into one block whose steps are the blocks' steps: Xyce writes each `.step` as
+/// its own block, ngspice `set appendwrite` appends one block per run. Blocks that differ start a
+/// new dataset. Cost: one copy of every merged block's samples.
+///
+/// # Panics
+///
+/// Panics if a merged dataset would exceed 2^32 points.
+pub fn group_datasets(plots: Vec<RawPlot>) -> Vec<RawPlot> {
+    let count = plots.len();
+    let mut out: Vec<RawPlot> = Vec::with_capacity(count);
+    let mut run: Vec<RawPlot> = Vec::new();
+    for p in plots {
+        if run.first().is_some_and(|first| !same_vars(first, &p)) {
+            out.push(merge(std::mem::take(&mut run)));
+        }
+        run.push(p);
+    }
+    if !run.is_empty() {
+        out.push(merge(run));
+    }
+    assert!(out.len() <= count, "grouping never adds a dataset");
+    out
+}
+
+impl VarKind {
+    /// Display unit (`"V"`, `"A"`, `"s"`, `"Hz"`, or `""`).
+    pub fn unit(self) -> &'static str {
+        match self {
+            VarKind::Time => "s",
+            VarKind::Frequency => "Hz",
+            VarKind::Voltage => "V",
+            VarKind::Current => "A",
+            VarKind::Other => "",
+        }
+    }
+
+    /// The kind a header type field names, compared ignoring case; unknown types are `Other`.
+    pub(crate) fn from_type_str(s: &str) -> VarKind {
+        const NAMES: [(&str, VarKind); 6] = [
+            ("time", VarKind::Time),
+            ("frequency", VarKind::Frequency),
+            ("voltage", VarKind::Voltage),
+            ("current", VarKind::Current),
+            ("device_current", VarKind::Current),
+            ("subckt_current", VarKind::Current),
+        ];
+        let s = s.trim();
+        NAMES
+            .iter()
+            .find(|(name, _)| s.eq_ignore_ascii_case(name))
+            .map_or(VarKind::Other, |&(_, kind)| kind)
+    }
 }
 
 impl RawPlot {
@@ -106,9 +138,8 @@ impl RawPlot {
             )));
         }
         let n = re.len() / nv;
-        if n > u32::MAX as usize {
-            return Err(RawError::Header(format!("{n} points exceed 2^32")));
-        }
+        let n32 =
+            u32::try_from(n).map_err(|_| RawError::Header(format!("{n} points exceed 2^32")))?;
         let complex = !im.is_empty();
         if complex && im.len() != re.len() {
             return Err(RawError::Header(
@@ -120,30 +151,13 @@ impl RawPlot {
             name: name.to_owned(),
             complex,
             vars,
-            n: n as u32,
+            n: n32,
             re,
             im,
             steps,
         };
         plot.check();
         Ok(plot)
-    }
-
-    /// Asserts the struct invariants (TigerStyle exit check of every constructor).
-    pub(crate) fn check(&self) {
-        let n = self.n as usize;
-        assert!(n > 0 && !self.vars.is_empty(), "empty plot");
-        assert_eq!(self.re.len(), n * self.vars.len(), "column store size");
-        assert_eq!(self.im.len(), if self.complex { self.re.len() } else { 0 });
-        let mut at = 0;
-        for s in &self.steps {
-            assert!(
-                s.start == at && s.end > s.start,
-                "steps do not partition the points"
-            );
-            at = s.end;
-        }
-        assert_eq!(at, self.n, "steps do not cover the points");
     }
 
     /// The `Plotname:` header value (for merged datasets, the first block's).
@@ -179,7 +193,7 @@ impl RawPlot {
     #[inline]
     pub fn col(&self, v: usize) -> &[f64] {
         assert!(v < self.vars.len(), "column {v} out of range");
-        let n = self.n as usize;
+        let n = self.len();
         &self.re[v * n..(v + 1) * n]
     }
 
@@ -194,7 +208,7 @@ impl RawPlot {
         if !self.complex {
             return &[];
         }
-        let n = self.n as usize;
+        let n = self.len();
         &self.im[v * n..(v + 1) * n]
     }
 
@@ -227,83 +241,42 @@ impl RawPlot {
             // A device's operating-point value is no column of a plot (run spec §4).
             SignalKind::Op => return None,
         };
-        let mut buf = String::with_capacity(name.len() + 8);
-        buf.push_str(f);
-        buf.push('(');
-        buf.push_str(name);
-        buf.push(')');
-        if let Some(v) = self.find_var(&buf) {
-            return Some(v);
-        }
-        if kind == SignalKind::I {
-            buf.clear();
-            buf.push_str(name);
-            buf.push_str("#branch");
-            if let Some(v) = self.find_var(&buf) {
-                return Some(v);
-            }
-        }
-        self.find_var(name)
+        self.find_var(&format!("{f}({name})"))
+            .or_else(|| {
+                (kind == SignalKind::I)
+                    .then(|| self.find_var(&format!("{name}#branch")))
+                    .flatten()
+            })
+            .or_else(|| self.find_var(name))
     }
 }
+
+// ---- private ----
 
 /// Splits `x` into sweep steps: a new step starts where `x` reverses direction (a nested sweep
 /// restarting, a `.step` run appended in place). Equal neighbours never split, so a descending
 /// sweep stays one step. O(n).
-pub(crate) fn detect_steps(x: &[f64]) -> Vec<Range<u32>> {
+fn detect_steps(x: &[f64]) -> Vec<Range<u32>> {
     assert!(!x.is_empty() && x.len() <= u32::MAX as usize);
     let mut steps = Vec::new();
-    let mut start = 0usize;
+    let mut start = 0u32;
     let mut dir = 0i8;
-    for i in 1..x.len() {
-        let d = x[i] - x[i - 1];
-        let s = if d > 0.0 {
-            1
-        } else if d < 0.0 {
-            -1
-        } else {
-            0
-        };
+    for (i, w) in (1u32..).zip(x.windows(2)) {
+        let d = w[1] - w[0];
+        let s = i8::from(d > 0.0) - i8::from(d < 0.0);
         if s == 0 {
             continue;
         }
         if dir == 0 {
             dir = s;
         } else if s != dir {
-            steps.push(start as u32..i as u32);
+            steps.push(start..i);
             start = i;
             dir = 0;
         }
     }
-    steps.push(start as u32..x.len() as u32);
-    debug_assert_eq!(steps.last().map(|s| s.end as usize), Some(x.len()));
+    steps.push(start..x.len() as u32);
     steps
-}
-
-/// Merges runs of consecutive blocks that hold the same variables (names ignoring case, kinds,
-/// real/complex) into one block whose steps are the blocks' steps: Xyce writes each `.step` as
-/// its own block, ngspice `set appendwrite` appends one block per run. Blocks that differ start a
-/// new dataset. Cost: one copy of every merged block's samples.
-///
-/// # Panics
-///
-/// Panics if a merged dataset would exceed 2^32 points.
-pub fn group_datasets(plots: Vec<RawPlot>) -> Vec<RawPlot> {
-    let mut out: Vec<RawPlot> = Vec::with_capacity(plots.len());
-    let mut run: Vec<RawPlot> = Vec::new();
-    for p in plots {
-        if let Some(first) = run.first()
-            && !same_vars(first, &p)
-        {
-            out.push(merge(std::mem::take(&mut run)));
-        }
-        run.push(p);
-    }
-    if !run.is_empty() {
-        out.push(merge(run));
-    }
-    debug_assert!(out.iter().all(|p| !p.steps.is_empty()));
-    out
 }
 
 fn same_vars(a: &RawPlot, b: &RawPlot) -> bool {
@@ -315,8 +288,9 @@ fn same_vars(a: &RawPlot, b: &RawPlot) -> bool {
             .all(|(x, y)| x.kind == y.kind && x.name.eq_ignore_ascii_case(&y.name))
 }
 
+/// One block holding `run`'s samples column by column and its steps end to end.
 fn merge(mut run: Vec<RawPlot>) -> RawPlot {
-    assert!(!run.is_empty());
+    assert!(!run.is_empty(), "a run holds a block");
     if run.len() == 1 {
         return run.pop().expect("one block");
     }
@@ -355,6 +329,24 @@ fn merge(mut run: Vec<RawPlot>) -> RawPlot {
     plot
 }
 
+impl RawPlot {
+    /// Asserts the struct invariants (the exit check of every constructor).
+    fn check(&self) {
+        let n = self.len();
+        assert!(n > 0, "a plot has a point");
+        assert!(!self.vars.is_empty(), "a plot has a variable");
+        assert_eq!(self.re.len(), n * self.vars.len(), "column store size");
+        assert_eq!(self.im.len(), if self.complex { self.re.len() } else { 0 });
+        let mut at = 0;
+        for s in &self.steps {
+            assert_eq!(s.start, at, "steps do not partition the points");
+            assert!(s.end > s.start, "an empty step");
+            at = s.end;
+        }
+        assert_eq!(at, self.n, "steps do not cover the points");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +368,22 @@ mod tests {
         assert_eq!(detect_steps(&[0.0, 0.0, 1.0, 1.0, 2.0]), vec![0..5]); // repeated time points
         assert_eq!(detect_steps(&[5.0]), vec![0..1]);
         assert_eq!(detect_steps(&[2.0, 0.0, 0.0, 2.0, 0.0]), vec![0..3, 3..5]);
+        assert_eq!(detect_steps(&[0.0, f64::NAN, 1.0]), vec![0..3]); // NaN never splits
+    }
+
+    #[test]
+    fn type_fields_classify_ignoring_case() {
+        for (s, k) in [
+            (" TIME ", VarKind::Time),
+            ("frequency", VarKind::Frequency),
+            ("Voltage", VarKind::Voltage),
+            ("device_current", VarKind::Current),
+            ("subckt_current", VarKind::Current),
+            ("notype", VarKind::Other),
+            ("", VarKind::Other),
+        ] {
+            assert_eq!(VarKind::from_type_str(s), k, "{s:?}");
+        }
     }
 
     #[test]
@@ -395,7 +403,13 @@ mod tests {
         assert_eq!(p.find_signal(SignalKind::I, "L1"), Some(4));
         assert_eq!(p.find_signal(SignalKind::V, "pow"), Some(5));
         assert_eq!(p.find_signal(SignalKind::V, "l1"), None);
+        assert_eq!(
+            p.find_signal(SignalKind::V, "v1"),
+            None,
+            "#branch is for i() only"
+        );
         assert_eq!(p.find_signal(SignalKind::I, "out"), None);
+        assert_eq!(p.find_signal(SignalKind::Op, "pow"), None);
     }
 
     #[test]
@@ -423,5 +437,6 @@ mod tests {
         assert_eq!(g[0].col(1), &[10.0, 11.0, 20.0, 21.0, 22.0]);
         assert_eq!(g[0].scale(), &[0.0, 1.0, 0.0, 1.0, 2.0]);
         assert_eq!(g[1].name(), "c");
+        assert!(group_datasets(vec![]).is_empty());
     }
 }

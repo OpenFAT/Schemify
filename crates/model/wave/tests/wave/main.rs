@@ -2,6 +2,10 @@
 //! oracle. Fixtures in `tests/fixtures/` are real ngspice-44 and Xyce-7.10 outputs of the `.cir`
 //! decks beside them (binary and ASCII of the same run); `oracle::regenerate_and_compare` reruns
 //! the simulators when they are installed.
+//!
+//! Contents:
+//! - `pub(crate) fn fixture(name: &str) -> Vec<RawPlot>`
+//! - `pub(crate) fn close(a: f64, b: f64, rtol: f64) -> bool`
 
 mod calc;
 mod digital;

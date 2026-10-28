@@ -14,85 +14,38 @@
 //! comparison), and an empty or all-NaN run gives `(+inf, -inf)`. The one difference is which
 //! zero wins between `0.0` and `-0.0`; they compare equal.
 //!
-//! The other two display reductions are per pixel column (digital lanes: [`logic_runs`], busy
-//! columns where samples disagree) and per bin (histogram panes: [`bin_counts`]).
+//! Contents:
+//! - `pub fn decimate(xs: &[f64], ys: &[f64], sx: &Scale, sy: &Scale, out: &mut Vec<[f32; 2]>)`
+//! - `pub(crate) fn minmax(y: &[f64]) -> (f64, f64)`
+//! - `pub(crate) fn minmax_scalar(y: &[f64]) -> (f64, f64)`
+//! - `pub(crate) fn extent(xs, ys, steps, x_lo, x_hi) -> (f64, f64)`
+//! - `pub(crate) fn pixel_columns(sx: &Scale) -> usize`
+//! - `pub(crate) fn gallop(xs: &[f64], from: usize, end: usize, edge: f64) -> usize`
 
 use core::ops::Range;
+
+use crate::axis::Scale;
 
 /// Lanes of the vector accumulators; 8 × f64 fills four SSE2 or two AVX registers per
 /// accumulator, enough independent chains to hide `minpd` latency.
 const LANES: usize = 8;
 
-/// Pixels beyond either end of an axis that [`Scale::px`] still resolves; anything further is
-/// clamped there, so paths stay finite and short for the rasterizer.
-const FAR: f64 = 64.0;
-
-/// One axis mapped onto pixels: a value `v` goes to `t = v` (or `log10 v` on a log axis), then
-/// linearly from `[t0, t1]` onto `[p0, p1]`. `p1 < p0` flips the axis (screen y grows down).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scale {
-    /// Transformed value at `p0`.
-    pub t0: f64,
-    /// Transformed value at `p1`.
-    pub t1: f64,
-    /// `t = log10(v)`.
-    pub log: bool,
-    /// Pixel of `t0`.
-    pub p0: f32,
-    /// Pixel of `t1`.
-    pub p1: f32,
-}
-
-impl Scale {
-    /// Maps the data range `[lo, hi]` onto pixels `[p0, p1]`.
-    ///
-    /// # Panics
-    ///
-    /// Panics unless `lo < hi` (both finite, and positive when `log`) and `p0 != p1`.
-    pub fn new(lo: f64, hi: f64, log: bool, p0: f32, p1: f32) -> Scale {
-        assert!(
-            lo.is_finite() && hi.is_finite() && lo < hi,
-            "empty axis range"
-        );
-        assert!(!log || lo > 0.0, "log axis needs a positive range");
-        assert!(
-            p0 != p1 && p0.is_finite() && p1.is_finite(),
-            "empty pixel range"
-        );
-        let t = |v: f64| if log { v.log10() } else { v };
-        let s = Scale {
-            t0: t(lo),
-            t1: t(hi),
-            log,
-            p0,
-            p1,
-        };
-        assert!(s.t0 < s.t1, "axis range collapses after the log transform");
-        s
-    }
-
-    /// Pixel of value `v`, clamped to 64 axis lengths beyond the ends. On a log axis a value
-    /// `<= 0` maps to the far low end. NaN stays NaN.
-    #[inline]
-    pub fn px(&self, v: f64) -> f32 {
-        let t = if !self.log {
-            v
-        } else if v > 0.0 {
-            v.log10()
-        } else {
-            return self.p0 - (self.p1 - self.p0) * FAR as f32;
-        };
-        let f = ((t - self.t0) / (self.t1 - self.t0)).clamp(-FAR, 1.0 + FAR);
-        (f64::from(self.p0) + f * f64::from(self.p1 - self.p0)) as f32
-    }
-
-    /// Value at pixel `p` (the inverse of [`Scale::px`] inside the clamp).
-    #[inline]
-    pub fn value(&self, p: f32) -> f64 {
-        let f = f64::from(p - self.p0) / f64::from(self.p1 - self.p0);
-        let t = self.t0 + f * (self.t1 - self.t0);
-        if self.log { 10f64.powf(t) } else { t }
-    }
+/// Appends the polyline of one sweep step to `out` as `[x, y]` pixels: every sample when the
+/// visible part has at most two per pixel column, otherwise each column's min and max (entered
+/// from the side nearer its first sample) plus the nearest sample beyond each edge so the line
+/// reaches the frame. Non-finite samples are skipped. A step whose x is not ascending (an X-Y
+/// plot, a descending sweep) is drawn sample by sample.
+///
+/// # Panics
+///
+/// Panics if the columns differ in length or `sx` does not increase left to right.
+///
+/// # Time complexity
+///
+/// O(visible samples) for the min/max scan plus O(columns · log(samples per column)) to find
+/// the column boundaries; O(samples) for non-ascending steps.
+pub fn decimate(xs: &[f64], ys: &[f64], sx: &Scale, sy: &Scale, out: &mut Vec<[f32; 2]>) {
+    decimate_with(minmax, xs, ys, sx, sy, out);
 }
 
 /// Minimum and maximum of `y`, skipping NaN; `(+inf, -inf)` when no sample compares. Vectorized
@@ -102,7 +55,7 @@ impl Scale {
 /// # Time complexity
 ///
 /// O(n): 9.6 µs per 64k samples in L2 (7× the scalar fold), 0.16 ms per 1M samples.
-pub fn minmax(y: &[f64]) -> (f64, f64) {
+pub(crate) fn minmax(y: &[f64]) -> (f64, f64) {
     let chunks = y.chunks_exact(LANES);
     let tail = chunks.remainder();
     // The accumulators travel through `fold` by value: that keeps them in registers. The same
@@ -124,14 +77,14 @@ pub fn minmax(y: &[f64]) -> (f64, f64) {
         a = if lo[k] < a { lo[k] } else { a };
         b = if hi[k] > b { hi[k] } else { b };
     }
-    debug_assert!(a > b || a <= b, "results are never NaN");
+    debug_assert!(!a.is_nan() && !b.is_nan(), "results are never NaN");
     (a, b)
 }
 
 /// The scalar fold [`minmax`] vectorizes: the oracle in tests and the vector loop's tail.
 /// Kept out of line so benchmarks measure it as written.
 #[inline(never)]
-pub fn minmax_scalar(y: &[f64]) -> (f64, f64) {
+pub(crate) fn minmax_scalar(y: &[f64]) -> (f64, f64) {
     let (mut a, mut b) = (f64::INFINITY, f64::NEG_INFINITY);
     for &v in y {
         if v < a {
@@ -161,10 +114,8 @@ pub(crate) fn extent(
     assert_eq!(xs.len(), ys.len(), "x and y columns differ in length");
     let (mut a, mut b) = (f64::INFINITY, f64::NEG_INFINITY);
     for s in steps {
-        let (x, y) = (
-            &xs[s.start as usize..s.end as usize],
-            &ys[s.start as usize..s.end as usize],
-        );
+        let r = s.start as usize..s.end as usize;
+        let (x, y) = (&xs[r.clone()], &ys[r]);
         let r = if x.first() <= x.last() {
             x.partition_point(|&v| v < x_lo)..x.partition_point(|&v| v <= x_hi)
         } else {
@@ -177,24 +128,34 @@ pub(crate) fn extent(
     (a, b)
 }
 
-/// Appends the polyline of one sweep step to `out` as `[x, y]` pixels: every sample when the
-/// visible part has at most two per pixel column, otherwise each column's min and max (entered
-/// from the side nearer its first sample) plus the nearest sample beyond each edge so the line
-/// reaches the frame. Non-finite samples are skipped. A step whose x is not ascending (an X-Y
-/// plot, a descending sweep) is drawn sample by sample.
-///
-/// # Panics
-///
-/// Panics if the columns differ in length or `sx` does not increase left to right.
-///
-/// # Time complexity
-///
-/// O(visible samples) for the min/max scan plus O(columns · log(samples per column)) to find
-/// the column boundaries; O(samples) for non-ascending steps.
-pub fn decimate(xs: &[f64], ys: &[f64], sx: &Scale, sy: &Scale, out: &mut Vec<[f32; 2]>) {
-    decimate_with(minmax, xs, ys, sx, sy, out);
+/// Whole pixel columns `sx` spans, at least one.
+pub(crate) fn pixel_columns(sx: &Scale) -> usize {
+    assert!(sx.p1 > sx.p0, "x pixels must increase left to right");
+    ((sx.p1 - sx.p0).floor() as usize).max(1)
 }
 
+/// First index in `from..=end` whose x is `>= edge` (`xs` ascending): exponential search from
+/// `from`, then binary search in the bracket, so a run of k samples costs O(log k) probes that
+/// stay near each other in memory.
+pub(crate) fn gallop(xs: &[f64], from: usize, end: usize, edge: f64) -> usize {
+    debug_assert!(from <= end && end <= xs.len());
+    let mut lo = from;
+    let mut step = 1;
+    // Invariant: xs[from..lo] < edge. Bounded: `step` doubles every pass.
+    while lo + step <= end && xs[lo + step - 1] < edge {
+        lo += step;
+        step *= 2;
+    }
+    let hi = (lo + step).min(end);
+    let k = lo + xs[lo..hi].partition_point(|&x| x < edge);
+    debug_assert!(k == end || xs[k] >= edge);
+    k
+}
+
+// ---- private ----
+
+/// [`decimate`] with its min/max kernel as a parameter, so tests and the benchmark run the
+/// scalar oracle through the same column walk.
 fn decimate_with(
     kernel: fn(&[f64]) -> (f64, f64),
     xs: &[f64],
@@ -204,7 +165,7 @@ fn decimate_with(
     out: &mut Vec<[f32; 2]>,
 ) {
     assert_eq!(xs.len(), ys.len(), "x and y columns differ in length");
-    assert!(sx.p1 > sx.p0, "x pixels must increase left to right");
+    let cols = pixel_columns(sx);
     let n = xs.len();
     let before = out.len();
     let push = |x: f64, y: f64, out: &mut Vec<[f32; 2]>| {
@@ -218,8 +179,8 @@ fn decimate_with(
     if xs[0] > xs[n - 1] || !xs[0].is_finite() {
         // ponytail: non-ascending steps are drawn point by point, O(samples) per frame.
         // Decimate them by sorting a copy once if X-Y plots of millions of points matter.
-        for i in 0..n {
-            push(xs[i], ys[i], out);
+        for (&x, &y) in xs.iter().zip(ys) {
+            push(x, y, out);
         }
         return;
     }
@@ -227,7 +188,6 @@ fn decimate_with(
     let first = xs.partition_point(|&x| x < x_lo);
     let end = xs.partition_point(|&x| x <= x_hi).max(first);
     let (a, b) = (first.saturating_sub(1), (end + 1).min(n));
-    let cols = ((sx.p1 - sx.p0).floor() as usize).max(1);
     if b - a <= 2 * cols {
         for i in a..b {
             push(xs[i], ys[i], out);
@@ -267,137 +227,10 @@ fn decimate_with(
     debug_assert!(out.len() - before <= 2 * cols + 2);
 }
 
-/// One run of equal pixel columns of a digital lane (spec waves §4): columns `c0..c1` counted
-/// from the x scale's `p0`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Run {
-    /// First column.
-    pub c0: u32,
-    /// One past the last column.
-    pub c1: u32,
-    /// The logic or bus value; `None` when the samples in a column disagree (busy).
-    pub value: Option<u32>,
-}
-
-/// The logic value of sample `y`: `y >= threshold` as 0/1, or the bus value `y` itself when
-/// there is no threshold (NaN reads 0).
-#[inline]
-pub fn logic(y: f64, threshold: Option<f64>) -> u32 {
-    match threshold {
-        Some(t) => u32::from(y >= t),
-        None => y as u32,
-    }
-}
-
-/// Appends the digital runs of one sweep step to `out` (spec waves §4): per pixel column of
-/// `sx`, the value held into it from the sample before plus every sample in it, `None` when
-/// they disagree; equal neighbours merge, columns before the first or after the last sample are
-/// left out. `threshold` thresholds an analog trace; `None` reads a bus's values.
-///
-/// # Panics
-///
-/// Panics if the columns differ in length or `sx` does not increase left to right.
-///
-/// # Time complexity
-///
-/// O(visible samples + columns · log(samples per column)); nothing for a non-ascending step.
-pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, out: &mut Vec<Run>) {
-    assert_eq!(xs.len(), ys.len(), "x and y columns differ in length");
-    assert!(sx.p1 > sx.p0, "x pixels must increase left to right");
-    let n = xs.len();
-    if n == 0 || xs[0] > xs[n - 1] || !xs[0].is_finite() {
-        // ponytail: a non-ascending step (an X-Y sweep) has no time order to hold values in.
-        return;
-    }
-    let before = out.len();
-    let cols = ((sx.p1 - sx.p0).floor() as usize).max(1);
-    let edge = |c: usize| sx.value(sx.p0 + c as f32);
-    // `i`: first sample at or after the current column's left edge.
-    let mut i = xs.partition_point(|&x| x < edge(0));
-    for c in 0..cols {
-        let j = gallop(xs, i, n, edge(c + 1));
-        let col = &ys[i..j];
-        // The value held into the column needs a sample before it and one at or after it;
-        // without one the column's first sample sets the value.
-        let first = if i > 0 && i < n {
-            ys[i - 1]
-        } else if let Some(&y) = col.first() {
-            y
-        } else {
-            i = j;
-            continue;
-        };
-        i = j;
-        let v0 = logic(first, threshold);
-        // A fold with no early exit: one compare and or per sample, no branch.
-        let busy = col
-            .iter()
-            .fold(false, |b, &y| b | (logic(y, threshold) != v0));
-        let value = (!busy).then_some(v0);
-        let c = c as u32;
-        let extend =
-            out.len() > before && out.last().is_some_and(|r| r.c1 == c && r.value == value);
-        if extend {
-            out.last_mut().expect("checked above").c1 = c + 1;
-        } else {
-            out.push(Run {
-                c0: c,
-                c1: c + 1,
-                value,
-            });
-        }
-    }
-    debug_assert!(out[before..].windows(2).all(|w| w[0].c1 <= w[1].c0));
-}
-
-/// Adds the samples of `y` to `bins` equal bins over `[t0, t1]` in transformed units (`log10`
-/// when `log`, spec waves §5): bin `⌊(t − t0) · bins / (t1 − t0)⌋`, `t1` itself in the last bin.
-/// Samples outside the range or not finite after the transform are not counted.
-///
-/// # Panics
-///
-/// Panics if `bins` is empty or `t0 < t1` does not hold with both finite.
-pub fn bin_counts(y: &[f64], t0: f64, t1: f64, log: bool, bins: &mut [u32]) {
-    assert!(!bins.is_empty(), "no bins");
-    assert!(
-        t0.is_finite() && t1.is_finite() && t0 < t1,
-        "empty bin range"
-    );
-    let n = bins.len();
-    let k = n as f64 / (t1 - t0);
-    // ponytail: a branch per sample. Branchless (add 0 to a clamped bin) measured 1.7x slower:
-    // the clamped misses serialize on one bin's store. Four sub-histograms if a profile asks.
-    for &v in y {
-        let t = if log { v.log10() } else { v };
-        if !(t >= t0 && t <= t1) {
-            continue; // outside, or NaN (a log of a value <= 0 is -inf or NaN)
-        }
-        let b = (((t - t0) * k) as usize).min(n - 1);
-        bins[b] += 1;
-    }
-}
-
-/// First index in `from..=end` whose x is `>= edge` (`xs` ascending): exponential search from
-/// `from`, then binary search in the bracket, so a run of k samples costs O(log k) probes that
-/// stay near each other in memory.
-fn gallop(xs: &[f64], from: usize, end: usize, edge: f64) -> usize {
-    debug_assert!(from <= end && end <= xs.len());
-    let mut lo = from;
-    let mut step = 1;
-    // Invariant: xs[from..lo] < edge. Bounded: `step` doubles every pass.
-    while lo + step <= end && xs[lo + step - 1] < edge {
-        lo += step;
-        step *= 2;
-    }
-    let hi = (lo + step).min(end);
-    let k = lo + xs[lo..hi].partition_point(|&x| x < edge);
-    debug_assert!(k == end || xs[k] >= edge);
-    k
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::digital::{bin_counts, logic_runs};
 
     /// Deterministic xorshift in [-1, 1).
     fn rng(seed: &mut u64) -> f64 {
@@ -514,17 +347,6 @@ mod tests {
         decimate(&[], &[], &sx, &sy, &mut pts);
         decimate(&[2.0, 1.0], &[f64::NAN, 1.0], &sx, &sy, &mut pts);
         assert_eq!(pts, vec![[-50.0, 0.0]]); // descending: point by point, NaN skipped
-    }
-
-    #[test]
-    fn scale_clamps_and_inverts() {
-        let s = Scale::new(1.0, 1000.0, true, 0.0, 300.0);
-        assert_eq!(s.px(10.0), 100.0);
-        assert!((s.value(200.0) - 100.0).abs() < 1e-9);
-        assert_eq!(s.px(0.0), -300.0 * FAR as f32);
-        assert_eq!(s.px(1e300), 300.0 * (1.0 + FAR as f32));
-        let y = Scale::new(-1.0, 1.0, false, 100.0, 0.0);
-        assert_eq!((y.px(-1.0), y.px(1.0)), (100.0, 0.0));
     }
 
     #[test]
