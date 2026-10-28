@@ -10,6 +10,8 @@ const NFET: &[u8] = b"schemify 1 shprim\n  prefix X\n\npin D inout 0 -40\npin G 
 const MAP: &[u8] = b"schemify 1 techmap\n  pdk fake130\n\nclass nmos core\n  cell pdk:nfet\n  param W w/1u\n  param L l/1u\n  param mult m\nclass nmos lvt\n  cell pdk:nfet_lvt\n";
 const MANIFEST: &[u8] = b"schemify 1 project\nlib pdk path pdk\nlib tech map maps/fake.map\n";
 
+// ---- private ----
+
 fn indexed(manifest: &[u8], map: &[u8]) -> Project {
     let mut p = Project::new(Some(manifest), None, 1).unwrap();
     p.index_library("core", "<builtin>", &[("nmos4.shprim", NMOS4)])

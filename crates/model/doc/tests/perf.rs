@@ -9,6 +9,8 @@ use schemify_doc::{Edit, Op, Outcome, Project, Target, apply_edits};
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind, write};
 use std::time::{Duration, Instant};
 
+// ---- private ----
+
 /// The research §1 synthetic mix: 35% instances (name + 5 params), 45% wires,
 /// 12% labels, 8% texts.
 fn design(n: usize, seed: u64) -> String {

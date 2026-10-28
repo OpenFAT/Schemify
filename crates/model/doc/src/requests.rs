@@ -5,7 +5,7 @@
 //! (parameter semantics of instance edits), D20 (cache write-back via extend).
 //!
 //! Contents:
-//! - `pub const UNDO_MAX`, `pub const STAGES_MAX`
+//! - `pub const UNDO_MAX`, `pub(crate) const STAGES_MAX`
 //! - `pub struct Stage`, `pub enum Edit`, `pub struct EditRequest`, `pub enum Outcome`
 //! - `pub fn apply_edits(project: &mut Project, requests: &[EditRequest]) -> Vec<Outcome>`
 //! - `Project`: `applied`, `stages`, `preview`
@@ -26,7 +26,7 @@ use schemify_format::{FileKind, RecordKind};
 pub const UNDO_MAX: usize = 1 << 16;
 
 /// Open stages per document.
-pub const STAGES_MAX: usize = 1 << 8;
+pub(crate) const STAGES_MAX: usize = 1 << 8;
 
 /// A staged transaction (edits spec §1 mode `stage`): validated, ids drawn, not applied.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -13,6 +13,8 @@ use schemify_format::{FileKind, RecordKind};
 
 const DEV: &str = "schemify 1 shprim\n\npin D inout 0 0\n\nparam L 0.15\n  grid 0.005\nparam W 1\n  step 0.5\n  min 0.25\nparam ad 0\n  computed W*0.29\n\nimpl spice spice\n";
 
+// ---- private ----
+
 fn project() -> Project {
     Project::new(Some(MANIFEST.as_bytes()), Some(LOCK.as_bytes()), 3).unwrap()
 }

@@ -10,6 +10,8 @@ use schemify_doc::{
 };
 use schemify_format::{RecordKind, merge3, parse};
 
+// ---- private ----
+
 fn set_attr(id: &str, key: &str, values: &[&str]) -> Op {
     Op::SetAttr {
         target: Target::new(RecordKind::Inst, id),

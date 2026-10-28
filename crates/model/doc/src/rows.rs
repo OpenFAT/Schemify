@@ -264,7 +264,7 @@ impl Document {
         let id_row = |text: &str| ObjId::find(text, s).and_then(|id| self.find_id(id));
         for r in 0..self.waivers.len() {
             let target = s.get(self.waivers.fields[r][1]);
-            if !id_row(target).is_some_and(|l| l.table == TableId::Instances) {
+            if id_row(target).is_none_or(|l| l.table != TableId::Instances) {
                 let key = s.get(self.waivers.fields[r][0]).to_owned();
                 out.push((RecordKind::Waive, key, target.to_owned()));
             }

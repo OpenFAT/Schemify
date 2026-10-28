@@ -64,8 +64,8 @@ impl TechMap {
     ///
     /// # Errors
     ///
-    /// The format error, a file of another kind, more than [`CLASSES_MAX`] rows, or a
-    /// flavor outside [`FLAVORS`], as text for the checks panel.
+    /// The format error, a file of another kind, more than 2^8 class rows, or a flavor
+    /// other than `core`, `io`, `lvt`, `hvt`, as text for the checks panel.
     pub fn parse(bytes: &[u8]) -> Result<TechMap, String> {
         let d = schemify_format::parse(bytes).map_err(|e| e.to_string())?;
         if d.kind() != FileKind::Techmap {

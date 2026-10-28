@@ -13,7 +13,7 @@
 //! 6. Not parallel: one writer (`doc`), many readers through `&Strings`.
 //!
 //! Contents:
-//! - `pub struct Sym`, `Sym::NONE`, `pub const SYMS_MAX`
+//! - `pub struct Sym`, `Sym::NONE`, `pub(crate) const SYMS_MAX`
 //! - `pub struct Strings`: `len`, `is_empty`, `get`, `find`; crate: `intern`, `settle`,
 //!   `outgrown`
 //! - `pub struct ObjId`: `NONE`, `decode`, `find`, `is_alias`, `write`, `text`; crate:
@@ -28,7 +28,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 pub struct Sym(pub u32);
 
 /// Most strings one document interns.
-pub const SYMS_MAX: u32 = 1 << 24;
+pub(crate) const SYMS_MAX: u32 = 1 << 24;
 
 /// Interned strings of one document: one byte arena plus an open-addressing table.
 #[derive(Clone, Debug, Default)]
