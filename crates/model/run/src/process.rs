@@ -61,6 +61,8 @@ impl Drop for Process {
 /// The message for a program that did not start: not found (with where to set its path)
 /// or the OS error.
 pub(crate) fn spawn_error(prog: &str, what: &str, config: &str, e: &io::Error) -> String {
+    assert!(!what.is_empty(), "messages name the program's role");
+    assert!(!config.is_empty(), "messages say where the path is set");
     if e.kind() == io::ErrorKind::NotFound {
         format!("{what} `{prog}` not found on PATH (install it or set its path in {config})")
     } else {
@@ -74,7 +76,6 @@ pub(crate) fn last_line(path: &Path) -> Option<String> {
     let text = fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&text);
     let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
-    debug_assert!(!line.contains('\n'), "one line");
     Some(line.to_owned())
 }
 

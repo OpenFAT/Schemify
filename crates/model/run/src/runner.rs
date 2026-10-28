@@ -174,6 +174,10 @@ impl Tools {
         for s in &mut self.sims {
             s.clone_from(cmd);
         }
+        debug_assert!(
+            self.sims.iter().all(|s| s == cmd),
+            "every simulator runs `cmd`"
+        );
     }
 
     /// Returns the command line of simulator `d`.
@@ -257,6 +261,7 @@ impl Runner {
     /// Returns job `j`'s directory, `<dir>/<j>`.
     #[must_use]
     pub fn job_dir(&self, j: u32) -> PathBuf {
+        debug_assert!(j < crate::JOBS_MAX, "job {j} past JOBS_MAX");
         self.config.dir.join(j.to_string())
     }
 
@@ -470,6 +475,10 @@ impl Runner {
     /// Starts the simulator of every waiting job whose sources are compiled; fails those
     /// with a failed source.
     fn start_ready(&mut self, jobs: &mut Jobs, results: &mut Results, finished: &mut Vec<u32>) {
+        assert!(
+            self.waiting.len() + self.running.len() <= usize::from(self.config.workers),
+            "a waiting job holds a worker slot"
+        );
         let mut i = 0;
         while i < self.waiting.len() {
             let w = &self.waiting[i];
@@ -611,7 +620,7 @@ fn tail(dir: &Path, r: &mut Running) {
     if f.seek(SeekFrom::Start(r.log_pos)).is_err() || f.take(CHUNK).read_to_end(&mut buf).is_err() {
         return;
     }
-    assert!(buf.len() as u64 <= CHUNK, "read through `take`");
+    let log_pos = r.log_pos;
     let Some(end) = buf.iter().rposition(|&b| b == b'\n') else {
         if buf.len() as u64 == CHUNK {
             r.log_pos += CHUNK; // one line longer than a chunk: skip it
@@ -619,8 +628,10 @@ fn tail(dir: &Path, r: &mut Running) {
         return;
     };
     r.log_pos += end as u64 + 1;
+    assert!(r.log_pos <= log_pos + CHUNK, "at most one chunk per call");
     let lines = buf[..end].split(|&b| b == b'\n').rev();
     if let Some(line) = lines.into_iter().find(|l| !l.trim_ascii().is_empty()) {
         r.last = String::from_utf8_lossy(line.trim_ascii()).into_owned();
     }
+    debug_assert!(!r.last.contains('\n'), "progress is one line");
 }

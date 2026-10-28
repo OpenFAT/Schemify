@@ -150,7 +150,7 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
     let (mut outputs, mut specs, mut vars) = (Vec::new(), Vec::new(), Vec::new());
     // Built at the first job record, once the columns are known.
     let mut table: Option<(Jobs, Results)> = None;
-    let mut cur: Option<JobRecord> = None;
+    let mut current: Option<JobRecord> = None;
     let mut header = true;
     for (n, line) in lines {
         if line.trim().is_empty() {
@@ -170,10 +170,10 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
             continue;
         }
         if line.starts_with(' ') {
-            let p = cur
+            let record = current
                 .as_mut()
                 .ok_or_else(|| bad(n, "attribute outside a job"))?;
-            p.attr(n, f)?;
+            record.attr(n, f)?;
             continue;
         }
         header = false;
@@ -193,14 +193,14 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
                         Results::from_columns(design, outputs.clone(), specs.clone(), vars.clone());
                     (Jobs::new(), r)
                 });
-                if let Some(p) = cur.take() {
-                    p.flush(jobs, r)?;
+                if let Some(record) = current.take() {
+                    record.flush(jobs, r)?;
                 }
                 if f[1].parse::<u32>() != Ok(jobs.len()) {
                     return Err(bad(n, "jobs must be numbered 0, 1, 2, …"));
                 }
                 let state = State::from_word(&f[2]).ok_or_else(|| bad(n, "unknown state"))?;
-                cur = Some(JobRecord::new(state));
+                current = Some(JobRecord::new(state));
             }
             _ => return Err(bad(n, "unexpected record")),
         }
@@ -211,8 +211,8 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
             Results::from_columns(design, outputs, specs, vars),
         )
     });
-    if let Some(p) = cur.take() {
-        p.flush(&mut jobs, &mut r)?;
+    if let Some(record) = current.take() {
+        record.flush(&mut jobs, &mut r)?;
     }
     // Provable: every flush covers its job.
     debug_assert_eq!(r.rows(), jobs.len(), "every job read has a row");
@@ -255,6 +255,7 @@ impl JobRecord {
 
     /// Appends the job to `jobs` and its values, verdicts and errors to `r`.
     fn flush(self, jobs: &mut Jobs, r: &mut Results) -> Result<(), String> {
+        assert_eq!(r.rows(), jobs.len(), "the previous job flushed its row");
         let sets: Vec<(&str, &str)> = self
             .sets
             .iter()
@@ -310,13 +311,16 @@ impl JobRecord {
             }
         }
         jobs.set_state(j, self.state);
-        assert_eq!(r.rows(), jobs.len());
+        assert_eq!(r.rows(), jobs.len(), "one row per job read");
         Ok(())
     }
 }
 
 /// Appends one indented attribute line `  <key> <value>…`.
 fn attr(out: &mut String, key: &str, vals: &[&str]) {
+    assert!(!key.is_empty(), "an attribute line starts with its key");
+    assert!(!key.contains(' '), "a key is one word: `{key}`");
+    assert!(out.ends_with('\n'), "attributes start a line");
     out.push_str("  ");
     out.push_str(key);
     for v in vals {
@@ -334,6 +338,7 @@ fn bad(n: usize, why: &str) -> String {
 /// The values of one line, owned (format spec §2 lexical layer); `None` for a malformed
 /// one or a line without values.
 fn split_values(line: &str) -> Option<Vec<String>> {
+    debug_assert!(!line.trim().is_empty(), "blank lines are skipped first");
     let v: Vec<String> = text::values(line)
         .map(|v| v.ok().map(|v| v.into_owned()))
         .collect::<Option<_>>()?;

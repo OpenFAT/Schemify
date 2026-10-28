@@ -113,6 +113,11 @@ impl Cache {
             }),
         }
         assert!(self.compiling.len() <= crate::JOBS_MAX as usize);
+        debug_assert!(
+            !(self.compiling.iter().any(|c| c.out == s.out)
+                && self.failed.iter().any(|f| f.out == s.out)),
+            "an output compiles or failed, never both"
+        );
     }
 
     /// Reaps exited compilers; one that failed, wrote nothing or ran past the timeout
@@ -288,8 +293,8 @@ fn spawn_compile(config: &RunnerConfig, s: &Source) -> Result<Option<Compiling>,
         }
     };
     let log = File::create(config.cache.join(format!("{}.log", s.out))).map_err(cache)?;
-    let log2 = log.try_clone().map_err(cache)?;
-    let process = Process::spawn(&mut cmd, log, log2).map_err(|e| {
+    let stderr_log = log.try_clone().map_err(cache)?;
+    let process = Process::spawn(&mut cmd, log, stderr_log).map_err(|e| {
         let need = format!("needed to compile {} ({what})", src.display());
         format!(
             "{}; {need}",

@@ -173,14 +173,14 @@ pub fn design<F: Funcs>(
     // follow the app's listing order, which differs between platforms.
     let mut reached: Vec<(String, u32)> = Vec::new();
     for config in configs {
-        let req = Request {
+        let request = Request {
             config,
             corner: None,
             overrides: &[],
             env,
             dialect,
         };
-        let e = schemify_elab::elaborate(project, top, &req, funcs);
+        let e = schemify_elab::elaborate(project, top, &request, funcs);
         gate(&e)?;
         let rows = e.cells.iter().filter(|c| c.row != u32::MAX);
         reached.extend(rows.map(|c| (e.names.get(c.cell).to_owned(), c.row)));
@@ -188,10 +188,10 @@ pub fn design<F: Funcs>(
     reached.sort_unstable();
     reached.dedup();
 
-    let mut h = Sha256::default();
+    let mut hasher = Sha256::default();
     let mut part = |bytes: &[u8]| {
-        h.update(&(bytes.len() as u64).to_le_bytes());
-        h.update(bytes);
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
     };
     part(b"schemify design 1");
     part(project.write_lock().as_bytes());
@@ -222,7 +222,7 @@ pub fn design<F: Funcs>(
     if dialect != Dialect::Ngspice {
         part(dialect.as_str().as_bytes());
     }
-    let digest = h.finish();
+    let digest = hasher.finish();
     assert_ne!(digest, [0; 32]);
     Ok(digest)
 }
@@ -252,14 +252,14 @@ pub fn prepare<F: Funcs>(
 ) -> Option<Prepared> {
     assert!(j < jobs.len(), "job {j} of {}", jobs.len());
     let overrides: Vec<(&str, &str)> = jobs.assignments(j).collect();
-    let req = Request {
+    let request = Request {
         config: jobs.config(j),
         corner: jobs.corner(j),
         overrides: &overrides,
         env,
         dialect,
     };
-    let e = schemify_elab::elaborate(project, top, &req, funcs);
+    let e = schemify_elab::elaborate(project, top, &request, funcs);
     drop(overrides);
     if let Err(b) = gate(&e) {
         let msg = match b {
@@ -336,30 +336,30 @@ pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source> {
         if !netlist::compiled_source(e, i) {
             continue;
         }
-        let iface = &e.cells[e.impls.cell[i] as usize];
+        let interface = &e.cells[e.impls.cell[i] as usize];
         let k = e.impls.index[i] as usize;
-        let (tool, ext) = match (e.names.get(iface.impl_lang[k]), dialect) {
+        let (tool, ext) = match (e.names.get(interface.impl_lang[k]), dialect) {
             ("veriloga", Dialect::Espice) => (Tool::Copy, "va"),
             ("veriloga", _) => (Tool::Openvaf, "osdi"),
             _ => (Tool::Iverilog, "vvp"),
         };
-        let (origin, stem) = if iface.impl_file[k] == Name::NONE {
+        let (origin, stem) = if interface.impl_file[k] == Name::NONE {
             let body = e.impls.body_start[i] as usize..e.impls.body_start[i + 1] as usize;
             let mut text = String::new();
             for &l in &e.impls.body[body] {
                 text.push_str(e.names.get(l));
                 text.push('\n');
             }
-            (Origin::Body(text), e.names.get(iface.stem))
+            (Origin::Body(text), e.names.get(interface.stem))
         } else {
-            if iface.row == u32::MAX {
+            if interface.row == u32::MAX {
                 continue; // not a project cell: no directory to resolve `file` against
             }
-            let file = e.names.get(iface.impl_file[k]);
+            let file = e.names.get(interface.impl_file[k]);
             // A derived `tech` cell's impls are its PDK cell's: `file` is relative to that.
             let row = project
-                .tech_source(iface.row as usize)
-                .unwrap_or(iface.row as usize);
+                .tech_source(interface.row as usize)
+                .unwrap_or(interface.row as usize);
             let dir = project.strings().get(cells.dir[row]);
             let path = if dir.is_empty() {
                 file.to_owned()
@@ -423,8 +423,9 @@ fn gate(e: &Elab) -> Result<(), Blocked> {
 
 /// Byte ranges of the relative corner `lib`/`include` paths in `text`, the netlist `e`
 /// emitted for `dialect` (the simulators: SPICE `.lib <path> <section>`, `.include
-/// <path>`; Spectre `include "<path>" section=<section>`, `include "<path>"`). Corner lines follow the header, globals and `.param` lines in file order, so
-/// each one's first match after the previous one is the line itself.
+/// <path>`; Spectre `include "<path>" section=<section>`, `include "<path>"`). Corner
+/// lines follow the header, globals and `.param` lines in file order, so each one's first
+/// match after the previous one is the line itself.
 fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<RelativePath> {
     let mut out = Vec::new();
     let b = &e.bench;

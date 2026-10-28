@@ -15,7 +15,8 @@
 //!   `pub struct MonteCarlo`, `pub enum DistKind`, `pub struct Dist`, `pub enum Goal`
 //!   (`Goal::err`), `pub struct Optimize`, `pub struct Output`, `pub struct Spec`
 //! - `pub struct Plan`: `Plan::read`, `Plan::output`, `Plan::var`, `Plan::corner`
-//! - crate-only: `plan_err`, `sort_by_name`, `var_bounds`, `const_value`, `parse_count`
+//! - crate-only: `struct Bounds`, `plan_err`, `sort_by_name`, `var_bounds`, `const_value`,
+//!   `parse_count`
 
 use schemify_doc::{Document, RecordKind, Span};
 use schemify_expr::{Mode, Program, Scratch, Value};
@@ -193,6 +194,13 @@ pub struct Plan {
     pub specs: Vec<Spec>,
     /// The bench's `corner` header attribute.
     pub default_corner: Option<String>,
+}
+
+/// A varied var's constant bounds and start ([`var_bounds`]): `min ≤ init ≤ max`.
+pub(crate) struct Bounds {
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) init: f64,
 }
 
 impl fmt::Display for PlanError {
@@ -442,10 +450,10 @@ pub(crate) fn sort_by_name<T>(v: &mut Vec<T>, name: impl Fn(&T) -> &String) {
     debug_assert!(v.windows(2).all(|w| name(&w[0]) <= name(&w[1])));
 }
 
-/// Returns `(min, max, init)` of bench var `name` for the optimizer: both bounds must be
+/// Returns the bounds and start of bench var `name` for the optimizer: both bounds must be
 /// constant expressions with `min ≤ max`; `init` is the var's own value when constant,
 /// else the midpoint, clamped into the bounds.
-pub(crate) fn var_bounds(plan: &Plan, name: &str) -> Result<(f64, f64, f64), String> {
+pub(crate) fn var_bounds(plan: &Plan, name: &str) -> Result<Bounds, String> {
     let v = plan.var(name).ok_or("is not a bench var")?;
     let (Some(lo), Some(hi)) = (&v.min, &v.max) else {
         return Err("needs `min` and `max` bounds (D13: the optimizer clamps to them)".to_owned());
@@ -457,9 +465,13 @@ pub(crate) fn var_bounds(plan: &Plan, name: &str) -> Result<(f64, f64, f64), Str
     let init = const_value(&v.expr)
         .unwrap_or(0.5 * (lo + hi))
         .clamp(lo, hi);
-    assert!(lo <= init);
-    assert!(init <= hi);
-    Ok((lo, hi, init))
+    assert!(lo <= init, "clamped into the bounds");
+    assert!(init <= hi, "clamped into the bounds");
+    Ok(Bounds {
+        min: lo,
+        max: hi,
+        init,
+    })
 }
 
 /// Evaluates a constant scalar expression (`1k`, `2*pi*1meg`) to a number.

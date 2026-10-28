@@ -197,6 +197,10 @@ impl Results {
         self.ensure(j);
         self.error(j, JOB_LEVEL, msg.into());
         jobs.set_state(j, State::Failed);
+        debug_assert!(
+            self.errors().any(|(job, _, _)| job == j),
+            "the job has its reason"
+        );
     }
 
     /// Evaluates `plan`'s outputs and specs for job `j` over its raw file `raw` (ngspice
@@ -336,6 +340,11 @@ impl Results {
     pub(crate) fn set_value(&mut self, j: u32, o: usize, x: f64) {
         assert!(!x.is_nan(), "NaN is the no-value marker");
         let k = self.index(self.outputs.len(), j, o);
+        debug_assert_eq!(
+            self.value.len(),
+            self.rows as usize * self.outputs.len(),
+            "covered rows"
+        );
         self.value[k] = x;
     }
 
@@ -343,6 +352,11 @@ impl Results {
     pub(crate) fn set_var(&mut self, j: u32, v: usize, x: f64) {
         assert!(!x.is_nan(), "NaN is the no-value marker");
         let k = self.index(self.vars.len(), j, v);
+        debug_assert_eq!(
+            self.var_value.len(),
+            self.rows as usize * self.vars.len(),
+            "covered rows"
+        );
         self.var_value[k] = x;
     }
 
@@ -394,6 +408,7 @@ impl Results {
     pub(crate) fn set_ops(&mut self, j: u32, map: &NameMap, dialect: Dialect) -> String {
         self.ensure(j);
         let n = self.ops.len();
+        assert_eq!(self.op_vector.len(), self.rows as usize * n, "covered rows");
         let mut saves = String::new();
         for k in 0..n {
             let (inst, param) = schemify_expr::op_parts(&self.ops[k]);
@@ -426,8 +441,6 @@ impl Results {
         }
         if !saves.is_empty() {
             saves.push('\n');
-        }
-        if !saves.is_empty() {
             assert!(saves.starts_with(".save all\n"));
             assert!(saves.ends_with('\n'), "whole lines before `.end`");
         }
@@ -438,8 +451,15 @@ impl Results {
 // ---- private ----
 
 impl Results {
-    fn cell<'t, T>(&self, col: &'t [T], width: usize, j: u32, k: usize) -> Option<&'t T> {
+    fn cell<'column, T>(
+        &self,
+        col: &'column [T],
+        width: usize,
+        j: u32,
+        k: usize,
+    ) -> Option<&'column T> {
         assert!(k < width, "column {k} of {width}");
+        debug_assert_eq!(col.len(), self.rows as usize * width, "covered rows");
         (j < self.rows).then(|| &col[j as usize * width + k])
     }
 
@@ -485,11 +505,11 @@ impl Results {
 /// Evaluates one output over the last dataset that binds all its signals; the result
 /// must be one number (a scalar, or a column of one point such as a reduction of a
 /// single-step dataset).
-fn eval_output<'v>(
+fn eval_output<'value>(
     prog: &Program,
     plots: &[RawPlot],
     ops: &[f64],
-    lookup: impl Fn(&str) -> Option<Value<'v>> + Copy,
+    lookup: impl Fn(&str) -> Option<Value<'value>> + Copy,
     scratch: &mut Scratch,
 ) -> Result<f64, String> {
     assert!(!plots.is_empty());
@@ -523,9 +543,9 @@ fn eval_output<'v>(
     Ok(x)
 }
 
-fn eval_scalar<'v>(
+fn eval_scalar<'value>(
     prog: &Program,
-    lookup: impl Fn(&str) -> Option<Value<'v>>,
+    lookup: impl Fn(&str) -> Option<Value<'value>>,
 ) -> Result<f64, String> {
     let mut inputs = Vec::new();
     prog.bind(&mut inputs, lookup).map_err(|e| e.to_string())?;

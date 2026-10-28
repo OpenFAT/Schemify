@@ -233,10 +233,19 @@ impl Optimizer {
         if self.n_evals() >= self.budget {
             return None;
         }
-        Some(match &self.search {
-            Search::Random(x) => x,
-            Search::NelderMead(nm) => nm.candidate(),
-        })
+        let candidate = match &self.search {
+            Search::Random(x) => x.as_slice(),
+            Search::NelderMead(simplex) => simplex.candidate(),
+        };
+        debug_assert_eq!(candidate.len(), self.params.len(), "one value per param");
+        debug_assert!(
+            candidate
+                .iter()
+                .zip(&self.params)
+                .all(|(&x, p)| (p.min..=p.max).contains(&x)),
+            "a candidate lies inside the bounds"
+        );
+        Some(candidate)
     }
 
     /// Records the measured objectives of the asked candidate and computes the next one.
@@ -291,21 +300,21 @@ impl Optimizer {
         if i >= self.scores.len() {
             return None;
         }
-        let (np, no) = (self.params.len(), self.objectives.len());
+        let (param_count, objective_count) = (self.params.len(), self.objectives.len());
         debug_assert_eq!(
             self.params_flat.len(),
-            self.scores.len() * np,
+            self.scores.len() * param_count,
             "columns in step"
         );
         debug_assert_eq!(
             self.objectives_flat.len(),
-            self.scores.len() * no,
+            self.scores.len() * objective_count,
             "columns in step"
         );
         Some(Evaluation {
             index: i as u32,
-            params: &self.params_flat[i * np..(i + 1) * np],
-            objectives: &self.objectives_flat[i * no..(i + 1) * no],
+            params: &self.params_flat[i * param_count..(i + 1) * param_count],
+            objectives: &self.objectives_flat[i * objective_count..(i + 1) * objective_count],
             score: self.scores[i],
         })
     }
@@ -318,7 +327,12 @@ impl Optimizer {
             .iter()
             .enumerate()
             .min_by(|(_, a), (_, b)| a.total_cmp(b))?;
-        self.eval(i as u32)
+        let best = self.eval(i as u32)?;
+        debug_assert!(
+            self.scores.iter().all(|s| best.score <= *s),
+            "no evaluation scores lower"
+        );
+        Some(best)
     }
 }
 
@@ -334,7 +348,7 @@ impl OptRun {
     /// Panics if the record's goals name outputs `plan` lacks or its weights are not
     /// parallel to its goals, which [`Plan::read`] never builds.
     pub fn new(plan: &Plan, name: &str) -> Result<OptRun, PlanError> {
-        let rec = plan
+        let record = plan
             .optimizes
             .iter()
             .find(|o| o.name == name)
@@ -347,34 +361,33 @@ impl OptRun {
             })?;
         let bad = |why: String| plan::plan_err("optimize", name, why);
         assert_eq!(
-            rec.goals.len(),
-            rec.weights.len(),
+            record.goals.len(),
+            record.weights.len(),
             "weights are parallel to goals"
         );
-        let algo = Algorithm::from_name(&rec.algo)
-            .ok_or_else(|| bad(format!("unknown algo `{}`", rec.algo)))?;
-        let mut params = Vec::with_capacity(rec.vary.len());
-        for v in &rec.vary {
-            let (min, max, init) =
-                plan::var_bounds(plan, v).map_err(|e| bad(format!("vary {v}: {e}")))?;
+        let algo = Algorithm::from_name(&record.algo)
+            .ok_or_else(|| bad(format!("unknown algo `{}`", record.algo)))?;
+        let mut params = Vec::with_capacity(record.vary.len());
+        for v in &record.vary {
+            let bounds = plan::var_bounds(plan, v).map_err(|e| bad(format!("vary {v}: {e}")))?;
             params.push(Param {
                 name: v.clone(),
-                min,
-                max,
-                init,
+                min: bounds.min,
+                max: bounds.max,
+                init: bounds.init,
             });
         }
-        let objectives: Vec<Objective> = rec
+        let objectives: Vec<Objective> = record
             .goals
             .iter()
-            .zip(&rec.weights)
+            .zip(&record.weights)
             .map(|(&(o, goal), &weight)| Objective {
                 name: plan.outputs[o as usize].name.clone(),
                 goal,
                 weight,
             })
             .collect();
-        let opt = Optimizer::new(params, objectives, algo, rec.seed, rec.budget)
+        let opt = Optimizer::new(params, objectives, algo, record.seed, record.budget)
             .map_err(|e| bad(e.to_string()))?;
         let dim = |names: &[String]| -> Vec<Option<String>> {
             if names.is_empty() {
@@ -383,9 +396,9 @@ impl OptRun {
                 names.iter().cloned().map(Some).collect()
             }
         };
-        let corners = dim(&rec.corners);
-        let mut points = Vec::with_capacity(rec.configs.len().max(1) * corners.len());
-        for config in dim(&rec.configs) {
+        let corners = dim(&record.corners);
+        let mut points = Vec::with_capacity(record.configs.len().max(1) * corners.len());
+        for config in dim(&record.configs) {
             for corner in &corners {
                 points.push(Point {
                     config: config.clone(),
@@ -395,7 +408,7 @@ impl OptRun {
         }
         let run = OptRun {
             opt,
-            goal_outputs: rec.goals.iter().map(|&(output, _)| output).collect(),
+            goal_outputs: record.goals.iter().map(|&(output, _)| output).collect(),
             points,
             pending: None,
             eval_job: Vec::new(),
@@ -408,6 +421,10 @@ impl OptRun {
     /// Returns the number of jobs each candidate runs (configs × corners of the record).
     #[must_use]
     pub fn jobs_per_candidate(&self) -> u32 {
+        debug_assert!(
+            !self.points.is_empty(),
+            "`new` gives every candidate a point"
+        );
         self.points.len() as u32
     }
 
@@ -534,7 +551,9 @@ fn next_unit(state: &mut u64) -> f64 {
     x ^= x << 25;
     x ^= x >> 27;
     *state = x;
-    (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 / (1u64 << 53) as f64
+    let unit = (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 / (1u64 << 53) as f64;
+    debug_assert!((0.0..1.0).contains(&unit), "53 bits over 2^53");
+    unit
 }
 
 impl Optimizer {
@@ -554,9 +573,9 @@ impl Optimizer {
                 }
                 self.rng_state = state;
             }
-            Search::NelderMead(nm) => {
-                self.params_flat.extend_from_slice(nm.candidate());
-                nm.tell(score);
+            Search::NelderMead(simplex) => {
+                self.params_flat.extend_from_slice(simplex.candidate());
+                simplex.tell(score);
             }
         }
         self.objectives_flat.extend_from_slice(measured);

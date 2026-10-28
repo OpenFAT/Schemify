@@ -63,8 +63,8 @@ pub(crate) fn sample<'plan>(
 #[must_use]
 pub fn sim_seed(seed: u64, sample: u32) -> u32 {
     // The stream of the empty name: no var is named "" (format names are nonempty).
-    let mut st = stream(seed, sample, "");
-    let s = (splitmix64(&mut st) >> 34) as u32 + 1;
+    let mut state = stream(seed, sample, "");
+    let s = (splitmix64(&mut state) >> 34) as u32 + 1;
     // 30 bits plus one: provable, so not a documented panic.
     debug_assert!(s >= 1, "0 means no seed");
     debug_assert!(s <= 1 << 30);
@@ -92,13 +92,13 @@ pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> 
         })
         .collect();
     for j in 0..jobs.len() {
-        let st = jobs.state(j);
-        if jobs.sample(j) == NO_SAMPLE || !st.finished() || st == State::Cancelled {
+        let state = jobs.state(j);
+        if jobs.sample(j) == NO_SAMPLE || !state.finished() || state == State::Cancelled {
             continue;
         }
         for y in &mut out {
             y.total += 1;
-            y.pass += u32::from(st == State::Done && results.pass(j, y.spec) == Pass::Pass);
+            y.pass += u32::from(state == State::Done && results.pass(j, y.spec) == Pass::Pass);
         }
     }
     for y in &mut out {
@@ -114,12 +114,12 @@ pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> 
 
 /// The expression a variation applies to: the latest assignment of `var` in this job,
 /// else the corner's last `set` of it, else the var's own expression.
-fn base_expr<'a>(
-    plan: &'a Plan,
+fn base_expr<'text>(
+    plan: &'text Plan,
     corner: Option<&str>,
     var: &str,
-    assigns: &'a [(&str, String)],
-) -> Option<&'a str> {
+    assigns: &'text [(&str, String)],
+) -> Option<&'text str> {
     if let Some((_, x)) = assigns.iter().rev().find(|(v, _)| *v == var) {
         return Some(x);
     }
@@ -134,12 +134,12 @@ fn base_expr<'a>(
 /// expression, so elab evaluates it in bench scope like any other assignment.
 fn vary_text(base: &str, spread: &str, rel: bool, z: f64) -> String {
     assert!(z.is_finite(), "draws are finite");
-    let mut zt = String::new();
-    schemify_expr::write_num(&mut zt, z);
+    let mut z_text = String::new();
+    schemify_expr::write_num(&mut z_text, z);
     let out = if rel {
-        format!("({base})*(1+({spread})*({zt}))")
+        format!("({base})*(1+({spread})*({z_text}))")
     } else {
-        format!("({base})+({spread})*({zt})")
+        format!("({base})+({spread})*({z_text})")
     };
     assert!(out.len() > base.len() + spread.len());
     out
@@ -148,10 +148,10 @@ fn vary_text(base: &str, spread: &str, rel: bool, z: f64) -> String {
 /// One draw: standard normal for [`DistKind::Gauss`], uniform on `[-1, 1)` for
 /// [`DistKind::Uniform`]. Pure in `(seed, sample, var)`.
 fn draw(kind: DistKind, seed: u64, sample: u32, var: &str) -> f64 {
-    let mut st = stream(seed, sample, var);
+    let mut state = stream(seed, sample, var);
     // u1 in (0, 1] (ln is finite), u2 in [0, 1).
-    let u1 = ((splitmix64(&mut st) >> 11) + 1) as f64 / (1u64 << 53) as f64;
-    let u2 = (splitmix64(&mut st) >> 11) as f64 / (1u64 << 53) as f64;
+    let u1 = ((splitmix64(&mut state) >> 11) + 1) as f64 / (1u64 << 53) as f64;
+    let u2 = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
     assert!(u1 > 0.0);
     assert!(u1 <= 1.0);
     assert!((0.0..1.0).contains(&u2));
