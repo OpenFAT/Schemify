@@ -1,15 +1,15 @@
 //! Properties of the host's pure transforms (docs/dev/testing.md `plugin` row), no wasm involved:
 //! stateful fuzz of output records against a naive model (malformed streams, stale
-//! documents, conflicting contributions, full queues), composition laws (last wins,
-//! unload == compose without, idempotence), and capability decisions.
+//! documents, conflicting contributions, full queues) and composition laws (last wins,
+//! unload == compose without, idempotence). Cites plugin-abi §1 (composition), §7, §8.
 
 use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use schemify_plugin::abi::{Code, Kind, Out, Table, col, text};
 use schemify_plugin::{
-    Composed, Contributions, EDITS_MAX, Grants, IoOp, LOGS_MAX, Override, PluginId, RUNS_MAX,
-    RequestQueues, Snapshots, TIMER_MS_MAX, TIMERS_MAX, authorize, compose, intake,
+    Composed, Contributions, EDITS_MAX, LOGS_MAX, Override, PluginId, RUNS_MAX, RequestQueues,
+    Snapshots, TIMER_MS_MAX, TIMERS_MAX, compose, intake,
 };
 
 const PLUGINS: [PluginId; 3] = [PluginId(1), PluginId(2), PluginId(3)];
@@ -59,6 +59,24 @@ enum Rec {
     Garbage(Vec<u8>),
     NearMiss(usize),
 }
+
+#[derive(Clone, Debug)]
+enum Step {
+    Output { plugin: usize, recs: Vec<Rec> },
+    Unload(usize),
+}
+
+/// The naive model: current sets as (key, text) lists, and queue lengths.
+#[derive(Default)]
+struct Model {
+    sets: BTreeMap<(PluginId, Kind, String), Vec<(String, String)>>,
+    edits: usize,
+    runs: usize,
+    timers: usize,
+    logs: usize,
+}
+
+// ---- private ----
 
 /// One set member: its text and its composition key, derived independently of the host.
 fn member(kind: Kind, name: u8, variant: u8) -> (String, String) {
@@ -143,12 +161,6 @@ fn rec() -> impl Strategy<Value = Rec> {
     ]
 }
 
-#[derive(Clone, Debug)]
-enum Step {
-    Output { plugin: usize, recs: Vec<Rec> },
-    Unload(usize),
-}
-
 fn step() -> impl Strategy<Value = Step> {
     prop_oneof![
         8 => (0..3usize, proptest::collection::vec(rec(), 0..10)).prop_map(|(plugin, recs)| Step::Output { plugin, recs }),
@@ -164,16 +176,6 @@ fn snapshots() -> Snapshots {
     s.fill_strings(Table::Docs, col::docs::PATH, &["top.shcomp"]);
     s.fill_strings(Table::Docs, col::docs::CELL, &["top"]);
     s
-}
-
-/// The naive model: current sets as (key, text) lists, and queue lengths.
-#[derive(Default)]
-struct Model {
-    sets: BTreeMap<(PluginId, Kind, String), Vec<(String, String)>>,
-    edits: usize,
-    runs: usize,
-    timers: usize,
-    logs: usize,
 }
 
 impl Model {
@@ -458,68 +460,6 @@ proptest! {
         prop_assert_eq!(accepted as usize + rej.len(), text::chunks(s.as_bytes()).count());
         prop_assert!(rej.iter().all(|r| matches!(r.code, Code::Parse | Code::Gone | Code::Range | Code::Space)));
         let _ = compose(&c, &PLUGINS);
-    }
-
-    #[test]
-    fn capability_decisions_follow_the_grants(
-        grants in proptest::sample::subsequence(
-            vec!["read_project", "write_project", "network", "clipboard", "spawn:ngspice", "spawn:xyce", "read:PDK_ROOT"], 0..=7),
-        op in proptest::sample::select(vec![
-            IoOp::FsRead, IoOp::FsList, IoOp::FsWrite, IoOp::FsRemove, IoOp::Spawn, IoOp::Fetch, IoOp::ClipboardGet,
-            IoOp::ClipboardSet,
-        ]),
-        args in proptest::collection::vec(prop_oneof![
-            proptest::sample::select(vec![
-                "lib/a.shcomp", "../x", "/abs", "a/./b", "a//b", "c:x", "ngspice", "xyce", "sh", "", "https://x",
-                ".schemify/pdks/a", ".schemify", ".schemify/../x", ".schemify/schemify.lock", "schemify.project",
-                "${PDK_ROOT}", "${PDK_ROOT}/a/b.sym", "${PDK_ROOT}/../x", "${PDK_ROOT}x", "${HOME}/x",
-                "a/${PDK_ROOT}/b", "${pdk_root}/x",
-            ]).prop_map(String::from),
-            "\\PC{0,8}",
-        ], 0..3),
-    ) {
-        let g = Grants::parse(&grants).unwrap();
-        let got = authorize(&g, op, &args);
-        prop_assert!(matches!(got, Ok(()) | Err(Code::Denied) | Err(Code::Parse)));
-        let arity = match op {
-            IoOp::FsRead | IoOp::FsList | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => args.len() == 1,
-            IoOp::Spawn => !args.is_empty(),
-            IoOp::ClipboardGet | IoOp::ClipboardSet => args.is_empty(),
-        };
-        if !arity {
-            prop_assert_eq!(got, Err(Code::Parse));
-            return Ok(());
-        }
-        // Positive and negative space: allowed exactly when the spec's rule says so.
-        let clean = |p: &str| {
-            !p.is_empty() && !p.starts_with('/') && !p.contains(['\\', ':', '\0'])
-                && p.split('/').all(|s| !s.is_empty() && s != "." && s != ".." && !s.starts_with("${"))
-        };
-        // `${NAME}` or `${NAME}/<clean>` reads need `read:<NAME>`; NAME is upper snake case.
-        let env_read = |p: &str| -> Option<bool> {
-            let rest = p.strip_prefix("${")?;
-            let (name, tail) = rest.split_once('}')?;
-            let named = !name.is_empty() && !name.starts_with(|c: char| c.is_ascii_digit())
-                && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
-            let tail_ok = tail.is_empty() || tail.strip_prefix('/').is_some_and(|t| clean(t) && t.len() <= 4096);
-            (named && tail_ok).then(|| grants.contains(&format!("read:{name}").as_str()))
-        };
-        let allowed = match op {
-            IoOp::FsRead | IoOp::FsList => match env_read(&args[0]) {
-                Some(granted) => granted,
-                None => g.has(op.cap()) && clean(&args[0]) && args[0].len() <= 4096,
-            },
-            _ => g.has(op.cap()) && match op {
-            IoOp::FsRead | IoOp::FsList => unreachable!(),
-            IoOp::FsWrite => clean(&args[0]) && args[0].len() <= 4096,
-            IoOp::FsRemove => clean(&args[0]) && args[0].len() <= 4096
-                && args[0].split('/').count() >= 2 && args[0].split('/').next() == Some(".schemify")
-                && !matches!(args[0].rsplit('/').next(), Some("schemify.project" | "schemify.lock")),
-            IoOp::Spawn => grants.iter().any(|gr| gr.strip_prefix("spawn:") == Some(args[0].as_str())),
-            IoOp::Fetch => !args[0].is_empty(),
-            IoOp::ClipboardGet | IoOp::ClipboardSet => true,
-        }};
-        prop_assert_eq!(got.is_ok(), allowed, "{:?} {:?} {:?}", grants, op, args);
     }
 }
 

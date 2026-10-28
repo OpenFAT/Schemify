@@ -215,3 +215,41 @@ impl PluginEvents {
         (target, &self.bytes[start..self.ends[i] as usize])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oracle: each stored event is exactly `Event::encode`'s bytes, with its target; a
+    /// refused push leaves the table as it was.
+    #[test]
+    fn events_keep_their_encoding_and_refuse_bad_pushes() {
+        let mut events = PluginEvents::new();
+        let timer = Event::Timer { id: 7 };
+        events.push(None, &Event::Load).unwrap();
+        events.push(Some(PluginId(3)), &timer).unwrap();
+        let bad_name = Event::Command {
+            name: "a b",
+            args: "",
+        };
+        assert_eq!(events.push(None, &bad_name), Err(Code::Parse));
+        let never = Some(PluginId(BROADCAST));
+        assert_eq!(events.push(never, &Event::Load), Err(Code::Gone));
+        assert_eq!(events.len(), 2);
+        let encoded = |e: &Event<'_>| {
+            let mut bytes = Vec::new();
+            e.encode(&mut bytes).unwrap();
+            bytes
+        };
+        assert_eq!(events.get(0), (None, &encoded(&Event::Load)[..]));
+        assert_eq!(events.get(1), (Some(PluginId(3)), &encoded(&timer)[..]));
+
+        while events.len() < EVENTS_MAX {
+            events.push(None, &Event::Load).unwrap();
+        }
+        assert_eq!(events.push(None, &Event::Load), Err(Code::Space));
+        assert_eq!(events.len(), EVENTS_MAX);
+        events.clear();
+        assert!(events.is_empty());
+    }
+}
