@@ -23,8 +23,9 @@
 
 use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::nelder_mead::{NelderMead, UNEVALUATED};
-use crate::plan::{Goal, Plan, PlanError, plan_err, var_bounds};
+use crate::plan::{self, Goal, Plan, PlanError};
 use crate::results::Results;
+use std::error::Error;
 use std::fmt;
 use std::ops::Range;
 
@@ -115,12 +116,19 @@ pub struct OptRun {
     /// The optimizer.
     pub opt: Optimizer,
     goal_outputs: Vec<u16>,
-    /// `(config, corner)` of each job of a candidate; `None` is the bench default.
-    points: Vec<(Option<String>, Option<String>)>,
+    /// The config and corner of each job of a candidate.
+    points: Vec<Point>,
     /// The jobs of the candidate in flight.
     pending: Option<Range<u32>>,
     /// First job of each evaluation's candidate.
     eval_job: Vec<u32>,
+}
+
+/// Where one job of a candidate runs; `None` is the bench default.
+#[derive(Clone, Debug, PartialEq)]
+struct Point {
+    config: Option<String>,
+    corner: Option<String>,
 }
 
 /// Algorithm-internal state: existence by variant, not by `Option` fields.
@@ -133,10 +141,11 @@ enum Search {
 }
 
 /// Seed used for 0, which xorshift cannot leave (the golden-ratio constant).
-const DEFAULT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
 impl Algorithm {
     /// Parses the `algo` word (`random`, `nelder-mead`).
+    #[must_use]
     pub fn from_name(s: &str) -> Option<Algorithm> {
         match s {
             "random" => Some(Algorithm::Random),
@@ -159,7 +168,7 @@ impl fmt::Display for OptError {
     }
 }
 
-impl std::error::Error for OptError {}
+impl Error for OptError {}
 
 impl Optimizer {
     /// Creates an optimizer that will ask at most `budget` candidates. The first
@@ -199,23 +208,27 @@ impl Optimizer {
             scores: Vec::new(),
             search,
         };
-        assert_ne!(o.rng_state, 0, "xorshift cannot leave 0");
-        assert!(o.ask().is_none_or(|x| x.len() == o.params.len()));
+        // Provable from the lines above: postconditions, not documented panics.
+        debug_assert_ne!(o.rng_state, 0, "xorshift cannot leave 0");
+        debug_assert!(o.ask().is_none_or(|x| x.len() == o.params.len()));
         Ok(o)
     }
 
     /// Returns the params.
+    #[must_use]
     pub fn params(&self) -> &[Param] {
         &self.params
     }
 
     /// Returns the objectives.
+    #[must_use]
     pub fn objectives(&self) -> &[Objective] {
         &self.objectives
     }
 
     /// Returns the candidate to evaluate next (inside the bounds), or `None` once the
     /// budget is spent. A pure read: asking twice returns the same point.
+    #[must_use]
     pub fn ask(&self) -> Option<&[f64]> {
         if self.n_evals() >= self.budget {
             return None;
@@ -232,6 +245,11 @@ impl Optimizer {
     /// # Errors
     ///
     /// [`OptError::DimMismatch`] for the wrong number of values; [`OptError::BudgetSpent`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the score is NaN (a NaN value, or `inf − inf` under a target): scores
+    /// must be comparable.
     pub fn tell(&mut self, measured: &[f64]) -> Result<f64, OptError> {
         if measured.len() != self.objectives.len() {
             return Err(OptError::DimMismatch {
@@ -257,17 +275,33 @@ impl Optimizer {
     }
 
     /// Returns the number of evaluations told.
+    #[must_use]
     pub fn n_evals(&self) -> u32 {
+        debug_assert!(
+            self.scores.len() <= self.budget as usize,
+            "advance stops at the budget"
+        );
         self.scores.len() as u32
     }
 
     /// Returns evaluation `i`.
+    #[must_use]
     pub fn eval(&self, i: u32) -> Option<Evaluation<'_>> {
         let i = i as usize;
         if i >= self.scores.len() {
             return None;
         }
         let (np, no) = (self.params.len(), self.objectives.len());
+        debug_assert_eq!(
+            self.params_flat.len(),
+            self.scores.len() * np,
+            "columns in step"
+        );
+        debug_assert_eq!(
+            self.objectives_flat.len(),
+            self.scores.len() * no,
+            "columns in step"
+        );
         Some(Evaluation {
             index: i as u32,
             params: &self.params_flat[i * np..(i + 1) * np],
@@ -277,6 +311,7 @@ impl Optimizer {
     }
 
     /// Returns the lowest-score evaluation (the first on ties).
+    #[must_use]
     pub fn best(&self) -> Option<Evaluation<'_>> {
         let (i, _) = self
             .scores
@@ -293,25 +328,35 @@ impl OptRun {
     /// # Errors
     ///
     /// No such record, or an unknown `algo`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the record's goals name outputs `plan` lacks or its weights are not
+    /// parallel to its goals, which [`Plan::read`] never builds.
     pub fn new(plan: &Plan, name: &str) -> Result<OptRun, PlanError> {
         let rec = plan
             .optimizes
             .iter()
             .find(|o| o.name == name)
             .ok_or_else(|| {
-                plan_err(
+                plan::plan_err(
                     "select",
                     name,
                     format!("the bench has no optimize `{name}`"),
                 )
             })?;
-        let bad = |why: String| plan_err("optimize", name, why);
+        let bad = |why: String| plan::plan_err("optimize", name, why);
+        assert_eq!(
+            rec.goals.len(),
+            rec.weights.len(),
+            "weights are parallel to goals"
+        );
         let algo = Algorithm::from_name(&rec.algo)
             .ok_or_else(|| bad(format!("unknown algo `{}`", rec.algo)))?;
         let mut params = Vec::with_capacity(rec.vary.len());
         for v in &rec.vary {
             let (min, max, init) =
-                var_bounds(plan, v).map_err(|e| bad(format!("vary {v}: {e}")))?;
+                plan::var_bounds(plan, v).map_err(|e| bad(format!("vary {v}: {e}")))?;
             params.push(Param {
                 name: v.clone(),
                 min,
@@ -319,7 +364,7 @@ impl OptRun {
                 init,
             });
         }
-        let objectives = rec
+        let objectives: Vec<Objective> = rec
             .goals
             .iter()
             .zip(&rec.weights)
@@ -339,13 +384,18 @@ impl OptRun {
             }
         };
         let corners = dim(&rec.corners);
-        let points = dim(&rec.configs)
-            .into_iter()
-            .flat_map(|cf| corners.iter().map(move |co| (cf.clone(), co.clone())))
-            .collect();
+        let mut points = Vec::with_capacity(rec.configs.len().max(1) * corners.len());
+        for config in dim(&rec.configs) {
+            for corner in &corners {
+                points.push(Point {
+                    config: config.clone(),
+                    corner: corner.clone(),
+                });
+            }
+        }
         let run = OptRun {
             opt,
-            goal_outputs: rec.goals.iter().map(|g| g.0).collect(),
+            goal_outputs: rec.goals.iter().map(|&(output, _)| output).collect(),
             points,
             pending: None,
             eval_job: Vec::new(),
@@ -356,6 +406,7 @@ impl OptRun {
     }
 
     /// Returns the number of jobs each candidate runs (configs × corners of the record).
+    #[must_use]
     pub fn jobs_per_candidate(&self) -> u32 {
         self.points.len() as u32
     }
@@ -370,6 +421,11 @@ impl OptRun {
     /// # Errors
     ///
     /// The jobs table cannot hold another candidate.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `jobs` and `results` are not the tables the previous step pushed the
+    /// candidate into.
     pub fn step(
         &mut self,
         jobs: &mut Jobs,
@@ -391,7 +447,7 @@ impl OptRun {
             return Ok(None);
         };
         if u64::from(jobs.len()) + self.points.len() as u64 > u64::from(crate::JOBS_MAX) {
-            return Err(plan_err(
+            return Err(plan::plan_err(
                 "select",
                 "jobs",
                 format!("more than {} jobs", crate::JOBS_MAX),
@@ -413,8 +469,9 @@ impl OptRun {
             .map(|(p, t)| (p.name.as_str(), t.as_str()))
             .collect();
         let start = jobs.len();
-        for (config, corner) in &self.points {
-            jobs.push(config.as_deref(), corner.as_deref(), NO_SAMPLE, &assigns)?;
+        for point in &self.points {
+            let (config, corner) = (point.config.as_deref(), point.corner.as_deref());
+            jobs.push(config, corner, NO_SAMPLE, &assigns)?;
         }
         let r = start..jobs.len();
         assert_eq!(r.len(), self.points.len());
@@ -424,18 +481,35 @@ impl OptRun {
     }
 
     /// Returns whether the budget is spent and nothing is pending.
+    #[must_use]
     pub fn done(&self) -> bool {
         self.pending.is_none() && self.opt.ask().is_none()
     }
 
     /// Returns the first job of evaluation `i`'s candidate (its jobs are the next
     /// [`OptRun::jobs_per_candidate`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i` is not an evaluation told so far.
+    #[must_use]
     pub fn eval_job(&self, i: u32) -> u32 {
+        assert!(
+            i < self.opt.n_evals(),
+            "evaluation {i} of {}",
+            self.opt.n_evals()
+        );
         self.eval_job[i as usize]
     }
 
     /// Returns the first job of the best evaluation so far.
+    #[must_use]
     pub fn best_job(&self) -> Option<u32> {
+        debug_assert_eq!(
+            self.eval_job.len() as u32,
+            self.opt.n_evals(),
+            "one job per told"
+        );
         self.opt.best().map(|e| self.eval_job[e.index as usize])
     }
 }
@@ -444,6 +518,7 @@ impl OptRun {
 
 /// Weighted-sum score; lower is better.
 fn score_of(objectives: &[Objective], measured: &[f64]) -> f64 {
+    assert_eq!(objectives.len(), measured.len(), "tell checks the count");
     objectives
         .iter()
         .zip(measured)
@@ -453,12 +528,13 @@ fn score_of(objectives: &[Objective], measured: &[f64]) -> f64 {
 
 /// xorshift64*: tiny and deterministic. State must be nonzero.
 fn next_unit(state: &mut u64) -> f64 {
+    debug_assert_ne!(*state, 0, "xorshift cannot leave 0");
     let mut x = *state;
     x ^= x >> 12;
     x ^= x << 25;
     x ^= x >> 27;
     *state = x;
-    (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+    (x.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11) as f64 / (1u64 << 53) as f64
 }
 
 impl Optimizer {
@@ -467,6 +543,7 @@ impl Optimizer {
             return Err(OptError::BudgetSpent);
         }
         assert!(!score.is_nan(), "scores are comparable");
+        assert_eq!(measured.len(), self.objectives.len());
         let n = self.scores.len();
         match &mut self.search {
             Search::Random(pending) => {
@@ -484,7 +561,16 @@ impl Optimizer {
         }
         self.objectives_flat.extend_from_slice(measured);
         self.scores.push(score);
-        assert_eq!(self.params_flat.len(), (n + 1) * self.params.len());
+        assert_eq!(
+            self.params_flat.len(),
+            (n + 1) * self.params.len(),
+            "columns in step"
+        );
+        assert_eq!(
+            self.objectives_flat.len(),
+            (n + 1) * self.objectives.len(),
+            "columns in step"
+        );
         Ok(())
     }
 }
@@ -493,6 +579,7 @@ impl OptRun {
     /// Per goal, the value of the job in `r` that is worst for it (largest error), or
     /// `None` when a job failed or lacks a goal output.
     fn worst(&self, jobs: &Jobs, results: &Results, r: Range<u32>) -> Option<Vec<f64>> {
+        assert_eq!(r.len(), self.points.len(), "one job per point");
         let mut out = Vec::with_capacity(self.goal_outputs.len());
         for (g, &o) in self.goal_outputs.iter().enumerate() {
             let goal = self.opt.objectives()[g].goal;

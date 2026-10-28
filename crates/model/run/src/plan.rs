@@ -19,6 +19,7 @@
 
 use schemify_doc::{Document, RecordKind, Span};
 use schemify_expr::{Mode, Program, Scratch, Value};
+use std::error::Error;
 use std::fmt;
 
 /// Most rows of one bench table (doc capacity `2^12`).
@@ -200,12 +201,13 @@ impl fmt::Display for PlanError {
     }
 }
 
-impl std::error::Error for PlanError {}
+impl Error for PlanError {}
 
 impl Goal {
     /// Returns the error of `value` under this goal, lower is better: `value` (min),
     /// `−value` (max) or `|value − target|` (target). The optimizer scores the weighted
     /// sum and, over one candidate's jobs, keeps each goal's largest.
+    #[must_use]
     pub fn err(self, value: f64) -> f64 {
         match self {
             Goal::Min => value,
@@ -225,6 +227,11 @@ impl Plan {
     /// # Errors
     ///
     /// The first record that cannot run as written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `doc` holds more than [`TABLE_MAX`] rows in one bench table, which doc's
+    /// reader never builds.
     pub fn read(doc: &Document) -> Result<Plan, PlanError> {
         let s = doc.strings();
         let pool = doc.pool();
@@ -242,7 +249,8 @@ impl Plan {
 
         // Vars (rank 4, document order) and their `dist`.
         let t = doc.doc_blocks();
-        for r in (0..t.kind.len()).filter(|&r| t.kind[r] == RecordKind::Var) {
+        let var_rows = (0..t.kind.len()).filter(|&r| t.kind[r] == RecordKind::Var);
+        for r in var_rows {
             let name = s.get(t.fields[r][0]).to_owned();
             if let Some(d) = values(t.attrs[r], "dist") {
                 plan.dists.push(read_dist(&name, &d)?);
@@ -255,11 +263,12 @@ impl Plan {
             });
         }
         sort_by_name(&mut plan.dists, |d| &d.var);
+        assert!(plan.vars.len() <= TABLE_MAX, "doc caps bench tables");
 
         // Corners and configs.
         let t = doc.corners();
         for r in 0..t.kind.len() {
-            let sets = pool
+            let sets: Vec<(String, String)> = pool
                 .attrs(t.attrs[r])
                 .filter(|(k, v)| s.get(*k) == "set" && v.len() == 2)
                 .map(|(_, v)| (s.get(v[0]).to_owned(), s.get(v[1]).to_owned()))
@@ -291,6 +300,12 @@ impl Plan {
             plan.sweeps.push(Sweep { name, var, values });
         }
         sort_by_name(&mut plan.sweeps, |x| &x.name);
+        assert!(
+            plan.sweeps
+                .iter()
+                .all(|sw| sw.values.is_empty() != cfg!(feature = "sweep")),
+            "a sweep has points exactly when the `sweep` feature expands them"
+        );
 
         // Monte Carlo records.
         let t = doc.montecarlos();
@@ -298,11 +313,11 @@ impl Plan {
             let name = s.get(t.fields[r][0]).to_owned();
             let bad = |why: String| plan_err("montecarlo", &name, why);
             let samples =
-                word(t.attrs[r], "samples").ok_or_else(|| bad("has no `samples`".into()))?;
+                word(t.attrs[r], "samples").ok_or_else(|| bad("has no `samples`".to_owned()))?;
             let samples =
                 parse_count(&samples, SAMPLES_MAX).map_err(|e| bad(format!("samples: {e}")))?;
             let seed = word(t.attrs[r], "seed").map_or(Ok(0), |x| x.parse::<u64>());
-            let seed = seed.map_err(|_| bad("seed is not a u64".into()))?;
+            let seed = seed.map_err(|_| bad("seed is not a u64".to_owned()))?;
             plan.montecarlos.push(MonteCarlo {
                 name,
                 samples,
@@ -310,6 +325,11 @@ impl Plan {
             });
         }
         sort_by_name(&mut plan.montecarlos, |x| &x.name);
+        assert!(
+            plan.montecarlos
+                .iter()
+                .all(|m| (1..=SAMPLES_MAX).contains(&m.samples))
+        );
 
         // Outputs and specs (before optimize: goals name outputs).
         let t = doc.outputs();
@@ -363,21 +383,28 @@ impl Plan {
     }
 
     /// Returns the index of output `name` (binary search: outputs are sorted).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `outputs` holds more than [`TABLE_MAX`] rows.
+    #[must_use]
     pub fn output(&self, name: &str) -> Option<u16> {
         let i = self
             .outputs
             .binary_search_by(|o| o.name.as_str().cmp(name))
             .ok()?;
-        assert!(i < TABLE_MAX);
+        assert!(i < TABLE_MAX, "doc caps bench tables");
         Some(i as u16)
     }
 
     /// Returns bench var `name`.
+    #[must_use]
     pub fn var(&self, name: &str) -> Option<&Var> {
         self.vars.iter().find(|v| v.name == name)
     }
 
     /// Returns corner `name`.
+    #[must_use]
     pub fn corner(&self, name: &str) -> Option<&Corner> {
         self.corners.iter().find(|c| c.name == name)
     }
@@ -385,15 +412,19 @@ impl Plan {
 
 /// Builds the error of record `<kind> <name>`.
 pub(crate) fn plan_err(kind: &str, name: &str, detail: impl Into<String>) -> PlanError {
+    assert!(!kind.is_empty(), "a record kind is a word");
+    let detail: String = detail.into();
+    assert!(!detail.is_empty(), "an error says what is wrong");
     PlanError {
         record: format!("{kind} {name}"),
-        detail: detail.into(),
+        detail,
     }
 }
 
 /// Sorts `v` stably by `name`: one `(name, position)` sort shared by every row type,
 /// instead of one merge sort instantiated per type and closure (binary size, D39).
 pub(crate) fn sort_by_name<T>(v: &mut Vec<T>, name: impl Fn(&T) -> &String) {
+    assert!(u32::try_from(v.len()).is_ok(), "positions are u32");
     let mut keyed: Vec<(&str, u32)> = v
         .iter()
         .zip(0..)
@@ -408,6 +439,7 @@ pub(crate) fn sort_by_name<T>(v: &mut Vec<T>, name: impl Fn(&T) -> &String) {
             .map(|&i| old[i as usize].take().expect("a permutation")),
     );
     assert_eq!(v.len(), old.len(), "a permutation");
+    debug_assert!(v.windows(2).all(|w| name(&w[0]) <= name(&w[1])));
 }
 
 /// Returns `(min, max, init)` of bench var `name` for the optimizer: both bounds must be
@@ -416,7 +448,7 @@ pub(crate) fn sort_by_name<T>(v: &mut Vec<T>, name: impl Fn(&T) -> &String) {
 pub(crate) fn var_bounds(plan: &Plan, name: &str) -> Result<(f64, f64, f64), String> {
     let v = plan.var(name).ok_or("is not a bench var")?;
     let (Some(lo), Some(hi)) = (&v.min, &v.max) else {
-        return Err("needs `min` and `max` bounds (D13: the optimizer clamps to them)".into());
+        return Err("needs `min` and `max` bounds (D13: the optimizer clamps to them)".to_owned());
     };
     let (lo, hi) = (const_value(lo)?, const_value(hi)?);
     if lo > hi {
@@ -440,16 +472,22 @@ pub(crate) fn const_value(src: &str) -> Result<f64, String> {
     let mut inputs = Vec::new();
     prog.bind(&mut inputs, |_| None)
         .map_err(|e| e.to_string())?;
-    match prog.eval(&inputs, &mut Scratch::default()) {
-        Ok(Value::Num(x)) => Ok(x),
-        Ok(Value::Int(i)) => Ok(i as f64),
-        Ok(other) => Err(format!("`{src}` is not a number ({other:?})")),
-        Err(e) => Err(e.to_string()),
-    }
+    let x = match prog.eval(&inputs, &mut Scratch::default()) {
+        Ok(Value::Num(x)) => x,
+        Ok(Value::Int(i)) => i as f64,
+        Ok(other) => return Err(format!("`{src}` is not a number ({other:?})")),
+        Err(e) => return Err(e.to_string()),
+    };
+    assert!(
+        x.is_finite(),
+        "the expression language refuses NaN and infinity (X010)"
+    );
+    Ok(x)
 }
 
 /// Parses a positive count `1..=max` (format numbers carry no exponent).
 pub(crate) fn parse_count(text: &str, max: u32) -> Result<u32, String> {
+    assert!(max >= 1, "a count range is never empty");
     match text.parse::<u32>() {
         Ok(n) if (1..=max).contains(&n) => Ok(n),
         _ => Err(format!("`{text}` is not a count in 1..={max}")),
@@ -459,6 +497,7 @@ pub(crate) fn parse_count(text: &str, max: u32) -> Result<u32, String> {
 // ---- private ----
 
 fn read_dist(var: &str, d: &[&str]) -> Result<Dist, PlanError> {
+    assert!(!var.is_empty(), "format names are nonempty");
     let bad = |why: &str| plan_err("var", var, format!("dist: {why}"));
     let shape = "expected `dist gauss|uniform <spread> [rel]`";
     let kind = match d.first().copied() {
@@ -476,6 +515,7 @@ fn read_dist(var: &str, d: &[&str]) -> Result<Dist, PlanError> {
     if prog.idents().any(|i| i == var) {
         return Err(bad("the spread cannot reference the var it varies"));
     }
+    assert!(d.len() == 2 || rel, "`rel` is the only third word");
     Ok(Dist {
         var: var.to_owned(),
         kind,
@@ -502,7 +542,7 @@ fn read_optimize<'a>(
 
     let mut goals = Vec::new();
     let mut weights = Vec::new();
-    let shape = || bad("goal: expected `<output> min|max|target <expr> [weight <w>]`".into());
+    let shape = || bad("goal: expected `<output> min|max|target <expr> [weight <w>]`".to_owned());
     for g in lines("goal") {
         let output = plan
             .output(g[0])
@@ -528,11 +568,11 @@ fn read_optimize<'a>(
         weights.push(weight);
     }
     if goals.is_empty() {
-        return Err(bad("has no `goal`".into()));
+        return Err(bad("has no `goal`".to_owned()));
     }
     let vary = firsts("vary");
     if vary.is_empty() {
-        return Err(bad("has no `vary`".into()));
+        return Err(bad("has no `vary`".to_owned()));
     }
     for v in &vary {
         var_bounds(plan, v).map_err(|e| bad(format!("vary {v}: {e}")))?;
@@ -562,7 +602,12 @@ fn read_optimize<'a>(
     };
     assert!(!opt.goals.is_empty());
     assert!(!opt.vary.is_empty());
-    assert_eq!(opt.goals.len(), opt.weights.len());
+    assert_eq!(
+        opt.goals.len(),
+        opt.weights.len(),
+        "weights are parallel to goals"
+    );
+    assert!((1..=BUDGET_MAX).contains(&opt.budget));
     Ok(opt)
 }
 

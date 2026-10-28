@@ -6,9 +6,12 @@
 #![allow(dead_code)] // each test binary uses a subset
 
 use schemify_doc::{Digest, DocHandle, Project};
-use schemify_elab::{Dialect, no_funcs};
-use schemify_run::{Jobs, Plan, Results, Runner, RunnerConfig, SimCommand, design, prepare};
+use schemify_elab::Dialect;
+use schemify_run::{Jobs, Plan, Results, Runner, RunnerConfig, SimCommand};
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub const RES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\n\
 impl spice spice\n  format spice \"{name} {A} {B} {R}\"\n";
@@ -102,12 +105,15 @@ pub fn cfg(dir: &Path, d: &Digest, sim: SimCommand, workers: u16) -> RunnerConfi
 /// Indexes and opens `files` (relpath, text) as the project's own library; returns the
 /// project and the handle of the one `.shbench`.
 pub fn project(files: &[(&str, &str)]) -> (Project, DocHandle) {
-    let mut p = Project::new(None, None, 7).unwrap();
+    let mut p = Project::new(None, None, 7).expect("a project without a root");
     let listing: Vec<(&str, &[u8])> = files.iter().map(|(n, t)| (*n, t.as_bytes())).collect();
-    p.index_library("", "", &listing).unwrap();
+    p.index_library("", "", &listing).expect("the files index");
     let mut top = None;
     for (name, text) in files {
-        let h = p.open("", name, text.as_bytes(), None).unwrap().handle;
+        let h = p
+            .open("", name, text.as_bytes(), None)
+            .expect("the file opens")
+            .handle;
         if name.ends_with(".shbench") {
             top = Some(h);
         }
@@ -128,8 +134,8 @@ pub fn tmp(name: &str) -> PathBuf {
     let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("schemify-run")
         .join(name);
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+    let _ = fs::remove_dir_all(&d);
+    fs::create_dir_all(&d).expect("the test temp dir is writable");
     d
 }
 
@@ -166,18 +172,19 @@ pub fn run_dialect(
     dialect: Dialect,
     cfg: impl FnOnce(&Digest) -> RunnerConfig,
 ) -> (Jobs, Results, Runner) {
-    let digest = design(p, top, &jobs, env, dialect, &mut no_funcs).expect("not blocked");
+    let digest = schemify_run::design(p, top, &jobs, env, dialect, &mut schemify_elab::no_funcs)
+        .expect("not blocked");
     let mut results = Results::new(plan, digest);
     let mut runner = Runner::new(cfg(&digest));
     for j in 0..jobs.len() {
-        let prepared = prepare(
+        let prepared = schemify_run::prepare(
             p,
             top,
             &mut jobs,
             j,
             env,
             dialect,
-            &mut no_funcs,
+            &mut schemify_elab::no_funcs,
             &mut results,
         );
         if let Some(prepared) = prepared {
@@ -207,10 +214,10 @@ pub fn first_of<'a>(tools: &[&'a str], arg: &str) -> Option<&'a str> {
     let found = tools
         .iter()
         .copied()
-        .find(|t| std::process::Command::new(t).arg(arg).output().is_ok());
+        .find(|t| Command::new(t).arg(arg).output().is_ok());
     if found.is_none() {
         assert!(
-            std::env::var_os("SCHEMIFY_REQUIRE_SIMULATORS").is_none(),
+            env::var_os("SCHEMIFY_REQUIRE_SIMULATORS").is_none(),
             "one of {tools:?} must be on PATH (SCHEMIFY_REQUIRE_SIMULATORS is set)"
         );
         eprintln!("none of {tools:?} on PATH: skipping");

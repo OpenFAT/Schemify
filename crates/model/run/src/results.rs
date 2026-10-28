@@ -20,12 +20,10 @@ use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
 use schemify_doc::Digest;
 use schemify_elab::{Dialect, Elab};
-use schemify_expr::{
-    CalcResult, Code, Error, Program, Scratch, SignalKind, Value, op_parts, parse_num,
-};
+use schemify_expr::{CalcResult, Code, Error, Program, Scratch, SignalKind, Value};
 use schemify_netlist::NameMap;
-use schemify_wave::calc::{op_dataset, op_value};
-use schemify_wave::{RawPlot, group_datasets, parse_raw};
+use schemify_wave::RawPlot;
+use schemify_wave::calc;
 
 /// `error` rows that belong to the whole job, not one output.
 pub const JOB_LEVEL: u16 = u16::MAX;
@@ -59,19 +57,31 @@ pub struct Results {
     pass: Vec<Pass>,
     /// `rows × vars`.
     var_value: Vec<f64>,
-    err_job: Vec<u32>,
-    err_output: Vec<u16>,
-    err_msg: Vec<String>,
+    error_job: Vec<u32>,
+    error_output: Vec<u16>,
+    error_message: Vec<String>,
     /// The `op(…)` signals of every output (`<inst>[<param>]`), sorted, distinct.
     ops: Vec<String>,
     /// `rows × ops`: the simulator's vector for each op (`@m.x1.mm2[gm]`), or why the job
     /// has none. Not persisted: only [`Results::record`] of the same run reads it.
-    op_vector: Vec<Result<String, (Code, String)>>,
+    op_vector: Vec<Result<String, OpMissing>>,
+}
+
+/// Why a job has no simulator vector for an `op(…)` signal: the error its outputs get.
+#[derive(Clone, Debug, PartialEq)]
+struct OpMissing {
+    code: Code,
+    why: String,
 }
 
 impl Results {
     /// Creates an empty table for `plan`'s outputs, specs and vars, tagged with the run's
     /// `design` hash (from [`crate::design`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a spec of `plan` names no output, which [`Plan::read`] never builds.
+    #[must_use]
     pub fn new(plan: &Plan, design: Digest) -> Results {
         let mut r = Results::from_columns(
             design,
@@ -86,32 +96,38 @@ impl Results {
             .collect();
         r.ops.sort();
         r.ops.dedup();
-        assert_eq!(r.outputs.len(), plan.outputs.len());
+        assert_eq!(r.rows, 0, "no job is covered yet");
+        assert!(r.ops.windows(2).all(|w| w[0] < w[1]), "sorted and distinct");
         r
     }
 
     /// Returns the design hash the results were computed for.
+    #[must_use]
     pub fn design(&self) -> &Digest {
         &self.design
     }
 
     /// Returns whether these results belong to another design than `current` (any reached
     /// cell, the bench, the lockfile, settings, environment or job list changed).
+    #[must_use]
     pub fn stale(&self, current: &Digest) -> bool {
         &self.design != current
     }
 
     /// Returns the output names (column order of [`Results::value`]).
+    #[must_use]
     pub fn outputs(&self) -> &[String] {
         &self.outputs
     }
 
     /// Returns the number of specs.
+    #[must_use]
     pub fn specs(&self) -> usize {
         self.specs.len()
     }
 
     /// Returns the var names (column order of [`Results::var_value`]).
+    #[must_use]
     pub fn vars(&self) -> &[String] {
         &self.vars
     }
@@ -121,6 +137,7 @@ impl Results {
     /// # Panics
     ///
     /// Panics if `o` is not an output column.
+    #[must_use]
     pub fn value(&self, j: u32, o: u16) -> Option<f64> {
         let x = *self.cell(&self.value, self.outputs.len(), j, o as usize)?;
         (!x.is_nan()).then_some(x)
@@ -131,6 +148,7 @@ impl Results {
     /// # Panics
     ///
     /// Panics if `s` is not a spec.
+    #[must_use]
     pub fn pass(&self, j: u32, s: u16) -> Pass {
         self.cell(&self.pass, self.specs.len(), j, s as usize)
             .copied()
@@ -142,6 +160,7 @@ impl Results {
     /// # Panics
     ///
     /// Panics if `v` is not a var column.
+    #[must_use]
     pub fn var_value(&self, j: u32, v: u16) -> Option<f64> {
         let x = *self.cell(&self.var_value, self.vars.len(), j, v as usize)?;
         (!x.is_nan()).then_some(x)
@@ -149,7 +168,21 @@ impl Results {
 
     /// Iterates error rows `(job, output or JOB_LEVEL, message)` in recording order.
     pub fn errors(&self) -> impl Iterator<Item = (u32, u16, &str)> + '_ {
-        let rows = self.err_job.iter().zip(&self.err_output).zip(&self.err_msg);
+        debug_assert_eq!(
+            self.error_job.len(),
+            self.error_output.len(),
+            "columns in step"
+        );
+        debug_assert_eq!(
+            self.error_job.len(),
+            self.error_message.len(),
+            "columns in step"
+        );
+        let rows = self
+            .error_job
+            .iter()
+            .zip(&self.error_output)
+            .zip(&self.error_message);
         rows.map(|((&j, &o), m)| (j, o, m.as_str()))
     }
 
@@ -188,8 +221,13 @@ impl Results {
             self.outputs.len(),
             "results of another plan"
         );
-        let plots = match parse_raw(raw) {
-            Ok(p) if !p.is_empty() => group_datasets(p),
+        assert_eq!(
+            plan.specs.len(),
+            self.specs.len(),
+            "results of another plan"
+        );
+        let plots = match schemify_wave::parse_raw(raw) {
+            Ok(p) if !p.is_empty() => schemify_wave::group_datasets(p),
             Ok(_) => return self.fail(jobs, j, "raw file holds no data"),
             Err(e) => return self.fail(jobs, j, format!("raw file: {e}")),
         };
@@ -204,7 +242,7 @@ impl Results {
                 .map(|(_, x)| Value::Num(*x))
         };
         let mut scratch = Scratch::default();
-        let mut values = Vec::with_capacity(plan.outputs.len());
+        let mut values: Vec<Result<f64, String>> = Vec::with_capacity(plan.outputs.len());
         for out in &plan.outputs {
             let x = self
                 .op_values(j, &out.prog, &plots)
@@ -221,10 +259,8 @@ impl Results {
             let verdict = match self.value(j, spec.output) {
                 None => Pass::Unknown,
                 Some(x) => {
-                    let bound = |p: &Option<Program>| {
-                        p.as_ref().map(|p| eval_scalar(p, lookup)).transpose()
-                    };
-                    match (bound(&spec.min), bound(&spec.max)) {
+                    let bound = |p: Option<&Program>| p.map(|p| eval_scalar(p, lookup)).transpose();
+                    match (bound(spec.min.as_ref()), bound(spec.max.as_ref())) {
                         (Ok(lo), Ok(hi)) => {
                             let ok = lo.is_none_or(|lo| x >= lo) && hi.is_none_or(|hi| x <= hi);
                             if ok { Pass::Pass } else { Pass::Fail }
@@ -288,19 +324,24 @@ impl Results {
         self.value.resize(n * self.outputs.len(), f64::NAN);
         self.pass.resize(n * self.specs.len(), Pass::Unknown);
         self.var_value.resize(n * self.vars.len(), f64::NAN);
-        let none = Err((Code::X006, "the job was not netlisted".to_owned()));
+        let none = Err(OpMissing {
+            code: Code::X006,
+            why: "the job was not netlisted".to_owned(),
+        });
         self.op_vector.resize(n * self.ops.len(), none);
         assert_eq!(self.value.len(), n * self.outputs.len());
     }
 
     /// Sets output `o` of covered job `j`.
     pub(crate) fn set_value(&mut self, j: u32, o: usize, x: f64) {
+        assert!(!x.is_nan(), "NaN is the no-value marker");
         let k = self.index(self.outputs.len(), j, o);
         self.value[k] = x;
     }
 
     /// Sets var `v` of covered job `j`.
     pub(crate) fn set_var(&mut self, j: u32, v: usize, x: f64) {
+        assert!(!x.is_nan(), "NaN is the no-value marker");
         let k = self.index(self.vars.len(), j, v);
         self.var_value[k] = x;
     }
@@ -308,6 +349,11 @@ impl Results {
     /// Sets spec `s`'s verdict for covered job `j`.
     pub(crate) fn set_pass(&mut self, j: u32, s: usize, p: Pass) {
         let k = self.index(self.specs.len(), j, s);
+        assert_eq!(
+            self.pass.len(),
+            self.rows as usize * self.specs.len(),
+            "covered rows"
+        );
         self.pass[k] = p;
     }
 
@@ -315,9 +361,14 @@ impl Results {
     pub(crate) fn error(&mut self, j: u32, output: u16, msg: String) {
         assert!(output == JOB_LEVEL || (output as usize) < self.outputs.len());
         assert!(j < self.rows, "error of job {j} outside the table");
-        self.err_job.push(j);
-        self.err_output.push(output);
-        self.err_msg.push(msg);
+        self.error_job.push(j);
+        self.error_output.push(output);
+        self.error_message.push(msg);
+        assert_eq!(
+            self.error_job.len(),
+            self.error_message.len(),
+            "columns in step"
+        );
     }
 
     /// Records the bench var values job `j` was elaborated with (numbers only).
@@ -328,7 +379,7 @@ impl Results {
         for k in 0..b.var_name.len() {
             let name = e.names.get(b.var_name[k]);
             if let Some(v) = self.vars.iter().position(|x| x == name)
-                && let Ok(x) = parse_num(e.names.get(b.var_text[k]))
+                && let Ok(x) = schemify_expr::parse_num(e.names.get(b.var_text[k]))
             {
                 self.set_var(j, v, x);
             }
@@ -345,19 +396,22 @@ impl Results {
         let n = self.ops.len();
         let mut saves = String::new();
         for k in 0..n {
-            let (inst, param) = op_parts(&self.ops[k]);
+            let (inst, param) = schemify_expr::op_parts(&self.ops[k]);
             let v = match dialect {
                 Dialect::Ngspice => map
                     .spice_device(inst)
                     .map(|dev| format!("@{dev}[{}]", param.to_ascii_lowercase()))
-                    .map_err(|why| (Code::X004, format!("op(): {why}"))),
-                d => Err((
-                    Code::X006,
-                    format!(
+                    .map_err(|why| OpMissing {
+                        code: Code::X004,
+                        why: format!("op(): {why}"),
+                    }),
+                d => Err(OpMissing {
+                    code: Code::X006,
+                    why: format!(
                         "op() needs device operating-point data, which {} does not provide",
                         d.as_str()
                     ),
-                )),
+                }),
             };
             if let Ok(vec) = &v {
                 saves.push_str(if saves.is_empty() {
@@ -373,7 +427,10 @@ impl Results {
         if !saves.is_empty() {
             saves.push('\n');
         }
-        assert!(saves.is_empty() || saves.starts_with(".save all\n"));
+        if !saves.is_empty() {
+            assert!(saves.starts_with(".save all\n"));
+            assert!(saves.ends_with('\n'), "whole lines before `.end`");
+        }
         saves
     }
 }
@@ -396,7 +453,8 @@ impl Results {
     /// point; the first that fails is the output's error.
     fn op_values(&self, j: u32, prog: &Program, plots: &[RawPlot]) -> Result<Vec<f64>, String> {
         let n = self.ops.len();
-        let op_plot = op_dataset(plots);
+        assert!(j < self.rows, "job {j} outside the table");
+        let op_plot = calc::op_dataset(plots);
         let mut ops = Vec::new();
         for (k, (kind, name)) in prog.signals().enumerate() {
             if kind != SignalKind::Op {
@@ -406,13 +464,13 @@ impl Results {
             let slot = self.ops.binary_search_by(|x| x.as_str().cmp(name));
             let slot = slot.expect("Results::new lists every op signal");
             let x = match (&self.op_vector[j as usize * n + slot], op_plot) {
-                (Err((code, why)), _) => Err(Error::new(*code, at, why.clone())),
+                (Err(missing), _) => Err(Error::new(missing.code, at, missing.why.clone())),
                 (Ok(_), None) => Err(Error::new(
                     Code::X010,
                     at,
                     "op() reads the operating point: the job has none (add `.op` to the bench)",
                 )),
-                (Ok(vec), Some(p)) => op_value(p, vec).ok_or_else(|| {
+                (Ok(vec), Some(p)) => calc::op_value(p, vec).ok_or_else(|| {
                     let why = format!("no vector `{vec}` in the operating point (op({name}))");
                     Error::new(Code::X004, at, why)
                 }),
@@ -445,8 +503,7 @@ fn eval_output<'v>(
         .rev()
         .find(|p| has_all(p))
         .unwrap_or(&plots[plots.len() - 1]);
-    let r = schemify_wave::calc::eval(prog, plot, Some(ops), lookup, scratch)
-        .map_err(|e| e.to_string())?;
+    let r = calc::eval(prog, plot, Some(ops), lookup, scratch).map_err(|e| e.to_string())?;
     let x = match r {
         CalcResult::Scalar(Value::Num(x)) => x,
         CalcResult::Scalar(Value::Int(i)) => i as f64,
@@ -472,12 +529,17 @@ fn eval_scalar<'v>(
 ) -> Result<f64, String> {
     let mut inputs = Vec::new();
     prog.bind(&mut inputs, lookup).map_err(|e| e.to_string())?;
-    match prog
+    let x = match prog
         .eval(&inputs, &mut Scratch::default())
         .map_err(|e| e.to_string())?
     {
-        Value::Num(x) => Ok(x),
-        Value::Int(i) => Ok(i as f64),
-        v => Err(format!("is not a number: {v:?}")),
-    }
+        Value::Num(x) => x,
+        Value::Int(i) => i as f64,
+        v => return Err(format!("is not a number: {v:?}")),
+    };
+    assert!(
+        x.is_finite(),
+        "the expression language refuses NaN and infinity (X010)"
+    );
+    Ok(x)
 }

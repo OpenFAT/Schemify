@@ -21,15 +21,17 @@ use crate::cache::Cache;
 use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
 use crate::prepare::{Prepared, Source};
-use crate::proc::{Proc, last_line, spawn_error};
+use crate::process::{self, Process};
 use crate::results::Results;
 use schemify_doc::Digest;
 use schemify_elab::Dialect;
 use std::collections::VecDeque;
 use std::fs::{self, File};
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, SeekFrom};
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::thread;
 use std::time::Duration;
 
 /// Netlist file name inside a job directory.
@@ -97,7 +99,7 @@ pub struct RunnerConfig {
 /// Jobs waiting for and holding worker slots, and the compilers they wait on. Dropping a
 /// runner kills its children.
 pub struct Runner {
-    cfg: RunnerConfig,
+    config: RunnerConfig,
     queue: VecDeque<Queued>,
     /// Jobs holding a worker slot while their sources compile.
     waiting: Vec<Queued>,
@@ -114,7 +116,7 @@ struct Queued {
 
 struct Running {
     job: u32,
-    proc: Proc,
+    process: Process,
     /// Bytes of stdout already scanned.
     log_pos: u64,
     /// Last non-empty stdout line.
@@ -135,7 +137,9 @@ impl SimCommand {
     /// # Panics
     ///
     /// Panics if `d` is not one of [`SIMULATORS`].
+    #[must_use]
     pub fn default_for(d: Dialect) -> SimCommand {
+        assert!(SIMULATORS.contains(&d), "{} is not a simulator", d.as_str());
         let (path, args): (&str, &[&str]) = match d {
             Dialect::Ngspice => ("ngspice", &["-b", "-r", "{raw}", "{netlist}"]),
             Dialect::Espice => (
@@ -148,12 +152,15 @@ impl SimCommand {
                 "spectre",
                 &["-format", "nutbin", "-raw", "{raw}", "{netlist}"],
             ),
-            _ => panic!("{} is not a simulator", d.as_str()),
+            _ => unreachable!("checked above"),
         };
-        assert!(SIMULATORS.contains(&d));
-        let args = args.iter().map(|a| (*a).to_owned()).collect();
+        let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        assert!(
+            args.iter().any(|a| a == "{netlist}"),
+            "the job's netlist goes in"
+        );
         SimCommand {
-            path: path.into(),
+            path: path.to_owned(),
             args,
             env: Vec::new(),
         }
@@ -164,7 +171,9 @@ impl Tools {
     /// Gives every simulator the command line `cmd` (a test harness's fake simulator, the
     /// editor's `--sim`).
     pub fn set_sims(&mut self, cmd: &SimCommand) {
-        self.sims.iter_mut().for_each(|s| s.clone_from(cmd));
+        for s in &mut self.sims {
+            s.clone_from(cmd);
+        }
     }
 
     /// Returns the command line of simulator `d`.
@@ -172,9 +181,12 @@ impl Tools {
     /// # Panics
     ///
     /// Panics if `d` is not one of [`SIMULATORS`].
+    #[must_use]
     pub fn sim(&self, d: Dialect) -> &SimCommand {
-        let k = SIMULATORS.iter().position(|s| *s == d);
-        &self.sims[k.unwrap_or_else(|| panic!("{} is not a simulator", d.as_str()))]
+        let Some(k) = SIMULATORS.iter().position(|s| *s == d) else {
+            panic!("{} is not a simulator", d.as_str());
+        };
+        &self.sims[k]
     }
 }
 
@@ -182,8 +194,8 @@ impl Default for Tools {
     fn default() -> Tools {
         Tools {
             sims: SIMULATORS.map(SimCommand::default_for),
-            openvaf: "openvaf".into(),
-            iverilog: "iverilog".into(),
+            openvaf: "openvaf".to_owned(),
+            iverilog: "iverilog".to_owned(),
         }
     }
 }
@@ -193,9 +205,11 @@ impl RunnerConfig {
     /// `.schemify/runs/<first 16 hex digits of design>`, cache `.schemify/build`, the
     /// project directory as library row 0, ngspice, one worker per available core, one
     /// hour per job.
+    #[must_use]
     pub fn new(root: &Path, design: &Digest) -> RunnerConfig {
         let hex = schemify_doc::hex(design);
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        debug_assert_eq!(hex.len(), 64, "two hex digits per byte");
+        let cores = thread::available_parallelism().map_or(1, |n| n.get());
         let c = RunnerConfig {
             tools: Tools::default(),
             dialect: Dialect::Ngspice,
@@ -205,7 +219,8 @@ impl RunnerConfig {
             workers: cores.clamp(1, usize::from(WORKERS_MAX)) as u16,
             timeout: Duration::from_secs(3600),
         };
-        assert!(c.workers >= 1);
+        // Provable from the clamp: a postcondition, not a documented panic.
+        debug_assert!((1..=WORKERS_MAX).contains(&c.workers));
         c
     }
 }
@@ -215,16 +230,17 @@ impl Runner {
     ///
     /// # Panics
     ///
-    /// Panics if `cfg.workers` is outside `1..=WORKERS_MAX` or `cfg.dir` is empty.
-    pub fn new(cfg: RunnerConfig) -> Runner {
+    /// Panics if `config.workers` is outside `1..=WORKERS_MAX` or `config.dir` is empty.
+    #[must_use]
+    pub fn new(config: RunnerConfig) -> Runner {
         assert!(
-            (1..=WORKERS_MAX).contains(&cfg.workers),
+            (1..=WORKERS_MAX).contains(&config.workers),
             "workers {}",
-            cfg.workers
+            config.workers
         );
-        assert!(!cfg.dir.as_os_str().is_empty());
+        assert!(!config.dir.as_os_str().is_empty());
         Runner {
-            cfg,
+            config,
             queue: VecDeque::new(),
             waiting: Vec::new(),
             running: Vec::new(),
@@ -233,13 +249,15 @@ impl Runner {
     }
 
     /// Returns the configuration.
+    #[must_use]
     pub fn config(&self) -> &RunnerConfig {
-        &self.cfg
+        &self.config
     }
 
     /// Returns job `j`'s directory, `<dir>/<j>`.
+    #[must_use]
     pub fn job_dir(&self, j: u32) -> PathBuf {
-        self.cfg.dir.join(j.to_string())
+        self.config.dir.join(j.to_string())
     }
 
     /// Writes job `j`'s netlist into its directory (removing an old raw file; relative
@@ -249,14 +267,18 @@ impl Runner {
     ///
     /// # Panics
     ///
-    /// Panics if job `j` is not pending (submitted once).
+    /// Panics if job `j` is not pending (submitted once), or `p` holds no netlist.
     pub fn submit(&mut self, jobs: &mut Jobs, results: &mut Results, j: u32, p: &Prepared) {
         assert_eq!(jobs.state(j), State::Pending, "submit job {j} once");
+        assert!(
+            !p.netlist.is_empty(),
+            "`prepare` never emits an empty netlist"
+        );
         assert!(self.queue.len() < crate::JOBS_MAX as usize);
         let dir = self.job_dir(j);
-        let text = match self.cfg.lib_dirs.get(usize::from(p.base.0)) {
+        let text = match self.config.lib_dirs.get(usize::from(p.base.0)) {
             Some(lib) if !p.relative.is_empty() => {
-                p.resolved(&lib.join(&p.base.1), &self.cfg.lib_dirs[0])
+                p.resolved(&lib.join(&p.base.1), &self.config.lib_dirs[0])
             }
             _ => p.netlist.clone(),
         };
@@ -278,6 +300,7 @@ impl Runner {
     }
 
     /// Returns whether any job is queued, compiling or running, or a compiler runs.
+    #[must_use]
     pub fn busy(&self) -> bool {
         !self.queue.is_empty()
             || !self.waiting.is_empty()
@@ -301,6 +324,11 @@ impl Runner {
     ///
     /// Cost: one `try_wait` per child and a stat of each source of an admitted job;
     /// compilers and simulators are child processes, so nothing here waits for them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `jobs` is not the table the jobs were submitted from (a job this runner
+    /// holds is missing or changed state behind it).
     pub fn poll(
         &mut self,
         plan: &Plan,
@@ -309,13 +337,13 @@ impl Runner {
         finished: &mut Vec<u32>,
     ) {
         let before = finished.len();
-        self.cache.reap(&self.cfg);
+        self.cache.reap(&self.config);
         let mut i = 0;
         while i < self.running.len() {
             let dir = self.job_dir(self.running[i].job);
             let r = &mut self.running[i];
             tail(&dir, r);
-            let Some(outcome) = r.proc.reap(self.cfg.timeout, "simulator") else {
+            let Some(outcome) = r.process.reap(self.config.timeout, "simulator") else {
                 i += 1;
                 continue;
             };
@@ -325,14 +353,21 @@ impl Runner {
         }
         // Each pass admits at least one queued job, or ends: a start that fails frees its
         // slot for the next queued job in the same poll.
-        let workers = usize::from(self.cfg.workers);
+        let workers = usize::from(self.config.workers);
+        let passes_max = self.queue.len() + 1;
+        let mut passes = 0;
         loop {
+            passes += 1;
+            assert!(
+                passes <= passes_max,
+                "each pass admits a queued job or ends"
+            );
             while self.waiting.len() + self.running.len() < workers {
                 let Some(q) = self.queue.pop_front() else {
                     break;
                 };
                 for s in &q.sources {
-                    self.cache.ensure(&self.cfg, s);
+                    self.cache.ensure(&self.config, s);
                 }
                 self.waiting.push(q);
             }
@@ -347,6 +382,10 @@ impl Runner {
 
     /// Polls until no job is queued, compiling or running (the CLI and tests; the app polls
     /// from its frame spine instead). Terminates: every child is killed at the timeout.
+    ///
+    /// # Panics
+    ///
+    /// As [`Runner::poll`].
     pub fn wait(
         &mut self,
         plan: &Plan,
@@ -361,7 +400,7 @@ impl Runner {
             if !self.busy() {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            thread::sleep(Duration::from_millis(5));
         }
         assert!(self.queue.is_empty());
         assert!(self.running.is_empty());
@@ -371,6 +410,10 @@ impl Runner {
     /// Cancels job `j` if it is queued, compiling or running (a running simulator is
     /// killed; a compiler other jobs may share keeps running); any other job is left as
     /// it is.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j` is held by this runner but finished in `jobs` (another table).
     pub fn cancel(&mut self, jobs: &mut Jobs, j: u32) {
         let found = if let Some(i) = self.queue.iter().position(|q| q.job == j) {
             self.queue.remove(i).is_some()
@@ -378,7 +421,7 @@ impl Runner {
             self.waiting.remove(i);
             true
         } else if let Some(i) = self.running.iter().position(|r| r.job == j) {
-            self.running.remove(i); // dropping the Proc kills the simulator
+            self.running.remove(i); // dropping the Process kills the simulator
             true
         } else {
             false
@@ -391,6 +434,10 @@ impl Runner {
     }
 
     /// Cancels every queued, compiling and running job and kills every compiler.
+    ///
+    /// # Panics
+    ///
+    /// As [`Runner::cancel`].
     pub fn cancel_all(&mut self, jobs: &mut Jobs) {
         let queued = self.queue.iter().chain(&self.waiting).map(|q| q.job);
         let all: Vec<u32> = queued.chain(self.running.iter().map(|r| r.job)).collect();
@@ -408,9 +455,9 @@ impl Runner {
     ///
     /// The file system's.
     pub fn save(&self, jobs: &Jobs, results: &Results) -> io::Result<PathBuf> {
-        fs::create_dir_all(&self.cfg.dir)?;
-        let path = self.cfg.dir.join(RESULTS);
-        let tmp = self.cfg.dir.join(".results.tmp");
+        fs::create_dir_all(&self.config.dir)?;
+        let path = self.config.dir.join(RESULTS);
+        let tmp = self.config.dir.join(".results.tmp");
         fs::write(&tmp, crate::write_results(jobs, results))?;
         fs::rename(&tmp, &path)?;
         Ok(path)
@@ -454,34 +501,39 @@ impl Runner {
     /// Copies the compiled sources into the job directory, writes `command.log` and spawns
     /// the simulator.
     fn start(&mut self, q: &Queued) -> Result<(), String> {
+        assert!(
+            self.running.len() < usize::from(self.config.workers),
+            "the job left its worker slot in `waiting`"
+        );
         let dir = self.job_dir(q.job);
-        self.cache.place(&self.cfg, &q.sources, &dir)?;
+        self.cache.place(&self.config, &q.sources, &dir)?;
         let log = |name: &str| {
             File::create(dir.join(name)).map_err(|e| format!("cannot create {name}: {e}"))
         };
         let (out, err) = (log(STDOUT)?, log(STDERR)?);
-        let sim = self.cfg.tools.sim(self.cfg.dialect);
+        let sim = self.config.tools.sim(self.config.dialect);
         let args: Vec<String> = sim
             .args
             .iter()
             .map(|a| a.replace("{netlist}", NETLIST).replace("{raw}", RAW))
             .collect();
-        let line = std::iter::once(sim.path.clone())
+        let words: Vec<String> = iter::once(sim.path.clone())
             .chain(args.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        fs::write(dir.join(COMMAND), line + "\n")
+            .collect();
+        let line = words.join(" ");
+        fs::write(dir.join(COMMAND), format!("{line}\n"))
             .map_err(|e| format!("cannot create {COMMAND}: {e}"))?;
         let mut cmd = Command::new(&sim.path);
         cmd.args(args)
             .envs(sim.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&dir);
-        let proc = Proc::spawn(&mut cmd, out, err)
-            .map_err(|e| spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e))?;
+        let process = Process::spawn(&mut cmd, out, err).map_err(|e| {
+            process::spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e)
+        })?;
         let before = self.running.len();
         self.running.push(Running {
             job: q.job,
-            proc,
+            process,
             log_pos: 0,
             last: String::new(),
         });
@@ -498,14 +550,15 @@ impl Runner {
         j: u32,
         outcome: Result<ExitStatus, String>,
     ) {
+        assert_eq!(jobs.state(j), State::Running, "only a running job finishes");
         let dir = self.job_dir(j);
         let status = match outcome {
             Ok(s) => s,
             Err(msg) => return results.fail(jobs, j, msg),
         };
-        let why = || last_line(&dir.join(STDERR)).unwrap_or_default();
+        let why = || process::last_line(&dir.join(STDERR)).unwrap_or_default();
         if !status.success() {
-            let sim = &self.cfg.tools.sim(self.cfg.dialect).path;
+            let sim = &self.config.tools.sim(self.config.dialect).path;
             let msg = format!(
                 "`{sim}` exited with {status}: {} (see {})",
                 why(),
@@ -548,6 +601,8 @@ fn read_raw(dir: &Path) -> io::Result<Vec<u8>> {
 
 /// Scans new complete stdout lines (at most 64 KiB per call) and keeps the last one.
 fn tail(dir: &Path, r: &mut Running) {
+    use std::io::{Read, Seek};
+
     const CHUNK: u64 = 1 << 16;
     let Ok(mut f) = File::open(dir.join(STDOUT)) else {
         return;
@@ -556,6 +611,7 @@ fn tail(dir: &Path, r: &mut Running) {
     if f.seek(SeekFrom::Start(r.log_pos)).is_err() || f.take(CHUNK).read_to_end(&mut buf).is_err() {
         return;
     }
+    assert!(buf.len() as u64 <= CHUNK, "read through `take`");
     let Some(end) = buf.iter().rposition(|&b| b == b'\n') else {
         if buf.len() as u64 == CHUNK {
             r.log_pos += CHUNK; // one line longer than a chunk: skip it

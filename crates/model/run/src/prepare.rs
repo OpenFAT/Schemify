@@ -14,10 +14,11 @@
 
 use crate::jobs::Jobs;
 use crate::results::Results;
-use schemify_doc::{Digest, DocHandle, Project, Sha256, sha256};
-use schemify_elab::{CornerLine, Dialect, Elab, Funcs, Name, Request, Severity, elaborate};
+use schemify_doc::{Digest, DocHandle, Project, Sha256};
+use schemify_elab::{CornerLine, Dialect, Elab, Funcs, Name, Request, Severity};
 use schemify_netlist as netlist;
 use std::ops::Range;
+use std::path::Path;
 
 /// Why a run cannot start.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,18 +88,33 @@ pub struct Prepared {
     pub base: (u8, String),
 }
 
+/// One relative corner path in a netlist: its byte range, and whether it came from a
+/// project variable.
+struct RelativePath {
+    range: Range<u32>,
+    from_project: bool,
+}
+
 impl Prepared {
     /// Returns the netlist with every [`Prepared::relative`] path joined onto `base_dir`
     /// (the bench's directory on disk), or onto `project_dir` for a path from a project
     /// variable ([`Prepared::project`]); quoted when it holds whitespace.
-    pub fn resolved(&self, base_dir: &std::path::Path, project_dir: &std::path::Path) -> String {
-        assert_eq!(self.relative.len(), self.project.len());
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Prepared::relative`] and [`Prepared::project`] differ in length, or a
+    /// range is empty, out of order, past the netlist or at its first byte (as `prepare`
+    /// never builds them).
+    #[must_use]
+    pub fn resolved(&self, base_dir: &Path, project_dir: &Path) -> String {
+        assert_eq!(self.relative.len(), self.project.len(), "parallel columns");
         let mut out = String::with_capacity(self.netlist.len() + 64 * self.relative.len());
         let mut at = 0;
         for (r, &from_project) in self.relative.iter().zip(&self.project) {
             let (start, end) = (r.start as usize, r.end as usize);
             assert!(at <= start, "ranges are sorted and disjoint");
-            assert!(start < end);
+            assert!(start < end, "a path is never empty");
+            assert!(start >= 1, "a path follows its directive");
             assert!(end <= self.netlist.len());
             out.push_str(&self.netlist[at..start]);
             let dir = if from_project { project_dir } else { base_dir };
@@ -164,7 +180,7 @@ pub fn design<F: Funcs>(
             env,
             dialect,
         };
-        let e = elaborate(project, top, &req, funcs);
+        let e = schemify_elab::elaborate(project, top, &req, funcs);
         gate(&e)?;
         let rows = e.cells.iter().filter(|c| c.row != u32::MAX);
         reached.extend(rows.map(|c| (e.names.get(c.cell).to_owned(), c.row)));
@@ -187,13 +203,13 @@ pub fn design<F: Funcs>(
         part(k.as_bytes());
         part(v.as_bytes());
     }
-    part(&sha256(bench.canonical().as_bytes()));
+    part(&schemify_doc::sha256(bench.canonical().as_bytes()));
     for (name, row) in &reached {
         let doc = project
             .interface(*row as usize)
             .expect("elaboration reached it");
         part(name.as_bytes());
-        part(&sha256(doc.canonical().as_bytes()));
+        part(&schemify_doc::sha256(doc.canonical().as_bytes()));
     }
     let mut key = String::new();
     for j in 0..jobs.len() {
@@ -220,7 +236,10 @@ pub fn design<F: Funcs>(
 /// # Panics
 ///
 /// Panics if `top` is a stale handle or `j` is not a job of `jobs`.
-#[allow(clippy::too_many_arguments)] // every argument is a table or input the step reads
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a table or input the step reads"
+)]
 pub fn prepare<F: Funcs>(
     project: &Project,
     top: DocHandle,
@@ -240,7 +259,7 @@ pub fn prepare<F: Funcs>(
         env,
         dialect,
     };
-    let e = elaborate(project, top, &req, funcs);
+    let e = schemify_elab::elaborate(project, top, &req, funcs);
     drop(overrides);
     if let Err(b) = gate(&e) {
         let msg = match b {
@@ -260,7 +279,9 @@ pub fn prepare<F: Funcs>(
     // (`-randseed`).
     let mut tail = results.set_ops(j, &emitted.name_map, dialect);
     if let (Some(seed), Dialect::Ngspice | Dialect::Espice) = (jobs.seed(j), dialect) {
-        tail.push_str(&format!(".option seed={seed}\n"));
+        use std::fmt::Write;
+
+        writeln!(tail, ".option seed={seed}").expect("String write");
     }
     if !tail.is_empty() {
         assert!(
@@ -269,8 +290,9 @@ pub fn prepare<F: Funcs>(
         );
         text.insert_str(text.len() - ".end\n".len(), &tail);
     }
-    let (relative, from_project): (Vec<_>, Vec<_>) =
-        relative_paths(&e, dialect, &text).into_iter().unzip();
+    let paths = relative_paths(&e, dialect, &text);
+    let relative: Vec<Range<u32>> = paths.iter().map(|p| p.range.clone()).collect();
+    let from_project: Vec<bool> = paths.iter().map(|p| p.from_project).collect();
     let top = &e.cells[0];
     let base = if top.row == u32::MAX {
         (0, String::new())
@@ -287,6 +309,7 @@ pub fn prepare<F: Funcs>(
         base,
     };
     assert!(!p.netlist.is_empty());
+    assert_eq!(p.relative.len(), p.project.len(), "parallel columns");
     Some(p)
 }
 
@@ -295,7 +318,18 @@ pub fn prepare<F: Funcs>(
 /// output name. For [`Dialect::Espice`] a Verilog-A source is [`Tool::Copy`] to
 /// `<stem>.va` (ESPice compiles it); otherwise it compiles with OpenVAF to `<stem>.osdi`.
 /// `e` must be elaborated for `dialect`.
+///
+/// # Panics
+///
+/// Panics if `e`'s impl body offsets are not one more than its impls (an `Elab` that
+/// `elaborate` did not build).
+#[must_use]
 pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source> {
+    assert_eq!(
+        e.impls.body_start.len(),
+        e.impls.cell.len() + 1,
+        "CSR offsets: one more than the impls"
+    );
     let mut out: Vec<Source> = Vec::new();
     let cells = project.cells();
     for i in 0..e.impls.cell.len() {
@@ -347,8 +381,11 @@ pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source> {
         }
     }
     crate::plan::sort_by_name(&mut out, |s| &s.out);
-    assert!(out.windows(2).all(|w| w[0].out < w[1].out));
-    assert!(dialect == Dialect::Espice || out.iter().all(|s| s.tool != Tool::Copy));
+    // Provable from the dedup and the tool match above.
+    debug_assert!(out.windows(2).all(|w| w[0].out < w[1].out));
+    if dialect != Dialect::Espice {
+        debug_assert!(out.iter().all(|s| s.tool != Tool::Copy));
+    }
     out
 }
 
@@ -388,12 +425,18 @@ fn gate(e: &Elab) -> Result<(), Blocked> {
 /// emitted for `dialect` (the simulators: SPICE `.lib <path> <section>`, `.include
 /// <path>`; Spectre `include "<path>" section=<section>`, `include "<path>"`). Corner lines follow the header, globals and `.param` lines in file order, so
 /// each one's first match after the previous one is the line itself.
-fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bool)> {
+fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<RelativePath> {
     let mut out = Vec::new();
     let b = &e.bench;
     if !crate::SIMULATORS.contains(&dialect) || b.corner_kind.is_empty() {
         return out;
     }
+    assert_eq!(b.corner_start.len(), b.corner_kind.len() + 1, "CSR offsets");
+    assert_eq!(
+        b.corner_project.len(),
+        b.corner_kind.len(),
+        "parallel columns"
+    );
     let spectre = dialect == Dialect::Spectre;
     let (lib, include, section) = if spectre {
         ("\ninclude \"", "\ninclude \"", "\" section=")
@@ -427,11 +470,13 @@ fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bo
         from = at + line.len() - 1;
         if relative(path) {
             let start = (at + prefix) as u32;
-            let from_project = b.corner_project.get(k).copied().unwrap_or(false);
-            out.push((start..start + path.len() as u32, from_project));
+            out.push(RelativePath {
+                range: start..start + path.len() as u32,
+                from_project: b.corner_project[k],
+            });
         }
     }
-    assert!(out.windows(2).all(|w| w[0].0.end <= w[1].0.start));
+    assert!(out.windows(2).all(|w| w[0].range.end <= w[1].range.start));
     out
 }
 

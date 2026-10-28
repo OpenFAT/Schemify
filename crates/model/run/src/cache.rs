@@ -13,23 +13,39 @@
 //!   `kill_all`, `place`
 
 use crate::prepare::{Origin, Source, Tool};
-use crate::proc::{Proc, last_line, spawn_error};
+use crate::process::{self, Process};
 use crate::runner::RunnerConfig;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Compile state of one run's sources. Dropping it kills its compilers.
 #[derive(Default)]
 pub(crate) struct Cache {
     /// Compiler children, at most one per output.
     compiling: Vec<Compiling>,
-    /// Outputs whose compile failed this run, with the message every job needing one
-    /// fails with.
-    failed: Vec<(String, String)>,
-    /// Per copied `file` source found this run: its output name, its directory, and the
-    /// files it includes relative to that directory.
-    includes: Vec<(String, PathBuf, Vec<String>)>,
+    /// Outputs whose compile failed this run.
+    failed: Vec<Failed>,
+    /// Per copied `file` source found this run, the files it includes.
+    includes: Vec<Includes>,
+}
+
+/// An output whose compile failed this run.
+struct Failed {
+    out: String,
+    /// The message every job needing `out` fails with.
+    message: String,
+}
+
+/// The files a copied `file` source includes.
+struct Includes {
+    /// The source's output name.
+    out: String,
+    /// The source's directory.
+    dir: PathBuf,
+    /// The included files, relative to `dir`.
+    files: Vec<String>,
 }
 
 /// Most files one copied Verilog-A source may `` `include`` (transitively).
@@ -48,7 +64,7 @@ const STANDARD_HEADERS: [&str; 4] = [
 /// One compiler child writing `out` into the build cache.
 struct Compiling {
     out: String,
-    proc: Proc,
+    process: Process,
     /// `` `openvaf` on <src> ``, for messages.
     what: String,
 }
@@ -57,59 +73,78 @@ impl Cache {
     /// Starts the compiler of `s` unless its output is fresh, already compiling, or
     /// failed this run; a compiler that cannot start fails the output. A copied `file`
     /// first has its includes found (once per run); a missing one fails the output.
-    pub(crate) fn ensure(&mut self, cfg: &RunnerConfig, s: &Source) {
-        if self.failed.iter().any(|(o, _)| *o == s.out)
+    pub(crate) fn ensure(&mut self, config: &RunnerConfig, s: &Source) {
+        assert!(
+            !s.out.is_empty(),
+            "`sources` names every output `<stem>.<ext>`"
+        );
+        if self.failed.iter().any(|f| f.out == s.out)
             || self.compiling.iter().any(|c| c.out == s.out)
         {
             return;
         }
         if let (Tool::Copy, Origin::File { lib, path }) = (s.tool, &s.origin)
-            && !self.includes.iter().any(|i| i.0 == s.out)
+            && !self.includes.iter().any(|i| i.out == s.out)
         {
-            let found = source_file(cfg, *lib, path).and_then(|src| {
+            let found = source_file(config, *lib, path).and_then(|src| {
                 let dir = src.parent().map_or_else(PathBuf::new, Path::to_path_buf);
                 va_includes(&src).map(|inc| (dir, inc))
             });
             match found {
-                Ok((dir, inc)) => self.includes.push((s.out.clone(), dir, inc)),
-                Err(msg) => return self.failed.push((s.out.clone(), msg)),
+                Ok((dir, files)) => self.includes.push(Includes {
+                    out: s.out.clone(),
+                    dir,
+                    files,
+                }),
+                Err(message) => {
+                    return self.failed.push(Failed {
+                        out: s.out.clone(),
+                        message,
+                    });
+                }
             }
         }
-        match spawn_compile(cfg, s) {
+        match spawn_compile(config, s) {
             Ok(None) => {}
             Ok(Some(c)) => self.compiling.push(c),
-            Err(msg) => self.failed.push((s.out.clone(), msg)),
+            Err(message) => self.failed.push(Failed {
+                out: s.out.clone(),
+                message,
+            }),
         }
         assert!(self.compiling.len() <= crate::JOBS_MAX as usize);
     }
 
     /// Reaps exited compilers; one that failed, wrote nothing or ran past the timeout
     /// fails its output.
-    pub(crate) fn reap(&mut self, cfg: &RunnerConfig) {
+    pub(crate) fn reap(&mut self, config: &RunnerConfig) {
         let mut i = 0;
         while i < self.compiling.len() {
-            let Some(outcome) = self.compiling[i].proc.reap(cfg.timeout, "compiler") else {
+            let Some(outcome) = self.compiling[i].process.reap(config.timeout, "compiler") else {
                 i += 1;
                 continue;
             };
             let c = self.compiling.remove(i);
-            let wrote = cfg.cache.join(&c.out).exists();
+            let wrote = config.cache.join(&c.out).exists();
             let why = match outcome {
                 Ok(status) if status.success() && wrote => continue,
                 Ok(status) => {
-                    let log = cfg.cache.join(format!("{}.log", c.out));
-                    let last = last_line(&log).unwrap_or_else(|| "no output".into());
+                    let log = config.cache.join(format!("{}.log", c.out));
+                    let last = process::last_line(&log).unwrap_or_else(|| "no output".to_owned());
                     format!("{status}: {last}")
                 }
                 Err(msg) => msg,
             };
-            self.failed
-                .push((c.out, format!("{} failed ({why})", c.what)));
+            self.failed.push(Failed {
+                message: format!("{} failed ({why})", c.what),
+                out: c.out,
+            });
         }
         assert!(
             self.compiling
                 .iter()
-                .all(|c| !self.failed.iter().any(|f| f.0 == c.out))
+                .all(|c| !self.failed.iter().any(|f| f.out == c.out)),
+            "an output compiles or failed, never both"
         );
     }
 
@@ -117,8 +152,8 @@ impl Cache {
     pub(crate) fn failure(&self, sources: &[Source]) -> Option<&str> {
         let f = sources
             .iter()
-            .find_map(|s| self.failed.iter().find(|f| f.0 == s.out));
-        f.map(|f| f.1.as_str())
+            .find_map(|s| self.failed.iter().find(|f| f.out == s.out));
+        f.map(|f| f.message.as_str())
     }
 
     /// Whether any of `sources` is still compiling.
@@ -148,20 +183,28 @@ impl Cache {
     /// path from different files (they cannot share the job directory).
     pub(crate) fn place(
         &self,
-        cfg: &RunnerConfig,
+        config: &RunnerConfig,
         sources: &[Source],
         dir: &Path,
     ) -> Result<(), String> {
+        assert!(
+            self.failure(sources).is_none(),
+            "a job with a failed source never starts"
+        );
+        assert!(
+            !self.compiling(sources),
+            "a job starts once its sources compiled"
+        );
         // Include paths placed so far, with the file each came from.
         let mut placed: Vec<(&str, PathBuf)> = Vec::new();
         for s in sources {
-            fs::copy(cfg.cache.join(&s.out), dir.join(&s.out))
+            fs::copy(config.cache.join(&s.out), dir.join(&s.out))
                 .map_err(|e| format!("copy {}: {e}", s.out))?;
-            let Some((_, src_dir, rels)) = self.includes.iter().find(|i| i.0 == s.out) else {
+            let Some(includes) = self.includes.iter().find(|i| i.out == s.out) else {
                 continue;
             };
-            for rel in rels {
-                let from = src_dir.join(rel);
+            for rel in &includes.files {
+                let from = includes.dir.join(rel);
                 match placed.iter().find(|p| p.0 == rel) {
                     Some((_, other)) if *other == from => continue,
                     Some((_, other)) => {
@@ -194,31 +237,31 @@ impl Cache {
 /// `<stem>.va|.v` (only when its text changed, so the mtime check holds across runs).
 /// The compiler's output goes to `<cache>/<out>.log`. A [`Tool::Copy`] source never
 /// starts a process: a `body` is its own output, a `file` is copied over a stale one.
-fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, String> {
-    let cache = |e: io::Error| format!("cache {}: {e}", cfg.cache.display());
+fn spawn_compile(config: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, String> {
+    let cache = |e: io::Error| format!("cache {}: {e}", config.cache.display());
     let src = match &s.origin {
-        Origin::File { lib, path } => source_file(cfg, *lib, path)?,
+        Origin::File { lib, path } => source_file(config, *lib, path)?,
         Origin::Body(text) => {
-            fs::create_dir_all(&cfg.cache).map_err(cache)?;
+            fs::create_dir_all(&config.cache).map_err(cache)?;
             let stem = s.out.rsplit_once('.').map_or(s.out.as_str(), |(st, _)| st);
             let ext = match s.tool {
                 Tool::Openvaf | Tool::Copy => "va",
                 Tool::Iverilog => "v",
             };
-            let p = cfg.cache.join(format!("{stem}.{ext}"));
+            let p = config.cache.join(format!("{stem}.{ext}"));
             if fs::read(&p).ok().as_deref() != Some(text.as_bytes()) {
                 fs::write(&p, text).map_err(cache)?;
             }
             p
         }
     };
-    let cached = cfg.cache.join(&s.out);
+    let cached = config.cache.join(&s.out);
     let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified());
     let src_time = mtime(&src).map_err(|e| format!("source {}: {e}", src.display()))?;
     if mtime(&cached).is_ok_and(|t| t >= src_time) {
         return Ok(None);
     }
-    fs::create_dir_all(&cfg.cache).map_err(cache)?;
+    fs::create_dir_all(&config.cache).map_err(cache)?;
     // A stale output must not pass for this compile's result if the compiler writes none.
     match fs::remove_file(&cached) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(cache(e)),
@@ -227,14 +270,14 @@ fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, St
     let mut cmd;
     let (prog, what) = match s.tool {
         Tool::Openvaf => {
-            cmd = std::process::Command::new(&cfg.tools.openvaf);
+            cmd = Command::new(&config.tools.openvaf);
             cmd.arg(&src).arg("-o").arg(&cached);
-            (&cfg.tools.openvaf, "Verilog-A → OSDI")
+            (&config.tools.openvaf, "Verilog-A → OSDI")
         }
         Tool::Iverilog => {
-            cmd = std::process::Command::new(&cfg.tools.iverilog);
+            cmd = Command::new(&config.tools.iverilog);
             cmd.arg("-o").arg(&cached).arg(&src);
-            (&cfg.tools.iverilog, "Verilog → VVP")
+            (&config.tools.iverilog, "Verilog → VVP")
         }
         Tool::Copy => {
             // A body was written as the output itself, which is never stale (above).
@@ -244,18 +287,18 @@ fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, St
             return Ok(None);
         }
     };
-    let log = File::create(cfg.cache.join(format!("{}.log", s.out))).map_err(cache)?;
+    let log = File::create(config.cache.join(format!("{}.log", s.out))).map_err(cache)?;
     let log2 = log.try_clone().map_err(cache)?;
-    let proc = Proc::spawn(&mut cmd, log, log2).map_err(|e| {
+    let process = Process::spawn(&mut cmd, log, log2).map_err(|e| {
         let need = format!("needed to compile {} ({what})", src.display());
         format!(
             "{}; {need}",
-            spawn_error(prog, "compiler", "the user config", &e)
+            process::spawn_error(prog, "compiler", "the user config", &e)
         )
     })?;
     let c = Compiling {
         out: s.out.clone(),
-        proc,
+        process,
         what: format!("`{prog}` on {}", src.display()),
     };
     assert!(!c.out.is_empty());
@@ -263,8 +306,8 @@ fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, St
 }
 
 /// The on-disk path of a `file` source: `path` under library row `lib`'s directory.
-fn source_file(cfg: &RunnerConfig, lib: u8, path: &str) -> Result<PathBuf, String> {
-    let dir = cfg
+fn source_file(config: &RunnerConfig, lib: u8, path: &str) -> Result<PathBuf, String> {
+    let dir = config
         .lib_dirs
         .get(usize::from(lib))
         .ok_or_else(|| format!("no directory for library row {lib}"))?;
@@ -364,7 +407,13 @@ fn normalize(p: &str) -> Option<String> {
             s => parts.push(s),
         }
     }
-    (!parts.is_empty()).then(|| parts.join("/"))
+    let out = (!parts.is_empty()).then(|| parts.join("/"));
+    debug_assert!(
+        out.as_deref()
+            .is_none_or(|o| o.split('/').all(|seg| !matches!(seg, "" | "." | ".."))),
+        "a relative path of plain segments"
+    );
+    out
 }
 
 #[cfg(test)]

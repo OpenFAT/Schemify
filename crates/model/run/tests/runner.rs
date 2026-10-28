@@ -5,13 +5,11 @@
 
 mod common;
 
-use common::{CAP, FAKE, RC_BENCH, RES, cfg, project, rc, run, sh, tmp};
+use common::{CAP, FAKE, RC_BENCH, RES};
 use schemify_doc::{DocHandle, Project};
-use schemify_elab::{Dialect, no_funcs};
-use schemify_run::{
-    Blocked, Jobs, NO_SAMPLE, Plan, Results, Runner, Select, SimCommand, State, design, expand,
-    prepare, read_results, write_results,
-};
+use schemify_elab::Dialect;
+use schemify_run::{Blocked, Jobs, NO_SAMPLE, Plan, Results, Runner, Select, SimCommand, State};
+use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
@@ -24,18 +22,18 @@ fn all_jobs(plan: &Plan) -> Jobs {
         montecarlo: Some("mc"),
         ..Select::default()
     };
-    expand(plan, &select).unwrap()
+    schemify_run::expand(plan, &select).expect("the RC bench has these records")
 }
 
 #[test]
 fn one_worker_and_eight_workers_write_identical_results() {
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let mut texts = Vec::new();
     for w in [1u16, 8] {
-        let dir = tmp(&format!("fake-workers-{w}"));
-        let (jobs, results, _) = run(&p, top, &plan, all_jobs(&plan), |d| {
-            cfg(&dir, d, sh(FAKE), w)
+        let dir = common::tmp(&format!("fake-workers-{w}"));
+        let (jobs, results, _) = common::run(&p, top, &plan, all_jobs(&plan), |d| {
+            common::cfg(&dir, d, common::sh(FAKE), w)
         });
         assert_eq!(jobs.len(), 24, "2 corners × 3 points × 4 samples");
         let (v1m, r) = (plan.output("v1m").unwrap(), 0u16);
@@ -50,28 +48,28 @@ fn one_worker_and_eight_workers_write_identical_results() {
             let want = results.var_value(j, r).unwrap() * 1e-3;
             assert!((results.value(j, v1m).unwrap() - want).abs() < 1e-9 * want);
         }
-        texts.push(write_results(&jobs, &results));
+        texts.push(schemify_run::write_results(&jobs, &results));
     }
     assert_eq!(texts[0], texts[1]);
     // MC varies R around each sweep point.
-    let (jobs, _) = read_results(&texts[0]).unwrap();
+    let (jobs, _) = schemify_run::read_results(&texts[0]).unwrap();
     assert_eq!(jobs.sample(1), 1);
     assert!(jobs.assigned(1, "R").unwrap().starts_with("(1k)+(50)*("));
 }
 
 #[test]
 fn results_file_round_trips() {
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
-    let dir = tmp("fake-roundtrip");
-    let (jobs, results, runner) = run(&p, top, &plan, all_jobs(&plan), |d| {
-        cfg(&dir, d, sh(FAKE), 4)
+    let dir = common::tmp("fake-roundtrip");
+    let (jobs, results, runner) = common::run(&p, top, &plan, all_jobs(&plan), |d| {
+        common::cfg(&dir, d, common::sh(FAKE), 4)
     });
-    let text = std::fs::read_to_string(runner.save(&jobs, &results).unwrap()).unwrap();
-    assert_eq!(text, write_results(&jobs, &results));
-    let (j2, r2) = read_results(&text).unwrap();
+    let text = fs::read_to_string(runner.save(&jobs, &results).unwrap()).unwrap();
+    assert_eq!(text, schemify_run::write_results(&jobs, &results));
+    let (j2, r2) = schemify_run::read_results(&text).unwrap();
     assert_eq!(j2, jobs);
-    assert_eq!(write_results(&j2, &r2), text);
+    assert_eq!(schemify_run::write_results(&j2, &r2), text);
     assert_eq!(r2.design(), results.design());
     // v1m = R·1e-3 ≥ 1 with the fake simulator: above the spec's max 0.9.
     assert_eq!(text.matches("\n  pass v1m fail\n").count(), 24);
@@ -81,7 +79,7 @@ fn results_file_round_trips() {
     for j in 0..jobs.len() {
         let seed = jobs.seed(j).expect("an MC sample");
         assert_eq!(seed, schemify_run::sim_seed(11, jobs.sample(j)));
-        let netlist = std::fs::read_to_string(runner.job_dir(j).join("netlist.cir")).unwrap();
+        let netlist = fs::read_to_string(runner.job_dir(j).join("netlist.cir")).unwrap();
         assert!(
             netlist.ends_with(&format!(".option seed={seed}\n.end\n")),
             "{netlist}"
@@ -103,7 +101,7 @@ fn relative_corner_paths_become_absolute_in_the_job_netlist() {
          set C 1u\n",
     );
     assert_ne!(bench, RC_BENCH);
-    let (p, top) = project(&[
+    let (p, top) = common::project(&[
         ("res.shprim", RES),
         ("cap.shprim", CAP),
         ("tb.shbench", &bench),
@@ -111,10 +109,12 @@ fn relative_corner_paths_become_absolute_in_the_job_netlist() {
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let mut jobs = Jobs::new();
     jobs.push(None, Some("tt"), NO_SAMPLE, &[]).unwrap();
-    let dir = tmp("relative-paths");
-    let (jobs, _, runner) = run(&p, top, &plan, jobs, |d| cfg(&dir, d, sh(FAKE), 1));
+    let dir = common::tmp("relative-paths");
+    let (jobs, _, runner) = common::run(&p, top, &plan, jobs, |d| {
+        common::cfg(&dir, d, common::sh(FAKE), 1)
+    });
     assert_eq!(jobs.state(0), State::Done);
-    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+    let netlist = fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
     let abs = |rel: &str| {
         let a = dir.join(rel).to_string_lossy().into_owned();
         if a.contains(char::is_whitespace) {
@@ -132,16 +132,28 @@ fn relative_corner_paths_become_absolute_in_the_job_netlist() {
 }
 
 fn digest(p: &Project, top: DocHandle, jobs: &Jobs, env: &[(&str, &str)]) -> schemify_doc::Digest {
-    design(p, top, jobs, env, Dialect::Ngspice, &mut no_funcs).unwrap()
+    schemify_run::design(
+        p,
+        top,
+        jobs,
+        env,
+        Dialect::Ngspice,
+        &mut schemify_elab::no_funcs,
+    )
+    .expect("not blocked")
 }
 
 #[test]
 fn design_hash_tracks_reached_cells_bench_jobs_and_env() {
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let jobs = Jobs::new();
     let base = digest(&p, top, &jobs, &[]);
-    assert_eq!(base, digest(&rc().0, rc().1, &jobs, &[]), "deterministic");
-    let (pr, tr) = project(&[
+    assert_eq!(
+        base,
+        digest(&common::rc().0, common::rc().1, &jobs, &[]),
+        "deterministic"
+    );
+    let (pr, tr) = common::project(&[
         ("tb.shbench", RC_BENCH),
         ("cap.shprim", CAP),
         ("res.shprim", RES),
@@ -152,7 +164,7 @@ fn design_hash_tracks_reached_cells_bench_jobs_and_env() {
         "independent of the listing order"
     );
     let unrelated = "schemify 1 shprim\n\npin A inout 0 0\n\nimpl spice spice\n";
-    let (p2, t2) = project(&[
+    let (p2, t2) = common::project(&[
         ("res.shprim", RES),
         ("cap.shprim", CAP),
         ("tb.shbench", RC_BENCH),
@@ -164,14 +176,14 @@ fn design_hash_tracks_reached_cells_bench_jobs_and_env() {
         "an unreached cell does not matter"
     );
     let res2 = RES.replace("param R 1k", "param R 2k");
-    let (p3, t3) = project(&[
+    let (p3, t3) = common::project(&[
         ("res.shprim", &res2),
         ("cap.shprim", CAP),
         ("tb.shbench", RC_BENCH),
     ]);
     assert_ne!(base, digest(&p3, t3, &jobs, &[]), "a reached cell changed");
     let bench2 = RC_BENCH.replace("var R 3.3k", "var R 3.4k");
-    let (p4, t4) = project(&[
+    let (p4, t4) = common::project(&[
         ("res.shprim", RES),
         ("cap.shprim", CAP),
         ("tb.shbench", &bench2),
@@ -194,28 +206,35 @@ fn design_hash_tracks_reached_cells_bench_jobs_and_env() {
 #[test]
 fn blocked_designs_and_unnetlistable_jobs() {
     let broken = RC_BENCH.replace("./cap", "./missing");
-    let (p, top) = project(&[
+    let (p, top) = common::project(&[
         ("res.shprim", RES),
         ("cap.shprim", CAP),
         ("tb.shbench", &broken),
     ]);
-    match design(&p, top, &Jobs::new(), &[], Dialect::Ngspice, &mut no_funcs) {
+    match schemify_run::design(
+        &p,
+        top,
+        &Jobs::new(),
+        &[],
+        Dialect::Ngspice,
+        &mut schemify_elab::no_funcs,
+    ) {
         Err(Blocked::Violations(v)) => assert!(v.iter().any(|l| l.starts_with("E001")), "{v:?}"),
         other => panic!("{other:?}"),
     }
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let mut jobs = Jobs::new();
     let j = jobs.push(None, Some("nope"), NO_SAMPLE, &[]).unwrap();
     let mut results = Results::new(&plan, [1; 32]);
-    let prepared = prepare(
+    let prepared = schemify_run::prepare(
         &p,
         top,
         &mut jobs,
         j,
         &[],
         Dialect::Ngspice,
-        &mut no_funcs,
+        &mut schemify_elab::no_funcs,
         &mut results,
     );
     assert!(prepared.is_none());
@@ -225,13 +244,14 @@ fn blocked_designs_and_unnetlistable_jobs() {
 }
 
 fn single(sim: SimCommand, name: &str, timeout: Duration) -> (Jobs, Results) {
-    let (p, top) = rc();
-    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
+    let (p, top) = common::rc();
+    let plan = Plan::read(p.doc(top).expect("the bench is open")).expect("the bench reads");
     let mut jobs = Jobs::new();
-    jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
-    let dir = tmp(name);
-    let (jobs, results, _) = run(&p, top, &plan, jobs, |d| {
-        let mut c = cfg(&dir, d, sim, 1);
+    jobs.push(None, None, NO_SAMPLE, &[])
+        .expect("an empty table takes a job");
+    let dir = common::tmp(name);
+    let (jobs, results, _) = common::run(&p, top, &plan, jobs, |d| {
+        let mut c = common::cfg(&dir, d, sim, 1);
         c.timeout = timeout;
         c
     });
@@ -241,7 +261,11 @@ fn single(sim: SimCommand, name: &str, timeout: Duration) -> (Jobs, Results) {
 fn failure(sim: SimCommand, name: &str, timeout: Duration) -> String {
     let (jobs, results) = single(sim, name, timeout);
     assert_eq!(jobs.state(0), State::Failed);
-    results.errors().map(|e| e.2.to_owned()).next().unwrap()
+    results
+        .errors()
+        .map(|e| e.2.to_owned())
+        .next()
+        .expect("a failed job has an error row")
 }
 
 #[test]
@@ -253,13 +277,23 @@ fn simulator_failures_fail_the_job_with_a_reason() {
         env: Vec::new(),
     };
     assert!(failure(missing, "fail-missing", hour).contains("not found on PATH"));
-    assert!(failure(sh("echo boom >&2; exit 3"), "fail-exit", hour).contains("boom"));
-    assert!(failure(sh("exit 0"), "fail-noraw", hour).contains("no raw file"));
-    assert!(failure(sh("echo garbage > \"$2\""), "fail-garbage", hour).contains("raw file"));
-    let slow = failure(sh("sleep 5"), "fail-timeout", Duration::from_millis(200));
+    assert!(failure(common::sh("echo boom >&2; exit 3"), "fail-exit", hour).contains("boom"));
+    assert!(failure(common::sh("exit 0"), "fail-noraw", hour).contains("no raw file"));
+    assert!(
+        failure(common::sh("echo garbage > \"$2\""), "fail-garbage", hour).contains("raw file")
+    );
+    let slow = failure(
+        common::sh("sleep 5"),
+        "fail-timeout",
+        Duration::from_millis(200),
+    );
     assert!(slow.contains("timed out"), "{slow}");
     // A raw file without the output's signal: the job is done, the output has an error.
-    let (jobs, results) = single(sh(&FAKE.replace("v(out)", "v(other)")), "fail-signal", hour);
+    let (jobs, results) = single(
+        common::sh(&FAKE.replace("v(out)", "v(other)")),
+        "fail-signal",
+        hour,
+    );
     assert_eq!(jobs.state(0), State::Done);
     assert!(
         results
@@ -274,7 +308,7 @@ fn a_bench_that_writes_its_own_raw_file_still_records_results() {
     // file never appears: the runner falls back to the raw files the job wrote.
     let own = FAKE.replace("> \"$2\"", "> \"$(dirname \"$2\")/own.raw\"");
     assert_ne!(own, FAKE, "the fake writes elsewhere");
-    let (jobs, results) = single(sh(&own), "own-raw", Duration::from_secs(3600));
+    let (jobs, results) = single(common::sh(&own), "own-raw", Duration::from_secs(3600));
     assert_eq!(jobs.state(0), State::Done);
     assert_eq!(results.errors().count(), 0);
     assert!(
@@ -285,25 +319,33 @@ fn a_bench_that_writes_its_own_raw_file_still_records_results() {
 
 #[test]
 fn cancel_kills_running_and_drops_queued_jobs() {
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let mut jobs = Jobs::new();
     for _ in 0..3 {
         jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
     }
-    let digest = design(&p, top, &jobs, &[], Dialect::Ngspice, &mut no_funcs).unwrap();
+    let digest = schemify_run::design(
+        &p,
+        top,
+        &jobs,
+        &[],
+        Dialect::Ngspice,
+        &mut schemify_elab::no_funcs,
+    )
+    .unwrap();
     let mut results = Results::new(&plan, digest);
-    let dir = tmp("cancel");
-    let mut runner = Runner::new(cfg(&dir, &digest, sh("sleep 5"), 1));
+    let dir = common::tmp("cancel");
+    let mut runner = Runner::new(common::cfg(&dir, &digest, common::sh("sleep 5"), 1));
     for j in 0..3 {
-        let prepared = prepare(
+        let prepared = schemify_run::prepare(
             &p,
             top,
             &mut jobs,
             j,
             &[],
             Dialect::Ngspice,
-            &mut no_funcs,
+            &mut schemify_elab::no_funcs,
             &mut results,
         )
         .unwrap();
@@ -353,13 +395,14 @@ fn project_variable_corner_paths_are_relative_to_the_project_root() {
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let mut jobs = Jobs::new();
     jobs.push(None, Some("tt"), NO_SAMPLE, &[]).unwrap();
-    let dir = tmp("project-var-paths");
+    let dir = common::tmp("project-var-paths");
     // `HOME_LIB` comes from the environment, not the project: it stays bench-relative.
     let env = [("HOME_LIB", "envlib")];
-    let (jobs, _, runner) =
-        common::run_env(&p, top, &plan, jobs, &env, |d| cfg(&dir, d, sh(FAKE), 1));
+    let (jobs, _, runner) = common::run_env(&p, top, &plan, jobs, &env, |d| {
+        common::cfg(&dir, d, common::sh(FAKE), 1)
+    });
     assert_eq!(jobs.state(0), State::Done);
-    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+    let netlist = fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
     // Joined as the runner joins them (one component per base), so the separators match on
     // Windows too.
     let from = |base: &Path, rel: &str| base.join(rel).to_string_lossy().into_owned();

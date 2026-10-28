@@ -8,12 +8,9 @@
 
 mod common;
 
-use common::project;
 use proptest::prelude::*;
 use schemify_expr::{Mode, Program, Scratch, Value};
-use schemify_run::{
-    Corner, Dist, DistKind, MonteCarlo, NO_SAMPLE, Plan, Select, Sweep, Var, expand, sim_seed,
-};
+use schemify_run::{Corner, Dist, DistKind, MonteCarlo, NO_SAMPLE, Plan, Select, Sweep, Var};
 
 // ---- private ----
 
@@ -85,13 +82,13 @@ proptest! {
             montecarlo: (samples > 0).then_some("mc"),
             overrides: &over,
         };
-        let jobs = expand(&p, &select).unwrap();
+        let jobs = schemify_run::expand(&p, &select).unwrap();
         // Count = product of dimensions.
         let n_samples = if samples > 0 { samples as usize } else { 1 };
         let want = nc.max(1) * nk.max(1) * sweeps.iter().product::<usize>() * n_samples;
         prop_assert_eq!(jobs.len() as usize, want);
         // Deterministic.
-        prop_assert_eq!(&jobs, &expand(&p, &select).unwrap());
+        prop_assert_eq!(&jobs, &schemify_run::expand(&p, &select).unwrap());
         // Ordering: config, corner, sweep point (first sweep outermost), sample.
         let mut j = 0u32;
         let mut point = vec![0usize; sweeps.len()];
@@ -110,7 +107,7 @@ proptest! {
                         let mc = samples > 0;
                         prop_assert_eq!(jobs.sample(j), if mc { s } else { NO_SAMPLE });
                         // The simulator seed of a sample (run spec §3), none otherwise.
-                        prop_assert_eq!(jobs.seed(j), mc.then(|| sim_seed(5, s)));
+                        prop_assert_eq!(jobs.seed(j), mc.then(|| schemify_run::sim_seed(5, s)));
                         let a: Vec<(&str, &str)> = jobs.assignments(j).collect();
                         let ndist = if mc { dists } else { 0 };
                         prop_assert_eq!(a.len(), sweeps.len() + ndist + 1);
@@ -136,8 +133,11 @@ proptest! {
 }
 
 fn eval(text: &str) -> f64 {
-    let p = Program::compile(text, Mode::Scalar).unwrap();
-    match p.eval(&[], &mut Scratch::default()).unwrap() {
+    let p = Program::compile(text, Mode::Scalar).expect("a constant expression compiles");
+    match p
+        .eval(&[], &mut Scratch::default())
+        .expect("a constant expression evaluates")
+    {
         Value::Num(x) => x,
         Value::Int(i) => i as f64,
         v => panic!("{v:?}"),
@@ -158,17 +158,17 @@ fn mc_values(kind: DistKind, spread: &str, rel: bool, n: u32) -> Vec<f64> {
         spread: spread.into(),
         rel,
     });
-    let jobs = expand(
+    let jobs = schemify_run::expand(
         &p,
         &Select {
             montecarlo: Some("mc"),
             ..Select::default()
         },
     )
-    .unwrap();
+    .expect("the plan has record `mc`");
     assert_eq!(jobs.len(), n);
     (0..n)
-        .map(|j| eval(jobs.assigned(j, "R").unwrap()))
+        .map(|j| eval(jobs.assigned(j, "R").expect("every sample assigns R")))
         .collect()
 }
 
@@ -212,7 +212,7 @@ fn monte_carlo_assignments_follow_the_declared_distribution() {
 #[test]
 fn bench_records_read_into_a_plan() {
     let bench = common::RC_BENCH;
-    let (p, top) = project(&[
+    let (p, top) = common::project(&[
         ("res.shprim", common::RES),
         ("cap.shprim", common::CAP),
         ("tb.shbench", bench),
@@ -246,8 +246,10 @@ fn bench_records_read_into_a_plan() {
 
 fn read_err(extra: &str) -> String {
     let bench = format!("schemify 1 shbench\n\nvar R 1k\n\n{extra}");
-    let (p, top) = project(&[("tb.shbench", &bench)]);
-    Plan::read(p.doc(top).unwrap()).unwrap_err().to_string()
+    let (p, top) = common::project(&[("tb.shbench", &bench)]);
+    Plan::read(p.doc(top).expect("the bench is open"))
+        .expect_err("the record cannot run")
+        .to_string()
 }
 
 #[test]
@@ -263,7 +265,7 @@ fn records_that_cannot_run_are_refused() {
     assert!(read_err("optimize o\n  goal x min\n  vary R\n\noutput x \"1\"\n").contains("min"));
     let bad_dist = |d: &str| {
         let bench = format!("schemify 1 shbench\n\nvar R 1k\n  dist {d}\n");
-        let (p, top) = project(&[("tb.shbench", &bench)]);
+        let (p, top) = common::project(&[("tb.shbench", &bench)]);
         Plan::read(p.doc(top).unwrap()).unwrap_err().detail
     };
     assert!(bad_dist("gauss 0.1*R").contains("cannot reference"));
@@ -290,7 +292,7 @@ fn records_that_cannot_run_are_refused() {
             "schemify 1 shbench\n\nvar R 1k\n  min 1\n  max 9k\n\ncorner tt\n  set R 2k\n\n\
              optimize o\n{extra}  vary R\n\noutput x \"1\"\n"
         );
-        let (p, top) = project(&[("tb.shbench", &bench)]);
+        let (p, top) = common::project(&[("tb.shbench", &bench)]);
         Plan::read(p.doc(top).unwrap())
     };
     assert!(opt("  goal x min 2\n").contains("weight <w>"));
@@ -313,7 +315,7 @@ fn records_that_cannot_run_are_refused() {
 #[test]
 fn selections_naming_what_the_bench_lacks_are_refused() {
     let p = plan(1, 2, &[2], 2, 0);
-    let e = |s: Select<'_>| expand(&p, &s).unwrap_err().detail;
+    let e = |s: Select<'_>| schemify_run::expand(&p, &s).unwrap_err().detail;
     assert!(
         e(Select {
             configs: &["nope"],
@@ -343,7 +345,7 @@ fn selections_naming_what_the_bench_lacks_are_refused() {
         .contains("no montecarlo")
     );
     let big = plan(0, 0, &[1024, 1024], 2, 0);
-    let err = expand(
+    let err = schemify_run::expand(
         &big,
         &Select {
             sweeps: &["s0", "s1"],

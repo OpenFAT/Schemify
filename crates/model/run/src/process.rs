@@ -1,9 +1,9 @@
 //! The crate's one subprocess boundary (run spec §5, D15): simulators and compilers are
-//! spawned, reaped and killed only through [`Proc`], never waited for while they run. In:
+//! spawned, reaped and killed only through [`Process`], never waited for while they run. In:
 //! a `Command` and its log files; out: an exit status or why the child was killed.
 //!
 //! Contents:
-//! - crate-only `struct Proc`: `spawn`, `reap`
+//! - crate-only `struct Process`: `spawn`, `reap`
 //! - crate-only `fn spawn_error(prog, what, config, e) -> String`
 //! - crate-only `fn last_line(path: &Path) -> Option<String>`
 
@@ -15,16 +15,16 @@ use std::time::{Duration, Instant};
 
 /// A child process and its start time. Dropping it kills and reaps the child, so no
 /// table that holds one leaks a process or a zombie.
-pub(crate) struct Proc {
+pub(crate) struct Process {
     child: Child,
     started: Instant,
 }
 
-impl Proc {
+impl Process {
     /// Spawns `cmd` with stdin closed and stdout/stderr into `out`/`err`.
-    pub(crate) fn spawn(cmd: &mut Command, out: File, err: File) -> io::Result<Proc> {
+    pub(crate) fn spawn(cmd: &mut Command, out: File, err: File) -> io::Result<Process> {
         let child = cmd.stdin(Stdio::null()).stdout(out).stderr(err).spawn()?;
-        Ok(Proc {
+        Ok(Process {
             child,
             started: Instant::now(),
         })
@@ -38,6 +38,7 @@ impl Proc {
         timeout: Duration,
         what: &str,
     ) -> Option<Result<ExitStatus, String>> {
+        assert!(!what.is_empty(), "messages name the child");
         let outcome = match self.child.try_wait() {
             Ok(Some(status)) => Ok(status),
             Ok(None) if self.started.elapsed() <= timeout => return None,
@@ -51,7 +52,7 @@ impl Proc {
     }
 }
 
-impl Drop for Proc {
+impl Drop for Process {
     fn drop(&mut self) {
         self.kill();
     }
@@ -72,15 +73,14 @@ pub(crate) fn spawn_error(prog: &str, what: &str, config: &str, e: &io::Error) -
 pub(crate) fn last_line(path: &Path) -> Option<String> {
     let text = fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&text);
-    text.lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(|l| l.trim().to_owned())
+    let line = text.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    debug_assert!(!line.contains('\n'), "one line");
+    Some(line.to_owned())
 }
 
 // ---- private ----
 
-impl Proc {
+impl Process {
     /// Kills the child and reaps it (no zombie); errors mean it already exited.
     fn kill(&mut self) {
         let _ = self.child.kill();

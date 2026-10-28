@@ -8,8 +8,17 @@
 //! Contents:
 //! - crate-only `fn points(shapes: &[Option<Vec<&str>>; 3]) -> Result<Vec<String>, String>`
 
-use crate::plan::{SWEEP_POINTS_MAX, const_value, parse_count};
-use schemify_expr::{Mode, Program, Scratch, Value, write_num};
+use crate::plan::{self, SWEEP_POINTS_MAX};
+use schemify_expr::{Mode, Program, Scratch, Value};
+
+/// How `grid` spaces its points between the bounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spacing {
+    /// `lin`: equal differences.
+    Linear,
+    /// `log`: equal ratios.
+    Logarithmic,
+}
 
 /// Expands one sweep's `[values, lin, log]` attribute values (exactly one present).
 ///
@@ -17,10 +26,10 @@ use schemify_expr::{Mode, Program, Scratch, Value, write_num};
 ///
 /// No shape or several; `values` entries that do not compile; `lin`/`log` bounds that
 /// are not constants; a point count outside `1..=SWEEP_POINTS_MAX`; `log` bounds that
-/// are zero or of different signs.
+/// are zero or of different signs; a `lin` point past the `f64` range.
 pub(crate) fn points(shapes: &[Option<Vec<&str>>; 3]) -> Result<Vec<String>, String> {
     if shapes.iter().filter(|s| s.is_some()).count() != 1 {
-        return Err("needs exactly one of `values`, `lin`, `log`".into());
+        return Err("needs exactly one of `values`, `lin`, `log`".to_owned());
     }
     let out = match shapes {
         [Some(values), None, None] => {
@@ -29,11 +38,14 @@ pub(crate) fn points(shapes: &[Option<Vec<&str>>; 3]) -> Result<Vec<String>, Str
             }
             values.iter().map(|v| (*v).to_owned()).collect()
         }
-        [None, Some(a), None] => grid(a, false)?,
-        [None, None, Some(a)] => grid(a, true)?,
+        [None, Some(a), None] => grid(a, Spacing::Linear)?,
+        [None, None, Some(a)] => grid(a, Spacing::Logarithmic)?,
         _ => unreachable!("exactly one shape is present"),
     };
-    assert!(!out.is_empty());
+    assert!(
+        !out.is_empty(),
+        "the format gives `values` at least one entry"
+    );
     assert!(out.len() <= SWEEP_POINTS_MAX as usize);
     Ok(out)
 }
@@ -41,10 +53,11 @@ pub(crate) fn points(shapes: &[Option<Vec<&str>>; 3]) -> Result<Vec<String>, Str
 // ---- private ----
 
 /// `lin|log <from> <to> <n>`: `n` points, both ends included (`n = 1` is `from`).
-fn grid(a: &[&str], log: bool) -> Result<Vec<String>, String> {
+fn grid(a: &[&str], spacing: Spacing) -> Result<Vec<String>, String> {
     assert_eq!(a.len(), 3, "the format checks the arity");
-    let (from, to) = (const_value(a[0])?, const_value(a[1])?);
-    let n = parse_count(a[2], SWEEP_POINTS_MAX)?;
+    let (from, to) = (plan::const_value(a[0])?, plan::const_value(a[1])?);
+    let n = plan::parse_count(a[2], SWEEP_POINTS_MAX)?;
+    let log = spacing == Spacing::Logarithmic;
     if log && (from == 0.0 || to == 0.0 || (from < 0.0) != (to < 0.0)) {
         return Err(format!(
             "log {from} {to}: bounds must be nonzero with one sign"
@@ -60,10 +73,10 @@ fn grid(a: &[&str], log: bool) -> Result<Vec<String>, String> {
         } else {
             f64::from(k) / f64::from(n - 1)
         };
-        let x = match (k + 1 == n && n > 1, log) {
+        let x = match (k + 1 == n && n > 1, spacing) {
             (true, _) => to,
-            (false, false) => from + (to - from) * t,
-            (false, true) => {
+            (false, Spacing::Linear) => from + (to - from) * t,
+            (false, Spacing::Logarithmic) => {
                 let inputs = [Value::Num(from), Value::Num(to), Value::Num(t)];
                 match geo.eval(&inputs, &mut scratch) {
                     Ok(Value::Num(x)) => x,
@@ -71,8 +84,12 @@ fn grid(a: &[&str], log: bool) -> Result<Vec<String>, String> {
                 }
             }
         };
+        // `to - from` overflows for bounds of opposite signs near the `f64` limit.
+        if !x.is_finite() {
+            return Err(format!("lin {from} {to}: point {k} is past the f64 range"));
+        }
         let mut text = String::new();
-        write_num(&mut text, x);
+        schemify_expr::write_num(&mut text, x);
         out.push(text);
     }
     assert_eq!(out.len(), n as usize);
@@ -106,5 +123,11 @@ mod tests {
         assert!(p(0, &["1 +"]).is_err());
         assert!(points(&[None, None, None]).is_err());
         assert!(points(&[Some(vec!["1"]), Some(vec!["1", "2", "2"]), None]).is_err());
+    }
+
+    #[test]
+    fn lin_points_past_the_f64_range_are_refused() {
+        let e = p(1, &["-1e308", "1e308", "3"]).unwrap_err();
+        assert!(e.contains("past the f64 range"), "{e}");
     }
 }
