@@ -57,7 +57,7 @@ pub(crate) struct Pick {
 enum Outcome {
     Drop,
     Take(u8),
-    Merged(MergedRec),
+    Merged(MergedRecord),
     /// `ours`/`theirs` are record indices in A/B, [`NONE`] for a deleted side.
     Conflict {
         ours: u32,
@@ -67,7 +67,7 @@ enum Outcome {
 
 /// A record assembled from components of different sides.
 #[derive(Clone, Debug)]
-struct MergedRec {
+struct MergedRecord {
     fields: u8,
     comments: u8,
     /// Range into [`Picks::attrs`], in merged order.
@@ -243,7 +243,9 @@ impl Plan {
         let by_rank: [Vec<Vec<u32>>; 3] = [O, A, B].map(|s| {
             let mut buckets = vec![Vec::new(); RANK_MAX as usize + 1];
             for r in 1..docs[s].record_count() {
-                buckets[rank_of[ident_of[s][r as usize] as usize] as usize].push(r);
+                let i = ident_of[s][r as usize];
+                assert_ne!(i, NONE, "every non-header record has an identity");
+                buckets[rank_of[i as usize] as usize].push(r);
             }
             buckets
         });
@@ -252,13 +254,6 @@ impl Plan {
             let records = docs[s].record_count() as usize;
             assert_eq!(bucketed + 1, records, "one rank per non-header record");
         }
-        assert!(
-            ident_of
-                .iter()
-                .flat_map(|side| &side[1..])
-                .all(|&i| i != NONE),
-            "every non-header record has an identity"
-        );
         Plan {
             idents,
             outcomes,
@@ -480,7 +475,11 @@ fn decide(docs: &[&Document<'_>; 3], recs: [u32; 3], picks: &mut Picks) -> Outco
 }
 
 /// Merges a record that all three sides have and both changed, component by component.
-fn merge_record(docs: &[&Document<'_>; 3], recs: [u32; 3], picks: &mut Picks) -> Option<MergedRec> {
+fn merge_record(
+    docs: &[&Document<'_>; 3],
+    recs: [u32; 3],
+    picks: &mut Picks,
+) -> Option<MergedRecord> {
     assert!(
         recs.iter().all(|&r| r != NONE),
         "both-changed records exist on all sides"
@@ -513,7 +512,7 @@ fn merge_record(docs: &[&Document<'_>; 3], recs: [u32; 3], picks: &mut Picks) ->
             index: base + line.index,
         });
     }
-    Some(MergedRec {
+    Some(MergedRecord {
         fields,
         comments,
         attrs: start..picks.attrs.len() as u32,
@@ -585,7 +584,10 @@ fn emit(
     let before = out.doc.record_count();
     // Spans are appended in record order, so the last one ends last.
     let spans_end = out.spans.last().map_or(0, |s| s.first + s.ours + s.theirs);
-    assert!(spans_end <= before, "a conflict span covers emitted records only");
+    assert!(
+        spans_end <= before,
+        "a conflict span covers emitted records only"
+    );
     let doc = &mut out.doc;
     match outcome {
         Outcome::Drop => {}
@@ -610,14 +612,9 @@ fn emit(
             push_conflict(out, docs, &side(*ours), &side(*theirs));
         }
     }
-    let (dropped, emitted) = (
-        matches!(outcome, Outcome::Drop),
-        out.doc.record_count() > before,
-    );
-    assert_ne!(
-        dropped, emitted,
-        "a drop emits nothing, anything else a record"
-    );
+    let emitted = out.doc.record_count() > before;
+    let dropped = matches!(outcome, Outcome::Drop);
+    assert_ne!(dropped, emitted, "a drop emits nothing, all else a record");
 }
 
 /// Copies A's `ours` records then B's `theirs` records and records the conflict span.

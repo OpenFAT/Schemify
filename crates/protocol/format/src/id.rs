@@ -76,7 +76,6 @@ pub fn fresh_id(rng: &mut IdRng, mut taken: impl FnMut(&str) -> bool) -> NewId {
         }));
         if !taken(id.as_str()) {
             assert!(is_id(id.as_str()), "a drawn id is legal");
-            assert_eq!(id.as_str().len(), ID_LEN_NEW);
             return id;
         }
     }
@@ -91,7 +90,6 @@ pub(crate) fn id_sort_key(s: &str) -> Option<u128> {
     if b.is_empty() || b.len() > ID_LEN_MAX {
         return None;
     }
-    assert!((1..=ID_LEN_MAX).contains(&b.len()));
     let mut key: u128 = 0;
     for i in 0..ID_LEN_MAX {
         let d = match b.get(i) {
@@ -141,9 +139,7 @@ impl NewId {
     /// Never for an id from [`fresh_id`]: its bytes come from [`ID_ALPHABET`].
     #[must_use]
     pub fn as_str(&self) -> &str {
-        let s = std::str::from_utf8(&self.0).expect("id bytes come from the ASCII alphabet");
-        assert_eq!(s.len(), ID_LEN_NEW);
-        s
+        std::str::from_utf8(&self.0).expect("id bytes come from the ASCII alphabet")
     }
 }
 

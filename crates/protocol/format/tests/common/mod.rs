@@ -10,7 +10,7 @@
 //! - `pub mod docgen` (`gen_doc`)
 //! - `pub fn chunks`, `pub fn chunk_word`, `pub fn messy`
 
-#![allow(dead_code)] // each test binary uses a subset
+#![allow(dead_code, reason = "each test binary uses a subset")]
 
 pub mod docgen;
 
@@ -46,7 +46,7 @@ const FRAGMENTS: &[&str] = &[
     "=",
     "(",
     "nfet_01v8",
-    "\u{1F600}",
+    "\u{1f600}",
     "\\n",
     "u{41}",
 ];

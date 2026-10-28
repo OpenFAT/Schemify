@@ -323,6 +323,7 @@ impl<'src> Document<'src> {
             self.push_value(v);
         }
         assert_eq!(self.attr_values(new).len(), from.attr_values(a).len());
+        assert_eq!(self.attr_key(new), from.attr_key(a));
     }
 
     /// Appends record `r` of `from`'s comments to the current record.
@@ -365,6 +366,7 @@ impl<'src> Document<'src> {
         self.arena.push_str(text);
         let s = Str::arena_tail(&self.arena, off); // asserts the arena is under 2 GiB
         assert_eq!(s.len as usize, text.len());
+        debug_assert_eq!(self.text(s), text, "an interned span reads back its text");
         s
     }
 

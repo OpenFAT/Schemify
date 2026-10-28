@@ -90,7 +90,15 @@ pub fn parse_prefix(bytes: &[u8], max_rank: u8) -> Result<Document<'_>, ParseErr
     );
     let cut = prefix_len(bytes, max_rank);
     assert!(cut <= bytes.len());
-    parse_with(&bytes[..cut], MAX_FILE_BYTES, max_rank)
+    let parsed = parse_with(&bytes[..cut], MAX_FILE_BYTES, max_rank);
+    if let Ok(doc) = &parsed {
+        let mut kinds = (1..doc.record_count()).map(|r| doc.record_kind(r));
+        assert!(
+            kinds.all(|k| k == RecordKind::Unknown || k.rank() <= max_rank),
+            "the cut drops every record above rank {max_rank}"
+        );
+    }
+    parsed
 }
 
 /// Spec §4 kind rules (`E025`): `.shprim` has ≥ 1 pin and ≥ 1 impl, none schematic;

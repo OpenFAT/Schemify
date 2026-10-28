@@ -27,7 +27,7 @@
 //! - `Document::{kind, version, record_count, record_kind, record_word, fields, field,
 //!   record_key, attrs, attr_key, attr_values, attr_value, field_coords, value_coords,
 //!   find_attr, verbatim, comments, eof_comments, warnings}`
-//! - crate: `Document::{assert_record, assert_attr, assert_columns, record_line, attr_line, field_range, value_range, field_spans,
+//! - crate: `Document::{assert_columns, record_line, attr_line, field_range, value_range, field_spans,
 //!   value_spans, text, ranks, wire_reversed}`
 
 use crate::diag::Diagnostic;
@@ -238,7 +238,10 @@ impl<'src> Document<'src> {
     /// Panics if `r >= record_count()`; the same holds for every `r` parameter below.
     #[must_use]
     pub fn record_kind(&self, r: u32) -> RecordKind {
-        self.assert_record(r);
+        assert!(
+            (r as usize) < self.record_kinds.len(),
+            "record {r} out of range"
+        );
         let kind = self.record_kinds[r as usize];
         if r == 0 {
             assert_eq!(kind, RecordKind::Header, "record 0 is the header");
@@ -273,7 +276,10 @@ impl<'src> Document<'src> {
     /// Panics if `r >= record_count()`.
     #[must_use]
     pub fn fields(&self, r: u32) -> Texts<'_> {
-        self.assert_record(r);
+        assert!(
+            (r as usize) < self.record_kinds.len(),
+            "record {r} out of range"
+        );
         self.texts(self.field_spans(r))
     }
 
@@ -284,7 +290,10 @@ impl<'src> Document<'src> {
     /// Panics if `r >= record_count()`.
     #[must_use]
     pub fn field(&self, r: u32, i: usize) -> Option<&str> {
-        self.assert_record(r);
+        assert!(
+            (r as usize) < self.record_kinds.len(),
+            "record {r} out of range"
+        );
         self.field_spans(r).get(i).map(|s| self.text(*s))
     }
 
@@ -317,7 +326,10 @@ impl<'src> Document<'src> {
     /// Panics if `r >= record_count()`.
     #[must_use]
     pub fn attrs(&self, r: u32) -> Range<u32> {
-        self.assert_record(r);
+        assert!(
+            (r as usize) < self.record_kinds.len(),
+            "record {r} out of range"
+        );
         let range = csr(&self.record_attr_start, r, self.attr_key.len());
         assert!(range.end < NONE as usize, "attribute index fits u32");
         range.start as u32..range.end as u32
@@ -330,7 +342,10 @@ impl<'src> Document<'src> {
     /// Panics if `a` is not an attribute index.
     #[must_use]
     pub fn attr_key(&self, a: u32) -> &str {
-        self.assert_attr(a);
+        assert!(
+            (a as usize) < self.attr_key.len(),
+            "attribute {a} out of range"
+        );
         self.text(self.attr_key[a as usize])
     }
 
@@ -341,7 +356,10 @@ impl<'src> Document<'src> {
     /// Panics if `a` is not an attribute index.
     #[must_use]
     pub fn attr_values(&self, a: u32) -> Texts<'_> {
-        self.assert_attr(a);
+        assert!(
+            (a as usize) < self.attr_key.len(),
+            "attribute {a} out of range"
+        );
         self.texts(self.value_spans(a))
     }
 
@@ -352,7 +370,10 @@ impl<'src> Document<'src> {
     /// Panics if `a` is not an attribute index.
     #[must_use]
     pub fn attr_value(&self, a: u32, i: usize) -> Option<&str> {
-        self.assert_attr(a);
+        assert!(
+            (a as usize) < self.attr_key.len(),
+            "attribute {a} out of range"
+        );
         self.value_spans(a).get(i).map(|s| self.text(*s))
     }
 
@@ -366,7 +387,10 @@ impl<'src> Document<'src> {
     /// Panics if `r >= record_count()`.
     #[must_use]
     pub fn field_coords(&self, r: u32) -> &[i32] {
-        self.assert_record(r);
+        assert!(
+            (r as usize) < self.record_kinds.len(),
+            "record {r} out of range"
+        );
         assert_eq!(self.field_milli.len(), self.fields.len(), "one per field");
         &self.field_milli[self.field_range(r)]
     }
@@ -379,7 +403,10 @@ impl<'src> Document<'src> {
     /// Panics if `a` is not an attribute index.
     #[must_use]
     pub fn value_coords(&self, a: u32) -> &[i32] {
-        self.assert_attr(a);
+        assert!(
+            (a as usize) < self.attr_key.len(),
+            "attribute {a} out of range"
+        );
         assert_eq!(
             self.value_milli.len(),
             self.attr_values.len(),
@@ -406,7 +433,10 @@ impl<'src> Document<'src> {
     /// Panics if `r >= record_count()`.
     #[must_use]
     pub fn verbatim(&self, r: u32) -> Texts<'_> {
-        self.assert_record(r);
+        assert!(
+            (r as usize) < self.record_kinds.len(),
+            "record {r} out of range"
+        );
         self.texts(&self.verbatim[csr(&self.record_verbatim_start, r, self.verbatim.len())])
     }
 
@@ -418,7 +448,10 @@ impl<'src> Document<'src> {
     /// Panics if `r >= record_count()`.
     #[must_use]
     pub fn comments(&self, r: u32) -> Texts<'_> {
-        self.assert_record(r);
+        assert!(
+            (r as usize) < self.record_kinds.len(),
+            "record {r} out of range"
+        );
         self.texts(&self.comments[csr(&self.record_comment_start, r, self.comments.len())])
     }
 
@@ -434,24 +467,6 @@ impl<'src> Document<'src> {
     pub fn warnings(&self) -> &[Diagnostic] {
         debug_assert!(self.warnings.iter().all(|d| d.code.is_warning()));
         &self.warnings
-    }
-
-    /// Record index `r` names a record: the caller's precondition for every `r` parameter.
-    pub(crate) fn assert_record(&self, r: u32) {
-        let records = self.record_kinds.len();
-        assert!(
-            (r as usize) < records,
-            "record {r} out of range ({records} records)"
-        );
-    }
-
-    /// Attribute index `a` names an attribute line: the precondition for every `a`.
-    pub(crate) fn assert_attr(&self, a: u32) {
-        let attrs = self.attr_key.len();
-        assert!(
-            (a as usize) < attrs,
-            "attribute {a} out of range ({attrs} attributes)"
-        );
     }
 
     /// Parallel columns of one table have equal lengths (the SoA invariant). The
