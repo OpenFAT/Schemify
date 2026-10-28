@@ -18,7 +18,11 @@ use crate::{DESIGN_ERROR, Exit, OK, USAGE_ERROR, usage};
 /// does not parse is reported and skipped; a read or write failure stops at once.
 pub fn fmt(args: &[String]) -> Exit {
     let check = args.iter().any(|a| a == "--check");
-    let files: Vec<&String> = args.iter().filter(|a| *a != "--check").collect();
+    let files: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| *a != "--check")
+        .collect();
     if files.is_empty() {
         return Err(usage());
     }
@@ -86,6 +90,16 @@ pub fn diff(args: &[String]) -> Exit {
             ChangeKind::Changed => ('~', &bd, c.b),
         };
         assert_ne!(r, format::NONE, "{sign} change without its record");
+        if c.kind == ChangeKind::Changed {
+            assert_ne!(
+                c.parts,
+                Parts::default(),
+                "a changed record differs somewhere"
+            );
+        } else {
+            assert_eq!(c.parts, Parts::default(), "only a changed record has parts");
+            assert!(c.keys.is_empty(), "only a changed record has keys");
+        }
         let (k1, k2) = doc.record_key(r);
         out.push(sign);
         out.push(' ');

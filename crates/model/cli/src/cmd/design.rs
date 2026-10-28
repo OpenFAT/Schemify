@@ -10,7 +10,7 @@ use std::path::Path;
 use schemify_cli::spines::{self, OpenError, Opened};
 use schemify_cli::{libs, platform};
 use schemify_config::Config;
-use schemify_elab::{self as elab, Dialect};
+use schemify_elab::{self as elab, Dialect, Elab, Request};
 
 use crate::{DESIGN_ERROR, Exit, OK, USAGE_ERROR, usage};
 
@@ -38,7 +38,7 @@ pub fn netlist(config: &Config, args: &[String]) -> Exit {
     let env = spines::env_pairs();
     let env = pairs(&env);
     let sets = pairs(&a.sets);
-    let req = elab::Request {
+    let req = Request {
         config: a.configs.first().map(String::as_str),
         corner: a.corners.first().map(String::as_str),
         overrides: &sets,
@@ -67,7 +67,7 @@ pub fn check(args: &[String]) -> Exit {
     let mut o = open_design(&a.cell)?;
     let env = spines::env_pairs();
     let env = pairs(&env);
-    let req = elab::Request {
+    let req = Request {
         config: a.configs.first().map(String::as_str),
         corner: a.corners.first().map(String::as_str),
         overrides: &[],
@@ -83,7 +83,7 @@ pub fn check(args: &[String]) -> Exit {
 /// bench name the editor's history looks for (`spines::bench_name`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run(config: &Config, args: &[String]) -> Exit {
-    use schemify_run as run;
+    use schemify_run::{self as run, Pass, RunnerConfig, Select};
     let a = design_args(args).ok_or_else(usage)?;
     let explicit = explicit_dialect(&a)?;
     if let Some(d) = explicit.filter(|d| !spines::SIMULATORS.contains(d)) {
@@ -107,7 +107,7 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
     let env = pairs(&env);
     let (configs, corners, sweeps) = (strs(&a.configs), strs(&a.corners), strs(&a.sweeps));
     let sets = pairs(&a.sets);
-    let select = run::Select {
+    let select = Select {
         configs: &configs,
         corners: &corners,
         sweeps: &sweeps,
@@ -133,7 +133,7 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
         dialect,
         &mut elab::no_funcs,
         |digest| {
-            let mut cfg = run::RunnerConfig::new(&root, digest);
+            let mut cfg = RunnerConfig::new(&root, digest);
             cfg.lib_dirs = lib_dirs;
             cfg.tools = spines::tools(config.table());
             if let Some(n) = a.jobs {
@@ -168,9 +168,8 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
     for (j, _, msg) in r.results.errors() {
         eprintln!("job {j}: {msg}");
     }
-    let spec_fail = (0..r.jobs.len()).any(|j| {
-        (0..r.results.specs()).any(|s| matches!(r.results.pass(j, s as u16), run::Pass::Fail))
-    });
+    let spec_fail = (0..r.jobs.len())
+        .any(|j| (0..r.results.specs()).any(|s| matches!(r.results.pass(j, s as u16), Pass::Fail)));
     Ok(if failed || spec_fail {
         DESIGN_ERROR
     } else {
@@ -214,7 +213,6 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
         }
     }
     a.cell = cell?;
-    assert!(a.jobs != Some(0));
     Some(a)
 }
 
@@ -240,7 +238,7 @@ fn open_design(file: &str) -> Result<Opened, u8> {
 }
 
 /// Elaborates `o.top`, opening every cell elab asks for (`spines::elaborate_all`).
-fn elaborate_all(o: &mut Opened, req: &elab::Request<'_>) -> Result<elab::Elab, u8> {
+fn elaborate_all(o: &mut Opened, req: &Request<'_>) -> Result<Elab, u8> {
     let top = o.top;
     spines::elaborate_all(o, top, req, &mut elab::no_funcs).map_err(|e| {
         eprintln!("{e}");
@@ -250,7 +248,7 @@ fn elaborate_all(o: &mut Opened, req: &elab::Request<'_>) -> Result<elab::Elab, 
 
 /// Prints violations (`E`/`W`/`I code cell path param: detail`); returns whether any is an
 /// error.
-fn report(e: &elab::Elab) -> bool {
+fn report(e: &Elab) -> bool {
     let mut errors = false;
     for v in &e.violations.rows {
         errors |= v.code.as_str().starts_with('E');
@@ -261,20 +259,16 @@ fn report(e: &elab::Elab) -> bool {
 
 /// Borrows owned `(key, value)` pairs as the `&str` pairs the elab and run requests take.
 fn pairs(owned: &[(String, String)]) -> Vec<(&str, &str)> {
-    let v: Vec<(&str, &str)> = owned
+    owned
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    assert_eq!(v.len(), owned.len());
-    v
+        .collect()
 }
 
 /// Borrows owned strings as the `&str` lists the run selection takes.
 #[cfg(not(target_arch = "wasm32"))]
 fn strs(owned: &[String]) -> Vec<&str> {
-    let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
-    assert_eq!(borrowed.len(), owned.len());
-    borrowed
+    owned.iter().map(String::as_str).collect()
 }
 
 /// The `--dialect` of `a` (`Ok(None)` without one); an unknown word is reported and is a

@@ -479,6 +479,9 @@ impl Vfs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::fs;
+    use std::process;
 
     /// A hosted project's refresh replaces its whole tree, hidden runs included, and
     /// leaves sibling projects alone.
@@ -514,14 +517,14 @@ mod tests {
     /// xorshift64*: seed-replayable inputs without a dependency.
     struct Rng(u64);
     impl Rng {
-        fn next(&mut self) -> u64 {
+        fn next_u64(&mut self) -> u64 {
             self.0 ^= self.0 >> 12;
             self.0 ^= self.0 << 25;
             self.0 ^= self.0 >> 27;
             self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
         }
         fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
-            xs[(self.next() % xs.len() as u64) as usize]
+            xs[(self.next_u64() % xs.len() as u64) as usize]
         }
     }
 
@@ -546,10 +549,9 @@ mod tests {
     #[test]
     fn behaves_like_the_native_file_system() {
         for seed in 1..=40u64 {
-            let root =
-                std::env::temp_dir().join(format!("schemify-vfs-{}-{seed}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
-            std::fs::create_dir_all(&root).expect("temp dir");
+            let root = env::temp_dir().join(format!("schemify-vfs-{}-{seed}", process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("temp dir");
             let native = |k: &str| root.join(&k[1..]);
             let mut v = Vfs::new();
             let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
@@ -557,7 +559,7 @@ mod tests {
                 let k = rng.pick(PATHS);
                 let bytes = format!("{seed}:{step}").into_bytes();
                 let ctx = format!("seed {seed} step {step} {k}");
-                match rng.next() % 6 {
+                match rng.next_u64() % 6 {
                     0 | 1 => assert_eq!(
                         v.write(k, bytes.clone(), 1).is_ok(),
                         super::super::imp::write_atomic(&native(k), &bytes).is_ok(),
@@ -577,11 +579,7 @@ mod tests {
                 }
                 for &p in PATHS {
                     let n = native(p);
-                    assert_eq!(
-                        v.read(p),
-                        std::fs::read(&n).ok().as_deref(),
-                        "read {p} ({ctx})"
-                    );
+                    assert_eq!(v.read(p), fs::read(&n).ok().as_deref(), "read {p} ({ctx})");
                     assert_eq!(v.is_dir(p), n.is_dir(), "is_dir {p} ({ctx})");
                     assert_eq!(v.exists(p), n.exists(), "exists {p} ({ctx})");
                 }
@@ -610,7 +608,7 @@ mod tests {
                     assert_eq!(got, want, "list {dir} ({ctx})");
                 }
             }
-            let _ = std::fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&root);
         }
     }
 

@@ -125,8 +125,13 @@ pub fn result(id: &Json, result: &Json) -> String {
 }
 
 /// The response line (with its `\n`) for a failed call.
+///
+/// # Panics
+///
+/// Panics if `code` is 0 (the code of no failure).
 #[must_use]
 pub fn error(id: &Json, code: i32, message: &str) -> String {
+    assert_ne!(code, 0, "an error response names a failure");
     let err = Json::obj(vec![
         ("code", Json::Num(f64::from(code))),
         ("message", Json::Str(message.to_owned())),
@@ -135,8 +140,13 @@ pub fn error(id: &Json, code: i32, message: &str) -> String {
 }
 
 /// A notification line (with its `\n`) from the server: `method` with `params`, no id.
+///
+/// # Panics
+///
+/// Panics if `method` is empty.
 #[must_use]
 pub fn notification(method: &str, params: &Json) -> String {
+    assert!(!method.is_empty(), "a notification names its method");
     frame(&[
         ("method", &Json::Str(method.to_owned())),
         ("params", params),
@@ -201,13 +211,19 @@ pub fn read_frame<R: BufRead>(input: &mut R, buf: &mut Vec<u8>) -> io::Result<Fr
         buf.pop();
     }
     assert!(buf.len() <= LINE_MAX);
+    debug_assert!(!buf.contains(&b'\n'), "a frame is one line");
     Ok(Frame::Line)
 }
 
 impl MethodError {
     /// A failure with `code` and `message`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `code` is 0 (the code of no failure).
     #[must_use]
     pub fn new(code: i32, message: String) -> MethodError {
+        assert_ne!(code, 0, "a method error names a failure");
         MethodError { code, message }
     }
 }
@@ -216,6 +232,7 @@ impl MethodError {
 
 /// `{"jsonrpc":"2.0",<members>}\n`, written in place: no copy of the member values.
 fn frame(members: &[(&str, &Json)]) -> String {
+    assert!(!members.is_empty(), "a frame carries more than its version");
     let mut out = String::from("{\"jsonrpc\":\"2.0\"");
     for (k, v) in members {
         out.push(',');

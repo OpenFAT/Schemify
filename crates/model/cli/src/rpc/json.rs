@@ -207,10 +207,6 @@ impl Parser<'_> {
             return Err(self.err("unknown literal"));
         }
         self.at += word.len();
-        debug_assert!(
-            self.at <= self.bytes.len(),
-            "`starts_with` checked the length"
-        );
         Ok(v)
     }
 
@@ -339,6 +335,7 @@ impl Parser<'_> {
             match self.bytes.get(self.at) {
                 Some(b'"') => {
                     self.at += 1;
+                    debug_assert!(self.at > run, "the closing quote was consumed");
                     return Ok(out);
                 }
                 Some(b'\\') => {
@@ -379,7 +376,6 @@ impl Parser<'_> {
         self.at += 4;
         let text = std::str::from_utf8(h).expect("hex digits are ASCII");
         let code = u32::from_str_radix(text, 16).expect("four hex digits");
-        assert!(code <= 0xffff);
         Ok(code)
     }
 

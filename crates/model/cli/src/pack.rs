@@ -241,6 +241,10 @@ pub fn status(specs: &[PackSpec], paths: &Paths) -> Report {
         }
     }
     assert_eq!(report.lines.len(), specs.len());
+    assert!(
+        report.failed as usize <= specs.len(),
+        "one failure per spec at most"
+    );
     report
 }
 
@@ -314,6 +318,10 @@ fn run(specs: &[PackSpec], paths: &Paths, mode: Mode) -> Report {
         report.fail(LOCKFILE, e);
     }
     assert!(report.lines.len() >= specs.len());
+    assert!(
+        report.lines.len() <= specs.len() + 1,
+        "one line per spec, plus the lockfile's"
+    );
     report
 }
 
@@ -421,6 +429,7 @@ fn newest(dir: &Path, rev: Option<&str>) -> Result<String, String> {
 /// `want`, and only then moves it to `file` (inside `dir`). On a mismatch nothing is
 /// installed and the temp file is deleted.
 fn download(url: &str, want: &str, pack: &Path, dir: &Path, file: &Path) -> Result<(), String> {
+    assert_eq!(want.len(), 64, "the config checked `sha256`");
     assert!(
         file.starts_with(dir),
         "the module lands in its package directory"

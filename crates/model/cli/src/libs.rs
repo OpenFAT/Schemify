@@ -18,6 +18,7 @@
 //!   `pub fn is_cell_file(&str) -> bool`, `pub fn rel_path(&Path, &Path) -> Option<String>`,
 //!   `pub fn absolute(&Path) -> PathBuf`
 
+use std::path;
 use std::path::{Path, PathBuf};
 
 use schemify_doc::{LibSource, Project, ReloadError};
@@ -282,7 +283,7 @@ pub fn rel_path(dir: &Path, path: &Path) -> Option<String> {
 /// symlinks kept); `p` itself when there is no working directory (the web) or it is empty.
 #[must_use]
 pub fn absolute(p: &Path) -> PathBuf {
-    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+    path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 // ---- private ----

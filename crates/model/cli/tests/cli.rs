@@ -3,6 +3,8 @@
 mod common;
 
 use common::{schemify, scratch};
+use std::env;
+use std::fs;
 
 const CANONICAL: &str = include_str!(concat!(
     env!("SCHEMIFY_ROOT"),
@@ -36,22 +38,19 @@ fn edit_attr(text: &str, nth_inst: usize, attr: &str, new_line: &str) -> String 
 #[test]
 fn fmt_check_and_rewrite() {
     let dir = scratch("fmt");
-    std::fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
-    std::fs::write(dir.join("b.shcomp"), MESSY).unwrap();
+    fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
+    fs::write(dir.join("b.shcomp"), MESSY).unwrap();
     assert_eq!(schemify(&dir, &["fmt", "--check", "a.shcomp"]).0, 0);
     assert_eq!(schemify(&dir, &["fmt", "--check", "b.shcomp"]).0, 1);
     assert_eq!(schemify(&dir, &["fmt", "b.shcomp"]).0, 0);
-    assert_eq!(
-        std::fs::read_to_string(dir.join("b.shcomp")).unwrap(),
-        CANONICAL
-    );
+    assert_eq!(fs::read_to_string(dir.join("b.shcomp")).unwrap(), CANONICAL);
     assert_eq!(schemify(&dir, &["fmt", "--check", "b.shcomp"]).0, 0);
 }
 
 #[test]
 fn fmt_reports_parse_errors_with_path() {
     let dir = scratch("fmt-err");
-    std::fs::write(dir.join("bad.shcomp"), "schemify 1 shcomp\nwire zz 0 0\n").unwrap();
+    fs::write(dir.join("bad.shcomp"), "schemify 1 shcomp\nwire zz 0 0\n").unwrap();
     let (code, text) = schemify(&dir, &["fmt", "bad.shcomp"]);
     assert_eq!(code, 1);
     assert!(text.starts_with("bad.shcomp:"), "{text}");
@@ -62,22 +61,22 @@ fn merge_driver_merges_independent_edits_and_flags_conflicts() {
     let dir = scratch("merge");
     let moved = edit_attr(CANONICAL, 0, "at ", "  at 999 -300 R0");
     let resized = edit_attr(CANONICAL, 1, "W ", "  W 7");
-    std::fs::write(dir.join("O"), CANONICAL).unwrap();
-    std::fs::write(dir.join("A"), &moved).unwrap();
-    std::fs::write(dir.join("B"), &resized).unwrap();
+    fs::write(dir.join("O"), CANONICAL).unwrap();
+    fs::write(dir.join("A"), &moved).unwrap();
+    fs::write(dir.join("B"), &resized).unwrap();
     assert_eq!(
         schemify(&dir, &["merge-driver", "O", "A", "B", "x.shcomp"]).0,
         0
     );
-    let merged = std::fs::read_to_string(dir.join("A")).unwrap();
+    let merged = fs::read_to_string(dir.join("A")).unwrap();
     assert!(merged.contains("  at 999 -300 R0") && merged.contains("  W 7"));
 
     // Same attribute changed differently on both sides: conflict, exit 1.
-    std::fs::write(dir.join("A"), edit_attr(CANONICAL, 1, "W ", "  W 3")).unwrap();
+    fs::write(dir.join("A"), edit_attr(CANONICAL, 1, "W ", "  W 3")).unwrap();
     let (code, text) = schemify(&dir, &["merge-driver", "O", "A", "B", "x.shcomp"]);
     assert_eq!(code, 1, "{text}");
     assert!(
-        std::fs::read_to_string(dir.join("A"))
+        fs::read_to_string(dir.join("A"))
             .unwrap()
             .contains("<<<<<<<")
     );
@@ -86,8 +85,8 @@ fn merge_driver_merges_independent_edits_and_flags_conflicts() {
 #[test]
 fn diff_lists_changed_records_and_exit_code() {
     let dir = scratch("diff");
-    std::fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
-    std::fs::write(dir.join("b.shcomp"), edit_attr(CANONICAL, 1, "W ", "  W 7")).unwrap();
+    fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
+    fs::write(dir.join("b.shcomp"), edit_attr(CANONICAL, 1, "W ", "  W 7")).unwrap();
     assert_eq!(
         schemify(&dir, &["diff", "a.shcomp", "a.shcomp"]),
         (0, String::new())
@@ -156,7 +155,7 @@ fn netlist_and_check_a_project_cell() {
         &["netlist", &top, "--dialect", "cdl", "-o", "top.cdl"],
     );
     assert_eq!(code, 0, "{cdl}");
-    let cdl = std::fs::read_to_string(dir.join("top.cdl")).unwrap();
+    let cdl = fs::read_to_string(dir.join("top.cdl")).unwrap();
     assert!(
         cdl.contains(".SUBCKT top IN OUT") && cdl.contains("*.PININFO"),
         "{cdl}"
@@ -169,8 +168,8 @@ fn netlist_and_check_a_project_cell() {
 fn netlist_gate_and_usage_errors() {
     let dir = scratch("netlist-gate");
     // A cell referencing a missing library cell: E001 blocks the netlist (exit 1).
-    std::fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
-    std::fs::write(
+    fs::write(dir.join("schemify.project"), "schemify 1 project\n").unwrap();
+    fs::write(
         dir.join("bad.shbench"),
         "schemify 1 shbench\n\ninst 0aaaaa ./nowhere\n  at 0 0 R0\n  name X1\n",
     )
@@ -195,8 +194,8 @@ fn netlist_gate_and_usage_errors() {
 #[test]
 fn user_config_flags_and_pack_commands() {
     let dir = scratch("config");
-    std::fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
-    std::fs::write(
+    fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
+    fs::write(
         dir.join("bad.lua"),
         "schemify.opt.snap = 5\nschemify.opt.nope = 1\n",
     )
@@ -214,25 +213,25 @@ fn user_config_flags_and_pack_commands() {
     assert_eq!(schemify(&dir, &["--clean", "-u", "x.lua", "fmt"]).0, 2);
     // The default config is <XDG_CONFIG_HOME>/schemify/init.lua.
     let cfg = dir.join(".xdg/config/schemify");
-    std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("init.lua"), "print('from init')").unwrap();
+    fs::create_dir_all(&cfg).unwrap();
+    fs::write(cfg.join("init.lua"), "print('from init')").unwrap();
     let (_, text) = schemify(&dir, &["fmt", "--check", "a.shcomp"]);
     assert!(text.contains("note: from init"), "{text}");
 
     // pack: a local package, synced and locked next to init.lua.
     let pkg = dir.join("pkg");
-    std::fs::create_dir_all(&pkg).unwrap();
-    std::fs::write(pkg.join("demo.wasm"), b"demo").unwrap();
+    fs::create_dir_all(&pkg).unwrap();
+    fs::write(pkg.join("demo.wasm"), b"demo").unwrap();
     let init = format!(
         "schemify.pack.add {{ {{ path = [==[{}]==], name = 'demo' }} }}",
         pkg.display()
     );
-    std::fs::write(cfg.join("init.lua"), init).unwrap();
+    fs::write(cfg.join("init.lua"), init).unwrap();
     let (code, text) = schemify(&dir, &["pack", "status"]);
     assert_eq!((code, text.trim()), (0, "demo: path - unlocked"));
     let (code, text) = schemify(&dir, &["pack", "sync"]);
     assert_eq!((code, text.trim()), (0, "demo: local"));
-    let lock = std::fs::read_to_string(cfg.join("schemify-pack.lock")).unwrap();
+    let lock = fs::read_to_string(cfg.join("schemify-pack.lock")).unwrap();
     assert!(
         lock.starts_with("schemify 1 lock\n") && lock.contains("locked plugin demo path"),
         "{lock}"
@@ -253,7 +252,7 @@ fn user_config_flags_and_pack_commands() {
 /// packages' smoke tests and `nix run …#latest -- --version` check.
 #[test]
 fn version_prints_the_package_version() {
-    let dir = std::env::temp_dir();
+    let dir = env::temp_dir();
     for flag in ["--version", "-V", "version"] {
         let (code, text) = schemify(&dir, &[flag]);
         assert_eq!(code, 0, "{flag}: {text}");

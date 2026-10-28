@@ -8,8 +8,10 @@
 //! `unix_ms`, `seed`, `list`.
 
 use std::env;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::{CLIPBOARD_BYTES_MAX, LIST_DEPTH_MAX, LIST_FILES_MAX};
 
@@ -24,13 +26,13 @@ struct ClipboardTool {
 }
 
 pub(super) fn read(path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+    fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub(super) fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
     use std::io::{Read, Seek, SeekFrom};
     let err = |e: std::io::Error| format!("{}: {e}", path.display());
-    let mut f = std::fs::File::open(path).map_err(err)?;
+    let mut f = File::open(path).map_err(err)?;
     let len = f.metadata().map_err(err)?.len();
     let from = len.saturating_sub(max);
     f.seek(SeekFrom::Start(from)).map_err(err)?;
@@ -50,21 +52,21 @@ pub(super) fn is_dir(path: &Path) -> bool {
 /// Writes a sibling temp file, then renames it over `path` (edits spec §5).
 pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".schemify-tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub(super) fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     // ponytail: no fsync batching (edits spec §3 asks ≤ 100 ms); the OS flushes. Add a
     // timer-driven fsync when the frame loop gets timers.
-    let mut f = std::fs::OpenOptions::new()
+    let mut f = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
@@ -106,23 +108,23 @@ pub(super) fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>)
 }
 
 pub(super) fn remove(path: &Path) -> Result<(), String> {
-    std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
+    fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub(super) fn remove_tree(path: &Path) -> Result<(), String> {
     // `symlink_metadata`: a link is removed itself, never followed out of the tree.
-    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if meta.is_dir() {
-        std::fs::remove_dir_all(path)
+        fs::remove_dir_all(path)
     } else {
-        std::fs::remove_file(path)
+        fs::remove_file(path)
     }
     .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub(super) fn mtime_unix_s(path: &Path) -> Option<u64> {
-    let t = std::fs::metadata(path).ok()?.modified().ok()?;
-    t.duration_since(std::time::UNIX_EPOCH)
+    let t = fs::metadata(path).ok()?.modified().ok()?;
+    t.duration_since(SystemTime::UNIX_EPOCH)
         .ok()
         .map(|d| d.as_secs())
 }
@@ -201,8 +203,8 @@ pub(super) fn args() -> Vec<String> {
 pub(super) fn unix_ms() -> u64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64)
     }
     // WASI (CI's determinism runs under wasmtime): no clock.
@@ -223,7 +225,7 @@ pub(super) fn seed() -> u64 {
 pub(super) fn list(dir: &Path, depth: u32, skip: &[&Path], out: &mut Vec<PathBuf>) {
     assert!(depth <= LIST_DEPTH_MAX);
     assert!(out.len() <= LIST_FILES_MAX);
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();

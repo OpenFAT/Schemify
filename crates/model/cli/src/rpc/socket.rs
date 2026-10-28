@@ -66,6 +66,10 @@ pub fn listen(addr: &str) -> io::Result<Listener> {
             bound.ip().is_loopback(),
             "D7: bound {bound} off the loopback"
         );
+        assert!(
+            sock.port() == 0 || bound.port() == sock.port(),
+            "bound {bound} for {sock}"
+        );
     }
     Ok(Listener::Tcp(listener))
 }
@@ -101,10 +105,19 @@ impl Stream {
 
     /// Bounds how long a write may block on a client that stops reading.
     ///
+    /// # Panics
+    ///
+    /// Panics if `timeout` is zero (`None` is "no bound").
+    ///
     /// # Errors
     ///
     /// The OS refusing the option.
     pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        assert_ne!(
+            timeout,
+            Some(Duration::ZERO),
+            "a zero timeout is `None` spelled wrong"
+        );
         match self {
             Stream::Tcp(s) => s.set_write_timeout(timeout),
             #[cfg(unix)]
@@ -146,13 +159,16 @@ impl Write for Stream {
 /// Binds a Unix-domain socket at `path`, replacing a stale socket file first.
 #[cfg(unix)]
 fn listen_path(path: &Path) -> io::Result<Listener> {
+    use std::fs;
     use std::os::unix::fs::FileTypeExt;
-    let stale = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
+    let stale = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
         && UnixStream::connect(path).is_err();
     if stale {
-        std::fs::remove_file(path)?;
+        fs::remove_file(path)?;
     }
-    UnixListener::bind(path).map(Listener::Unix)
+    let listener = UnixListener::bind(path)?;
+    debug_assert!(path.exists(), "{}: bound but missing", path.display());
+    Ok(Listener::Unix(listener))
 }
 
 #[cfg(not(unix))]

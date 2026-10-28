@@ -8,7 +8,10 @@
 // Each test crate uses a subset of these helpers.
 #![allow(dead_code)]
 
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::process::Command;
 
 /// The core binary, run in `dir` with its config and data directories under `dir/.xdg`.
@@ -35,12 +38,12 @@ pub fn schemify(dir: &Path, args: &[&str]) -> (i32, String) {
 /// An empty directory `schemify-<test crate>-<name>-<pid>` under the temp dir; `name` is
 /// unique within its test crate.
 pub fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = env::temp_dir().join(format!(
         "schemify-{}-{name}-{}",
         env!("CARGO_CRATE_NAME"),
-        std::process::id()
+        process::id()
     ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("the temp dir is writable");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("the temp dir is writable");
     dir
 }

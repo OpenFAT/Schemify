@@ -82,6 +82,7 @@ fn publish_one(dir: &Path, site: &Path, index: &[HostedProject]) -> Result<Hoste
         );
         return Err(USAGE_ERROR);
     }
+    assert!(!name.is_empty(), "`project_name` refuses an empty name");
     if index.iter().any(|p| p.name == name) {
         eprintln!("{}: a second project named `{name}`", dir.display());
         return Err(USAGE_ERROR);
@@ -95,13 +96,13 @@ fn publish_one(dir: &Path, site: &Path, index: &[HostedProject]) -> Result<Hoste
         let rel = rel.to_string_lossy().replace('\\', "/");
         files.push((rel, fail(p, fs::read(p))?));
     }
-    assert_eq!(files.len(), paths.len());
     if files.len() > hosted::FILES_MAX {
         eprintln!("{name}: more than {} files", hosted::FILES_MAX);
         return Err(USAGE_ERROR);
     }
     // Replace the published copy whole.
     let dest = site.join("projects").join(&name);
+    assert!(dest.starts_with(site), "a project lands inside the site");
     let _ = fs::remove_dir_all(&dest);
     let manifest = hosted::manifest(&files);
     for (rel, bytes) in &files {
@@ -121,7 +122,6 @@ fn publish_one(dir: &Path, site: &Path, index: &[HostedProject]) -> Result<Hoste
             jobs: newest_run_jobs(&root, &root.join(rel)),
         })
         .collect();
-    assert!(benches.len() <= files.len());
     println!("{name}: {} files", files.len());
     Ok(HostedProject { name, benches })
 }
@@ -131,6 +131,10 @@ fn publish_one(dir: &Path, site: &Path, index: &[HostedProject]) -> Result<Hoste
 /// (the caller refuses that many).
 #[cfg(not(target_arch = "wasm32"))]
 fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    assert!(
+        out.len() <= hosted::FILES_MAX + 1,
+        "the caller stopped at the cap"
+    );
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };

@@ -124,6 +124,10 @@ pub fn spawn_start(cwd: &Path, argv: Vec<String>, stdin: Vec<u8>) -> Spawned {
 impl Spawned {
     /// The child's `(status, stdout + stderr)` once it exited; `None` while it runs. Returns
     /// the result once; later calls return `None`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the worker reports a status below `-E_GONE` (a bug in `spawn`).
     pub fn try_finish(&mut self) -> Option<(i32, Vec<u8>)> {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -137,6 +141,7 @@ impl Spawned {
                 Err(TryRecvError::Disconnected) => (-1, b"spawn worker vanished".to_vec()),
             };
             self.taken = true;
+            assert!(r.0 >= -2, "status {}: below `-E_GONE`", r.0);
             Some(r)
         }
         #[cfg(target_arch = "wasm32")]
@@ -169,6 +174,12 @@ pub fn read(path: &Path) -> Result<Vec<u8>, String> {
 pub fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
     let (bytes, cut) = imp::read_tail(path, max)?;
     assert!(bytes.len() as u64 <= max);
+    // A cut tail is a full one: bytes are left out only when `max` of them were kept.
+    assert!(
+        !cut || bytes.len() as u64 == max,
+        "a cut tail of {} bytes",
+        bytes.len()
+    );
     Ok((bytes, cut))
 }
 
@@ -220,6 +231,11 @@ pub fn export_project(root: &Path) -> Result<PathBuf, String> {
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .unwrap_or("project");
+    assert!(!name.is_empty());
+    assert!(
+        !name.contains(['/', '\\']),
+        "{name}: a file name, not a path"
+    );
     let files = list_files(root, &[]);
     let mut names = Vec::with_capacity(files.len());
     let mut bytes = Vec::with_capacity(files.len());
@@ -266,7 +282,13 @@ pub fn exists(path: &Path) -> bool {
 /// Returns whether `path` is a directory.
 #[must_use]
 pub fn is_dir(path: &Path) -> bool {
-    imp::is_dir(path)
+    let dir = imp::is_dir(path);
+    debug_assert!(
+        !dir || exists(path),
+        "{}: a directory that does not exist",
+        path.display()
+    );
+    dir
 }
 
 /// Writes `bytes` atomically (temp file + rename), creating parent directories, so a crash
@@ -277,7 +299,9 @@ pub fn is_dir(path: &Path) -> bool {
 ///
 /// The OS error, prefixed with the path.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    imp::write_atomic(path, bytes)
+    imp::write_atomic(path, bytes)?;
+    debug_assert!(exists(path), "{}: written but missing", path.display());
+    Ok(())
 }
 
 /// Appends `bytes` to `path`, creating it and its directories.
@@ -286,7 +310,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 ///
 /// The OS error, prefixed with the path.
 pub fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    imp::append(path, bytes)
+    imp::append(path, bytes)?;
+    debug_assert!(exists(path), "{}: appended but missing", path.display());
+    Ok(())
 }
 
 /// Deletes a file.
@@ -350,8 +376,17 @@ pub fn clipboard_set(text: &str) -> Result<(), String> {
 ///
 /// No clipboard program answered, or the text is not UTF-8; on the web also
 /// [`CLIPBOARD_PENDING`], or the browser refused the read (permission).
+///
+/// # Panics
+///
+/// Panics if the platform side returns more than [`CLIPBOARD_BYTES_MAX`] bytes (a bug there).
 pub fn clipboard_get() -> Result<String, String> {
-    imp::clipboard_get()
+    let text = imp::clipboard_get()?;
+    assert!(
+        text.len() <= CLIPBOARD_BYTES_MAX,
+        "the clipboard read is capped"
+    );
+    Ok(text)
 }
 
 /// True once after a pending web clipboard read finished: the caller repeats the paste
@@ -364,9 +399,15 @@ pub fn clipboard_ready() -> bool {
 /// Milliseconds until the caller should poll again without input because the browser owes
 /// an answer ([`clipboard_ready`]); `None` when nothing is pending (always natively), so an
 /// idle editor sleeps (D39).
+///
+/// # Panics
+///
+/// Panics if the platform side asks for a zero wait (a bug there: the frame loop would spin).
 #[must_use]
 pub fn wake_ms() -> Option<u32> {
-    imp::wake_ms()
+    let ms = imp::wake_ms();
+    assert_ne!(ms, Some(0), "a zero wait would spin the frame loop");
+    ms
 }
 
 /// The user state directory, `stdpath("state")` of the config spec §1 (honours
@@ -389,8 +430,13 @@ pub fn list_files(dir: &Path, skip: &[&Path]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     imp::list(dir, 0, skip, &mut out);
     assert!(out.len() <= LIST_FILES_MAX);
-    // Depth-first over sorted children is component order, which is `Path`'s order.
-    assert!(out.is_sorted(), "{}: listing out of order", dir.display());
+    // Depth-first over sorted children is component order, which is `Path`'s order; a file
+    // is listed once.
+    assert!(
+        out.windows(2).all(|w| w[0] < w[1]),
+        "{}: listing out of order or repeated",
+        dir.display()
+    );
     out
 }
 

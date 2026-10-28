@@ -102,6 +102,12 @@ fn string_schema() -> Json {
 
 /// A JSON Schema object with `props`, `required` listing the mandatory ones.
 fn schema(props: Vec<(&str, Json)>, required: &[&str]) -> Json {
+    for (i, (name, _)) in props.iter().enumerate() {
+        assert!(
+            props[..i].iter().all(|(earlier, _)| earlier != name),
+            "property `{name}` twice"
+        );
+    }
     for r in required {
         assert!(
             props.iter().any(|(name, _)| name == r),

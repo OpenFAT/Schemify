@@ -65,27 +65,6 @@ pub const DIALECTS: [(&str, Dialect, &str); 8] = [
     ("verilog", Dialect::Verilog, "v"),
 ];
 
-// The words and the extensions are each unique, so `dialect_of` and `netlist_file` are
-// one-to-one; a duplicate row is a compile error.
-const _: () = {
-    let mut i = 0;
-    while i < DIALECTS.len() {
-        let mut j = i + 1;
-        while j < DIALECTS.len() {
-            assert!(
-                !same_str(DIALECTS[i].0, DIALECTS[j].0),
-                "two dialects share a word"
-            );
-            assert!(
-                !same_str(DIALECTS[i].2, DIALECTS[j].2),
-                "two dialects share an extension"
-            );
-            j += 1;
-        }
-        i += 1;
-    }
-};
-
 /// A project loaded from disk with one cell file open: the CLI's `load` spine (the editor's
 /// equivalent is its session).
 #[derive(Debug)]
@@ -106,6 +85,27 @@ pub enum OpenError {
     /// The file does not parse or is refused by `doc`.
     Design(String),
 }
+
+// The words and the extensions are each unique, so `dialect_of` and `netlist_file` are
+// one-to-one; a duplicate row is a compile error.
+const _: () = {
+    let mut i = 0;
+    while i < DIALECTS.len() {
+        let mut j = i + 1;
+        while j < DIALECTS.len() {
+            assert!(
+                !same_str(DIALECTS[i].0, DIALECTS[j].0),
+                "two dialects share a word"
+            );
+            assert!(
+                !same_str(DIALECTS[i].2, DIALECTS[j].2),
+                "two dialects share an extension"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+};
 
 /// Elaborates `top`, opening every cell elab asks for and elaborating again, at most once per
 /// indexed cell plus one (each round opens at least one new cell).
@@ -302,24 +302,6 @@ pub fn bench_name<'dirs>(
     })
 }
 
-// ---- private ----
-
-/// `a == b` for the compile-time checks (`str` equality is not `const` yet).
-const fn same_str(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
 impl Cells for Opened {
     fn project(&self) -> &Project {
         &self.project
@@ -339,6 +321,24 @@ impl Cells for Opened {
             .map(|_| ())
             .map_err(|e| format!("{name}:{rel}: cannot open: {e:?}"))
     }
+}
+
+// ---- private ----
+
+/// `a == b` for the compile-time checks (`str` equality is not `const` yet).
+const fn same_str(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 #[cfg(test)]

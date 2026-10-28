@@ -4,9 +4,12 @@
 
 mod common;
 
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
 
 use common::core;
 use schemify_cli::rpc::{self, Json};
@@ -25,7 +28,7 @@ const MESSY: &str = include_str!(concat!(
 /// A scratch directory holding an empty project.
 fn scratch(name: &str) -> PathBuf {
     let dir = common::scratch(name);
-    std::fs::write(dir.join("schemify.project"), "schemify 1 project\n")
+    fs::write(dir.join("schemify.project"), "schemify 1 project\n")
         .expect("the scratch dir is writable");
     dir
 }
@@ -88,8 +91,8 @@ fn error_of(reply: &Json) -> Option<f64> {
 #[test]
 fn cli_methods_answer_what_the_cli_does() {
     let dir = scratch("cli");
-    std::fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
-    std::fs::write(dir.join("b.shcomp"), MESSY).unwrap();
+    fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
+    fs::write(dir.join("b.shcomp"), MESSY).unwrap();
     let direct = |args: &[&str]| {
         let out = core(&dir).arg("--clean").args(args).output().unwrap();
         (
@@ -124,8 +127,8 @@ fn cli_methods_answer_what_the_cli_does() {
 #[test]
 fn edit_applies_ops_and_refuses_bad_ones() {
     let dir = scratch("edit");
-    std::fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
-    std::fs::write(dir.join("orig.shcomp"), CANONICAL).unwrap();
+    fs::write(dir.join("a.shcomp"), CANONICAL).unwrap();
+    fs::write(dir.join("orig.shcomp"), CANONICAL).unwrap();
     let file = dir.join("a.shcomp").to_string_lossy().into_owned();
     let edit = |ops: &str| {
         Json::obj(vec![
@@ -159,7 +162,7 @@ fn edit_applies_ops_and_refuses_bad_ones() {
         String::from_utf8_lossy(&out.stdout),
         "~ inst 1j446r [attrs: W]\n"
     );
-    let text = std::fs::read_to_string(dir.join("a.shcomp")).unwrap();
+    let text = fs::read_to_string(dir.join("a.shcomp")).unwrap();
     assert!(text.contains("  W 7\n"), "{text}");
 }
 
@@ -217,7 +220,7 @@ fn listens_on_a_unix_socket() {
             conn = Some(c);
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(10));
     }
     let mut conn = conn.expect("the server listens within 5 s");
     writeln!(conn, "{}", request(7, "rpc.methods", Json::Arr(Vec::new()))).unwrap();

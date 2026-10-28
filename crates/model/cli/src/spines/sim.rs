@@ -142,6 +142,11 @@ pub fn run_dialect(chosen: Dialect, project: &Project, user: &Table) -> Result<D
 #[must_use]
 pub fn tools(user: &Table) -> Tools {
     let mut t = Tools::default();
+    assert_eq!(
+        t.sims.len(),
+        SIMULATORS.len(),
+        "one program row per simulator"
+    );
     for (k, d) in SIMULATORS.into_iter().enumerate() {
         let Some(s) = user.sim(kind(d)) else {
             continue;

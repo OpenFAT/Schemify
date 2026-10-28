@@ -4,6 +4,8 @@
 //! `--offline`: `--target all` needs every platform's crate sources, and a host build only
 //! fetched its own (CI); cargo fetches the rest.
 
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 /// Crates that belong to the editor only.
@@ -147,13 +149,13 @@ fn the_editor_links_no_gpu_or_window_crate() {
 #[test]
 fn crate_folders_depend_only_downward() {
     const LAYERS: [&str; 4] = ["protocol", "plugins", "model", "view"];
-    let crates = std::path::Path::new(concat!(env!("SCHEMIFY_ROOT"), "/crates"));
+    let crates = Path::new(concat!(env!("SCHEMIFY_ROOT"), "/crates"));
     let mut layer_of: Vec<(String, usize)> = Vec::new();
     let mut manifests: Vec<(String, usize, String)> = Vec::new();
     for (rank, layer) in LAYERS.iter().enumerate() {
-        for e in std::fs::read_dir(crates.join(layer)).expect("layer folder") {
+        for e in fs::read_dir(crates.join(layer)).expect("layer folder") {
             let dir = e.expect("entry").path();
-            let Ok(text) = std::fs::read_to_string(dir.join("Cargo.toml")) else {
+            let Ok(text) = fs::read_to_string(dir.join("Cargo.toml")) else {
                 continue;
             };
             let name = format!("schemify-{}", dir.file_name().unwrap().to_string_lossy());
@@ -211,12 +213,12 @@ fn paths_are_anchored_at_the_crate_or_the_root() {
         "crates/model/editor/",
         "crates/view/app/",
     ];
-    let root = std::path::Path::new(env!("SCHEMIFY_ROOT"));
+    let root = Path::new(env!("SCHEMIFY_ROOT"));
     let mut stack = vec![root.join("crates")];
     let (mut bad, mut files) = (Vec::new(), 0);
     while let Some(dir) = stack.pop() {
         assert!(files < 100_000, "a bounded tree");
-        for e in std::fs::read_dir(&dir).expect("dir") {
+        for e in fs::read_dir(&dir).expect("dir") {
             let p = e.expect("entry").path();
             let name = p.file_name().unwrap().to_string_lossy();
             if p.is_dir() {
@@ -238,7 +240,7 @@ fn paths_are_anchored_at_the_crate_or_the_root() {
                 continue; // this test spells the patterns it looks for
             }
             let test = rel.contains("/tests/") || rel.contains("/fuzz/");
-            let text = std::fs::read_to_string(&p).expect("utf-8 source");
+            let text = fs::read_to_string(&p).expect("utf-8 source");
             for (n, line) in text.lines().enumerate() {
                 let chain = (line.contains("include") && line.contains("!(\"../"))
                     || (line.contains("CARGO_MANIFEST_DIR") && line.contains("/../"));
