@@ -130,7 +130,12 @@ pub fn elaborate_all<C: Cells, F: Funcs>(
         if e.needs_open.is_empty() {
             return Ok(e);
         }
+        let rows = c.project().cells().lib.len();
         for &row in &e.needs_open {
+            assert!(
+                (row as usize) < rows,
+                "elab asks for indexed cell rows only"
+            );
             c.open_row(row)?;
         }
     }

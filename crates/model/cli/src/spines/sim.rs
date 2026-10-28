@@ -186,6 +186,7 @@ fn detect(user: &Table) -> Option<Dialect> {
 /// name in a `PATH` directory (with `.exe` on Windows). Runs no program.
 #[cfg(not(target_arch = "wasm32"))]
 fn installed(d: Dialect, user: &Table) -> bool {
+    assert!(SIMULATORS.contains(&d), "{} is not a simulator", d.as_str());
     let prog = tools(user).sim(d).path.clone();
     let p = Path::new(&prog);
     if p.components().count() > 1 {

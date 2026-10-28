@@ -60,7 +60,7 @@ pub const METHODS: [&str; 7] = [
 /// What the headless methods need: the `schemify` binary that runs the CLI methods (`None`:
 /// those methods answer [`INTERNAL_ERROR`]), the startup flags it gets (`--clean`, `-u`),
 /// and the id seed for `edit`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Headless {
     /// The core binary (`std::env::current_exe`).
     pub exe: Option<PathBuf>,

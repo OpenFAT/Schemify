@@ -222,6 +222,7 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
 fn open_design(file: &str) -> Result<Opened, u8> {
     match spines::open_file(Path::new(file), platform::seed()) {
         Ok((o, notes)) => {
+            assert!(o.project.doc(o.top).is_some(), "open_file opens its file");
             for n in &notes {
                 eprintln!("note: {n}");
             }

@@ -37,6 +37,10 @@ fn call(h: &Headless, method: &str, params: &Json) -> Result<Json, MethodError> 
         "initialize" => {
             let asked = params.get("protocolVersion").and_then(Json::as_str);
             let version = asked.filter(|v| PROTOCOLS.contains(v)).unwrap_or(PROTOCOL);
+            assert!(
+                PROTOCOLS.contains(&version),
+                "the fallback is a spoken revision"
+            );
             Ok(Json::obj(vec![
                 ("protocolVersion", str_value(version)),
                 (

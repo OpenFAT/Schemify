@@ -33,7 +33,7 @@ use web_sys::{
 pub(super) use super::opfs::mount_then;
 use super::opfs::{flush, pending};
 use super::vfs::{self, IMPORT_BYTES_MAX, ImportPlan, Vfs};
-use super::{CLIPBOARD_BYTES_MAX, CLIPBOARD_PENDING};
+use super::{CLIPBOARD_BYTES_MAX, CLIPBOARD_PENDING, LIST_DEPTH_MAX};
 
 /// The error when the page has no window (a worker).
 pub(super) const NO_WINDOW: &str = "no browser window";
@@ -115,6 +115,7 @@ pub fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
     FS.with_borrow_mut(|fs| fs.append(&k, bytes, now_s()))
         .inspect_err(|e| warn(e))?;
     flush();
+    assert!(exists(path));
     Ok(())
 }
 
@@ -122,6 +123,7 @@ pub fn remove(path: &Path) -> Result<(), String> {
     let k = vfs::key(path);
     FS.with_borrow_mut(|fs| fs.remove(&k))?;
     flush();
+    assert!(FS.with_borrow(|fs| fs.read(&k).is_none()));
     Ok(())
 }
 
@@ -144,6 +146,7 @@ pub fn mtime_unix_s(path: &Path) -> Option<u64> {
 }
 
 pub fn list(dir: &Path, depth: u32, skip: &[&Path], out: &mut Vec<PathBuf>) {
+    assert!(depth <= LIST_DEPTH_MAX);
     let skip: Vec<String> = skip.iter().map(|p| vfs::key(p)).collect();
     FS.with_borrow(|fs| fs.list(&vfs::key(dir), depth, &skip, out));
 }
@@ -174,6 +177,7 @@ pub fn args() -> Vec<String> {
         return Vec::new();
     }
     let path = js_sys::decode_uri_component(raw).map_or_else(|_| raw.to_owned(), String::from);
+    assert!(!path.is_empty(), "a non-empty fragment decodes to text");
     vec![path]
 }
 
@@ -189,6 +193,7 @@ pub fn clipboard_set(text: &str) -> Result<(), String> {
 
 pub fn clipboard_get() -> Result<String, String> {
     if let Some(answer) = CLIP.with_borrow_mut(|c| c.answer.take()) {
+        assert!(!CLIP.with_borrow(|c| c.reading), "an answer ends its read");
         return answer;
     }
     if CLIP.with_borrow(|c| c.reading) {
@@ -219,6 +224,8 @@ pub fn clipboard_get() -> Result<String, String> {
             }
         };
         CLIP.with_borrow_mut(|c| {
+            assert!(c.reading, "one read in flight at a time");
+            assert!(c.answer.is_none(), "an answer was never taken");
             c.reading = false;
             c.answer = Some(answer);
             c.ready = true;

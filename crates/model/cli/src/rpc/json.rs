@@ -173,6 +173,7 @@ impl Json {
 
 impl Parser<'_> {
     fn err(&self, what: &'static str) -> JsonError {
+        debug_assert!(self.at <= self.bytes.len());
         JsonError { at: self.at, what }
     }
 
@@ -206,6 +207,10 @@ impl Parser<'_> {
             return Err(self.err("unknown literal"));
         }
         self.at += word.len();
+        debug_assert!(
+            self.at <= self.bytes.len(),
+            "`starts_with` checked the length"
+        );
         Ok(v)
     }
 
