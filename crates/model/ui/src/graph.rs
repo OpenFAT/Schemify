@@ -1,5 +1,10 @@
-//! Axis ticks for the waveform viewer's plots (D23; drawn by `render`): linear and log
-//! positions and the digits that tell neighbouring ticks apart.
+//! Axis ticks for the waveform viewer's plots (D23; drawn by `render`): an axis range in, tick
+//! positions and the digits that tell neighbouring ticks apart out.
+//!
+//! Contents:
+//! - `pub fn ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>)`
+//! - `pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>)`
+//! - `pub fn tick_digits(ts: &[f64], log: bool) -> usize`
 
 /// Writes "nice" tick positions (steps of 1, 2 or 5 × 10^k) covering `[lo, hi]` into `out`,
 /// at most `max_ticks + 1` of them.

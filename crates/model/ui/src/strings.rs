@@ -1,12 +1,18 @@
-//! Session string interner: every id, label and command name in the UI tables is a [`Sym`].
+//! Session string interner: text in, [`Sym`] handles out. Every id, label and command name in
+//! the UI tables is a [`Sym`].
 //!
 //! Two regions. The **permanent** region is append-only: ids, commands, style classes and every
 //! string of a plugin contribution, interned once per session. The **live** region holds the
 //! free text of the app's state contribution (labels and values that change every frame, such
 //! as the pointer coordinates in the status line): each [`crate::records::parse_live`] call is
 //! one generation, a string still used keeps its handle, and the strings the previous
-//! generation used but this one does not are freed. So text that changes every frame no longer
-//! grows the table.
+//! generation used but this one does not are freed. So text that changes every frame does not
+//! grow the table.
+//!
+//! Contents:
+//! - `pub struct Sym`: `Sym::NONE`, `is_none`, `raw`, `is_live`
+//! - `pub struct Strings`: `CAPACITY`, `LIVE_CAPACITY`, `new`, `intern`, `find`, `get`, `len`,
+//!   `live_len`, `is_empty`; crate-only `begin_live`, `intern_live`, `end_live`
 
 use std::collections::HashMap;
 
@@ -14,9 +20,28 @@ use std::collections::HashMap;
 ///
 /// `Sym::NONE` is the empty string and doubles as "absent" in every column that holds a `Sym`.
 /// A permanent handle is stable for the life of its [`Strings`]; a live one until the
-/// generation after the last one that used its text ([`Strings::end_live`]).
+/// generation after the last one that used its text (`Strings::end_live`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 pub struct Sym(pub(crate) u32);
+
+/// The interner: an append-only permanent region plus a generational live region.
+///
+/// Capacity: [`Strings::CAPACITY`] permanent strings (session lifetime; plugin churn re-interns
+/// the same names, so growth is bounded by the distinct names ever seen) and
+/// [`Strings::LIVE_CAPACITY`] live strings per generation.
+#[derive(Debug)]
+pub struct Strings {
+    names: Vec<Box<str>>,
+    lookup: HashMap<Box<str>, Sym>,
+    /// Live strings of the generation being built (or the last one built): text → handle.
+    live: HashMap<Box<str>, Sym>,
+    /// The previous generation's strings not (yet) reused by the current one.
+    live_old: HashMap<Box<str>, Sym>,
+    /// Handle → text for every live string of the current and the open previous generation.
+    live_text: HashMap<u32, Box<str>>,
+    /// Next live index to try (31 bits, wraps).
+    live_next: u32,
+}
 
 /// Handle bit of the live region. Permanent handles stay below [`Strings::CAPACITY`].
 const LIVE: u32 = 1 << 31;
@@ -40,25 +65,6 @@ impl Sym {
     pub fn is_live(self) -> bool {
         self.0 & LIVE != 0
     }
-}
-
-/// The interner: an append-only permanent region plus a generational live region.
-///
-/// Capacity: [`Strings::CAPACITY`] permanent strings (session lifetime; plugin churn re-interns
-/// the same names, so growth is bounded by the distinct names ever seen) and
-/// [`Strings::LIVE_CAPACITY`] live strings per generation.
-#[derive(Debug)]
-pub struct Strings {
-    names: Vec<Box<str>>,
-    lookup: HashMap<Box<str>, Sym>,
-    /// Live strings of the generation being built (or the last one built): text → handle.
-    live: HashMap<Box<str>, Sym>,
-    /// The previous generation's strings not (yet) reused by the current one.
-    live_old: HashMap<Box<str>, Sym>,
-    /// Handle → text for every live string of the current and the open previous generation.
-    live_text: HashMap<u32, Box<str>>,
-    /// Next live index to try (31 bits, wraps).
-    live_next: u32,
 }
 
 impl Default for Strings {
@@ -85,6 +91,7 @@ impl Strings {
         };
         s.names.push("".into());
         s.lookup.insert("".into(), Sym::NONE);
+        debug_assert_eq!(s.len(), 1);
         s
     }
 
@@ -106,9 +113,45 @@ impl Strings {
         sym
     }
 
+    /// Returns the handle for `s` without interning it (permanent, or live in the current
+    /// generation).
+    pub fn find(&self, s: &str) -> Option<Sym> {
+        self.lookup.get(s).or_else(|| self.live.get(s)).copied()
+    }
+
+    /// Returns the text of `sym`; a dead live handle reads as the empty string (and fails a
+    /// debug assertion: tables must be recomposed after every live generation).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a permanent `sym` came from a different interner and is out of range.
+    pub fn get(&self, sym: Sym) -> &str {
+        if sym.is_live() {
+            let text = self.live_text.get(&sym.0);
+            debug_assert!(text.is_some(), "dead live string handle");
+            return text.map_or("", |t| t.as_ref());
+        }
+        &self.names[sym.0 as usize]
+    }
+
+    /// Number of permanent strings, including the empty string.
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Number of live strings held (the current generation's).
+    pub fn live_len(&self) -> usize {
+        self.live_text.len()
+    }
+
+    /// Always false: the empty string is interned at construction.
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
     /// Opens a live generation: until [`Strings::end_live`], [`Strings::intern_live`] reuses
     /// the handles of the previous generation's strings and allocates new ones for new text.
-    pub fn begin_live(&mut self) {
+    pub(crate) fn begin_live(&mut self) {
         assert!(self.live_old.is_empty(), "live generation already open");
         self.live_old = std::mem::take(&mut self.live);
         debug_assert!(self.live.is_empty());
@@ -120,7 +163,7 @@ impl Strings {
     /// # Panics
     ///
     /// Panics when one generation holds more than [`Strings::LIVE_CAPACITY`] strings.
-    pub fn intern_live(&mut self, s: &str) -> Sym {
+    pub(crate) fn intern_live(&mut self, s: &str) -> Sym {
         if let Some(&sym) = self.lookup.get(s) {
             return sym;
         }
@@ -158,48 +201,12 @@ impl Strings {
 
     /// Closes the live generation opened by [`Strings::begin_live`]: the previous
     /// generation's strings it did not reuse are freed, and their handles die.
-    pub fn end_live(&mut self) {
+    pub(crate) fn end_live(&mut self) {
         // Iteration order does not matter: every entry is removed.
         for (_, sym) in self.live_old.drain() {
             self.live_text.remove(&sym.0);
         }
         assert_eq!(self.live.len(), self.live_text.len(), "live tables agree");
-    }
-
-    /// Returns the handle for `s` without interning it (permanent, or live in the current
-    /// generation).
-    pub fn find(&self, s: &str) -> Option<Sym> {
-        self.lookup.get(s).or_else(|| self.live.get(s)).copied()
-    }
-
-    /// Returns the text of `sym`; a dead live handle reads as the empty string (and fails a
-    /// debug assertion: tables must be recomposed after every live generation).
-    ///
-    /// # Panics
-    ///
-    /// Panics if a permanent `sym` came from a different interner and is out of range.
-    pub fn get(&self, sym: Sym) -> &str {
-        if sym.is_live() {
-            let text = self.live_text.get(&sym.0);
-            debug_assert!(text.is_some(), "dead live string handle");
-            return text.map_or("", |t| t.as_ref());
-        }
-        &self.names[sym.0 as usize]
-    }
-
-    /// Number of permanent strings, including the empty string.
-    pub fn len(&self) -> usize {
-        self.names.len()
-    }
-
-    /// Number of live strings held (the current generation's).
-    pub fn live_len(&self) -> usize {
-        self.live_text.len()
-    }
-
-    /// Always false: the empty string is interned at construction.
-    pub fn is_empty(&self) -> bool {
-        false
     }
 }
 

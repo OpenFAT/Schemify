@@ -1,12 +1,17 @@
 //! Vector icons as data (the `icon` prop, D6: a plugin restyles icons the way it restyles
-//! everything else): SVG path data in a [`ICON_BOX`]-unit square, parsed into the verb/point
-//! tables the math widget already draws.
+//! everything else): SVG path data in a [`ICON_BOX`]-unit square in, the verb/point tables the
+//! math widget already draws out.
 //!
 //! Syntax: one or more paths separated by `;`. A path is stroked (line icons), or filled when
 //! it starts with `F`. Path data takes the SVG commands `M L H V C Q Z` (absolute) and
 //! `m l h v c q z` (relative), numbers separated by spaces or commas, implicit repeats (extra
 //! pairs after `M` are lines). Example, a play triangle beside a bar:
 //! `"F M4 2 L14 8 L4 14 Z; M1 2 V14"`.
+//!
+//! Contents:
+//! - `pub const ICON_BOX: f32`, `pub const ICON_STROKE: f32`, `pub const ICON_POINTS_MAX: usize`
+//! - `pub struct Icon`
+//! - `pub fn parse(src: &str) -> Option<Icon>`
 
 use crate::math::{MathPaths, Verb};
 
@@ -26,6 +31,13 @@ pub struct Icon {
     pub fill: MathPaths,
     /// Paths drawn with a [`ICON_STROKE`]-unit stroke.
     pub stroke: MathPaths,
+}
+
+/// One token of path data.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Tok {
+    Cmd(u8),
+    Num(f32),
 }
 
 /// Parses icon data (module docs). `None` on any syntax error, a non-finite number, an empty
@@ -63,13 +75,9 @@ pub fn parse(src: &str) -> Option<Icon> {
     (!empty).then_some(icon)
 }
 
-/// One token of path data.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Tok {
-    Cmd(u8),
-    Num(f32),
-}
+// ---- private ----
 
+/// Splits path data into commands and numbers; `None` on a stray byte or a bad number.
 fn tokens(data: &str) -> Option<Vec<Tok>> {
     let b = data.as_bytes();
     let mut out = Vec::with_capacity(b.len() / 2);
