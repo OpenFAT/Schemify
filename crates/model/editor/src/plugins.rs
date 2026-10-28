@@ -1677,7 +1677,7 @@ mod io_tests {
         assert_eq!(status, 0);
         let list = String::from_utf8(bytes).unwrap();
         assert!(list.lines().any(|l| l == "plugins.rs"), "{list}");
-        assert!(list.lines().any(|l| l == "editor/integrate.rs"), "{list}");
+        assert!(list.lines().any(|l| l == "editor/gestures.rs"), "{list}");
         // Path order: each directory's entries by name, depth first (`editor/…` before
         // `editor.rs`), as `platform::list_files` walks.
         let mut sorted: Vec<&Path> = list.lines().map(Path::new).collect();

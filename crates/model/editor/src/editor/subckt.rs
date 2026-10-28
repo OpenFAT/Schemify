@@ -19,14 +19,14 @@ use schemify_doc::{DocHandle, Document, EditRequest, Op, PinDir, RecordBuf, Tabl
 use schemify_elab::{CellState, Name};
 use schemify_format::{FileKind, Orient, RecordKind};
 
-use super::Editor;
-use super::parity::{PITCH, symbol_records};
-use crate::checks;
-use crate::edit::{self, Ids};
+use crate::edit::Ids;
 use crate::geometry::Pt;
-use crate::platform;
 use crate::scene::ObjKey;
 use crate::wiring::{on_interior, route};
+use crate::{checks, edit, platform};
+
+use super::Editor;
+use super::symbol::{PITCH, symbol_records};
 
 /// Net of a connection point that belongs to no net (a noconn): foreign to every crossing.
 const NO_COMP: u32 = u32::MAX;

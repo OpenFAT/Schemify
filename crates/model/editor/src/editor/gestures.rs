@@ -15,10 +15,12 @@ use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
 use schemify_format::{RecordKind, format_coord, parse_coord};
 
-use super::{Editor, HIT_PX, Tool};
 use crate::edit;
 use crate::geometry::{Pt, Xform};
 use crate::scene::{LAYER_SEL, ObjKey};
+
+use super::Editor;
+use super::tool::{HIT_PX, Tool};
 
 /// Half side of the mark on a selected wire end, milli-units (xschem's pin box).
 const END_MARK: i32 = 2_500;
