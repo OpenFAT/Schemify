@@ -2,6 +2,8 @@
 //! containment, autoscale covering the data, readouts equal to interpolation), refusals leaving
 //! the tables unchanged, and capacities.
 
+use std::ptr;
+
 use proptest::prelude::*;
 use schemify_wave::{
     Applied, Axis, Cursor, MAX_PANES, RawPlot, Request, VarKind, Variable, ViewError, Waves,
@@ -35,14 +37,14 @@ fn plain_signals_borrow_the_dataset() {
     assert_eq!(add(&mut w, "v(out)", 0), Ok(Applied::Trace(0)));
     let d = &w.datasets()[0];
     let (x, y) = w.xy(0);
-    assert!(std::ptr::eq(x, d.scale()), "x borrows the scale column");
+    assert!(ptr::eq(x, d.scale()), "x borrows the scale column");
     assert!(
-        std::ptr::eq(y, d.col(d.find_var("v(out)").unwrap())),
+        ptr::eq(y, d.col(d.find_var("v(out)").unwrap())),
         "y borrows v(out)"
     );
     // An expression owns its values.
     add(&mut w, "v(out) * 2", 0).unwrap();
-    assert!(!std::ptr::eq(w.xy(1).1, w.datasets()[0].col(2)));
+    assert!(!ptr::eq(w.xy(1).1, w.datasets()[0].col(2)));
     assert_eq!(w.xy(1).1[100], 2.0 * w.xy(0).1[100]);
 }
 
@@ -214,9 +216,9 @@ fn ramp() -> Waves {
     let mut re: Vec<f64> = (0..n).map(|i| f64::from(i) * 1e-3).collect();
     re.extend((0..n).map(|i| f64::from(i).sin()));
     let mut w = Waves::new(vec![
-        RawPlot::from_columns("ramp", vars, re, vec![]).unwrap(),
+        RawPlot::from_columns("ramp", vars, re, vec![]).expect("two columns of n samples each"),
     ]);
-    add(&mut w, "v(r)", 0).unwrap();
+    add(&mut w, "v(r)", 0).expect("v(r) is a column of the ramp");
     w
 }
 

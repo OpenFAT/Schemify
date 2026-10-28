@@ -7,6 +7,9 @@
 //! - `pub enum Applied`
 //! - `pub enum ViewError`
 
+use std::error;
+use std::fmt;
+
 use crate::pane::{Cursor, LineStyle, PaneProps};
 
 /// One change to the viewer tables. Positions are fractions of the visible span (0 = low end,
@@ -211,10 +214,10 @@ pub enum ViewError {
     Bus(String),
 }
 
-impl std::error::Error for ViewError {}
+impl error::Error for ViewError {}
 
-impl std::fmt::Display for ViewError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ViewError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ViewError::Expr(e) => write!(f, "{e}"),
             ViewError::Full(what) => write!(f, "too many {what}"),

@@ -5,17 +5,17 @@
 //! axis is the plot's scale column and the sweep steps are the plot's steps.
 //!
 //! Contents:
-//! - `pub fn eval(prog, plot, ops, lookup, scratch) -> Result<CalcResult, Error>`
+//! - `pub fn eval(program, plot, ops, lookup, scratch) -> Result<CalcResult, Error>`
 //! - `pub fn op_dataset(plots: &[RawPlot]) -> Option<&RawPlot>`
 //! - `pub fn op_value(op: &RawPlot, vector: &str) -> Option<f64>`
 //! - `pub fn signal_expr(plot: &RawPlot, v: usize) -> String`
-//! - `pub(crate) fn bind(prog, plot, ops, cols) -> Result<(), Error>`
+//! - `pub(crate) fn bind(program, plot, ops, cols) -> Result<(), Error>`
 
 use schemify_expr::{CalcResult, Code, Column, Error, Plot, Program, Scratch, SignalKind, Value};
 
 use crate::plot::{RawPlot, VarKind};
 
-/// Evaluates `prog` over `plot`. Its `v()`/`i()` signals read `plot`'s columns by
+/// Evaluates `program` over `plot`. Its `v()`/`i()` signals read `plot`'s columns by
 /// [`RawPlot::find_signal`] without copying; `ops[k]` is the value of the `k`-th `op(…)` signal
 /// (a run's job reads them from its operating point, run spec §4), `None` where there is none.
 /// Identifiers (bench vars) resolve through `lookup`; the result's strings borrow `scratch`.
@@ -28,25 +28,30 @@ use crate::plot::{RawPlot, VarKind};
 ///
 /// # Panics
 ///
-/// Panics if `prog` was not compiled in calculator mode, or if `ops` does not hold one value per
-/// `op(…)` signal.
-pub fn eval<'s, 'v>(
-    prog: &Program,
+/// Panics if `program` was not compiled in calculator mode, or if `ops` does not hold one value
+/// per `op(…)` signal.
+pub fn eval<'scratch, 'value>(
+    program: &Program,
     plot: &RawPlot,
     ops: Option<&[f64]>,
-    lookup: impl FnMut(&str) -> Option<Value<'v>>,
-    scratch: &'s mut Scratch,
-) -> Result<CalcResult<'s>, Error> {
-    let mut cols = Vec::with_capacity(prog.signals().len());
-    bind(prog, plot, ops, &mut cols)?;
-    let mut inputs = Vec::with_capacity(prog.idents().len());
-    prog.bind(&mut inputs, lookup)?;
+    lookup: impl FnMut(&str) -> Option<Value<'value>>,
+    scratch: &'scratch mut Scratch,
+) -> Result<CalcResult<'scratch>, Error> {
+    let mut cols = Vec::with_capacity(program.signals().len());
+    bind(program, plot, ops, &mut cols)?;
+    let mut inputs = Vec::with_capacity(program.idents().len());
+    program.bind(&mut inputs, lookup)?;
+    assert_eq!(
+        inputs.len(),
+        program.idents().len(),
+        "one input per identifier"
+    );
     let p = Plot {
         x: plot.scale(),
         steps: plot.steps(),
         signals: &cols,
     };
-    prog.eval_calc_plain(&inputs, &p, scratch)
+    program.eval_calc_plain(&inputs, &p, scratch)
 }
 
 /// Fills `cols` (cleared first) with one borrowed column per [`Program::signals`] entry, in that
@@ -62,26 +67,26 @@ pub fn eval<'s, 'v>(
 /// # Panics
 ///
 /// Panics if `ops` does not hold one value per `op(…)` signal.
-pub(crate) fn bind<'a>(
-    prog: &Program,
-    plot: &'a RawPlot,
-    ops: Option<&'a [f64]>,
-    cols: &mut Vec<Column<'a>>,
+pub(crate) fn bind<'plot>(
+    program: &Program,
+    plot: &'plot RawPlot,
+    ops: Option<&'plot [f64]>,
+    cols: &mut Vec<Column<'plot>>,
 ) -> Result<(), Error> {
     cols.clear();
-    let mut op_k = 0;
-    for (k, (kind, name)) in prog.signals().enumerate() {
+    let mut op_index = 0;
+    for (k, (kind, name)) in program.signals().enumerate() {
         if kind == SignalKind::Op {
-            let Some(x) = ops.and_then(|o| o.get(op_k)) else {
+            let Some(x) = ops.and_then(|o| o.get(op_index)) else {
                 return Err(Error::new(
                     Code::X006,
-                    prog.signal_span(k),
+                    program.signal_span(k),
                     format!(
                         "op({name}) needs a simulation job's operating point: use it in a bench `output`"
                     ),
                 ));
             };
-            op_k += 1;
+            op_index += 1;
             cols.push(Column {
                 re: core::slice::from_ref(x),
                 im: &[],
@@ -92,7 +97,7 @@ pub(crate) fn bind<'a>(
             let f = if kind == SignalKind::V { "v" } else { "i" };
             return Err(Error::new(
                 Code::X004,
-                prog.signal_span(k),
+                program.signal_span(k),
                 format!("no signal `{f}({name})` in `{}`", plot.name()),
             ));
         };
@@ -101,9 +106,13 @@ pub(crate) fn bind<'a>(
             im: plot.col_im(v),
         });
     }
-    debug_assert_eq!(cols.len(), prog.signals().len());
+    assert_eq!(
+        cols.len(),
+        program.signals().len(),
+        "one column per signal, in order"
+    );
     assert!(
-        ops.is_none_or(|o| o.len() == op_k),
+        ops.is_none_or(|o| o.len() == op_index),
         "one value per op() signal"
     );
     Ok(())
@@ -111,6 +120,7 @@ pub(crate) fn bind<'a>(
 
 /// The operating-point dataset of a raw file's plots: the one whose plot name says
 /// "operating point" (ngspice, ESPice), else a one-point `dc` plot (Xyce writes `.op` that way).
+#[must_use]
 pub fn op_dataset(plots: &[RawPlot]) -> Option<&RawPlot> {
     let named = |p: &&RawPlot, s: &str| p.name().to_ascii_lowercase().contains(s);
     plots
@@ -122,6 +132,11 @@ pub fn op_dataset(plots: &[RawPlot]) -> Option<&RawPlot> {
 /// The value of ngspice device vector `vector` (`@m.x1.mm2[gm]`) at the operating point `op`:
 /// the vector by that name, or as ngspice writes saved device vectors (`i(@…)`, `v(@…)`),
 /// compared case-insensitively; `None` when `op` lacks it.
+///
+/// # Panics
+///
+/// Panics if `vector` does not start with `@` (it names no device vector).
+#[must_use]
 pub fn op_value(op: &RawPlot, vector: &str) -> Option<f64> {
     assert!(vector.starts_with('@'), "a device vector: {vector}");
     let v = op
@@ -139,7 +154,10 @@ pub fn op_value(op: &RawPlot, vector: &str) -> Option<f64> {
 /// # Panics
 ///
 /// Panics when `v >= plot.vars().len()`.
+#[must_use]
 pub fn signal_expr(plot: &RawPlot, v: usize) -> String {
+    let columns = plot.vars().len();
+    assert!(v < columns, "column {v} out of range ({columns} columns)");
     let var = &plot.vars()[v];
     let name = var.name.as_str();
     let inner = |p: char| {
@@ -176,7 +194,8 @@ pub fn signal_expr(plot: &RawPlot, v: usize) -> String {
         let quoted = arg.replace('\\', "\\\\").replace('"', "\\\"");
         format!("{f}(\"{quoted}\")")
     };
-    debug_assert!(out.len() >= 4);
+    debug_assert!(out.starts_with(f), "a `{f}(…)` call");
+    debug_assert!(out.ends_with(')'), "a `{f}(…)` call");
     out
 }
 
@@ -188,7 +207,7 @@ mod tests {
     use crate::plot::Variable;
 
     fn plot() -> RawPlot {
-        let vars = [
+        let vars: Vec<Variable> = [
             "time",
             "v(out)",
             "IN",
@@ -211,9 +230,9 @@ mod tests {
             name: (*n).into(),
             kind,
         })
-        .collect::<Vec<_>>();
+        .collect();
         let n = 4;
-        let re = (0..vars.len() * n).map(|k| k as f64).collect();
+        let re: Vec<f64> = (0..vars.len() * n).map(|k| k as f64).collect();
         RawPlot::from_columns("t", vars, re, vec![]).unwrap()
     }
 
@@ -233,8 +252,8 @@ mod tests {
         for (v, w) in want.iter().enumerate() {
             let src = signal_expr(&p, v);
             assert_eq!(&src, w);
-            let prog = Program::compile(&src, Mode::Calc).unwrap();
-            bind(&prog, &p, None, &mut cols).unwrap();
+            let program = Program::compile(&src, Mode::Calc).unwrap();
+            bind(&program, &p, None, &mut cols).unwrap();
             assert_eq!(cols[0].re, p.col(v), "{src}");
         }
     }
@@ -242,9 +261,9 @@ mod tests {
     #[test]
     fn eval_borrows_columns_and_reports_unknown_signals() {
         let p = plot();
-        let prog = Program::compile("v(out) * 2 + i(v1)", Mode::Calc).unwrap();
+        let program = Program::compile("v(out) * 2 + i(v1)", Mode::Calc).unwrap();
         let mut s = Scratch::default();
-        let CalcResult::Column(c) = eval(&prog, &p, None, |_| None, &mut s).unwrap() else {
+        let CalcResult::Column(c) = eval(&program, &p, None, |_| None, &mut s).unwrap() else {
             panic!("column expected")
         };
         assert_eq!(c.kind, ColKind::Real);

@@ -9,7 +9,7 @@
 //! - `pub fn bin_counts(y: &[f64], t0: f64, t1: f64, log: bool, bins: &mut [u32])`
 
 use crate::axis::Scale;
-use crate::decimate::{gallop, pixel_columns};
+use crate::decimate;
 
 /// One run of equal pixel columns of a digital lane (spec waves §4): columns `c0..c1` counted
 /// from the x scale's `p0`.
@@ -38,7 +38,7 @@ pub struct Run {
 /// O(visible samples + columns · log(samples per column)); nothing for a non-ascending step.
 pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, out: &mut Vec<Run>) {
     assert_eq!(xs.len(), ys.len(), "x and y columns differ in length");
-    let cols = pixel_columns(sx);
+    let cols = decimate::pixel_columns(sx);
     let n = xs.len();
     if n == 0 || xs[0] > xs[n - 1] || !xs[0].is_finite() {
         // ponytail: a non-ascending step (an X-Y sweep) has no time order to hold values in.
@@ -49,7 +49,7 @@ pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, ou
     // `i`: first sample at or after the current column's left edge.
     let mut i = xs.partition_point(|&x| x < edge(0));
     for c in 0..cols {
-        let j = gallop(xs, i, n, edge(c + 1));
+        let j = decimate::gallop(xs, i, n, edge(c + 1));
         let col = &ys[i..j];
         // The value held into the column needs a sample before it and one at or after it;
         // without one the column's first sample sets the value.
@@ -79,12 +79,22 @@ pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, ou
             }),
         }
     }
-    debug_assert!(out[before..].windows(2).all(|w| w[0].c1 <= w[1].c0));
+    let runs = &out[before..];
+    debug_assert!(
+        runs.windows(2).all(|w| w[0].c1 <= w[1].c0),
+        "runs are ordered and disjoint"
+    );
+    debug_assert!(runs.iter().all(|r| r.c0 < r.c1), "every run spans a column");
+    debug_assert!(
+        runs.last().is_none_or(|r| r.c1 as usize <= cols),
+        "runs stay inside the scale"
+    );
 }
 
 /// The logic value of sample `y`: `y >= threshold` as 0/1, or the bus value `y` itself when
 /// there is no threshold (NaN reads 0).
 #[inline]
+#[must_use]
 pub fn logic(y: f64, threshold: Option<f64>) -> u32 {
     match threshold {
         Some(t) => u32::from(y >= t),
@@ -101,12 +111,16 @@ pub fn logic(y: f64, threshold: Option<f64>) -> u32 {
 /// Panics if `bins` is empty or `t0 < t1` does not hold with both finite.
 pub fn bin_counts(y: &[f64], t0: f64, t1: f64, log: bool, bins: &mut [u32]) {
     assert!(!bins.is_empty(), "no bins");
-    assert!(
-        t0.is_finite() && t1.is_finite() && t0 < t1,
-        "empty bin range"
-    );
+    assert!(t0.is_finite(), "bin range start {t0} is not finite");
+    assert!(t1.is_finite(), "bin range end {t1} is not finite");
+    assert!(t0 < t1, "empty bin range {t0} .. {t1}");
     let n = bins.len();
     let k = n as f64 / (t1 - t0);
+    debug_assert!(
+        bins.iter()
+            .all(|&c| c as usize <= (u32::MAX as usize).saturating_sub(y.len())),
+        "counts never overflow"
+    );
     // ponytail: a branch per sample. Branchless (add 0 to a clamped bin) measured 1.7x slower:
     // the clamped misses serialize on one bin's store. Four sub-histograms if a profile asks.
     for &v in y {

@@ -2,6 +2,8 @@
 //! and mutated real files give `Ok` or a declared [`RawError`], never a panic or a hang, and
 //! every `Ok` satisfies the column-store invariants (which `RawPlot`'s constructor asserts).
 
+use std::fs;
+
 use proptest::prelude::*;
 use schemify_wave::{RawError, RawPlot, parse_raw};
 
@@ -28,7 +30,7 @@ enum Mutation {
 
 fn seed(k: usize) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), SEEDS[k]);
-    std::fs::read(path).expect("fixture")
+    fs::read(path).expect("fixture")
 }
 
 fn check(bytes: &[u8]) {

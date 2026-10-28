@@ -28,8 +28,8 @@ fn naive_runs(xs: &[f64], ys: &[f64], thr: Option<f64>, sx: &Scale) -> Vec<Run> 
         let Some(&v0) = vals.first() else { continue };
         let value = vals.iter().all(|&v| v == v0).then_some(v0);
         let c = c as u32;
-        if out.last().is_some_and(|r| r.c1 == c && r.value == value) {
-            out.last_mut().unwrap().c1 = c + 1;
+        if let Some(last) = out.last_mut().filter(|r| r.c1 == c && r.value == value) {
+            last.c1 = c + 1;
         } else {
             out.push(Run {
                 c0: c,

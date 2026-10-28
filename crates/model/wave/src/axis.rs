@@ -10,9 +10,9 @@
 //! - `pub(crate) fn fit_range(lo, hi, log, pad) -> Option<Axis>`
 //! - `pub(crate) fn zoom(a: Axis, at: f64, factor: f64) -> Axis`
 //! - `pub(crate) fn window(a: Axis, f0: f64, f1: f64) -> Axis`
-//! - `pub(crate) fn span(x: &[f64], log: bool) -> (f64, f64)`
+//! - `pub(crate) fn span(x: &[f64], log: bool) -> MinMax`
 
-use crate::decimate::minmax;
+use crate::decimate::{self, MinMax};
 
 /// One axis' visible range in data units; on a log axis both ends are positive.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,6 +56,8 @@ const FAR: f64 = 64.0;
 /// single value widens to ±1 (or one decade each way on a log axis); `pad == 0` keeps the exact
 /// data ends. `None` when the range is empty, not finite, or not positive on a log axis.
 pub(crate) fn fit_range(lo: f64, hi: f64, log: bool, pad: f64) -> Option<Axis> {
+    assert!(pad.is_finite(), "padding {pad} is a finite fraction");
+    assert!(pad >= 0.0, "padding {pad} widens, never narrows");
     if !(lo.is_finite() && hi.is_finite()) || lo > hi || (log && lo <= 0.0) {
         return None;
     }
@@ -72,45 +74,58 @@ pub(crate) fn fit_range(lo: f64, hi: f64, log: bool, pad: f64) -> Option<Axis> {
     } else {
         pad * w
     };
-    Axis::from_t(t0 - d, t1 + d, log)
+    let fitted = Axis::from_t(t0 - d, t1 + d, log);
+    if !log && let Some(a) = fitted {
+        // A linear fit is exact arithmetic on the ends (the log one rounds through `10^t`).
+        assert!(a.lo <= lo, "the fit {a:?} cuts off the low end {lo}");
+        assert!(a.hi >= hi, "the fit {a:?} cuts off the high end {hi}");
+    }
+    fitted
 }
 
 /// `a` zoomed by `factor` about fraction `at`; `a` unchanged when the result is not a valid
 /// axis (zooming past f64 resolution, a non-finite factor).
 pub(crate) fn zoom(a: Axis, at: f64, factor: f64) -> Axis {
+    assert!(a.valid(), "the viewer holds only valid axes, got {a:?}");
     if !(factor.is_finite() && factor > 0.0 && at.is_finite()) {
         return a;
     }
     let (t0, t1) = a.ts();
     let c = t0 + at * (t1 - t0);
-    Axis::from_t(c - (c - t0) * factor, c + (t1 - c) * factor, a.log).unwrap_or(a)
+    let zoomed = Axis::from_t(c - (c - t0) * factor, c + (t1 - c) * factor, a.log).unwrap_or(a);
+    assert_eq!(zoomed.log, a.log, "zooming keeps the scale");
+    zoomed
 }
 
 /// `a` narrowed (or moved) to the fractions `[f0, f1]` of its span; unchanged when invalid or
 /// narrower than 1e-9 of the span.
 pub(crate) fn window(a: Axis, f0: f64, f1: f64) -> Axis {
+    assert!(a.valid(), "the viewer holds only valid axes, got {a:?}");
     if !(f0.is_finite() && f1.is_finite()) || f1 - f0 < 1e-9 {
         return a;
     }
     let (t0, t1) = a.ts();
     let w = t1 - t0;
-    Axis::from_t(t0 + f0 * w, t0 + f1 * w, a.log).unwrap_or(a)
+    let windowed = Axis::from_t(t0 + f0 * w, t0 + f1 * w, a.log).unwrap_or(a);
+    assert_eq!(windowed.log, a.log, "panning and box zoom keep the scale");
+    windowed
 }
 
 /// Min and max of `x` skipping NaN, with the min taken over positive values on a log axis;
-/// `(+inf, -inf)` when nothing qualifies.
-pub(crate) fn span(x: &[f64], log: bool) -> (f64, f64) {
-    let (lo, hi) = minmax(x);
-    if !log || lo > 0.0 {
-        return (lo, hi);
+/// `min` is `+inf` (and `max` `-inf` off a log axis) when nothing qualifies.
+pub(crate) fn span(x: &[f64], log: bool) -> MinMax {
+    let all = decimate::minmax(x);
+    if !log || all.min > 0.0 {
+        return all;
     }
     // ponytail: a second scalar pass, only on log axes whose data reaches zero.
-    let lo = x
-        .iter()
-        .copied()
-        .filter(|&v| v > 0.0)
-        .fold(f64::INFINITY, f64::min);
-    (lo, hi)
+    let positive = x.iter().copied().filter(|&v| v > 0.0);
+    let min = positive.fold(f64::INFINITY, f64::min);
+    assert!(
+        min > 0.0,
+        "a log span's low end is positive (+inf when none is)"
+    );
+    MinMax { min, max: all.max }
 }
 
 impl Axis {
@@ -118,13 +133,16 @@ impl Axis {
     ///
     /// # Panics
     ///
-    /// Panics if `p0 == p1` (the range itself is valid by construction).
+    /// As [`Scale::new`]: panics if `p0 == p1` or either is not finite, or if the axis is not
+    /// ordered and finite (every axis [`Waves`](crate::Waves) hands out is).
+    #[must_use]
     pub fn scale(&self, p0: f32, p1: f32) -> Scale {
         Scale::new(self.lo, self.hi, self.log, p0, p1)
     }
 
     /// Finite, ordered, positive on a log axis, and not narrower than f64 can resolve. Every
     /// axis the viewer holds satisfies this; requests that would break it are refused.
+    #[must_use]
     pub fn valid(&self) -> bool {
         let (t0, t1) = self.ts();
         self.lo.is_finite()
@@ -135,6 +153,7 @@ impl Axis {
     }
 
     /// The data value at fraction `f` of the span (0 = `lo`, 1 = `hi`), in transformed units.
+    #[must_use]
     pub fn at(&self, f: f64) -> f64 {
         let (t0, t1) = self.ts();
         from_t(t0 + f * (t1 - t0), self.log)
@@ -151,17 +170,20 @@ impl Scale {
     ///
     /// # Panics
     ///
-    /// Panics unless `lo < hi` (both finite, and positive when `log`) and `p0 != p1`.
+    /// Panics unless `lo < hi` (both finite, and positive when `log`) and `p0 != p1` (both
+    /// finite).
+    #[must_use]
     pub fn new(lo: f64, hi: f64, log: bool, p0: f32, p1: f32) -> Scale {
+        assert!(lo.is_finite(), "axis low end {lo} is not finite");
+        assert!(hi.is_finite(), "axis high end {hi} is not finite");
+        assert!(lo < hi, "empty axis range {lo} .. {hi}");
         assert!(
-            lo.is_finite() && hi.is_finite() && lo < hi,
-            "empty axis range"
+            !log || lo > 0.0,
+            "log axis needs a positive range, got {lo} .. {hi}"
         );
-        assert!(!log || lo > 0.0, "log axis needs a positive range");
-        assert!(
-            p0 != p1 && p0.is_finite() && p1.is_finite(),
-            "empty pixel range"
-        );
+        assert!(p0.is_finite(), "pixel {p0} is not finite");
+        assert!(p1.is_finite(), "pixel {p1} is not finite");
+        assert!(p0 != p1, "empty pixel range at {p0}");
         let s = Scale {
             t0: to_t(lo, log),
             t1: to_t(hi, log),
@@ -176,7 +198,9 @@ impl Scale {
     /// Pixel of value `v`, clamped to 64 axis lengths beyond the ends. On a log axis a value
     /// `<= 0` (or NaN) maps to the far low end; on a linear axis NaN stays NaN.
     #[inline]
+    #[must_use]
     pub fn px(&self, v: f64) -> f32 {
+        debug_assert!(self.t0 < self.t1, "a scale built by Scale::new is ordered");
         let t = if !self.log {
             v
         } else if v > 0.0 {
@@ -190,7 +214,12 @@ impl Scale {
 
     /// Value at pixel `p` (the inverse of [`Scale::px`] inside the clamp).
     #[inline]
+    #[must_use]
     pub fn value(&self, p: f32) -> f64 {
+        debug_assert!(
+            self.p0 != self.p1,
+            "a scale built by Scale::new has pixel extent"
+        );
         let f = f64::from(p - self.p0) / f64::from(self.p1 - self.p0);
         from_t(self.t0 + f * (self.t1 - self.t0), self.log)
     }
@@ -306,8 +335,12 @@ mod tests {
 
     #[test]
     fn log_span_skips_non_positive_values() {
-        assert_eq!(span(&[-1.0, 0.0, 3.0, 2.0], true), (2.0, 3.0));
-        assert_eq!(span(&[-1.0, 0.0, 3.0, 2.0], false), (-1.0, 3.0));
-        assert_eq!(span(&[-1.0], true), (f64::INFINITY, -1.0));
+        let span_of = |x: &[f64], log| {
+            let s = span(x, log);
+            (s.min, s.max)
+        };
+        assert_eq!(span_of(&[-1.0, 0.0, 3.0, 2.0], true), (2.0, 3.0));
+        assert_eq!(span_of(&[-1.0, 0.0, 3.0, 2.0], false), (-1.0, 3.0));
+        assert_eq!(span_of(&[-1.0], true), (f64::INFINITY, -1.0));
     }
 }

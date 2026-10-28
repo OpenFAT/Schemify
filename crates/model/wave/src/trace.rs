@@ -17,7 +17,7 @@ use crate::calc;
 use crate::pane::{LineStyle, MAX_BUS_BITS, MAX_TRACES};
 use crate::plot::RawPlot;
 use crate::request::ViewError;
-use crate::si::format_si;
+use crate::si;
 
 /// Trace rows (SoA), in legend order; at most [`MAX_TRACES`]. Every column has one entry per
 /// row; `retain` and `push` are the only resizes, so they stay equal.
@@ -77,6 +77,12 @@ pub(crate) enum Evaluated {
     Value(String),
 }
 
+/// A bus's value column and its width in bits, `1..=MAX_BUS_BITS`.
+struct Bus {
+    values: Vec<f64>,
+    bits: u8,
+}
+
 /// Evaluates trace source `src` over `d` (spec waves §2, §4): a bus, a borrowed raw column, an
 /// evaluated column, or measurement text. `threshold` is the logic threshold of a bus's bits.
 ///
@@ -84,21 +90,29 @@ pub(crate) enum Evaluated {
 ///
 /// [`ViewError::Expr`] when the source (or a bit) does not compile or evaluate over `d`;
 /// [`ViewError::Bus`] for a malformed bus.
+///
+/// # Panics
+///
+/// Panics if `threshold` is not finite (pane properties are valid).
 pub(crate) fn evaluate(d: &RawPlot, src: &str, threshold: f64) -> Result<Evaluated, ViewError> {
+    assert!(
+        threshold.is_finite(),
+        "logic threshold {threshold}: pane properties are valid"
+    );
     if let Some(body) = bus_body(src) {
-        let (y, bits) = eval_bus(d, body, threshold)?;
+        let bus = eval_bus(d, body, threshold)?;
         return Ok(Evaluated::Trace(Eval {
-            y: TraceY::Owned(y),
+            y: TraceY::Owned(bus.values),
             axis: None,
             complex: false,
-            bits,
+            bits: bus.bits,
         }));
     }
-    let prog = Program::compile(src, Mode::Calc).map_err(ViewError::Expr)?;
+    let program = Program::compile(src, Mode::Calc).map_err(ViewError::Expr)?;
     let mut cols = Vec::new();
-    calc::bind(&prog, d, None, &mut cols).map_err(ViewError::Expr)?;
+    calc::bind(&program, d, None, &mut cols).map_err(ViewError::Expr)?;
     if bare_signal(src) && cols.len() == 1 && !d.is_complex() {
-        let (k, n) = prog.signals().next().expect("one signal");
+        let (k, n) = program.signals().next().expect("one signal");
         let v = d.find_signal(k, n).expect("bound above");
         return Ok(Evaluated::Trace(Eval {
             y: TraceY::Raw(v as u32),
@@ -108,7 +122,7 @@ pub(crate) fn evaluate(d: &RawPlot, src: &str, threshold: f64) -> Result<Evaluat
         }));
     }
     let mut scratch = Scratch::default();
-    let c = match calc::eval(&prog, d, None, |_| None, &mut scratch).map_err(ViewError::Expr)? {
+    let c = match calc::eval(&program, d, None, |_| None, &mut scratch).map_err(ViewError::Expr)? {
         CalcResult::Scalar(v) => return Ok(Evaluated::Value(format!("{src} = {}", text(v)))),
         CalcResult::Column(c) => c,
     };
@@ -119,7 +133,18 @@ pub(crate) fn evaluate(d: &RawPlot, src: &str, threshold: f64) -> Result<Evaluat
         c.re
     };
     if c.axis.is_some() && y.len() == 1 {
-        return Ok(Evaluated::Value(format!("{src} = {}", format_si(y[0], 4))));
+        return Ok(Evaluated::Value(format!(
+            "{src} = {}",
+            si::format_si(y[0], 4)
+        )));
+    }
+    if c.axis.is_none() {
+        // The pair of `Waves::xy`'s check: x is then the dataset's scale.
+        assert_eq!(
+            y.len(),
+            d.len(),
+            "`{src}`: a column without its own axis is on the scale"
+        );
     }
     let axis = c.axis.map(|a| {
         assert_eq!(a.x.len(), y.len(), "one x per value");
@@ -144,15 +169,22 @@ pub(crate) fn evaluate(d: &RawPlot, src: &str, threshold: f64) -> Result<Evaluat
 ///
 /// # Panics
 ///
-/// Panics if `src` is not a bus source (`{b1, …, bn}`).
+/// Panics if `src` is not a bus source (`{b1, …, bn}`) or `threshold` is not finite.
 pub(crate) fn bus_values(d: &RawPlot, src: &str, threshold: f64) -> Result<Vec<f64>, ViewError> {
+    assert!(
+        threshold.is_finite(),
+        "logic threshold {threshold}: pane properties are valid"
+    );
     let body = bus_body(src).expect("a bus trace has a bus source");
-    eval_bus(d, body, threshold).map(|(y, _)| y)
+    let bus = eval_bus(d, body, threshold)?;
+    assert_eq!(bus.values.len(), d.len(), "a bus is on its dataset's scale");
+    Ok(bus.values)
 }
 
 impl Traces {
     /// Number of rows.
     pub(crate) fn len(&self) -> usize {
+        debug_assert_eq!(self.eval.len(), self.src.len(), "trace columns in step");
         self.src.len()
     }
 
@@ -170,6 +202,7 @@ impl Traces {
         self.color.push(color);
         self.style.push(LineStyle::Thin);
         self.eval.push(eval);
+        assert_eq!(self.eval.len(), self.len(), "trace columns in step");
     }
 
     /// Keeps the rows whose `keep` flag is set, in order.
@@ -193,12 +226,14 @@ impl Traces {
 
 /// The inside of a bus source `{b1, …, bn}`, or `None` when `src` is not one.
 fn bus_body(src: &str) -> Option<&str> {
-    src.trim().strip_prefix('{')?.strip_suffix('}')
+    let body = src.trim().strip_prefix('{')?.strip_suffix('}')?;
+    debug_assert!(body.len() + 2 <= src.len(), "the braces are stripped");
+    Some(body)
 }
 
 /// A bus's value column (spec waves §4): each bit a real column on `d`'s axis, thresholded at
-/// `threshold`, the first bit the most significant. Returns the values and the width.
-fn eval_bus(d: &RawPlot, body: &str, threshold: f64) -> Result<(Vec<f64>, u8), ViewError> {
+/// `threshold`, the first bit the most significant.
+fn eval_bus(d: &RawPlot, body: &str, threshold: f64) -> Result<Bus, ViewError> {
     let parts = split_top(body);
     if parts.len() > MAX_BUS_BITS || parts.iter().any(|p| p.trim().is_empty()) {
         return Err(ViewError::Bus(format!(
@@ -210,8 +245,8 @@ fn eval_bus(d: &RawPlot, body: &str, threshold: f64) -> Result<(Vec<f64>, u8), V
     let mut scratch = Scratch::default();
     for part in &parts {
         let e = part.trim();
-        let prog = Program::compile(e, Mode::Calc).map_err(ViewError::Expr)?;
-        let r = calc::eval(&prog, d, None, |_| None, &mut scratch).map_err(ViewError::Expr)?;
+        let program = Program::compile(e, Mode::Calc).map_err(ViewError::Expr)?;
+        let r = calc::eval(&program, d, None, |_| None, &mut scratch).map_err(ViewError::Expr)?;
         let CalcResult::Column(c) = r else {
             return Err(ViewError::Bus(format!("`{e}` is a value, not a signal")));
         };
@@ -225,7 +260,12 @@ fn eval_bus(d: &RawPlot, body: &str, threshold: f64) -> Result<(Vec<f64>, u8), V
         }
     }
     assert!((1..=MAX_BUS_BITS).contains(&parts.len()), "bus width");
-    Ok((acc.into_iter().map(f64::from).collect(), parts.len() as u8))
+    let values: Vec<f64> = acc.into_iter().map(f64::from).collect();
+    assert_eq!(values.len(), n, "one value per point");
+    Ok(Bus {
+        values,
+        bits: parts.len() as u8,
+    })
 }
 
 /// Splits `s` at the commas outside parentheses, brackets and string quotes.
@@ -255,6 +295,12 @@ fn split_top(s: &str) -> Vec<&str> {
         }
     }
     out.push(&s[start..]);
+    assert!(!out.is_empty(), "the text after the last comma is a part");
+    debug_assert_eq!(
+        out.iter().map(|p| p.len()).sum::<usize>() + out.len() - 1,
+        s.len(),
+        "the parts and the commas between them cover the text"
+    );
     out
 }
 
@@ -276,20 +322,26 @@ fn bare_signal(src: &str) -> bool {
 fn text(v: Value) -> String {
     match v {
         Value::Int(i) => i.to_string(),
-        Value::Num(x) => format_si(x, 6),
+        Value::Num(x) => si::format_si(x, 6),
         Value::Bool(b) => b.to_string(),
         Value::Cnum { re, im } => {
             let sign = if im < 0.0 { '-' } else { '+' };
-            format!("{} {sign} {}j", format_si(re, 6), format_si(im.abs(), 6))
+            format!(
+                "{} {sign} {}j",
+                si::format_si(re, 6),
+                si::format_si(im.abs(), 6)
+            )
         }
         Value::Str(s) => format!("\"{s}\""),
     }
 }
 
+/// Keeps the entries of `v` whose `keep` flag is set, in order.
 fn retain_by<T>(v: &mut Vec<T>, keep: &[bool]) {
     assert_eq!(v.len(), keep.len(), "one flag per row");
     let mut k = keep.iter();
     v.retain(|_| *k.next().expect("one flag per row"));
+    assert!(k.next().is_none(), "every flag was read");
 }
 
 #[cfg(test)]

@@ -2,6 +2,8 @@
 //! checks of the decoded numbers back it up: ngspice and Xyce agree on the same deck, and the
 //! series RLC response matches its closed form.
 
+use std::env;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -132,10 +134,10 @@ fn ngspice_and_xyce_agree_on_the_rc_transient() {
 fn regenerate_and_compare() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("wave-raw");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
     for deck in DECKS {
-        std::fs::copy(
+        fs::copy(
             src.join(format!("{deck}.cir")),
             dir.join(format!("{deck}.cir")),
         )
@@ -147,9 +149,9 @@ fn regenerate_and_compare() {
             .map(|o| o.status.success())
             .unwrap_or(false);
         assert!(ok, "ngspice failed on {deck}");
-        let xyce = std::env::var("XYCE").unwrap_or_else(|_| "Xyce".into());
+        let xyce = env::var("XYCE").unwrap_or_else(|_| "Xyce".into());
         let cir = format!("{deck}.xyce.cir");
-        std::fs::copy(src.join(&cir), dir.join(&cir)).unwrap();
+        fs::copy(src.join(&cir), dir.join(&cir)).unwrap();
         for (out, extra) in [("bin", None), ("ascii", Some("-a"))] {
             let mut c = Command::new(&xyce);
             c.args(["-r", &format!("{deck}.xyce.{out}.raw")]);
@@ -164,7 +166,7 @@ fn regenerate_and_compare() {
         for (flavour, rtol) in FLAVOURS {
             let read = |kind: &str| {
                 let f = dir.join(format!("{deck}{flavour}.{kind}.raw"));
-                parse_raw(&std::fs::read(&f).unwrap()).unwrap()
+                parse_raw(&fs::read(&f).unwrap()).unwrap()
             };
             let (bin, asc) = (read("bin"), read("ascii"));
             assert_same(&bin, &asc, rtol, &format!("fresh {deck}{flavour}"));
