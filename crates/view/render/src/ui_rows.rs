@@ -435,10 +435,11 @@ impl Source {
     /// returns its slot range.
     fn place(&mut self, key: RowKey, len: u32, cap: u32) -> Range<u32> {
         let at = self.at;
+        let end = at.checked_add(cap).expect("slots are u32");
         self.new.push(key, at, len, cap);
-        self.at += cap;
+        self.at = end;
         debug_assert_eq!(self.new.key.len(), self.new.cap.len(), "rows in step");
-        at..at + cap
+        at..end
     }
 
     /// This frame's layout leaves last frame's at slot `at`: every row from there on is

@@ -22,7 +22,7 @@
 //!    so serial.
 //!
 //! Contents:
-//! - `pub struct CanvasScratch`, `pub struct GridDots`
+//! - `pub struct CanvasScratch`, `pub struct GridDots`, `pub(super) struct GlyphSpan`
 //! - `pub const LOD_PX`, `pub const TEXT_MIN_PX`
 //! - `pub fn draw_canvas`, `draw_grid`, `grid_dots`, `draw_prims`, `draw_marks`
 //! - `pub use rows::{Paths, draw_rows}`, `pub use text::draw_texts`

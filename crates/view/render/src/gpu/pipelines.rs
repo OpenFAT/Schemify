@@ -311,13 +311,6 @@ impl Pipelines {
     }
 }
 
-impl TexelRect {
-    /// Texels covered.
-    fn texels(self) -> usize {
-        self.w as usize * self.h as usize
-    }
-}
-
 /// A buffer of `size` bytes for `usage` (plus copies into it).
 pub(super) fn buffer(
     device: &wgpu::Device,
@@ -436,6 +429,13 @@ pub(super) fn bind_batch(
 }
 
 // ---- private ----
+
+impl TexelRect {
+    /// Texels covered.
+    fn texels(self) -> usize {
+        self.w as usize * self.h as usize
+    }
+}
 
 /// A render pipeline of `module`'s `vs`/`fs` into `format`, its rows `stride`-byte instances
 /// with `attributes` (none: a full-quad pipeline), blended by `blend`.

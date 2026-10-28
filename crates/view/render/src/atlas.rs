@@ -217,6 +217,10 @@ impl Atlas {
         } else {
             let s = &mut self.shelves[usize::from(e.shelf)];
             debug_assert!(e.placed.slot.y >= s.y, "an entry lies in its shelf");
+            debug_assert!(
+                e.placed.slot.y + e.placed.slot.h <= s.y + s.h,
+                "an entry lies in its shelf"
+            );
             s.used = self.frame;
         }
         Some(e.placed)
