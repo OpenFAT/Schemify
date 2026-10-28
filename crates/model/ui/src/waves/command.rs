@@ -12,7 +12,16 @@ use schemify_wave::{
 
 use super::dialog;
 use super::pointer::PaneFraction;
-use super::{DOUBLE_CLICK_MS, DialogFx, Effect, Geometry, WaveUi};
+use super::{DOUBLE_CLICK_MS, DialogFx, Effect, Geometry, SignalClick, WaveUi};
+
+/// One command as the window issued it ([`WaveUi::command`]'s arguments).
+#[derive(Clone, Copy, Debug)]
+struct Issued<'cmd> {
+    name: &'cmd str,
+    arg: &'cmd str,
+    node: &'cmd str,
+    now_ms: u64,
+}
 
 impl WaveUi {
     /// Runs one command from the waves window (buttons, keys, list rows, the dialog). `node` is
@@ -33,6 +42,109 @@ impl WaveUi {
         now_ms: u64,
         out: &mut Vec<Request>,
     ) -> Effect {
+        debug_assert!(
+            geo.panes.len() <= waves.panes().len(),
+            "a geometry from a stale layout"
+        );
+        let before = out.len();
+        let issued = Issued {
+            name,
+            arg,
+            node,
+            now_ms,
+        };
+        let fx = self.run_command(waves, geo, issued, out);
+        debug_assert!(out.len() >= before, "commands only append requests");
+        if !fx.redraw {
+            debug_assert!(!fx.recompose, "an unknown command changes nothing");
+            debug_assert_eq!(out.len(), before, "an unknown command asks for nothing");
+        }
+        fx
+    }
+
+    /// Records the outcome of one applied request: status text, selection and pane bookkeeping.
+    /// Returns what the window must redo.
+    pub fn note(
+        &mut self,
+        waves: &Waves,
+        request: &Request,
+        result: &Result<Applied, ViewError>,
+    ) -> Effect {
+        let mut fx = Effect {
+            redraw: true,
+            ..Effect::default()
+        };
+        match result {
+            Err(e) => {
+                self.status = e.to_string();
+                fx.recompose = true;
+                return fx;
+            }
+            Ok(Applied::Value(v)) => {
+                self.status = v.clone();
+                fx.recompose = true;
+                return fx;
+            }
+            Ok(Applied::Trace(i)) => {
+                debug_assert!(usize::from(*i) < waves.trace_count(), "a new trace exists");
+                self.selected_trace = Some(*i);
+                self.status = format!("plotted {}", waves.src(usize::from(*i)));
+            }
+            Ok(Applied::Done) => {}
+        }
+        match request {
+            Request::RemoveTrace { trace } => {
+                self.selected_trace = match self.selected_trace {
+                    Some(s) if s == *trace => None,
+                    Some(s) if s > *trace => Some(s - 1),
+                    s => s,
+                };
+            }
+            Request::RemovePane { .. } => {
+                let last = waves.panes().len().saturating_sub(1) as u8;
+                self.active_pane = self.active_pane.min(last);
+                self.selected_trace = None;
+            }
+            _ => {}
+        }
+        let on = waves.cursors().map(|c| c.is_some());
+        fx.recompose |= on != self.cursors_on
+            || matches!(
+                request,
+                Request::AddTrace { .. }
+                    | Request::RemoveTrace { .. }
+                    | Request::MoveTrace { .. }
+                    | Request::SetStyle { .. }
+                    | Request::SetColor { .. }
+                    | Request::SetPane { .. }
+                    | Request::AddPane
+                    | Request::RemovePane { .. }
+                    | Request::LogX { .. }
+                    | Request::LogY { .. }
+            );
+        self.cursors_on = on;
+        debug_assert!(usize::from(self.active_pane) < waves.panes().len());
+        fx
+    }
+}
+
+// ---- private ----
+
+impl WaveUi {
+    /// [`WaveUi::command`]'s body: one arm per command name.
+    fn run_command(
+        &mut self,
+        waves: &Waves,
+        geo: &Geometry,
+        issued: Issued<'_>,
+        out: &mut Vec<Request>,
+    ) -> Effect {
+        let Issued {
+            name,
+            arg,
+            node,
+            now_ms,
+        } = issued;
         let mut fx = Effect {
             redraw: true,
             ..Effect::default()
@@ -77,11 +189,14 @@ impl WaveUi {
                 let Some(v) = signal else {
                     return fx;
                 };
-                let double = self.last_click.is_some_and(|(last, t)| {
-                    last == v && now_ms.saturating_sub(t) <= DOUBLE_CLICK_MS
+                let double = self.last_click.is_some_and(|last| {
+                    last.signal == v && now_ms.saturating_sub(last.at_ms) <= DOUBLE_CLICK_MS
                 });
                 self.selected_signal = Some(v);
-                self.last_click = Some((v, now_ms));
+                self.last_click = Some(SignalClick {
+                    signal: v,
+                    at_ms: now_ms,
+                });
                 fx.recompose = true;
                 if double {
                     self.add_signal(waves, v, out);
@@ -310,78 +425,14 @@ impl WaveUi {
         fx
     }
 
-    /// Records the outcome of one applied request: status text, selection and pane bookkeeping.
-    /// Returns what the window must redo.
-    pub fn note(
-        &mut self,
-        waves: &Waves,
-        request: &Request,
-        result: &Result<Applied, ViewError>,
-    ) -> Effect {
-        let mut fx = Effect {
-            redraw: true,
-            ..Effect::default()
-        };
-        match result {
-            Err(e) => {
-                self.status = e.to_string();
-                fx.recompose = true;
-                return fx;
-            }
-            Ok(Applied::Value(v)) => {
-                self.status = v.clone();
-                fx.recompose = true;
-                return fx;
-            }
-            Ok(Applied::Trace(i)) => {
-                self.selected_trace = Some(*i);
-                self.status = format!("plotted {}", waves.src(usize::from(*i)));
-            }
-            Ok(Applied::Done) => {}
-        }
-        match request {
-            Request::RemoveTrace { trace } => {
-                self.selected_trace = match self.selected_trace {
-                    Some(s) if s == *trace => None,
-                    Some(s) if s > *trace => Some(s - 1),
-                    s => s,
-                };
-            }
-            Request::RemovePane { .. } => {
-                let last = waves.panes().len().saturating_sub(1) as u8;
-                self.active_pane = self.active_pane.min(last);
-                self.selected_trace = None;
-            }
-            _ => {}
-        }
-        let on = waves.cursors().map(|c| c.is_some());
-        fx.recompose |= on != self.cursors_on
-            || matches!(
-                request,
-                Request::AddTrace { .. }
-                    | Request::RemoveTrace { .. }
-                    | Request::MoveTrace { .. }
-                    | Request::SetStyle { .. }
-                    | Request::SetColor { .. }
-                    | Request::SetPane { .. }
-                    | Request::AddPane
-                    | Request::RemovePane { .. }
-                    | Request::LogX { .. }
-                    | Request::LogY { .. }
-            );
-        self.cursors_on = on;
-        debug_assert!(usize::from(self.active_pane) < waves.panes().len());
-        fx
-    }
-}
-
-// ---- private ----
-
-impl WaveUi {
     fn add_signal(&self, waves: &Waves, v: u32, out: &mut Vec<Request>) {
         let Some(d) = waves.datasets().get(usize::from(self.dataset)) else {
             return;
         };
+        debug_assert!(
+            (v as usize) < d.vars().len(),
+            "signal {v} is in the dataset"
+        );
         let e = calc::signal_expr(d, v as usize);
         // On AC data a plain node is shown as its Bode magnitude.
         let src = if d.is_complex() {
@@ -389,6 +440,7 @@ impl WaveUi {
         } else {
             e
         };
+        debug_assert!(!src.is_empty(), "a variable names an expression");
         out.push(Request::AddTrace {
             src,
             dataset: self.dataset,

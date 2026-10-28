@@ -14,6 +14,10 @@ impl WaveUi {
     /// Opens the properties dialog on pane `pane` with the values the viewer shows now.
     pub(super) fn open_dialog(&mut self, waves: &Waves, pane: u8) -> Effect {
         let p = usize::from(pane);
+        assert!(
+            p < waves.panes().len(),
+            "the dialog opens on a pane ({pane})"
+        );
         let props = waves.props(p);
         let (xa, ya) = (waves.x_of(p), waves.panes()[p]);
         let [a, b] = waves.cursors();
@@ -45,6 +49,7 @@ impl WaveUi {
         });
         // The dialog is modal: the gesture that opened it ends here.
         self.drag = Drag::None;
+        debug_assert!(self.dialog.is_some());
         Effect {
             redraw: true,
             recompose: true,
@@ -60,6 +65,10 @@ impl WaveUi {
         waves: &Waves,
         d: &Dialog,
     ) -> Result<Vec<Request>, String> {
+        assert!(
+            usize::from(d.pane) < waves.panes().len(),
+            "the dialog's pane outlives it"
+        );
         let mut v = [None; FIELDS.len()];
         for (k, t) in d.text.iter().enumerate() {
             let t = t.trim();
@@ -123,13 +132,21 @@ impl WaveUi {
             }
         }
         debug_assert!(matches!(out[0], Request::SetPane { .. }));
+        // One request for the pane, at most two ranges and four cursors.
+        debug_assert!(out.len() <= 7, "one request per changed field group");
         Ok(out)
     }
 }
 
 /// The dialog field `node` names (`waves.props.f.<k>`), if any.
 pub(super) fn field_index(node: &str) -> Option<usize> {
-    node.strip_prefix("waves.props.f.")
-        .and_then(|k| k.parse::<usize>().ok())
-        .filter(|&k| k < FIELDS.len())
+    let k: usize = node.strip_prefix("waves.props.f.")?.parse().ok()?;
+    if k >= FIELDS.len() {
+        return None;
+    }
+    debug_assert!(
+        node.ends_with(&k.to_string()),
+        "the index is the node's suffix"
+    );
+    Some(k)
 }

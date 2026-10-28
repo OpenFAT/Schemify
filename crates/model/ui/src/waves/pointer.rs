@@ -8,7 +8,7 @@
 
 use schemify_wave::{Cursor, PaneMode, Request, Scale, Waves};
 
-use super::{DOUBLE_CLICK_MS, Drag, Effect, Geometry, WaveUi};
+use super::{DOUBLE_CLICK_MS, Drag, Effect, Geometry, PlotPress, WaveUi};
 use crate::input::{Button, InputEvent, InputEvents};
 use crate::keys::Mods;
 
@@ -190,12 +190,16 @@ impl WaveUi {
                 };
                 match button {
                     Button::Left if in_plot => {
-                        let double = self.last_down.is_some_and(|(px, py, t)| {
-                            now_ms.saturating_sub(t) <= DOUBLE_CLICK_MS
-                                && (px - x).abs() <= 4.0
-                                && (py - y).abs() <= 4.0
+                        let double = self.last_down.is_some_and(|last| {
+                            now_ms.saturating_sub(last.at_ms) <= DOUBLE_CLICK_MS
+                                && (last.x - x).abs() <= 4.0
+                                && (last.y - y).abs() <= 4.0
                         });
-                        self.last_down = Some((x, y, now_ms));
+                        self.last_down = Some(PlotPress {
+                            x,
+                            y,
+                            at_ms: now_ms,
+                        });
                         if double {
                             self.last_down = None;
                             fx.or(self.open_dialog(waves, k));
