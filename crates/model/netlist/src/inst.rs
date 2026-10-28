@@ -7,50 +7,81 @@
 //! subcircuit row is spelled by SpiceRack's `push_instance`.
 //!
 //! Contents:
+//! - `pub(crate) struct Context`
 //! - `pub(crate) struct Uses`, `Uses::merge(&mut self, other: Uses)`
-//! - `pub(crate) struct Tmp`, `Tmp::new(e: &Elab) -> Tmp`
-//! - `pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(e, d, plans, r, name, net, out, tmp) -> Result<(), String>`
+//! - `pub(crate) struct ModelUse`
+//! - `pub(crate) struct RowScratch`, `RowScratch::new(elab: &Elab) -> RowScratch`
+//! - `pub(crate) fn line<'net, F: Fn(Name) -> &'net str>(context, index, name, net, out, scratch) -> Result<(), String>`
 
-use crate::plan::{Form, Lang, Plan, Plans, Src, is_input};
-use crate::{is_spice, net_text, push_name, sr};
+use crate::plan;
+use crate::plan::{Form, Lang, Plan, Plans, Source};
 use schemify_elab::{COMPUTED, DEFAULT, Dialect, Elab, Iface, Name, Target, Val};
 use schemify_expr::{Scratch, Segment, Template, Value};
 use spicerack::codegen::xschem;
+use std::ops::Range;
+
+/// What every row of one lowering reads: the elaboration, the dialect and its template
+/// plans.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Context<'elab> {
+    pub(crate) elab: &'elab Elab,
+    pub(crate) dialect: Dialect,
+    /// Built from `elab` for `dialect`.
+    pub(crate) plans: &'elab Plans,
+}
 
 /// What once-only text the emitted rows need.
 #[derive(Debug)]
 pub(crate) struct Uses {
     /// Per leaf impl row: some emitted row instantiates it (its body is emitted).
     pub(crate) impl_used: Vec<bool>,
-    /// `(model, impl row)` of Verilog-A and d_cosim rows (one `.model` each).
-    pub(crate) models: Vec<(Name, u32)>,
+    /// The models of Verilog-A and d_cosim rows (one `.model` each).
+    pub(crate) models: Vec<ModelUse>,
+}
+
+/// One `.model` a row needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModelUse {
+    pub(crate) model: Name,
+    /// The leaf impl row the model belongs to; always a used one.
+    pub(crate) leaf: u32,
 }
 
 /// Per-line scratch, reused across the lines of one thread.
 #[derive(Debug)]
-pub(crate) struct Tmp {
-    /// Identifier texts of the slow path, one range each in `ranges`.
-    buf: String,
-    ranges: Vec<(u32, u32)>,
-    scratch: Scratch,
+pub(crate) struct RowScratch {
+    /// Identifier texts of the slow path, one range each in `text_ranges`.
+    texts: String,
+    text_ranges: Vec<Range<u32>>,
+    template: Scratch,
     pub(crate) uses: Uses,
 }
 
 /// One row as the renderers see it.
-struct Row<'a, F> {
-    e: &'a Elab,
-    d: Dialect,
-    plan: &'a Plan,
-    r: usize,
+struct Row<'row, F> {
+    elab: &'row Elab,
+    dialect: Dialect,
+    plan: &'row Plan,
+    /// The instance row.
+    index: usize,
     /// The instance name before dialect escaping.
-    name: &'a str,
+    name: &'row str,
     /// `cell` (definition name or leaf stem).
     cell: Name,
     /// The cell's interface.
-    f: &'a Iface,
+    iface: &'row Iface,
     /// The row's connections.
-    conn: &'a [Name],
+    conn: &'row [Name],
     net: F,
+}
+
+/// Which pins `in_pins` / `out_pins` list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PinGroup {
+    /// Ordinary `in` pins.
+    Inputs,
+    /// Every other pin: `out`, `inout`, inherited.
+    Others,
 }
 
 /// Template identifiers held inline by the slow path before it allocates.
@@ -65,6 +96,12 @@ impl Uses {
             self.impl_used.len(),
             "uses of one elaboration"
         );
+        for model in &other.models {
+            assert!(
+                other.impl_used[model.leaf as usize],
+                "a model's impl is used"
+            );
+        }
         for (a, b) in self.impl_used.iter_mut().zip(other.impl_used) {
             *a |= b;
         }
@@ -72,23 +109,23 @@ impl Uses {
     }
 }
 
-impl Tmp {
-    /// Empty scratch for the rows of `e`.
-    pub(crate) fn new(e: &Elab) -> Tmp {
-        assert_eq!(e.impls.cell.len(), e.impls.index.len());
-        Tmp {
-            buf: String::new(),
-            ranges: Vec::new(),
-            scratch: Scratch::default(),
+impl RowScratch {
+    /// Empty scratch for the rows of `elab`.
+    pub(crate) fn new(elab: &Elab) -> RowScratch {
+        assert_eq!(elab.impls.cell.len(), elab.impls.index.len());
+        RowScratch {
+            texts: String::new(),
+            text_ranges: Vec::new(),
+            template: Scratch::default(),
             uses: Uses {
-                impl_used: vec![false; e.impls.cell.len()],
+                impl_used: vec![false; elab.impls.cell.len()],
                 models: Vec::new(),
             },
         }
     }
 }
 
-/// Appends instance row `r`'s text to `out` (no final newline unless the template
+/// Appends instance row `index`'s text to `out` (no final newline unless the template
 /// writes one; empty when the template renders nothing). `name` is the instance name
 /// before escaping; `net` gives a connection's text (never called with [`Name::NONE`],
 /// which is `?`).
@@ -98,56 +135,74 @@ impl Tmp {
 /// The message of a failed render (`X0xx` from the template, `E008` for a param
 /// without a value, `E013` for a lang without a default template); `out` is then
 /// unspecified past its length at entry (the caller truncates).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
-    e: &Elab,
-    d: Dialect,
-    plans: &Plans,
-    r: usize,
+pub(crate) fn line<'net, F: Fn(Name) -> &'net str>(
+    context: Context<'_>,
+    index: usize,
     name: &str,
     net: F,
     out: &mut String,
-    tmp: &mut Tmp,
+    scratch: &mut RowScratch,
 ) -> Result<(), String> {
-    assert!(r < e.insts.name.len());
-    assert_eq!(e.insts.param_start.len(), e.insts.name.len() + 1);
-    let (cell, f, leaf) = match e.insts.target[r] {
-        Target::Def(c) => {
-            let f = &e.cells[e.defs.cell[c as usize] as usize];
-            (e.defs.name[c as usize], f, u32::MAX)
+    let Context {
+        elab,
+        dialect,
+        plans,
+    } = context;
+    assert!(
+        index < elab.insts.name.len(),
+        "row {index} is an instance row"
+    );
+    assert_eq!(elab.insts.param_start.len(), elab.insts.name.len() + 1);
+    assert_eq!(
+        scratch.uses.impl_used.len(),
+        elab.impls.cell.len(),
+        "scratch of this elaboration"
+    );
+    let (cell, iface, leaf) = match elab.insts.target[index] {
+        Target::Def(def) => {
+            let iface = &elab.cells[elab.defs.cell[def as usize] as usize];
+            (elab.defs.name[def as usize], iface, u32::MAX)
         }
-        Target::Leaf(l) => {
-            tmp.uses.impl_used[l as usize] = true;
-            let f = &e.cells[e.impls.cell[l as usize] as usize];
-            (f.stem, f, l)
+        Target::Leaf(leaf) => {
+            scratch.uses.impl_used[leaf as usize] = true;
+            let iface = &elab.cells[elab.impls.cell[leaf as usize] as usize];
+            (iface.stem, iface, leaf)
         }
     };
     let row = Row {
-        e,
-        d,
-        plan: plans.of_row(e, r),
-        r,
+        elab,
+        dialect,
+        plan: plans.of_row(elab, index),
+        index,
         name,
         cell,
-        f,
-        conn: e.conns(r),
+        iface,
+        conn: elab.conns(index),
         net,
     };
-    assert_eq!(row.plan.slots.len(), f.pin_name.len());
+    assert_eq!(row.plan.slots.len(), iface.pin_name.len());
     match &row.plan.form {
-        Form::Bad(msg) => Err(msg.clone()),
-        Form::Default => default_line(&row, leaf, out, &mut tmp.uses),
-        Form::Template { tmpl, srcs, fast } if *fast && fast_ok(&row, srcs) => {
-            for seg in tmpl.segments() {
-                match seg {
+        Form::Bad(message) => Err(message.clone()),
+        Form::Default => default_line(&row, leaf, out, &mut scratch.uses),
+        Form::Template {
+            template,
+            sources,
+            fast,
+        } if *fast && fast_ok(&row, sources) => {
+            for segment in template.segments() {
+                match segment {
                     Segment::Lit(s) => out.push_str(s),
-                    Segment::Hole { ident: Some(i) } => write_src(&row, srcs[i as usize], out),
+                    Segment::Hole { ident: Some(i) } => {
+                        write_source(&row, sources[i as usize], out);
+                    }
                     Segment::Hole { ident: None } => unreachable!("a fast plan has bare holes"),
                 }
             }
             Ok(())
         }
-        Form::Template { tmpl, srcs, .. } => slow_line(&row, tmpl, srcs, out, tmp),
+        Form::Template {
+            template, sources, ..
+        } => slow_line(&row, template, sources, out, scratch),
     }
 }
 
@@ -155,131 +210,151 @@ pub(crate) fn line<'n, F: Fn(Name) -> &'n str>(
 
 /// The fast form copies param texts; a `cnum` or failed value must go through the
 /// template so it reports the same error.
-fn fast_ok<F>(row: &Row<'_, F>, srcs: &[Src]) -> bool {
-    let p0 = row.e.insts.param_start[row.r] as usize;
+fn fast_ok<F>(row: &Row<'_, F>, sources: &[Source]) -> bool {
+    let param_start = row.elab.insts.param_start[row.index] as usize;
     // Elab writes one param entry per schema param, so `Param(k)` indexes stay in range.
-    assert_eq!(row.e.params_of(row.r).len(), row.f.param_name.len());
-    !srcs.iter().any(|s| {
-        matches!(s, Src::Param(k) if matches!(
-            row.e.insts.param_val[p0 + *k as usize],
+    assert_eq!(
+        row.elab.params_of(row.index).len(),
+        row.iface.param_name.len()
+    );
+    !sources.iter().any(|s| {
+        matches!(s, Source::Param(k) if matches!(
+            row.elab.insts.param_val[param_start + *k as usize],
             Val::Cnum(..) | Val::Err(_) | Val::Upstream
         ))
     })
 }
 
 /// Appends the text of one identifier source (`Param` and `Missing` are the slow path's).
-fn write_src<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, s: Src, out: &mut String) {
-    let e = row.e;
-    match s {
-        Src::Name => push_name(out, row.name, row.d),
-        Src::Cell => push_name(out, e.names.get(row.cell), row.d),
-        Src::Text(n) => out.push_str(e.names.get(n)),
-        Src::Pins => push_nets(out, row.conn, row),
-        Src::InPins | Src::OutPins => dir_nets(out, row, s == Src::InPins),
+fn write_source<'net, F: Fn(Name) -> &'net str>(
+    row: &Row<'_, F>,
+    source: Source,
+    out: &mut String,
+) {
+    let elab = row.elab;
+    match source {
+        Source::Name => crate::push_name(out, row.name, row.dialect),
+        Source::Cell => crate::push_name(out, elab.names.get(row.cell), row.dialect),
+        Source::Text(n) => out.push_str(elab.names.get(n)),
+        Source::Pins => push_nets(out, row.conn, row),
+        Source::InPins => dir_nets(out, row, PinGroup::Inputs),
+        Source::OutPins => dir_nets(out, row, PinGroup::Others),
         // A specialized subckt takes no params (spec §6).
-        Src::Params if matches!(e.insts.target[row.r], Target::Def(_)) => {}
-        Src::Params => {
+        Source::Params if matches!(elab.insts.target[row.index], Target::Def(_)) => {}
+        Source::Params => {
             let start = out.len();
-            for k in e.params_of(row.r) {
-                if e.insts.param_flags[k] & (COMPUTED | DEFAULT) == 0 {
+            for k in elab.params_of(row.index) {
+                if elab.insts.param_flags[k] & (COMPUTED | DEFAULT) == 0 {
                     if out.len() > start {
                         out.push(' ');
                     }
-                    out.push_str(e.names.get(e.insts.param_name[k]));
+                    out.push_str(elab.names.get(elab.insts.param_name[k]));
                     out.push('=');
-                    out.push_str(e.names.get(e.insts.param_text[k]));
+                    out.push_str(elab.names.get(elab.insts.param_text[k]));
                 }
             }
         }
-        Src::Pin(p) => push_nets(out, pin_bits(row, p as usize), row),
-        Src::Param(k) => {
-            let p0 = e.insts.param_start[row.r] as usize;
-            out.push_str(e.names.get(e.insts.param_text[p0 + k as usize]));
+        Source::Pin(p) => push_nets(out, pin_bits(row, p as usize), row),
+        Source::Param(k) => {
+            let params = elab.params_of(row.index);
+            debug_assert!((k as usize) < params.len(), "param {k} of the row's schema");
+            out.push_str(
+                elab.names
+                    .get(elab.insts.param_text[params.start + k as usize]),
+            );
         }
-        Src::Missing => unreachable!("plans with unknown identifiers take the slow path"),
+        Source::Missing => unreachable!("plans with unknown identifiers take the slow path"),
     }
 }
 
 /// Renders through `schemify_expr::Template` (any hole expression).
-fn slow_line<'n, F: Fn(Name) -> &'n str>(
+fn slow_line<'net, F: Fn(Name) -> &'net str>(
     row: &Row<'_, F>,
-    tmpl: &Template,
-    srcs: &[Src],
+    template: &Template,
+    sources: &[Source],
     out: &mut String,
-    tmp: &mut Tmp,
+    scratch: &mut RowScratch,
 ) -> Result<(), String> {
-    let e = row.e;
-    assert_eq!(srcs.len(), tmpl.program().idents().len());
-    // The texts of every non-param source, written once into `buf`.
-    tmp.buf.clear();
-    tmp.ranges.clear();
-    for &s in srcs {
-        let start = tmp.buf.len() as u32;
-        if !matches!(s, Src::Param(_) | Src::Missing) {
-            write_src(row, s, &mut tmp.buf);
+    let elab = row.elab;
+    assert_eq!(sources.len(), template.program().idents().len());
+    // The texts of every non-param source, written once into `texts`.
+    scratch.texts.clear();
+    scratch.text_ranges.clear();
+    for &source in sources {
+        let start = scratch.texts.len() as u32;
+        if !matches!(source, Source::Param(_) | Source::Missing) {
+            write_source(row, source, &mut scratch.texts);
         }
-        tmp.ranges.push((start, tmp.buf.len() as u32));
+        scratch.text_ranges.push(start..scratch.texts.len() as u32);
     }
-    assert_eq!(tmp.ranges.len(), srcs.len());
-    let p0 = e.insts.param_start[row.r] as usize;
+    assert!(
+        scratch.texts.len() < u32::MAX as usize,
+        "one row's identifier texts stay below 4 GiB"
+    );
+    assert_eq!(scratch.text_ranges.len(), sources.len());
+    let param_start = elab.insts.param_start[row.index] as usize;
     let mut small = [Value::Int(0); INLINE_VALUES];
     let mut big = Vec::new();
-    let vals: &mut [Value<'_>] = if srcs.len() <= small.len() {
-        &mut small[..srcs.len()]
+    let values: &mut [Value<'_>] = if sources.len() <= small.len() {
+        &mut small[..sources.len()]
     } else {
-        big.resize(srcs.len(), Value::Int(0));
+        big.resize(sources.len(), Value::Int(0));
         &mut big
     };
-    for (i, s) in srcs.iter().enumerate() {
-        vals[i] = match *s {
-            Src::Param(k) => {
-                let v = &e.insts.param_val[p0 + k as usize];
-                v.value().ok_or_else(|| {
-                    let n = e.names.get(e.insts.param_name[p0 + k as usize]);
-                    format!("E008: param `{n}` has no value")
+    for (i, source) in sources.iter().enumerate() {
+        values[i] = match *source {
+            Source::Param(k) => {
+                let value = &elab.insts.param_val[param_start + k as usize];
+                value.value().ok_or_else(|| {
+                    let name = elab
+                        .names
+                        .get(elab.insts.param_name[param_start + k as usize]);
+                    format!("E008: param `{name}` has no value")
                 })?
             }
-            Src::Missing => {
-                let id = tmpl.program().idents().nth(i).unwrap_or("?");
+            Source::Missing => {
+                let id = template.program().idents().nth(i).unwrap_or("?");
                 return Err(format!("X004: unknown identifier `{id}`"));
             }
             _ => {
-                let (a, b) = tmp.ranges[i];
-                Value::Str(&tmp.buf[a as usize..b as usize])
+                let range = scratch.text_ranges[i].clone();
+                Value::Str(&scratch.texts[range.start as usize..range.end as usize])
             }
         };
     }
-    tmpl.render(vals, &mut tmp.scratch, out)
+    template
+        .render(values, &mut scratch.template, out)
         .map_err(|err| err.to_string())
 }
 
-/// The connection bits of pin `p` (empty when the row is short of them, `E012`).
-fn pin_bits<'a, F>(row: &Row<'a, F>, p: usize) -> &'a [Name] {
-    let (a, w) = row.plan.slots[p];
-    row.conn.get(a as usize..(a + w) as usize).unwrap_or(&[])
+/// The connection bits of pin `pin` (empty when the row is short of them, `E012`).
+fn pin_bits<'row, F>(row: &Row<'row, F>, pin: usize) -> &'row [Name] {
+    row.conn.get(row.plan.slots[pin].bits()).unwrap_or(&[])
 }
 
 /// Appends `nets` space-separated in the row's dialect; an unconnected bit is `?`.
-fn push_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, nets: &[Name], row: &Row<'_, F>) {
-    for (i, &n) in nets.iter().enumerate() {
+fn push_nets<'net, F: Fn(Name) -> &'net str>(out: &mut String, nets: &[Name], row: &Row<'_, F>) {
+    for (i, &net) in nets.iter().enumerate() {
         if i > 0 {
             out.push(' ');
         }
-        if n == Name::NONE {
+        if net == Name::NONE {
             out.push('?');
         } else {
-            push_name(out, (row.net)(n), row.d);
+            crate::push_name(out, (row.net)(net), row.dialect);
         }
     }
 }
 
-/// Appends the connections of the cell's `in` pins (`inputs`), or of all other pins
-/// (`out`, `inout`, inherited), in pin order, space-separated; alias pins are skipped.
-fn dir_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, row: &Row<'_, F>, inputs: bool) {
-    let f = row.f;
+/// Appends the connections of the cell's pins in `group`, in pin order, space-separated;
+/// alias pins are skipped.
+fn dir_nets<'net, F: Fn(Name) -> &'net str>(out: &mut String, row: &Row<'_, F>, group: PinGroup) {
+    let iface = row.iface;
+    debug_assert_eq!(iface.pin_alias.len(), iface.pin_name.len());
     let start = out.len();
-    for p in 0..f.pin_name.len() {
-        if is_input(f, p) != inputs || f.pin_alias[p] != u32::MAX {
+    for p in 0..iface.pin_name.len() {
+        let in_group = plan::is_input(iface, p) == (group == PinGroup::Inputs);
+        if !in_group || iface.pin_alias[p] != u32::MAX {
             continue; // an alias pin is its target's connection, listed once
         }
         let bits = pin_bits(row, p);
@@ -293,99 +368,110 @@ fn dir_nets<'n, F: Fn(Name) -> &'n str>(out: &mut String, row: &Row<'_, F>, inpu
 /// The default templates of spec §7.1 (and §7.5 for spectre and verilog): a subcircuit
 /// row is spelled by SpiceRack (`X{name} {pins} {cell}`, Spectre `{name} ({pins})
 /// {cell}`, Verilog `{cell} {name} (.{port}({net}), …);`).
-fn default_line<'n, F: Fn(Name) -> &'n str>(
+fn default_line<'net, F: Fn(Name) -> &'net str>(
     row: &Row<'_, F>,
     leaf: u32,
     out: &mut String,
     uses: &mut Uses,
 ) -> Result<(), String> {
-    let (e, d, f) = (row.e, row.d, row.f);
+    let (elab, dialect, iface) = (row.elab, row.dialect, row.iface);
+    assert_eq!(
+        leaf == u32::MAX,
+        matches!(elab.insts.target[row.index], Target::Def(_)),
+        "a leaf impl row exactly when the row targets a leaf"
+    );
+    let start = out.len();
     let model_name = || match row.plan.model {
-        Src::Text(n) => n,
-        Src::Param(k) => e.insts.param_text[e.insts.param_start[row.r] as usize + k as usize],
+        Source::Text(n) => n,
+        Source::Param(k) => {
+            elab.insts.param_text[elab.insts.param_start[row.index] as usize + k as usize]
+        }
         _ => row.cell,
     };
-    match (row.plan.lang, d) {
-        (Lang::Schematic | Lang::Spice, _) if is_spice(d) => instance(row, out),
+    match (row.plan.lang, dialect) {
+        (Lang::Schematic | Lang::Spice, _) if crate::is_spice(dialect) => instance(row, out),
         (Lang::Schematic, Dialect::Spectre | Dialect::Verilog) => {
             assert!(
-                matches!(e.insts.target[row.r], Target::Def(_)),
+                matches!(elab.insts.target[row.index], Target::Def(_)),
                 "a definition row"
             );
             instance(row, out);
         }
         (Lang::Verilog, Dialect::Verilog) => {
-            write_src(row, row.plan.model, out);
-            let ordinary = (0..f.pin_name.len())
-                .filter(|&p| f.pin_inherit[p] == Name::NONE && f.pin_alias[p] == u32::MAX);
-            let inherited = (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] != Name::NONE);
+            write_source(row, row.plan.model, out);
+            let pins = 0..iface.pin_name.len();
+            let ordinary = pins
+                .clone()
+                .filter(|&p| iface.pin_inherit[p] == Name::NONE && iface.pin_alias[p] == u32::MAX);
+            let inherited = pins.filter(|&p| iface.pin_inherit[p] != Name::NONE);
             let bits = ordinary
                 .chain(inherited)
-                .flat_map(|p| f.bits(p).iter().map(|b| e.names.get(*b)));
+                .flat_map(|p| iface.bits(p).iter().map(|b| elab.names.get(*b)));
             module_ports(out, row, bits);
         }
         (Lang::VerilogA, Dialect::Ngspice | Dialect::Espice) => {
-            push_prefixed(out, b'N', row.name, d);
-            for &n in row.conn {
+            push_prefixed(out, b'N', row.name, dialect);
+            for &net in row.conn {
                 out.push(' ');
-                push_nets(out, &[n], row);
+                push_nets(out, &[net], row);
             }
             out.push(' ');
-            write_src(row, row.plan.model, out);
-            if d == Dialect::Espice {
+            write_source(row, row.plan.model, out);
+            if dialect == Dialect::Espice {
                 va_params(row, out);
             }
             push_model(uses, model_name(), leaf);
         }
         (Lang::Verilog, Dialect::Ngspice) => {
-            push_prefixed(out, b'A', row.name, d);
+            push_prefixed(out, b'A', row.name, dialect);
             out.push_str(" [ ");
-            dir_nets(out, row, true);
+            dir_nets(out, row, PinGroup::Inputs);
             out.push_str(" ] [ ");
-            dir_nets(out, row, false);
+            dir_nets(out, row, PinGroup::Others);
             out.push_str(" ] ");
-            write_src(row, row.plan.model, out);
+            write_source(row, row.plan.model, out);
             push_model(uses, model_name(), leaf);
         }
         (lang, _) => {
             return Err(format!(
                 "E013: no default template for a {lang:?} impl in {}",
-                d.as_str()
+                dialect.as_str()
             ));
         }
     }
+    assert!(out.len() > start, "a default template writes the element");
     Ok(())
 }
 
 /// Appends the subcircuit instance of a default-template row as SpiceRack spells an
 /// IR `Instance` (`xschem::push_instance`): its name, its cell, its connections in the
 /// row's spelling (`?` unconnected); Verilog pairs them with the definition's ports.
-fn instance<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, out: &mut String) {
-    let e = row.e;
+fn instance<'net, F: Fn(Name) -> &'net str>(row: &Row<'_, F>, out: &mut String) {
+    let elab = row.elab;
     let nets = row
         .conn
         .iter()
         .map(|&n| if n == Name::NONE { "?" } else { (row.net)(n) });
-    let ports: &[Name] = match (e.insts.target[row.r], row.d) {
-        (Target::Def(c), Dialect::Verilog) => e.ports(c),
+    let ports: &[Name] = match (elab.insts.target[row.index], row.dialect) {
+        (Target::Def(def), Dialect::Verilog) => elab.ports(def),
         _ => &[],
     };
     let start = out.len();
     xschem::push_instance(
         out,
         row.name,
-        e.names.get(row.cell),
+        elab.names.get(row.cell),
         nets,
-        ports.iter().map(|&p| net_text(e, p)),
+        ports.iter().map(|&p| crate::net_text(elab, p)),
         [],
-        sr(row.d),
+        crate::spicerack_dialect(row.dialect),
     );
     assert!(out.len() > start);
 }
 
 /// Appends `name` with the device letter `letter` in front unless it already starts
 /// with it (ASCII case-insensitive): `X1` stays `X1`, `M1` becomes `XM1` (spec §7.6.5).
-fn push_prefixed(out: &mut String, letter: u8, name: &str, d: Dialect) {
+fn push_prefixed(out: &mut String, letter: u8, name: &str, dialect: Dialect) {
     assert!(letter.is_ascii_uppercase());
     let start = out.len();
     if !name
@@ -395,7 +481,7 @@ fn push_prefixed(out: &mut String, letter: u8, name: &str, d: Dialect) {
     {
         out.push(char::from(letter));
     }
-    push_name(out, name, d);
+    crate::push_name(out, name, dialect);
     assert!(out.len() > start);
 }
 
@@ -403,19 +489,20 @@ fn push_prefixed(out: &mut String, letter: u8, name: &str, d: Dialect) {
 /// (spec §7.2a: ESPice reads instance parameters from the `N` line), except computed params
 /// and the `model` param the line already names; `m` is written `mfactor`, the LRM name
 /// ESPice's Verilog-A instances take (`m=` is its `UnknownParameter`).
-fn va_params<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, out: &mut String) {
-    let e = row.e;
-    let params = e.params_of(row.r);
+fn va_params<'net, F: Fn(Name) -> &'net str>(row: &Row<'_, F>, out: &mut String) {
+    let elab = row.elab;
+    assert_eq!(row.plan.lang, Lang::VerilogA, "a Verilog-A row");
+    let params = elab.params_of(row.index);
     let model = match row.plan.model {
-        Src::Param(k) => params.start + k as usize,
+        Source::Param(k) => params.start + k as usize,
         _ => usize::MAX,
     };
     assert!(model == usize::MAX || params.contains(&model));
     for k in params {
-        if e.insts.param_flags[k] & (COMPUTED | DEFAULT) != 0 || k == model {
+        if elab.insts.param_flags[k] & (COMPUTED | DEFAULT) != 0 || k == model {
             continue;
         }
-        let name = e.names.get(e.insts.param_name[k]);
+        let name = elab.names.get(elab.insts.param_name[k]);
         out.push(' ');
         out.push_str(if name.eq_ignore_ascii_case("m") {
             "mfactor"
@@ -423,7 +510,7 @@ fn va_params<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, out: &mut String) {
             name
         });
         out.push('=');
-        out.push_str(e.names.get(e.insts.param_text[k]));
+        out.push_str(elab.names.get(elab.insts.param_text[k]));
     }
 }
 
@@ -431,30 +518,36 @@ fn va_params<'n, F: Fn(Name) -> &'n str>(row: &Row<'_, F>, out: &mut String) {
 /// duplicates folded; the rest are folded when written).
 fn push_model(uses: &mut Uses, model: Name, leaf: u32) {
     assert!(leaf != u32::MAX, "only leaf impls declare models");
-    assert!((leaf as usize) < uses.impl_used.len());
-    if uses.models.last() != Some(&(model, leaf)) {
-        uses.models.push((model, leaf));
+    assert!(
+        uses.impl_used[leaf as usize],
+        "the row marked its impl used"
+    );
+    let model_use = ModelUse { model, leaf };
+    if uses.models.last() != Some(&model_use) {
+        uses.models.push(model_use);
     }
 }
 
 /// Appends ` <name> (.<port>(<net>), …);` for a verilog module instance.
-fn module_ports<'p, 'n, F: Fn(Name) -> &'n str>(
+fn module_ports<'port, 'net, F: Fn(Name) -> &'net str>(
     out: &mut String,
     row: &Row<'_, F>,
-    ports: impl Iterator<Item = &'p str>,
+    ports: impl Iterator<Item = &'port str>,
 ) {
     assert!(!out.is_empty(), "the module name precedes the instance");
+    assert_eq!(row.dialect, Dialect::Verilog);
     out.push(' ');
-    push_name(out, row.name, row.d);
+    crate::push_name(out, row.name, row.dialect);
     out.push_str(" (");
-    for (i, (port, &n)) in ports.zip(row.conn).enumerate() {
+    let connections = ports.zip(row.conn);
+    for (i, (port, &net)) in connections.enumerate() {
         if i > 0 {
             out.push_str(", ");
         }
         out.push('.');
-        push_name(out, port, row.d);
+        crate::push_name(out, port, row.dialect);
         out.push('(');
-        push_nets(out, &[n], row);
+        push_nets(out, &[net], row);
         out.push(')');
     }
     out.push_str(");");

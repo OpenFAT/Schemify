@@ -14,14 +14,15 @@
 //!   `net_name(&self, path: &str) -> Option<String>`,
 //!   `net_path(&self, name: &str) -> Option<String>`,
 //!   `leaves(&self, max: usize) -> Vec<String>`
-//! - `pub(crate) struct Builder`: `Builder::new(e, d, defs, rows, respell) -> Builder`,
-//!   `def(&mut self, e: &Elab, d: u32, def_map: &[u32])`,
-//!   `row(&mut self, e: &Elab, r: usize, emitted: &str, child: u32)`,
+//! - `pub(crate) struct Builder`: `Builder::new(elab, dialect, defs, rows, respellings) -> Builder`,
+//!   `def(&mut self, elab: &Elab, def: u32, def_map: &[u32])`,
+//!   `row(&mut self, elab: &Elab, row: usize, emitted: &str, child: u32)`,
 //!   `finish(self) -> NameMap`
 
-use crate::{NONE, is_spice, push_name, spelled};
+use crate::{NONE, Respelling};
 use schemify_elab::{DEPTH_MAX, Dialect, Elab, Name};
 use std::cmp::Ordering;
+use std::iter;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -36,6 +37,10 @@ use std::sync::OnceLock;
 /// Reverse lookups (emitted → path) compare ASCII case-insensitively for the SPICE
 /// dialects (ngspice lowercases names in its output) and take net names with or
 /// without the dialect's escapes.
+///
+/// Every lookup asserts the map's own invariants (CSR offsets in step, a walk no deeper
+/// than [`DEPTH_MAX`]); they hold for every map [`crate::emit`] builds, so a panic in a
+/// lookup is a bug in this crate, never a bad argument.
 #[derive(Clone, Debug, Default)]
 pub struct NameMap {
     dialect: Option<Dialect>,
@@ -73,14 +78,17 @@ pub(crate) struct Builder {
     /// Net id → the last definition that listed it.
     stamp: Vec<u32>,
     /// The definition being recorded.
-    cur: u32,
+    current: u32,
     /// Net respellings of the netlist (XSPICE bus bits, spec §7.2), sorted by name.
-    pub(crate) respell: Vec<(Name, String)>,
+    pub(crate) respellings: Vec<Respelling>,
 }
 
-/// A `(start, len)` range of [`NameMap`]'s text arena.
+/// A range of [`NameMap`]'s text arena.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Span(u32, u32);
+struct Span {
+    start: u32,
+    len: u32,
+}
 
 /// Lookup orders, built on the first query that needs them.
 #[derive(Clone, Debug)]
@@ -99,16 +107,21 @@ impl NameMap {
     /// rows whose template failed have none).
     ///
     /// Cost: one binary search per path level.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken map invariant (see [`NameMap`]).
+    #[must_use]
     pub fn inst_name(&self, path: &str) -> Option<String> {
         let rest = path.strip_prefix('/').filter(|r| !r.is_empty())?;
-        let (mut d, mut out) = (0u32, String::new());
-        for seg in rest.split('/') {
-            let r = self.find_local(d, seg)?;
+        let (mut def, mut out) = (0u32, String::new());
+        for segment in rest.split('/') {
+            let row = self.find_local(def, segment)?;
             if !out.is_empty() {
                 out.push('.');
             }
-            out.push_str(self.s(self.row_emitted[r]));
-            d = self.row_child[r];
+            out.push_str(self.span_text(self.row_emitted[row]));
+            def = self.row_child[row];
         }
         assert!(!out.is_empty());
         Some(out)
@@ -129,40 +142,44 @@ impl NameMap {
     /// subcircuit instance rather than a device.
     ///
     /// Cost: one binary search per schematic level.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken map invariant (see [`NameMap`]).
     pub fn spice_device(&self, path: &str) -> Result<String, String> {
         let rest = path.strip_prefix('/').unwrap_or(path);
         if rest.is_empty() || rest.split('/').any(str::is_empty) {
             return Err(format!("`{path}` is not an instance path"));
         }
-        let (mut d, mut out, mut last) = (0u32, String::new(), "");
-        for seg in rest.split('/') {
+        let (mut def, mut out, mut last) = (0u32, String::new(), "");
+        for segment in rest.split('/') {
             if !out.is_empty() {
                 out.push('.');
             }
-            if d == NONE {
-                out.push_str(seg); // inside a leaf's own subcircuit
-                last = seg;
+            if def == NONE {
+                out.push_str(segment); // inside a leaf's own subcircuit
+                last = segment;
                 continue;
             }
-            let Some(r) = self.find_local(d, seg) else {
-                return Err(format!("no instance `{seg}` on the path `{path}`"));
+            let Some(row) = self.find_local(def, segment) else {
+                return Err(format!("no instance `{segment}` on the path `{path}`"));
             };
-            last = self.s(self.row_emitted[r]);
+            last = self.span_text(self.row_emitted[row]);
             out.push_str(last);
-            d = self.row_child[r];
+            def = self.row_child[row];
         }
-        if d != NONE {
+        if def != NONE {
             return Err(format!("`{path}` is a subcircuit instance, not a device"));
         }
         out.make_ascii_lowercase();
         let nested = out.contains('.');
         let letter = last.chars().next().map(|c| c.to_ascii_lowercase());
-        let dev = match letter {
+        let device = match letter {
             Some(c) if nested => format!("{c}.{out}"),
             _ => out,
         };
-        assert!(!dev.is_empty());
-        Ok(dev)
+        assert!(!device.is_empty());
+        Ok(device)
     }
 
     /// Returns the path of the instance whose emitted hierarchical name is `name`
@@ -170,6 +187,11 @@ impl NameMap {
     ///
     /// Cost: the first reverse lookup sorts every definition's rows and nets by name;
     /// then a binary search per level, retried at each `.` when names contain dots.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken map invariant (see [`NameMap`]).
+    #[must_use]
     pub fn inst_path(&self, name: &str) -> Option<String> {
         let mut path = String::new();
         let found = self.walk_inst(0, name, &mut path, 0);
@@ -181,51 +203,71 @@ impl NameMap {
     /// a port resolves to the net it connects to in the parent, a global to its bare
     /// name. `None` when the path names no emitted instance or no net of its
     /// definition.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken map invariant (see [`NameMap`]).
+    #[must_use]
     pub fn net_name(&self, path: &str) -> Option<String> {
         let rest = path.strip_prefix('/').filter(|r| !r.is_empty())?;
         let (insts, net) = match rest.rsplit_once('/') {
-            Some((a, b)) => (Some(a), b),
+            Some((insts, net)) => (Some(insts), net),
             None => (None, rest),
         };
+        // (parent definition, row) per instance on the path.
         let mut chain: Vec<(u32, usize)> = Vec::new();
-        let mut d = 0u32;
-        for seg in insts.into_iter().flat_map(|p| p.split('/')) {
-            let r = self.find_local(d, seg)?;
-            chain.push((d, r));
-            d = self.row_child[r];
+        let mut def = 0u32;
+        let segments = insts.into_iter().flat_map(|p| p.split('/'));
+        for segment in segments {
+            let row = self.find_local(def, segment)?;
+            chain.push((def, row));
+            def = self.row_child[row];
         }
-        let mut id = self.find_net(d, net)?;
+        assert!(
+            chain.len() <= DEPTH_MAX as usize,
+            "a path of emitted instances is no deeper than the elaboration"
+        );
+        let mut id = self.find_net(def, net)?;
         while !self.net_global[id as usize] {
-            let Some(j) = self.ports(d).iter().position(|p| *p == id) else {
+            let Some(j) = self.ports(def).iter().position(|p| *p == id) else {
                 break;
             };
-            let Some((parent, r)) = chain.pop() else {
+            let Some((parent, row)) = chain.pop() else {
                 break; // a port of the top is a top-level net
             };
-            id = *self.conn.get(self.row_conn[r] as usize + j)?;
+            id = *self.conn.get(self.row_conn[row] as usize + j)?;
             if id == NONE {
                 return None;
             }
-            d = parent;
+            def = parent;
         }
         let mut out = String::new();
         if !self.net_global[id as usize] {
-            for &(_, r) in &chain {
-                out.push_str(self.s(self.row_emitted[r]));
+            for &(_, row) in &chain {
+                out.push_str(self.span_text(self.row_emitted[row]));
                 out.push('.');
             }
         }
-        push_name(&mut out, self.s(self.net_name[id as usize]), self.dialect?);
+        crate::push_name(
+            &mut out,
+            self.span_text(self.net_name[id as usize]),
+            self.dialect?,
+        );
         Some(out)
     }
 
     /// Returns the path of the net whose emitted hierarchical name is `name`
     /// (`x1.n1` → `/X1/n1`; a global's bare name → `/<name>`). Cost as
     /// [`NameMap::inst_path`].
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken map invariant (see [`NameMap`]).
+    #[must_use]
     pub fn net_path(&self, name: &str) -> Option<String> {
         let globals = &self.index().globals;
         if let Some(id) = self.find_spelled(globals, &self.net_name, &self.unescape(name)) {
-            return Some(format!("/{}", self.s(self.net_name[id as usize])));
+            return Some(format!("/{}", self.span_text(self.net_name[id as usize])));
         }
         let mut path = String::new();
         let found = self.walk_net(0, name, &mut path, 0);
@@ -238,11 +280,17 @@ impl NameMap {
     ///
     /// Cost: O(`max` + the definitions walked); the hierarchy is walked, never flattened in
     /// memory, so a design of 10^6 leaves costs `max` names.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken map invariant (see [`NameMap`]).
+    #[must_use]
     pub fn leaves(&self, max: usize) -> Vec<String> {
         let mut out = Vec::new();
         if self.def_rows.len() >= 2 {
             let mut prefix = String::new();
             self.walk_leaves(0, &mut prefix, max, &mut out, 0);
+            assert!(prefix.is_empty(), "the walk restores its prefix");
         }
         assert!(out.len() <= max);
         out
@@ -250,18 +298,25 @@ impl NameMap {
 }
 
 impl Builder {
-    /// An empty map of dialect `d` whose nets are spelled under `respell` (sorted by
+    /// An empty map of `dialect` whose nets are spelled under `respellings` (sorted by
     /// [`Name`]); `defs` and `rows` are capacity hints.
     pub(crate) fn new(
-        e: &Elab,
-        d: Dialect,
+        elab: &Elab,
+        dialect: Dialect,
         defs: usize,
         rows: usize,
-        respell: Vec<(Name, String)>,
+        respellings: Vec<Respelling>,
     ) -> Builder {
-        assert!(respell.windows(2).all(|w| w[0].0.0 < w[1].0.0));
+        assert!(
+            respellings.windows(2).all(|w| w[0].net.0 < w[1].net.0),
+            "respellings are sorted by name, one per net"
+        );
+        assert!(
+            !respellings.iter().any(|r| r.net == Name::NONE),
+            "an unconnected bit is never respelled"
+        );
         let mut map = NameMap {
-            dialect: Some(d),
+            dialect: Some(dialect),
             ..NameMap::default()
         };
         map.def_rows.reserve(defs + 1);
@@ -274,65 +329,75 @@ impl Builder {
         map.text.reserve(rows * 32);
         Builder {
             map,
-            remap: vec![NONE; e.names.len() as usize],
+            remap: vec![NONE; elab.names.len() as usize],
             stamp: Vec::new(),
-            cur: NONE,
-            respell,
+            current: NONE,
+            respellings,
         }
     }
 
-    /// Starts elab definition `d` (map definitions are numbered in call order, which
+    /// Starts elab definition `def` (map definitions are numbered in call order, which
     /// must be `def_map`'s numbering).
-    pub(crate) fn def(&mut self, e: &Elab, d: u32, def_map: &[u32]) {
-        assert_eq!(def_map[d as usize] as usize, self.map.def_rows.len());
-        self.cur = self.map.def_rows.len() as u32;
+    pub(crate) fn def(&mut self, elab: &Elab, def: u32, def_map: &[u32]) {
+        assert_eq!(def_map[def as usize] as usize, self.map.def_rows.len());
+        self.current = self.map.def_rows.len() as u32;
         self.map.def_rows.push(self.map.row_local.len() as u32);
         self.map.def_ports.push(self.map.port.len() as u32);
         self.map.def_nets.push(self.map.net.len() as u32);
-        for &p in e.ports(d) {
-            let id = self.net(e, p);
+        let first_port = self.map.port.len();
+        let ports = elab.ports(def);
+        for &p in ports {
+            let id = self.net(elab, p);
             self.map.port.push(id);
         }
+        assert_eq!(self.map.def_ports.len(), self.map.def_rows.len());
+        assert_eq!(
+            self.map.port.len() - first_port,
+            ports.len(),
+            "one port net id per port"
+        );
     }
 
-    /// Records emitted row `r` of the current definition.
-    pub(crate) fn row(&mut self, e: &Elab, r: usize, emitted: &str, child: u32) {
+    /// Records emitted row `row` of the current definition.
+    pub(crate) fn row(&mut self, elab: &Elab, row: usize, emitted: &str, child: u32) {
         assert!(
             !self.map.def_rows.is_empty(),
             "a row belongs to a definition"
         );
-        let local = span(&mut self.map.text, e.names.get(e.insts.name[r]));
+        let local = span(&mut self.map.text, elab.names.get(elab.insts.name[row]));
         let emitted = span(&mut self.map.text, emitted);
         self.map.row_local.push(local);
         self.map.row_emitted.push(emitted);
         self.map.row_child.push(child);
-        for &c in e.conns(r) {
-            let id = self.net(e, c);
+        for &c in elab.conns(row) {
+            let id = self.net(elab, c);
             self.map.conn.push(id);
         }
         self.map.row_conn.push(self.map.conn.len() as u32);
+        assert_eq!(self.map.row_emitted.len(), self.map.row_local.len());
+        assert_eq!(self.map.row_child.len(), self.map.row_local.len());
     }
 
     /// Closes the last definition's groups and returns the map.
     pub(crate) fn finish(mut self) -> NameMap {
-        let m = &mut self.map;
-        if !m.def_rows.is_empty() {
-            m.def_rows.push(m.row_local.len() as u32);
-            m.def_ports.push(m.port.len() as u32);
-            m.def_nets.push(m.net.len() as u32);
+        let map = &mut self.map;
+        if !map.def_rows.is_empty() {
+            map.def_rows.push(map.row_local.len() as u32);
+            map.def_ports.push(map.port.len() as u32);
+            map.def_nets.push(map.net.len() as u32);
         }
-        assert_eq!(m.row_conn.len(), m.row_local.len() + 1);
-        assert_eq!(m.net_name.len(), m.net_global.len());
+        assert_eq!(map.row_conn.len(), map.row_local.len() + 1);
+        assert_eq!(map.net_name.len(), map.net_global.len());
         self.map
     }
 }
 
 // ---- private ----
 
-/// Group `d` of the CSR offsets `csr`; `None` past the last group (`NONE`, the child of
+/// Group `def` of the CSR offsets `csr`; `None` past the last group (`NONE`, the child of
 /// a leaf, included), so a walk below a leaf finds nothing.
-fn group(csr: &[u32], d: u32) -> Option<Range<usize>> {
-    match csr.get(d as usize..)? {
+fn group(csr: &[u32], def: u32) -> Option<Range<usize>> {
+    match csr.get(def as usize..)? {
         [a, b, ..] => Some(*a as usize..*b as usize),
         _ => None,
     }
@@ -343,56 +408,60 @@ fn span(text: &mut String, s: &str) -> Span {
     let start = text.len();
     text.push_str(s);
     assert!(text.len() < u32::MAX as usize, "name map holds < 4 GiB");
-    Span(start as u32, s.len() as u32)
+    Span {
+        start: start as u32,
+        len: s.len() as u32,
+    }
 }
 
 impl NameMap {
     fn walk_leaves(
         &self,
-        d: u32,
+        def: u32,
         prefix: &mut String,
         max: usize,
         out: &mut Vec<String>,
         depth: u32,
     ) {
         assert!(depth <= DEPTH_MAX, "deeper than any elaboration");
-        let len0 = prefix.len();
-        for r in self.rows_of(d) {
+        let start_len = prefix.len();
+        for row in self.rows_of(def) {
             if out.len() >= max {
                 return;
             }
-            prefix.push_str(self.s(self.row_emitted[r]));
-            match self.row_child[r] {
+            prefix.push_str(self.span_text(self.row_emitted[row]));
+            match self.row_child[row] {
                 NONE => out.push(prefix.clone()),
-                c => {
+                child => {
                     prefix.push('.');
-                    self.walk_leaves(c, prefix, max, out, depth + 1);
+                    self.walk_leaves(child, prefix, max, out, depth + 1);
                 }
             }
-            prefix.truncate(len0);
+            prefix.truncate(start_len);
         }
+        assert!(out.len() <= max);
     }
 
-    fn s(&self, sp: Span) -> &str {
-        &self.text[sp.0 as usize..(sp.0 + sp.1) as usize]
+    fn span_text(&self, span: Span) -> &str {
+        &self.text[span.start as usize..(span.start + span.len) as usize]
     }
 
-    /// Rows of definition `d`; `d` is a definition of this map.
-    fn rows_of(&self, d: u32) -> Range<usize> {
-        group(&self.def_rows, d).expect("a definition of the map")
+    /// Rows of definition `def`; `def` is a definition of this map.
+    fn rows_of(&self, def: u32) -> Range<usize> {
+        group(&self.def_rows, def).expect("a definition of the map")
     }
 
-    /// Port net ids of definition `d`; `d` is a definition of this map.
-    fn ports(&self, d: u32) -> &[u32] {
-        &self.port[group(&self.def_ports, d).expect("a definition of the map")]
+    /// Port net ids of definition `def`; `def` is a definition of this map.
+    fn ports(&self, def: u32) -> &[u32] {
+        &self.port[group(&self.def_ports, def).expect("a definition of the map")]
     }
 
-    fn fold(&self) -> bool {
-        self.dialect.is_some_and(is_spice)
+    fn folds_case(&self) -> bool {
+        self.dialect.is_some_and(crate::is_spice)
     }
 
     fn key_cmp(&self, a: &str, b: &str) -> Ordering {
-        if self.fold() {
+        if self.folds_case() {
             let lower = |c: u8| c.to_ascii_lowercase();
             a.bytes().map(lower).cmp(b.bytes().map(lower))
         } else {
@@ -402,16 +471,16 @@ impl NameMap {
 
     /// Removes the dialect's identifier escapes (spectre `\c`, verilog `\name `).
     fn unescape(&self, name: &str) -> String {
-        match self.dialect {
+        let out = match self.dialect {
             Some(Dialect::Spectre) => {
                 let mut out = String::with_capacity(name.len());
-                let mut esc = false;
+                let mut escaped = false;
                 for c in name.chars() {
-                    if c == '\\' && !esc {
-                        esc = true;
+                    if c == '\\' && !escaped {
+                        escaped = true;
                         continue;
                     }
-                    esc = false;
+                    escaped = false;
                     out.push(c);
                 }
                 out
@@ -421,100 +490,122 @@ impl NameMap {
                 .map_or(name, |n| n.trim_end_matches(' '))
                 .to_owned(),
             _ => name.to_owned(),
-        }
+        };
+        assert!(
+            out.len() <= name.len(),
+            "unescaping only removes characters"
+        );
+        out
     }
 
-    /// The row of definition `d` (`NONE`: a leaf, none) whose local name is `seg`.
-    fn find_local(&self, d: u32, seg: &str) -> Option<usize> {
-        let rows = group(&self.def_rows, d)?;
+    /// The row of definition `def` (`NONE`: a leaf, none) whose local name is `segment`.
+    fn find_local(&self, def: u32, segment: &str) -> Option<usize> {
+        let rows = group(&self.def_rows, def)?;
         let k = self.row_local[rows.clone()]
-            .binary_search_by(|sp| self.s(*sp).cmp(seg))
+            .binary_search_by(|span| self.span_text(*span).cmp(segment))
             .ok()?;
         assert!(rows.start + k < rows.end);
         Some(rows.start + k)
     }
 
-    /// The row of definition `d` emitted as `name`.
-    fn find_emitted(&self, d: u32, name: &str) -> Option<usize> {
-        let rows = &self.index().rows[group(&self.def_rows, d)?];
-        let r = self.find_spelled(rows, &self.row_emitted, name)?;
-        Some(r as usize)
+    /// The row of definition `def` emitted as `name`.
+    fn find_emitted(&self, def: u32, name: &str) -> Option<usize> {
+        let rows = &self.index().rows[group(&self.def_rows, def)?];
+        let row = self.find_spelled(rows, &self.row_emitted, name)? as usize;
+        assert!(row < self.row_emitted.len());
+        Some(row)
     }
 
-    /// The net of definition `d` (`NONE`: a leaf, none) named `name` (unescaped).
-    fn find_net(&self, d: u32, name: &str) -> Option<u32> {
-        let nets = &self.index().nets[group(&self.def_nets, d)?];
-        self.find_spelled(nets, &self.net_name, name)
+    /// The net of definition `def` (`NONE`: a leaf, none) named `name` (unescaped).
+    fn find_net(&self, def: u32, name: &str) -> Option<u32> {
+        let nets = &self.index().nets[group(&self.def_nets, def)?];
+        let id = self.find_spelled(nets, &self.net_name, name)?;
+        assert!((id as usize) < self.net_name.len());
+        Some(id)
     }
 
     /// The id among `ids` (sorted by [`NameMap::key_cmp`] of their `text`) whose text is
     /// `name`, preferring the exact spelling over a case-folded match.
     fn find_spelled(&self, ids: &[u32], text: &[Span], name: &str) -> Option<u32> {
-        let key = |id: u32| self.key_cmp(self.s(text[id as usize]), name);
-        let k0 = ids.partition_point(|&id| key(id).is_lt());
-        let equal = ids[k0..].iter().copied().take_while(|&id| key(id).is_eq());
+        let key = |id: u32| self.key_cmp(self.span_text(text[id as usize]), name);
+        let first_equal = ids.partition_point(|&id| key(id).is_lt());
+        let equal = ids[first_equal..]
+            .iter()
+            .copied()
+            .take_while(|&id| key(id).is_eq());
         let mut first = None;
         for id in equal {
-            if self.s(text[id as usize]) == name {
+            if self.span_text(text[id as usize]) == name {
                 return Some(id);
             }
             first = first.or(Some(id));
         }
         first
     }
+
     /// Candidate `(head, rest)` splits of a dotted name: at each `.`, then whole.
     fn splits(name: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
         name.match_indices('.')
             .map(move |(i, _)| (&name[..i], Some(&name[i + 1..])))
-            .chain(std::iter::once((name, None)))
+            .chain(iter::once((name, None)))
     }
 
-    fn walk_inst(&self, d: u32, name: &str, path: &mut String, depth: u32) -> bool {
+    fn walk_inst(&self, def: u32, name: &str, path: &mut String, depth: u32) -> bool {
         assert!(depth <= DEPTH_MAX, "deeper than any elaboration");
-        let len0 = path.len();
+        let start_len = path.len();
         for (head, rest) in Self::splits(name) {
-            let Some(r) = self.find_emitted(d, head) else {
+            let Some(row) = self.find_emitted(def, head) else {
                 continue;
             };
             path.push('/');
-            path.push_str(self.s(self.row_local[r]));
+            path.push_str(self.span_text(self.row_local[row]));
             match rest {
                 None => return true,
                 Some(rest) => {
-                    let c = self.row_child[r];
-                    if c != NONE && self.walk_inst(c, rest, path, depth + 1) {
+                    let child = self.row_child[row];
+                    if child != NONE && self.walk_inst(child, rest, path, depth + 1) {
                         return true;
                     }
                 }
             }
-            path.truncate(len0);
+            path.truncate(start_len);
         }
+        assert_eq!(
+            path.len(),
+            start_len,
+            "a failed walk leaves the path as it was"
+        );
         false
     }
 
-    fn walk_net(&self, d: u32, name: &str, path: &mut String, depth: u32) -> bool {
+    fn walk_net(&self, def: u32, name: &str, path: &mut String, depth: u32) -> bool {
         assert!(depth <= DEPTH_MAX, "deeper than any elaboration");
-        let len0 = path.len();
-        if let Some(id) = self.find_net(d, &self.unescape(name)) {
+        let start_len = path.len();
+        if let Some(id) = self.find_net(def, &self.unescape(name)) {
             path.push('/');
-            path.push_str(self.s(self.net_name[id as usize]));
+            path.push_str(self.span_text(self.net_name[id as usize]));
             return true;
         }
         for (head, rest) in Self::splits(name) {
-            let (Some(rest), Some(r)) = (rest, self.find_emitted(d, head)) else {
+            let (Some(rest), Some(row)) = (rest, self.find_emitted(def, head)) else {
                 continue;
             };
-            let c = self.row_child[r];
-            if c == NONE {
+            let child = self.row_child[row];
+            if child == NONE {
                 continue;
             }
             path.push('/');
-            path.push_str(self.s(self.row_local[r]));
-            if self.walk_net(c, rest, path, depth + 1) {
+            path.push_str(self.span_text(self.row_local[row]));
+            if self.walk_net(child, rest, path, depth + 1) {
                 return true;
             }
-            path.truncate(len0);
+            path.truncate(start_len);
         }
+        assert_eq!(
+            path.len(),
+            start_len,
+            "a failed walk leaves the path as it was"
+        );
         false
     }
 
@@ -522,14 +613,17 @@ impl NameMap {
         self.index.get_or_init(|| {
             let sort = |ids: &mut [u32], text: &[Span]| {
                 ids.sort_by(|a, b| {
-                    self.key_cmp(self.s(text[*a as usize]), self.s(text[*b as usize]))
+                    self.key_cmp(
+                        self.span_text(text[*a as usize]),
+                        self.span_text(text[*b as usize]),
+                    )
                 });
             };
             let mut rows: Vec<u32> = (0..self.row_local.len() as u32).collect();
             let mut nets = self.net.clone();
-            for d in 0..self.def_rows.len().saturating_sub(1) as u32 {
-                sort(&mut rows[self.rows_of(d)], &self.row_emitted);
-                let group = group(&self.def_nets, d).expect("a definition of the map");
+            for def in 0..self.def_rows.len().saturating_sub(1) as u32 {
+                sort(&mut rows[self.rows_of(def)], &self.row_emitted);
+                let group = group(&self.def_nets, def).expect("a definition of the map");
                 sort(&mut nets[group], &self.net_name);
             }
             let mut globals: Vec<u32> = (0..self.net_name.len() as u32)
@@ -548,27 +642,33 @@ impl NameMap {
 }
 
 impl Builder {
-    /// The net id of elab name `n` (interning it), listed in the current definition.
-    fn net(&mut self, e: &Elab, n: Name) -> u32 {
-        if n == Name::NONE {
+    /// The net id of elab name `net` (interning it), listed in the current definition.
+    fn net(&mut self, elab: &Elab, net: Name) -> u32 {
+        if net == Name::NONE {
             return NONE;
         }
-        let mut id = self.remap[n.0 as usize];
+        let mut id = self.remap[net.0 as usize];
         if id == NONE {
             id = self.map.net_name.len() as u32;
-            self.remap[n.0 as usize] = id;
+            self.remap[net.0 as usize] = id;
             // Copied straight from elab's arena (no owned copy per new net: 10^6 in a flat
-            // design); `respell` and `map` are disjoint fields.
-            let name = span(&mut self.map.text, spelled(e, &self.respell, n));
+            // design); `respellings` and `map` are disjoint fields.
+            let name = span(
+                &mut self.map.text,
+                crate::spelled(elab, &self.respellings, net),
+            );
             self.map.net_name.push(name);
-            let global = e.globals.binary_search_by(|g| e.names.cmp(*g, n)).is_ok();
+            let global = elab
+                .globals
+                .binary_search_by(|g| elab.names.cmp(*g, net))
+                .is_ok();
             self.map.net_global.push(global);
             self.stamp.push(NONE);
         }
         assert!((id as usize) < self.map.net_name.len());
-        assert!(self.cur != NONE, "a net belongs to a definition");
-        if self.stamp[id as usize] != self.cur {
-            self.stamp[id as usize] = self.cur;
+        assert!(self.current != NONE, "a net belongs to a definition");
+        if self.stamp[id as usize] != self.current {
+            self.stamp[id as usize] = self.current;
             self.map.net.push(id);
         }
         id

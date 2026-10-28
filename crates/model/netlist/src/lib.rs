@@ -18,16 +18,17 @@
 //!
 //! ```
 //! use schemify_doc::Project;
-//! use schemify_elab::{Dialect, Request, elaborate, no_funcs};
+//! use schemify_elab::{Dialect, Request};
 //!
-//! let mut p = Project::new(None, None, 1).unwrap();
+//! let mut p = Project::new(None, None, 1).expect("an empty project");
 //! let res = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
 //! let bench = "schemify 1 shbench\n\ninst 0aaaaa ./res\n  at 0 0 R0\n  name 1\n  R 2k\n\nlabel 0bbbbb 0 0 R0 in\nlabel 0ccccc 0 20 R0 0\n";
-//! p.index_library("", "", &[("res.shprim", res.as_bytes()), ("tb.shbench", bench.as_bytes())]).unwrap();
-//! p.open("", "res.shprim", res.as_bytes(), None).unwrap();
-//! let top = p.open("", "tb.shbench", bench.as_bytes(), None).unwrap().handle;
+//! p.index_library("", "", &[("res.shprim", res.as_bytes()), ("tb.shbench", bench.as_bytes())])
+//!     .expect("the library indexes");
+//! p.open("", "res.shprim", res.as_bytes(), None).expect("the cell opens");
+//! let top = p.open("", "tb.shbench", bench.as_bytes(), None).expect("the bench opens").handle;
 //! let req = Request { config: None, corner: None, overrides: &[], env: &[], dialect: Dialect::Ngspice };
-//! let e = elaborate(&p, top, &req, &mut no_funcs);
+//! let e = schemify_elab::elaborate(&p, top, &req, &mut schemify_elab::no_funcs);
 //! assert!(!e.violations.blocking());
 //! let n = schemify_netlist::emit(&e, Dialect::Ngspice);
 //! assert_eq!(n.text, "* tb (schemify ngspice)\nR1 in 0 2000\n.end\n");
@@ -41,11 +42,13 @@
 //! - `pub fn lower(elab: &Elab, dialect: Dialect) -> Lowered`
 //! - re-exported: `emit_flat` (flat.rs), `compiled_source` (deck.rs), `set_serial`
 //!   (block.rs), `NameMap` (name_map.rs), SpiceRack's `Lines`, `SetupLine`, `CircuitIR`
-//! - crate-wide: `const NONE`, `fn write(l: &mut Lowered, dialect: Dialect) -> String`,
-//!   `fn sr(d: Dialect) -> SrDialect`, `fn is_spice(d: Dialect) -> bool`,
-//!   `fn push_name(out: &mut String, name: &str, d: Dialect)`,
-//!   `fn net_text(e: &Elab, n: Name) -> &str`,
-//!   `fn spelled<'a>(e: &'a Elab, rs: &'a [(Name, String)], n: Name) -> &'a str`
+//! - crate-wide: `const NONE`, `struct Respelling`,
+//!   `fn write(lowered: &mut Lowered, dialect: Dialect) -> String`,
+//!   `fn spicerack_dialect(dialect: Dialect) -> SpiceRackDialect`,
+//!   `fn is_spice(dialect: Dialect) -> bool`,
+//!   `fn push_name(out: &mut String, name: &str, dialect: Dialect)`,
+//!   `fn net_text(elab: &Elab, net: Name) -> &str`,
+//!   `fn spelled<'elab>(elab: &'elab Elab, respellings: &'elab [Respelling], net: Name) -> &'elab str`
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -86,10 +89,13 @@ pub use spicerack::codegen::xschem::{Lines, SetupLine};
 pub use spicerack::ir::CircuitIR;
 
 use block::Writer;
+use inst::Context;
 use plan::Plans;
 use schemify_elab::{Dialect, Elab, Name};
-use spicerack::codegen::Dialect as SrDialect;
+use spicerack::codegen::Dialect as SpiceRackDialect;
 use spicerack::codegen::xschem;
+use spicerack::codegen::xschem::Deck;
+use std::mem;
 
 /// One emitted netlist.
 #[derive(Clone, Debug, Default)]
@@ -127,6 +133,14 @@ pub struct Lowered {
 /// "No row / no definition" in `u32` columns.
 pub(crate) const NONE: u32 = u32::MAX;
 
+/// One net written under another name (spec §7.2: an XSPICE bus bit `d[0]` is `d_0`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Respelling {
+    pub(crate) net: Name,
+    /// Never empty.
+    pub(crate) text: String,
+}
+
 /// Emits `elab` in `dialect` (netlist spec §7): [`lower`], then SpiceRack's
 /// xschem-layout codegen writes the deck.
 ///
@@ -141,12 +155,18 @@ pub(crate) const NONE: u32 = u32::MAX;
 ///
 /// Panics if `elab` violates its own table invariants (CSR columns of mismatched
 /// lengths), i.e. it was not produced by `schemify_elab::elaborate`.
+#[must_use]
 pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist {
-    let mut l = lower(elab, dialect);
-    let text = write(&mut l, dialect);
+    let mut lowered = lower(elab, dialect);
+    let text = write(&mut lowered, dialect);
+    // The title `frame` wrote is the deck's first line.
+    assert!(
+        text.starts_with(xschem::comment(spicerack_dialect(dialect))),
+        "the deck opens with its title comment"
+    );
     Netlist {
         text,
-        name_map: l.name_map,
+        name_map: lowered.name_map,
     }
 }
 
@@ -157,110 +177,156 @@ pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist {
 /// # Panics
 ///
 /// As [`emit`].
+#[must_use]
 pub fn lower(elab: &Elab, dialect: Dialect) -> Lowered {
     assert_eq!(elab.defs.inst_start.len(), elab.defs.cell.len() + 1);
     assert_eq!(elab.defs.code_start.len(), elab.defs.cell.len() + 1);
     assert_eq!(elab.insts.conn_start.len(), elab.insts.name.len() + 1);
+    assert!(
+        elab.top == NONE || (elab.top as usize) < elab.defs.cell.len(),
+        "the top is a definition row or NONE"
+    );
     let plans = Plans::new(elab, dialect);
     let order = defs_by_name(elab);
-    let mut w = Writer::new(elab, dialect, &plans, &order);
-    let mut l = deck::frame(elab, dialect);
-    l.lines.reserve_exact(order.len() + 1);
-    l.nets.reserve_exact(order.len() + 1);
-    // The top block: a bench's vars stay the top's parameters; CDL's top takes its tuple.
-    let (top_lines, top_nets) = if elab.top == NONE {
-        (Vec::new(), Vec::new())
-    } else {
-        let vars = std::mem::take(&mut l.ir.top.parameters);
-        let (top, lines, nets) = w.def_block(elab.top);
-        l.ir.top = top;
-        if dialect != Dialect::Cdl {
-            l.ir.top.parameters = vars;
-        }
-        (lines, nets)
+    let context = Context {
+        elab,
+        dialect,
+        plans: &plans,
     };
-    l.lines.push(top_lines);
-    l.nets.push(top_nets);
-    for &d in &order {
-        let (sc, lines, nets) = w.def_block(d);
-        l.ir.subcircuit_defs.push(sc);
-        l.lines.push(lines);
-        l.nets.push(nets);
+    let mut writer = Writer::new(context, &order);
+    let mut lowered = deck::frame(elab, dialect);
+    lowered.lines.reserve_exact(order.len() + 1);
+    lowered.nets.reserve_exact(order.len() + 1);
+    // The top block: a bench's vars stay the top's parameters; CDL's top takes its tuple.
+    if elab.top == NONE {
+        lowered.lines.push(Vec::new());
+        lowered.nets.push(Vec::new());
+    } else {
+        let vars = mem::take(&mut lowered.ir.top.parameters);
+        let top = writer.def_block(elab.top);
+        lowered.ir.top = top.subcircuit;
+        if dialect != Dialect::Cdl {
+            lowered.ir.top.parameters = vars;
+        }
+        lowered.lines.push(top.lines);
+        lowered.nets.push(top.nets);
     }
-    let (uses, name_map) = w.finish();
-    deck::once_only(&mut l, elab, dialect, &uses);
-    l.name_map = name_map;
-    assert_eq!(l.lines.len(), order.len() + 1);
-    assert_eq!(l.nets.len(), l.lines.len());
-    l
+    for &def in &order {
+        let block = writer.def_block(def);
+        lowered.ir.subcircuit_defs.push(block.subcircuit);
+        lowered.lines.push(block.lines);
+        lowered.nets.push(block.nets);
+    }
+    let (uses, name_map) = writer.finish();
+    deck::once_only(&mut lowered, elab, dialect, &uses);
+    lowered.name_map = name_map;
+    assert_eq!(lowered.ir.subcircuit_defs.len(), order.len());
+    assert_eq!(lowered.lines.len(), order.len() + 1);
+    assert_eq!(lowered.nets.len(), lowered.lines.len());
+    lowered
 }
 
-/// SpiceRack writes `l` (its title, globals, setup, bodies, lines and nets are moved into
-/// the deck; the IR and name map stay).
-pub(crate) fn write(l: &mut Lowered, dialect: Dialect) -> String {
-    let deck = xschem::Deck {
-        ir: &l.ir,
-        title: Some(std::mem::take(&mut l.title)),
-        globals: std::mem::take(&mut l.globals),
-        setup: std::mem::take(&mut l.setup),
-        bodies: std::mem::take(&mut l.bodies),
-        lines: std::mem::take(&mut l.lines),
-        nets: std::mem::take(&mut l.nets),
+/// SpiceRack writes `lowered` (its title, globals, setup, bodies, lines and nets are
+/// moved into the deck; the IR and name map stay).
+pub(crate) fn write(lowered: &mut Lowered, dialect: Dialect) -> String {
+    let blocks = lowered.ir.subcircuit_defs.len() + 1;
+    assert!(
+        lowered.lines.len() <= blocks,
+        "line runs of the top and each definition"
+    );
+    assert!(
+        lowered.nets.len() <= blocks,
+        "wires of the top and each definition"
+    );
+    assert!(!lowered.title.is_empty(), "`deck::frame` names the deck");
+    let deck = Deck {
+        ir: &lowered.ir,
+        title: Some(mem::take(&mut lowered.title)),
+        globals: mem::take(&mut lowered.globals),
+        setup: mem::take(&mut lowered.setup),
+        bodies: mem::take(&mut lowered.bodies),
+        lines: mem::take(&mut lowered.lines),
+        nets: mem::take(&mut lowered.nets),
     };
-    let text = xschem::write(&deck, sr(dialect)).expect("every dialect has an xschem layout");
+    let text = xschem::write(&deck, spicerack_dialect(dialect))
+        .expect("every dialect has an xschem layout");
     assert!(text.ends_with('\n'));
     text
 }
 
-/// SpiceRack's dialect of `d`.
-pub(crate) fn sr(d: Dialect) -> SrDialect {
-    match d {
-        Dialect::Ngspice => SrDialect::Ngspice,
-        Dialect::Espice => SrDialect::Espice,
-        Dialect::Xyce => SrDialect::Xyce,
-        Dialect::Cdl => SrDialect::Cdl,
-        Dialect::Spectre => SrDialect::Spectre,
-        Dialect::Verilog => SrDialect::Verilog,
-        Dialect::Hspice => SrDialect::Hspice,
-        Dialect::Ltspice => SrDialect::Ltspice,
+/// SpiceRack's dialect of `dialect`.
+pub(crate) fn spicerack_dialect(dialect: Dialect) -> SpiceRackDialect {
+    match dialect {
+        Dialect::Ngspice => SpiceRackDialect::Ngspice,
+        Dialect::Espice => SpiceRackDialect::Espice,
+        Dialect::Xyce => SpiceRackDialect::Xyce,
+        Dialect::Cdl => SpiceRackDialect::Cdl,
+        Dialect::Spectre => SpiceRackDialect::Spectre,
+        Dialect::Verilog => SpiceRackDialect::Verilog,
+        Dialect::Hspice => SpiceRackDialect::Hspice,
+        Dialect::Ltspice => SpiceRackDialect::Ltspice,
     }
 }
 
-/// Whether `d` is a SPICE-syntax dialect: verbatim names, `*` comments, `.subckt`
+/// Whether `dialect` is a SPICE-syntax dialect: verbatim names, `*` comments, `.subckt`
 /// blocks, case-insensitive names.
-pub(crate) fn is_spice(d: Dialect) -> bool {
-    xschem::is_spice(sr(d))
+pub(crate) fn is_spice(dialect: Dialect) -> bool {
+    xschem::is_spice(spicerack_dialect(dialect))
 }
 
 /// Appends `name` as the dialect spells an identifier (SpiceRack's `push_ident`: SPICE
 /// verbatim, spectre `\`-escaped, verilog escaped identifiers).
 #[inline]
-pub(crate) fn push_name(out: &mut String, name: &str, d: Dialect) {
-    xschem::push_ident(out, name, sr(d));
+pub(crate) fn push_name(out: &mut String, name: &str, dialect: Dialect) {
+    let start = out.len();
+    xschem::push_ident(out, name, spicerack_dialect(dialect));
+    debug_assert!(
+        out.len() >= start + name.len(),
+        "escaping only adds characters"
+    );
 }
 
-/// The text of net `n`; `?` for an unconnected bit ([`Name::NONE`]).
-pub(crate) fn net_text(e: &Elab, n: Name) -> &str {
-    if n == Name::NONE { "?" } else { e.names.get(n) }
+/// The text of net `net`; `?` for an unconnected bit ([`Name::NONE`]).
+pub(crate) fn net_text(elab: &Elab, net: Name) -> &str {
+    if net == Name::NONE {
+        "?"
+    } else {
+        elab.names.get(net)
+    }
 }
 
-/// The emitted text of net `n` under the respellings `rs` (sorted by [`Name`], spec §7.2).
-pub(crate) fn spelled<'a>(e: &'a Elab, rs: &'a [(Name, String)], n: Name) -> &'a str {
-    match rs.binary_search_by_key(&n.0, |p| p.0.0) {
-        Ok(i) => &rs[i].1,
-        Err(_) => net_text(e, n),
+/// The emitted text of net `net` under `respellings` (sorted by [`Name`], spec §7.2).
+pub(crate) fn spelled<'elab>(
+    elab: &'elab Elab,
+    respellings: &'elab [Respelling],
+    net: Name,
+) -> &'elab str {
+    match respellings.binary_search_by_key(&net.0, |r| r.net.0) {
+        Ok(i) => {
+            debug_assert!(!respellings[i].text.is_empty(), "a respelling has text");
+            &respellings[i].text
+        }
+        Err(_) => net_text(elab, net),
     }
 }
 
 // ---- private ----
 
 /// Used definitions other than the top, sorted by subckt name (spec §7.1).
-fn defs_by_name(e: &Elab) -> Vec<u32> {
-    let mut order: Vec<(Name, u32)> = (0..e.defs.cell.len() as u32)
-        .filter(|&d| e.defs.used[d as usize] && d != e.top)
-        .map(|d| (e.defs.name[d as usize], d))
+fn defs_by_name(elab: &Elab) -> Vec<u32> {
+    assert_eq!(elab.defs.used.len(), elab.defs.cell.len());
+    assert_eq!(elab.defs.name.len(), elab.defs.cell.len());
+    let used = (0..elab.defs.cell.len() as u32)
+        .filter(|&def| elab.defs.used[def as usize] && def != elab.top);
+    let mut order: Vec<(Name, u32)> = used
+        .map(|def| (elab.defs.name[def as usize], def))
         .collect();
-    e.names.sort_by_text(&mut order);
-    assert!(order.len() < e.defs.cell.len().max(1));
-    order.into_iter().map(|k| k.1).collect()
+    elab.names.sort_by_text(&mut order);
+    assert!(order.len() < elab.defs.cell.len().max(1));
+    let defs: Vec<u32> = order.into_iter().map(|(_, def)| def).collect();
+    assert!(
+        !defs.contains(&elab.top),
+        "the top is written first, not by name"
+    );
+    defs
 }
