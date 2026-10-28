@@ -126,6 +126,7 @@ impl UiState {
     /// Shows dialog `id` modally (closing menus); `Sym::NONE` closes it.
     pub fn set_dialog(&mut self, id: Sym) {
         self.set_dialog_at(id, None);
+        debug_assert_eq!(self.dialog, id);
         debug_assert!(self.dialog_at.is_none());
     }
 

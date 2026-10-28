@@ -188,6 +188,10 @@ impl Builder<'_> {
     /// caller shifts it into place).
     pub(crate) fn float(&mut self, node: NodeIx, shown: Shown, out: &mut Frame) -> Placed {
         let start = self.rows.len();
+        assert!(
+            (node as usize) < self.tables.nodes.len(),
+            "node {node} out of range"
+        );
         let root = self.build(node, shown, NO_ROW, 0.0);
         let max_content = Size {
             width: AvailableSpace::MaxContent,
@@ -410,6 +414,7 @@ impl Builder<'_> {
         } = self.rows[row as usize];
         let i = node as usize;
         let kind = self.tables.nodes.kind[i];
+        debug_assert!(indent >= 0.0, "an indicator inset is not negative");
         let font = self.style(node, shown, StyleProp::Font).max(8.0);
         if kind == Kind::Prose {
             // Width comes from the parent (stretch); the height is measured at that width.

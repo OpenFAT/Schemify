@@ -194,6 +194,7 @@ impl InputEvents {
         self.events.clear();
         self.text.clear();
         debug_assert!(self.is_empty());
+        debug_assert!(self.text.is_empty(), "payloads go with their events");
     }
 
     /// True when no event is queued.
@@ -263,6 +264,7 @@ impl Routed {
         self.relayout = false;
         self.redraw = false;
         debug_assert!(self.canvas.is_empty());
+        debug_assert!(self.commands.is_empty());
     }
 }
 

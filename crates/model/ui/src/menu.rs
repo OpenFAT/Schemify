@@ -24,6 +24,7 @@ enum Step {
 /// Returns false when there is no menubar menu.
 pub(crate) fn open_menubar(tables: &UiTables, strings: &Strings, state: &mut UiState) -> bool {
     let n = &tables.nodes;
+    debug_assert!(state.open.len() <= UiState::MAX_OPEN);
     let Some(bar) = (0..n.len()).find(|&i| n.kind[i] == Kind::Menubar) else {
         return false;
     };
@@ -219,6 +220,7 @@ fn step_menubar(tables: &UiTables, strings: &Strings, state: &mut UiState, step:
     };
     let len = menus.len();
     debug_assert!(at < len);
+    debug_assert!(len > 0, "the root menu is one of the bar's menus");
     let next = menus[match step {
         Step::Next => (at + 1) % len,
         Step::Previous => (at + len - 1) % len,

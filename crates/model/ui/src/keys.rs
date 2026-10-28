@@ -123,7 +123,9 @@ impl Key {
     pub fn parse(s: &str) -> Option<Key> {
         let mut chars = s.chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
-            return Some(Key(c as u32));
+            let key = Key(c as u32);
+            debug_assert!(key.0 < Self::NAMED, "a character sits below the named keys");
+            return Some(key);
         }
         let alias = match s.to_ascii_lowercase().as_str() {
             "escape" => "Esc",
@@ -137,6 +139,7 @@ impl Key {
             .iter()
             .position(|n| n.eq_ignore_ascii_case(alias))
         {
+            debug_assert!(i < NAMED_KEYS.len());
             return Some(Key(Self::NAMED + i as u32));
         }
         let n: u8 = s.strip_prefix(['F', 'f'])?.parse().ok()?;
@@ -206,7 +209,13 @@ impl Chord {
             rest = &rest[name.len() + 1..];
         }
         debug_assert_eq!(mods & !0x0f, 0, "four modifier bits");
-        Some(Chord::new(Mods(mods), Key::parse(rest)?))
+        debug_assert!(
+            rest.len() <= s.len(),
+            "modifiers are consumed from the front"
+        );
+        let chord = Chord::new(Mods(mods), Key::parse(rest)?);
+        debug_assert_eq!(chord.mods().0 & !Mods::SHIFT, mods & !Mods::SHIFT);
+        Some(chord)
     }
 
     /// Modifier bits.

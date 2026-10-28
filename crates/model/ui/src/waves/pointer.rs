@@ -48,10 +48,12 @@ impl WaveUi {
             "more pane rects than panes"
         );
         let mut fx = Effect::default();
+        let before = out.len();
         for &ev in &events.events {
             let e = self.event(waves, geo, ev, now_ms, out);
             fx.or(e);
         }
+        debug_assert!(out.len() >= before, "routing only appends requests");
         fx
     }
 

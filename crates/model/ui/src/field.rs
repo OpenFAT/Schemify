@@ -49,6 +49,13 @@ pub(crate) fn flush_typed(tables: &UiTables, state: &UiState, typed: &mut bool, 
     let (Some(n), Some(ed)) = (tables.nodes.find(state.focus), state.editor.as_ref()) else {
         return;
     };
+    debug_assert!(
+        matches!(
+            tables.nodes.kind[n as usize],
+            Kind::TextInput | Kind::TextArea
+        ),
+        "only a text field types"
+    );
     let before = out.commands.len();
     let cmd = tables.nodes.prop(Prop::Input)[n as usize];
     if !cmd.is_none() {
@@ -115,6 +122,7 @@ pub(crate) fn follow_caret(
         return;
     };
     debug_assert_eq!(tables.nodes.kind[n as usize], Kind::TextArea);
+    debug_assert!(state.editor.is_some(), "a focused field has an editor");
     let (Some(r), Some(caret)) = (
         layout.row_of(n),
         state.editor.as_ref().and_then(|e| e.cursor_geometry(1.0)),

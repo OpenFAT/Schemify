@@ -102,6 +102,7 @@ struct NoteDef<'line> {
 /// Cost: O(len); allocates the block texts.
 pub(crate) fn blocks(src: &str) -> Vec<Block> {
     let lines: Vec<&str> = src.lines().take(LINES_MAX).collect();
+    debug_assert!(lines.len() <= LINES_MAX);
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
@@ -436,6 +437,7 @@ pub fn split_plots(src: &str) -> Vec<Segment<'_>> {
         out.push(Segment::Plot(src[body..].trim()));
         from = src.len();
     }
+    debug_assert!(from <= src.len(), "prose resumes inside the source");
     push_prose(&mut out, &src[from..]);
     debug_assert!(at == src.len());
     out

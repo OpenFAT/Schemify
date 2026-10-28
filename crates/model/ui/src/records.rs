@@ -363,6 +363,11 @@ fn node_attr(
             }
         }
     };
+    if let Edit::Set { value, .. } = edit
+        && region == TextRegion::Permanent
+    {
+        debug_assert!(!value.is_live(), "a permanent parse interns nothing live");
+    }
     out.edits.push(edit);
     debug_assert_eq!(out.edits.len(), before + 1);
     Ok(())

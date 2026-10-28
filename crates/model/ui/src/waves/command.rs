@@ -234,6 +234,7 @@ impl WaveUi {
             "waves.move_trace" => {
                 if let Some(t) = trace.filter(|&t| usize::from(t) < waves.trace_count()) {
                     let n = waves.panes().len() as u8;
+                    debug_assert!(n > 0, "a viewer always has a pane");
                     let to = (waves.pane_of(usize::from(t)) + 1) % n;
                     out.push(Request::MoveTrace { trace: t, pane: to });
                 }
@@ -346,6 +347,7 @@ impl WaveUi {
                 } else {
                     (self.dataset + 1) % n
                 };
+                debug_assert!(self.dataset < n, "the dataset index wraps inside the list");
                 self.scroll = 0;
                 self.selected_signal = None;
                 fx.recompose = true;
@@ -353,6 +355,7 @@ impl WaveUi {
             "waves.props" => {
                 let p = active.min(waves.panes().len().saturating_sub(1) as u8);
                 fx.or(self.open_dialog(waves, p));
+                debug_assert_eq!(fx.dialog, DialogFx::Open, "the dialog opens");
             }
             "waves.props.mode" | "waves.props.radix" | "waves.props.unlock" => {
                 if let Some(d) = self.dialog.as_mut() {

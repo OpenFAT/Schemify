@@ -30,7 +30,9 @@ macro_rules! named_enum {
             pub fn name(self) -> &'static str {
                 // `ALL` is in discriminant order: per-variant arrays index by `self as usize`.
                 debug_assert_eq!(Self::ALL[self as usize], self);
-                match self { $($name::$v => $s),+ }
+                let name = match self { $($name::$v => $s),+ };
+                debug_assert!(!name.is_empty(), "every variant has a spelling");
+                name
             }
 
             /// Parses the record spelling; `None` for anything else.
@@ -220,6 +222,7 @@ impl StyleProp {
                 _ => None,
             };
         }
+        debug_assert!(self > StyleProp::BorderColor, "colours parse above");
         let length: u32 = s.parse().ok()?;
         (length <= LENGTH_MAX).then_some(length)
     }

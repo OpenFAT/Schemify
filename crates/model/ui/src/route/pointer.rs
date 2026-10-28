@@ -200,10 +200,16 @@ impl Router<'_> {
             && let Some(max) = self.layout.scroll_max(s)
         {
             let id = nodes.id[s as usize];
+            debug_assert_eq!(
+                nodes.kind[s as usize],
+                Kind::Scroll,
+                "only scroll panes scroll"
+            );
             let now = self.state.scroll_of(id);
             self.state.set_scroll(id, now - dy * UiState::WHEEL_PX, max);
             self.out.relayout |= self.state.scroll_of(id) != now;
         }
+        debug_assert!(self.state.scroll.len() <= UiState::MAX_SCROLL);
     }
 }
 

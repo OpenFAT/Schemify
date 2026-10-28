@@ -369,7 +369,9 @@ impl TextSystem {
             (id as usize) < self.images.len(),
             "image id {id} not registered"
         );
-        &self.images[id as usize]
+        let image = &self.images[id as usize];
+        debug_assert!(image.width > 0, "registered images have pixels");
+        image
     }
 
     /// A shaped layout.

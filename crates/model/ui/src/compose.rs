@@ -74,7 +74,7 @@ pub fn compose(
     let mut health = Health::default();
     let mut rows: Vec<Row> = Vec::with_capacity(base.edits.len() / 2);
     let mut by_id: HashMap<Sym, u32> = HashMap::new();
-    let mut sel: Vec<Selector> = Vec::new();
+    let mut selectors: Vec<Selector> = Vec::new();
     let mut keys: HashMap<Chord, (Sym, u8)> = HashMap::new();
 
     let all = iter::once((Sym::NONE, base)).chain(plugins.iter().copied());
@@ -116,7 +116,7 @@ pub fn compose(
                     selector,
                     prop,
                     value,
-                } => set_style(&mut sel, &mut health, selector, prop, value, owner),
+                } => set_style(&mut selectors, &mut health, selector, prop, value, owner),
                 Edit::Key { chord, command } => {
                     if let Some(&(old, old_owner)) = keys.get(&chord)
                         && old_owner != owner
@@ -129,7 +129,7 @@ pub fn compose(
         }
     }
 
-    let styles = build_styles(strings, sel);
+    let styles = build_styles(strings, selectors);
     let nodes = build_tree(&rows, &by_id, &styles, &mut health);
     let mut bindings: Vec<(Chord, Sym)> = keys.into_iter().map(|(c, (s, _))| (c, s)).collect();
     bindings.sort_unstable_by_key(|b| b.0);
@@ -279,6 +279,7 @@ fn target<'a>(
     id: Sym,
     owner: u8,
 ) -> Option<&'a mut Row> {
+    debug_assert_eq!(by_id.len(), rows.len(), "one index entry per row");
     let Some(r) = by_id.get(&id).copied().filter(|&r| rows[r as usize].live) else {
         health.push(HealthKind::UnknownTarget, id, owner, owner);
         return None;
@@ -291,7 +292,7 @@ fn target<'a>(
 
 /// `style` edit: sets one prop of `selector`, creating the selector on first sight.
 fn set_style(
-    sel: &mut Vec<Selector>,
+    selectors: &mut Vec<Selector>,
     health: &mut Health,
     selector: Sym,
     prop: StyleProp,
@@ -299,19 +300,19 @@ fn set_style(
     owner: u8,
 ) {
     let p = prop as usize;
-    let i = match sel.iter().position(|s| s.name == selector) {
+    let i = match selectors.iter().position(|s| s.name == selector) {
         Some(i) => i,
         None => {
-            sel.push(Selector {
+            selectors.push(Selector {
                 name: selector,
                 value: [0; StyleProp::COUNT],
                 set: 0,
                 owner: [0; StyleProp::COUNT],
             });
-            sel.len() - 1
+            selectors.len() - 1
         }
     };
-    let s = &mut sel[i];
+    let s = &mut selectors[i];
     debug_assert_eq!(s.name, selector);
     if s.set & (1 << p) != 0 && s.owner[p] != owner {
         health.push(HealthKind::StyleOverridden, selector, owner, s.owner[p]);
@@ -323,12 +324,15 @@ fn set_style(
 }
 
 /// The style table, with each kind's row and the `*` row resolved once.
-fn build_styles(strings: &Strings, sel: Vec<Selector>) -> UiStyles {
-    assert!(sel.len() < NO_STYLE as usize, "too many style selectors");
+fn build_styles(strings: &Strings, selectors: Vec<Selector>) -> UiStyles {
+    assert!(
+        selectors.len() < NO_STYLE as usize,
+        "too many style selectors"
+    );
     let mut styles = UiStyles {
-        selector: sel.iter().map(|s| s.name).collect(),
-        value: sel.iter().map(|s| s.value).collect(),
-        set: sel.iter().map(|s| s.set).collect(),
+        selector: selectors.iter().map(|s| s.name).collect(),
+        value: selectors.iter().map(|s| s.value).collect(),
+        set: selectors.iter().map(|s| s.set).collect(),
         ..UiStyles::default()
     };
     for &k in Kind::ALL {
@@ -444,6 +448,7 @@ fn build_tree(
 /// parent cycle ends.
 fn removed_ancestor(rows: &[Row], by_id: &HashMap<Sym, u32>, row: &Row) -> bool {
     debug_assert!(row.live, "only live rows can be orphans");
+    debug_assert_eq!(by_id.len(), rows.len(), "one index entry per row");
     let mut p = row.parent;
     for _ in 0..rows.len() {
         match by_id.get(&p) {

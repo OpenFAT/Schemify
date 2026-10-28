@@ -163,6 +163,7 @@ impl UiLayout {
     /// True when nothing is visible.
     #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.rect.len(), self.node.len(), "columns in step");
         self.node.is_empty()
     }
 
@@ -259,6 +260,7 @@ impl UiLayout {
             "scroll columns in step"
         );
         let i = self.scroll_node.iter().position(|&n| n == node)?;
+        debug_assert!(self.scroll_max[i] >= 0.0, "a scroll extent is not negative");
         Some(self.scroll_max[i])
     }
 
