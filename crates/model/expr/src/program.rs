@@ -234,9 +234,6 @@ impl Program {
     /// # Errors
     /// `X004` naming the first identifier `lookup` does not know, spanned at
     /// its first occurrence; `out` then holds the inputs before it.
-    ///
-    /// # Panics
-    /// Never for any `lookup`; an assertion failure is a bug in this crate.
     pub fn bind<'input>(
         &self,
         out: &mut Vec<Value<'input>>,
@@ -254,7 +251,7 @@ impl Program {
             })?;
             out.push(v);
         }
-        assert_eq!(out.len(), self.idents.len());
+        debug_assert_eq!(out.len(), self.idents.len(), "one input per identifier");
         Ok(())
     }
 

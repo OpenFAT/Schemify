@@ -50,7 +50,7 @@ struct Frame {
     /// Code index where this node's code starts (for folding).
     start: u32,
     /// Pending jump to patch (lazy operators).
-    aux: u32,
+    jump: u32,
     /// Under a lazy arm: folding errors are deferred to runtime.
     lazy: bool,
 }
@@ -111,7 +111,7 @@ impl Compiler {
             node: ast.root,
             phase: 0,
             start: code_start,
-            aux: 0,
+            jump: 0,
             lazy: false,
         });
         while let Some(f) = self.work.pop() {
@@ -217,13 +217,13 @@ impl Compiler {
                 match f.phase {
                     0 => self.child(f, 1, a, Arm::Always),
                     1 => {
-                        f.aux = self.emit(open, 0, 0, span);
+                        f.jump = self.emit(open, 0, 0, span);
                         self.child(f, 2, b, Arm::Lazy);
                     }
                     _ => {
                         self.emit(close, 0, 0, span);
-                        debug_assert_eq!(self.program.ops[f.aux as usize].kind, open);
-                        self.program.ops[f.aux as usize].arg = self.here();
+                        debug_assert_eq!(self.program.ops[f.jump as usize].kind, open);
+                        self.program.ops[f.jump as usize].arg = self.here();
                         self.finish_node(f, 2, Fold::Allowed)?;
                     }
                 }
@@ -322,7 +322,7 @@ impl Compiler {
             node: child,
             phase: 0,
             start,
-            aux: 0,
+            jump: 0,
             lazy: parent.lazy || arm == Arm::Lazy,
         });
     }
@@ -332,20 +332,20 @@ impl Compiler {
         match f.phase {
             0 => self.child(f, 1, c, Arm::Always),
             1 => {
-                f.aux = self.emit(OpKind::Cond, 0, 0, span);
+                f.jump = self.emit(OpKind::Cond, 0, 0, span);
                 self.child(f, 2, t, Arm::Lazy);
             }
             2 => {
                 let else_op = self.emit(OpKind::Else, 0, 0, span);
-                debug_assert_eq!(self.program.ops[f.aux as usize].kind, OpKind::Cond);
-                self.program.ops[f.aux as usize].arg = self.here();
-                f.aux = else_op;
+                debug_assert_eq!(self.program.ops[f.jump as usize].kind, OpKind::Cond);
+                self.program.ops[f.jump as usize].arg = self.here();
+                f.jump = else_op;
                 self.child(f, 3, e, Arm::Lazy);
             }
             _ => {
                 let end = self.emit(OpKind::EndCond, 0, 0, span);
-                debug_assert_eq!(self.program.ops[f.aux as usize].kind, OpKind::Else);
-                self.program.ops[f.aux as usize].arg = end;
+                debug_assert_eq!(self.program.ops[f.jump as usize].kind, OpKind::Else);
+                self.program.ops[f.jump as usize].arg = end;
                 self.finish_node(f, 3, Fold::Allowed)?;
             }
         }
@@ -358,7 +358,7 @@ impl Compiler {
         let argc = ast.b[n];
         let arg = |k: u32| ast.extra[x + 1 + k as usize] as usize;
         let name = &src[span.start as usize..ast.extra[x] as usize];
-        // Looked up again each phase: `aux` belongs to `if`'s jump patching.
+        // Looked up again each phase: `jump` belongs to `if`'s jump patching.
         let row = Builtin::lookup(name)
             .ok_or_else(|| Error::new(Code::X006, span, format!("unknown function `{name}`")))?;
         if f.phase == 0 {

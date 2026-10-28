@@ -86,6 +86,10 @@ impl Template {
             *lit_start = text.len();
         };
         while i < b.len() {
+            debug_assert!(
+                src.is_char_boundary(i),
+                "the scan steps over whole characters"
+            );
             match (b[i], b.get(i + 1)) {
                 (b'{', Some(b'{')) | (b'}', Some(b'}')) => {
                     text.push(b[i] as char);
@@ -142,6 +146,13 @@ impl Template {
                 }
             }
         }
+        debug_assert!(
+            segments.iter().all(
+                |segment| !matches!(segment, StoredSegment::Hole { ident, .. }
+                    if *ident != NOT_IDENT && *ident as usize >= program.idents.len())
+            ),
+            "a hole's identifier indexes the program's identifiers"
+        );
         Ok(Template {
             program,
             text,
@@ -164,6 +175,7 @@ impl Template {
     pub fn segments(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
         self.segments.iter().map(|segment| match *segment {
             StoredSegment::Literal { start, end } => {
+                debug_assert!(start < end, "literal segments are never empty");
                 Segment::Lit(&self.text[start as usize..end as usize])
             }
             StoredSegment::Hole { ident, .. } => Segment::Hole {
@@ -213,13 +225,19 @@ impl Template {
             self.program.idents.len(),
             "one input per identifier"
         );
-        let len0 = out.len();
-        let r = self.render_inner(inputs, plugins, scratch, out);
-        if r.is_err() {
-            out.truncate(len0);
+        let start_len = out.len();
+        let rendered = self.render_inner(inputs, plugins, scratch, out);
+        if rendered.is_err() {
+            out.truncate(start_len);
+            debug_assert_eq!(
+                out.len(),
+                start_len,
+                "a failed render leaves `out` as it was"
+            );
+        } else {
+            debug_assert!(out.len() >= start_len, "rendering only appends");
         }
-        debug_assert!(out.len() >= len0, "rendering only appends");
-        r
+        rendered
     }
 }
 

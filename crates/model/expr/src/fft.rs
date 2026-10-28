@@ -170,7 +170,8 @@ mod tests {
     fn assert_close(ours: &[Complex], theirs: &[Complex], tol: f64) {
         assert_eq!(ours.len(), theirs.len());
         let scale = theirs.iter().map(|&z| norm(z)).fold(1.0, f64::max);
-        for (k, (&a, &b)) in ours.iter().zip(theirs).enumerate() {
+        let bins = ours.iter().zip(theirs).enumerate();
+        for (k, (&a, &b)) in bins {
             assert!(
                 norm(a - b) <= tol * scale,
                 "bin {k} of {}: {a:?} vs {b:?}",

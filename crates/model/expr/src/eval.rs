@@ -358,9 +358,16 @@ pub(crate) fn load_value(v: &Value<'_>, strings: &mut String) -> Result<Scalar, 
 pub(crate) fn to_value(v: Scalar, strings: &str) -> Value<'_> {
     match v {
         Scalar::Int(x) => Value::Int(x),
-        Scalar::Num(x) => Value::Num(x),
+        Scalar::Num(x) => {
+            debug_assert!(x.is_finite(), "a value is never NaN or infinite");
+            Value::Num(x)
+        }
         Scalar::Bool(b) => Value::Bool(b),
-        Scalar::Cnum(re, im) => Value::Cnum { re, im },
+        Scalar::Cnum(re, im) => {
+            debug_assert!(re.is_finite(), "a value is never NaN or infinite");
+            debug_assert!(im.is_finite(), "a value is never NaN or infinite");
+            Value::Cnum { re, im }
+        }
         Scalar::Str(s, len) => Value::Str(str_at(strings, s, len)),
     }
 }

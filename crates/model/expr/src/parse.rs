@@ -161,6 +161,11 @@ impl Parser<'_> {
     }
 
     fn expect(&mut self, kind: TokenKind, what: &str) -> Result<(), Error> {
+        debug_assert_ne!(
+            kind,
+            TokenKind::Eof,
+            "the end is checked by `parse`, not expected"
+        );
         if self.tok.kind != kind {
             let mut e = self.unexpected();
             e.msg = format!("{}, expected {what}", e.msg);
@@ -209,7 +214,9 @@ impl Parser<'_> {
     }
 
     fn span_of(&self, n: u32) -> Span {
-        self.ast.span[n as usize]
+        let span = self.ast.span[n as usize];
+        debug_assert!(span.start < span.end, "node {n} spans no text");
+        span
     }
 
     fn bin(&mut self, op: BinOp, l: u32, r: u32) -> Result<u32, Error> {
@@ -228,6 +235,9 @@ impl Parser<'_> {
             let then = self.expr()?;
             self.expect(TokenKind::Colon, "`:`")?;
             let else_arm = self.expr()?;
+            // Post-order: the arms are built in source order, after the condition.
+            debug_assert!(cond < then, "the condition precedes its arms");
+            debug_assert!(then < else_arm, "the then-arm precedes the else-arm");
             let x = self.ast.extra.len() as u32;
             self.ast.extra.extend([then, else_arm]);
             let span = self.span_of(cond).join(self.span_of(else_arm));
@@ -349,6 +359,10 @@ impl Parser<'_> {
     // an optional call suffix on identifiers.
     fn primary(&mut self) -> Result<u32, Error> {
         let t = self.tok;
+        debug_assert!(
+            self.ast.ints.len() + self.ast.nums.len() <= self.ast.kind.len(),
+            "every literal has its node"
+        );
         let (kind, a, b) = match t.kind {
             TokenKind::Int(v) => {
                 self.ast.ints.push(v);

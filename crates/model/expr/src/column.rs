@@ -294,6 +294,11 @@ fn common_axis(args: &[CalcValue], axes: &[Axis]) -> Result<u32, Error> {
 }
 
 fn element(c: &ColumnValue, i: usize) -> Scalar {
+    if c.kind == ColKind::Complex {
+        debug_assert_eq!(c.im.len(), c.re.len(), "complex parts in step");
+    } else {
+        debug_assert!(c.im.is_empty(), "only complex columns have imaginary parts");
+    }
     match c.kind {
         ColKind::Real => Scalar::Num(c.re.get(i).copied().unwrap_or(0.0)),
         ColKind::Complex => Scalar::Cnum(

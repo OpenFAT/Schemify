@@ -71,6 +71,7 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
         while !rest.is_empty() {
             let cut = rest.find(['(', ')']).unwrap_or(rest.len());
             let (head, tail) = rest.split_at(if cut == 0 { 1 } else { cut });
+            debug_assert!(!head.is_empty(), "every cut makes progress");
             tokens.push(head);
             rest = tail;
         }
@@ -87,6 +88,8 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
         }
     };
     while i < tokens.len() {
+        // Bounded: every part consumes at least its own token.
+        let part_start = i;
         let t = tokens[i];
         if t.eq_ignore_ascii_case("dc") || (is_value(t) && !dc && i == 0) {
             let v = if t.eq_ignore_ascii_case("dc") {
@@ -176,6 +179,10 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
         } else {
             return Err(bad(spec, format_args!("unexpected `{t}`")));
         }
+        assert!(
+            i > part_start,
+            "part at token {part_start} consumed nothing"
+        );
     }
     assert_eq!(i, tokens.len(), "every token consumed exactly once");
     debug_assert!(!out[start..].contains("  "), "parameters are single-spaced");
@@ -190,6 +197,7 @@ pub(crate) fn source(spec: &str, out: &mut String) -> Result<(), Error> {
 
 /// `X009` naming `spec` and `why`.
 fn bad(spec: &str, why: impl Display) -> Error {
+    debug_assert!(!spec.is_empty(), "an empty spec translates to nothing");
     Error::new(
         Code::X009,
         Span::default(),

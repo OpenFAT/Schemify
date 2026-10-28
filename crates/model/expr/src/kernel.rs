@@ -344,6 +344,7 @@ pub(crate) fn not_bool(what: &str, v: Scalar) -> Error {
 // ---- private ----
 
 fn type_err(what: &str, a: Scalar, b: Scalar) -> Error {
+    debug_assert!(!what.is_empty(), "the error names its operator");
     Error::bare(
         Code::X003,
         format!("`{what}` cannot take {} and {}", type_name(a), type_name(b)),
@@ -378,6 +379,14 @@ fn int_binary(op: OpKind, x: i64, y: i64) -> Result<Scalar, Error> {
         OpKind::Div | OpKind::Pow => None,
         _ => return Ok(Scalar::Bool(cmp(op, x.cmp(&y)))),
     };
+    // Only `+ - * %` can stay int; `/` and `^` always promote.
+    if r.is_some() {
+        debug_assert!(
+            matches!(op, OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Rem),
+            "`{}` kept an int",
+            op_str(op)
+        );
+    }
     // Overflow (or `/`, `^`, `% 0`) promotes to num.
     r.map_or_else(
         || num_binary(op, x as f64, y as f64),
@@ -406,6 +415,8 @@ fn num_binary(op: OpKind, x: f64, y: f64) -> Result<Scalar, Error> {
 
 /// Complex arithmetic; `None` for operators complex numbers lack.
 fn cnum_binary(op: OpKind, a: Complex, b: Complex) -> Option<Result<Scalar, Error>> {
+    debug_assert!(!a.re.is_nan(), "operands are finite");
+    debug_assert!(!b.re.is_nan(), "operands are finite");
     let r = match op {
         OpKind::Add => a + b,
         OpKind::Sub => a - b,
@@ -425,8 +436,9 @@ fn str_binary(op: OpKind, a: Scalar, b: Scalar, strings: &mut String) -> Result<
         sa as usize..(sa + la) as usize,
         sb as usize..(sb + lb) as usize,
     );
+    debug_assert!(ra.end <= strings.len(), "left operand past the buffer");
+    debug_assert!(rb.end <= strings.len(), "right operand past the buffer");
     if op == OpKind::Add {
-        debug_assert!(rb.end <= strings.len(), "operands live in the buffer");
         eval::check_str_len(strings, (la + lb) as usize)?;
         let start = strings.len();
         strings.extend_from_within(ra);

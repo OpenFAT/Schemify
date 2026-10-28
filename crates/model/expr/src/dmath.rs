@@ -234,7 +234,13 @@ fn cexp(z: Complex) -> Complex {
 }
 
 fn cln(z: Complex) -> Complex {
-    Complex::new(libm::log(norm(z)), libm::atan2(z.im, z.re))
+    let argument = libm::atan2(z.im, z.re);
+    // The principal branch: the argument lies in [-π, π] (NaN passes through).
+    debug_assert!(
+        argument.abs() <= core::f64::consts::PI || argument.is_nan(),
+        "arg({z:?}) = {argument} off the principal branch"
+    );
+    Complex::new(libm::log(norm(z)), argument)
 }
 
 /// Principal square root without cancellation (Kahan's formulation).
