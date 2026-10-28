@@ -7,6 +7,12 @@
 //! Per frame and pane the cost is O(pixel columns) per trace step after
 //! [`schemify_wave::decimate`] or [`schemify_wave::logic_runs`] (which scan the visible samples
 //! once), O(samples) per histogram trace, plus shaping the tick and legend labels.
+//!
+//! Contents:
+//! - `pub struct WaveLook` (`Default`: xschem's colours), `pub struct WaveScratch`
+//! - `pub fn draw_window<P: Painter>(p, geo, waves, ui, look, text, s)`
+//! - `pub fn draw_pane<P: Painter>(p, area, waves, k, active, drag, look, text, s)`
+
 
 use kurbo::{BezPath, Rect};
 use peniko::Color;
@@ -39,18 +45,6 @@ pub struct WaveLook {
     pub cursor: [u32; 2],
 }
 
-impl Default for WaveLook {
-    fn default() -> Self {
-        WaveLook {
-            bg: 0x0000_00ff,
-            grid: 0x3a3a_3aff,
-            label: 0xb0b0_b0ff,
-            active: 0x5a8c_d2ff,
-            cursor: [0xffff_ffff, 0xff8c_ffff],
-        }
-    }
-}
-
 /// Buffers reused across frames (no allocation per frame after warm-up).
 #[derive(Debug, Default)]
 pub struct WaveScratch {
@@ -68,6 +62,26 @@ pub struct WaveScratch {
 
 /// Tick label size in logical pixels.
 const TICK_PX: f32 = 10.0;
+
+/// Where a label sits relative to its anchor x.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+impl Default for WaveLook {
+    fn default() -> Self {
+        WaveLook {
+            bg: 0x0000_00ff,
+            grid: 0x3a3a_3aff,
+            label: 0xb0b0_b0ff,
+            active: 0x5a8c_d2ff,
+            cursor: [0xffff_ffff, 0xff8c_ffff],
+        }
+    }
+}
 
 /// Draws every pane of the window into its layout rectangle, then the readout panel and, while
 /// it is on, the measurement tooltip at the pointer.
@@ -273,9 +287,125 @@ pub fn draw_pane<P: Painter>(
     }
 }
 
-/// The traces drawn in pane `k`, in trace order.
-fn traces_of(waves: &Waves, k: u8) -> impl Iterator<Item = usize> + '_ {
-    (0..waves.trace_count()).filter(move |&i| waves.pane_of(i) == k)
+// ---- private ----
+
+/// Draws the cursor readout: the head lines of [`readout_head`], the column headings, then
+/// the [`readout_rows`] that fit in `area`, each in its trace's colour.
+fn draw_readout<P: Painter>(
+    p: &mut P,
+    area: UiRect,
+    waves: &Waves,
+    active: u8,
+    look: &WaveLook,
+    text: &mut TextSystem,
+    s: &mut WaveScratch,
+) {
+    let r = kr(area);
+    p.push_clip(r);
+    let fg = rgba(0xd0d0_d0ff);
+    let row = 15.0;
+    let mut y = r.y0 + 4.0;
+    let head = readout_head(waves, active);
+    // Columns: name 40%, then A, B and B−A at 20% each.
+    let col = |k: usize| r.x0 + 6.0 + [0.0, 0.4, 0.6, 0.8][k] * (r.width() - 12.0);
+    for (k, name) in ["A", "B"].into_iter().enumerate() {
+        if head.shown[k] {
+            let c = rgba(look.cursor[k]);
+            label_at(p, text, s, name, col(0), y, Align::Left, c);
+        }
+        label_at(p, text, s, &head.x[k], col(0) + 16.0, y, Align::Left, fg);
+        y += row;
+    }
+    if let Some(t) = &head.dx {
+        label_at(p, text, s, t, col(0), y, Align::Left, fg);
+    }
+    if let Some(t) = &head.dy {
+        y += row;
+        label_at(p, text, s, t, col(0), y, Align::Left, fg);
+    }
+    y += row + 4.0;
+    for (k, h) in READOUT_HEADINGS.iter().enumerate() {
+        label_at(p, text, s, h, col(k), y, Align::Left, rgba(look.label));
+    }
+    y += row;
+    // A row whose bottom would pass the panel's is left out.
+    let fit = ((r.y1 - y) / row).floor().max(0.0) as usize;
+    let mut rows = std::mem::take(&mut s.rows);
+    readout_rows(waves, fit, &mut rows);
+    for rr in &rows {
+        let color = rgba(rr.color);
+        for (k, t) in rr.cells.iter().enumerate() {
+            label_at(p, text, s, t, col(k), y, Align::Left, color);
+        }
+        y += row;
+    }
+    debug_assert!(rows.is_empty() || y <= r.y1, "a readout row overflows");
+    s.rows = rows;
+    p.pop_clip();
+}
+
+/// The measurement tooltip ([`measure_label`]) on a black box beside the pointer.
+fn draw_measure<P: Painter>(
+    p: &mut P,
+    geo: &Geometry,
+    waves: &Waves,
+    x: f32,
+    y: f32,
+    text: &mut TextSystem,
+    s: &mut WaveScratch,
+) {
+    let Some(t) = measure_label(geo, waves, x, y) else {
+        return;
+    };
+    text.shape_into(&t, TICK_PX, &mut s.label);
+    let w = f64::from(s.label.width());
+    let (bx, by) = (f64::from(x) + 12.0, f64::from(y) - 20.0);
+    p.fill_rect(
+        Rect::new(bx, by, bx + w + 8.0, by + 15.0),
+        rgba(0x0000_00ff),
+    );
+    draw_text(
+        p,
+        &s.label,
+        bx + 4.0,
+        by + 1.0,
+        rgba(0xffff_40ff),
+        &mut s.ui,
+    );
+}
+
+/// Tick positions for one axis: decades on a log axis, nice 1-2-5 steps otherwise.
+fn axis_ticks(a: Axis, n: u8, out: &mut Vec<f64>) {
+    if a.log {
+        log_ticks(a.lo, a.hi, n, out);
+    } else {
+        ticks(a.lo, a.hi, n, out);
+    }
+}
+
+/// Shapes and draws `t` with its top at `y`, anchored at `x`; returns the width.
+#[allow(clippy::too_many_arguments)]
+fn label_at<P: Painter>(
+    p: &mut P,
+    text: &mut TextSystem,
+    s: &mut WaveScratch,
+    t: &str,
+    x: f64,
+    y: f64,
+    align: Align,
+    color: Color,
+) -> f64 {
+    // ponytail: every tick, legend and readout label is shaped each frame (~0.3 ms for a
+    // three-pane window). Cache by (text, size) in `TextSystem` if a profile ever shows it.
+    text.shape_into(t, TICK_PX, &mut s.label);
+    let w = f64::from(s.label.width());
+    let x = match align {
+        Align::Left => x,
+        Align::Center => x - w / 2.0,
+        Align::Right => x - w,
+    };
+    draw_text(p, &s.label, x, y, color, &mut s.ui);
+    w
 }
 
 /// Analog mode: each trace's shown steps as decimated polylines.
@@ -436,128 +566,7 @@ fn draw_histogram<P: Painter>(
     }
 }
 
-/// Draws the cursor readout: the head lines of [`readout_head`], the column headings, then
-/// the [`readout_rows`] that fit in `area`, each in its trace's colour.
-fn draw_readout<P: Painter>(
-    p: &mut P,
-    area: UiRect,
-    waves: &Waves,
-    active: u8,
-    look: &WaveLook,
-    text: &mut TextSystem,
-    s: &mut WaveScratch,
-) {
-    let r = kr(area);
-    p.push_clip(r);
-    let fg = rgba(0xd0d0_d0ff);
-    let row = 15.0;
-    let mut y = r.y0 + 4.0;
-    let head = readout_head(waves, active);
-    // Columns: name 40%, then A, B and B−A at 20% each.
-    let col = |k: usize| r.x0 + 6.0 + [0.0, 0.4, 0.6, 0.8][k] * (r.width() - 12.0);
-    for (k, name) in ["A", "B"].into_iter().enumerate() {
-        if head.shown[k] {
-            let c = rgba(look.cursor[k]);
-            label_at(p, text, s, name, col(0), y, Align::Left, c);
-        }
-        label_at(p, text, s, &head.x[k], col(0) + 16.0, y, Align::Left, fg);
-        y += row;
-    }
-    if let Some(t) = &head.dx {
-        label_at(p, text, s, t, col(0), y, Align::Left, fg);
-    }
-    if let Some(t) = &head.dy {
-        y += row;
-        label_at(p, text, s, t, col(0), y, Align::Left, fg);
-    }
-    y += row + 4.0;
-    for (k, h) in READOUT_HEADINGS.iter().enumerate() {
-        label_at(p, text, s, h, col(k), y, Align::Left, rgba(look.label));
-    }
-    y += row;
-    // A row whose bottom would pass the panel's is left out.
-    let fit = ((r.y1 - y) / row).floor().max(0.0) as usize;
-    let mut rows = std::mem::take(&mut s.rows);
-    readout_rows(waves, fit, &mut rows);
-    for rr in &rows {
-        let color = rgba(rr.color);
-        for (k, t) in rr.cells.iter().enumerate() {
-            label_at(p, text, s, t, col(k), y, Align::Left, color);
-        }
-        y += row;
-    }
-    debug_assert!(rows.is_empty() || y <= r.y1, "a readout row overflows");
-    s.rows = rows;
-    p.pop_clip();
-}
-
-/// The measurement tooltip ([`measure_label`]) on a black box beside the pointer.
-fn draw_measure<P: Painter>(
-    p: &mut P,
-    geo: &Geometry,
-    waves: &Waves,
-    x: f32,
-    y: f32,
-    text: &mut TextSystem,
-    s: &mut WaveScratch,
-) {
-    let Some(t) = measure_label(geo, waves, x, y) else {
-        return;
-    };
-    text.shape_into(&t, TICK_PX, &mut s.label);
-    let w = f64::from(s.label.width());
-    let (bx, by) = (f64::from(x) + 12.0, f64::from(y) - 20.0);
-    p.fill_rect(
-        Rect::new(bx, by, bx + w + 8.0, by + 15.0),
-        rgba(0x0000_00ff),
-    );
-    draw_text(
-        p,
-        &s.label,
-        bx + 4.0,
-        by + 1.0,
-        rgba(0xffff_40ff),
-        &mut s.ui,
-    );
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Align {
-    Left,
-    Center,
-    Right,
-}
-
-/// Shapes and draws `t` with its top at `y`, anchored at `x`; returns the width.
-#[allow(clippy::too_many_arguments)]
-fn label_at<P: Painter>(
-    p: &mut P,
-    text: &mut TextSystem,
-    s: &mut WaveScratch,
-    t: &str,
-    x: f64,
-    y: f64,
-    align: Align,
-    color: Color,
-) -> f64 {
-    // ponytail: every tick, legend and readout label is shaped each frame (~0.3 ms for a
-    // three-pane window). Cache by (text, size) in `TextSystem` if a profile ever shows it.
-    text.shape_into(t, TICK_PX, &mut s.label);
-    let w = f64::from(s.label.width());
-    let x = match align {
-        Align::Left => x,
-        Align::Center => x - w / 2.0,
-        Align::Right => x - w,
-    };
-    draw_text(p, &s.label, x, y, color, &mut s.ui);
-    w
-}
-
-/// Tick positions for one axis: decades on a log axis, nice 1-2-5 steps otherwise.
-fn axis_ticks(a: Axis, n: u8, out: &mut Vec<f64>) {
-    if a.log {
-        log_ticks(a.lo, a.hi, n, out);
-    } else {
-        ticks(a.lo, a.hi, n, out);
-    }
+/// The traces drawn in pane `k`, in trace order.
+fn traces_of(waves: &Waves, k: u8) -> impl Iterator<Item = usize> + '_ {
+    (0..waves.trace_count()).filter(move |&i| waves.pane_of(i) == k)
 }

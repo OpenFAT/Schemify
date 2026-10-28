@@ -58,8 +58,6 @@ pub mod atlas;
 pub mod batch;
 pub mod canvas;
 mod cpu;
-#[cfg(target_arch = "wasm32")]
-mod cpu_view;
 pub mod gpu;
 mod painter;
 pub mod ui_rows;
