@@ -66,7 +66,10 @@ impl<'e> Writer<'e> {
     /// and sizes the name map for their rows.
     pub(crate) fn new(e: &'e Elab, d: Dialect, plans: &'e Plans, order: &[u32]) -> Writer<'e> {
         let mut def_map = vec![NONE; e.defs.cell.len()];
-        let emitted = (e.top != NONE).then_some(e.top).into_iter().chain(order.iter().copied());
+        let emitted = (e.top != NONE)
+            .then_some(e.top)
+            .into_iter()
+            .chain(order.iter().copied());
         let mut rows = 0;
         for (k, def) in emitted.enumerate() {
             assert_eq!(def_map[def as usize], NONE, "definition {def} listed once");
@@ -90,7 +93,10 @@ impl<'e> Writer<'e> {
     /// `wire`s. The deck sorts the rows by element name.
     pub(crate) fn def_block(&mut self, d: u32) -> (Subcircuit, Vec<Lines>, Vec<String>) {
         let e = self.e;
-        assert!(self.def_map[d as usize] != NONE, "definition {d} is emitted");
+        assert!(
+            self.def_map[d as usize] != NONE,
+            "definition {d} is emitted"
+        );
         self.map.def(e, d, &self.def_map);
         let lines = self.rows(d);
         let code =

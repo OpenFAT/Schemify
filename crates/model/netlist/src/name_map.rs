@@ -281,7 +281,6 @@ impl Builder {
         }
     }
 
-
     /// Starts elab definition `d` (map definitions are numbered in call order, which
     /// must be `def_map`'s numbering).
     pub(crate) fn def(&mut self, e: &Elab, d: u32, def_map: &[u32]) {
@@ -356,10 +355,7 @@ impl NameMap {
         out: &mut Vec<String>,
         depth: u32,
     ) {
-        assert!(
-            depth <= DEPTH_MAX,
-            "deeper than any elaboration"
-        );
+        assert!(depth <= DEPTH_MAX, "deeper than any elaboration");
         let len0 = prefix.len();
         for r in self.rows_of(d) {
             if out.len() >= max {
@@ -474,10 +470,7 @@ impl NameMap {
     }
 
     fn walk_inst(&self, d: u32, name: &str, path: &mut String, depth: u32) -> bool {
-        assert!(
-            depth <= DEPTH_MAX,
-            "deeper than any elaboration"
-        );
+        assert!(depth <= DEPTH_MAX, "deeper than any elaboration");
         let len0 = path.len();
         for (head, rest) in Self::splits(name) {
             let Some(r) = self.find_emitted(d, head) else {
@@ -500,10 +493,7 @@ impl NameMap {
     }
 
     fn walk_net(&self, d: u32, name: &str, path: &mut String, depth: u32) -> bool {
-        assert!(
-            depth <= DEPTH_MAX,
-            "deeper than any elaboration"
-        );
+        assert!(depth <= DEPTH_MAX, "deeper than any elaboration");
         let len0 = path.len();
         if let Some(id) = self.find_net(d, &self.unescape(name)) {
             path.push('/');

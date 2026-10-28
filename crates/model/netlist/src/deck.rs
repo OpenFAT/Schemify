@@ -31,7 +31,11 @@ type ModelLine = (String, String, Option<String>);
 ///
 /// Panics if `l` is not a row of `e.impls`.
 pub fn compiled_source(e: &Elab, l: usize) -> bool {
-    assert!(l < e.impls.cell.len(), "impl row {l} of {}", e.impls.cell.len());
+    assert!(
+        l < e.impls.cell.len(),
+        "impl row {l} of {}",
+        e.impls.cell.len()
+    );
     let f = &e.cells[e.impls.cell[l] as usize];
     let k = e.impls.index[l] as usize;
     let has_file = f.impl_file[k] != Name::NONE;

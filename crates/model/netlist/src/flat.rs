@@ -116,8 +116,16 @@ impl Flat<'_> {
                         nets.iter().find(|x| x.0 == n).map_or("?", |x| x.1.as_str())
                     };
                     let mut out = String::new();
-                    let rendered =
-                        inst::line(e, self.d, self.plans, r, &name, net, &mut out, &mut self.tmp);
+                    let rendered = inst::line(
+                        e,
+                        self.d,
+                        self.plans,
+                        r,
+                        &name,
+                        net,
+                        &mut out,
+                        &mut self.tmp,
+                    );
                     if rendered.is_ok() && !out.is_empty() {
                         self.lines.push(out);
                     }

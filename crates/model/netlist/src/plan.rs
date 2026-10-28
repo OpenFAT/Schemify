@@ -209,7 +209,10 @@ fn template_form(
             "params" => Src::Params,
             "model" if model != Src::Cell => model,
             "file" => attr(&f.impl_file, k).map_or(Src::Missing, Src::Text),
-            _ => match ((0..n).find(|&p| base(names, f, p) == id), param(names, f, id)) {
+            _ => match (
+                (0..n).find(|&p| base(names, f, p) == id),
+                param(names, f, id),
+            ) {
                 (Some(p), _) => Src::Pin(p as u32),
                 (None, Some(q)) => Src::Param(q),
                 (None, None) => Src::Missing,
