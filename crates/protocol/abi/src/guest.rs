@@ -418,7 +418,15 @@ pub fn __call(
     };
     let mut result = String::new();
     match call(fn_id, args, &mut result) {
-        Ok(()) if !result.is_empty() => publish(result.into_bytes()),
+        Ok(()) if !result.is_empty() => {
+            let packed = publish(result.into_bytes());
+            debug_assert_ne!(
+                crate::unpack(packed).0,
+                0,
+                "a result must not read as the failure form (pointer 0)"
+            );
+            packed
+        }
         Ok(()) => crate::pack(0, Code::Parse as u32),
         Err(code) => crate::pack(0, code as u32),
     }

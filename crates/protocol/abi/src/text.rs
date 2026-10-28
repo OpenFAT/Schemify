@@ -327,7 +327,7 @@ impl<'text> Values<'text> {
     ///
     /// [`Code::Parse`] when no value is left or it is not a number of that type.
     pub fn need_num<T: FromStr>(&mut self) -> Result<T, Code> {
-        self.need()?.parse().map_err(|_| Code::Parse)
+        self.need()?.parse::<T>().map_err(|_| Code::Parse)
     }
 
     /// Succeeds only when every value has been consumed (arity check).
