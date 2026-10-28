@@ -5,6 +5,14 @@
 //!
 //! Data design: ≤ [`RECENT_MAX`] absolute paths, most recent first; read once at start,
 //! rewritten whole after every open (a few hundred bytes).
+//!
+//! Contents:
+//! - `pub const RECENT_MAX`
+//! - `pub fn file`
+//! - `pub fn load`
+//! - `pub fn push`
+//! - `pub fn text`
+//! - `pub fn save`
 
 use std::path::{Path, PathBuf};
 

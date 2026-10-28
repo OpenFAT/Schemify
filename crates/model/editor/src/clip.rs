@@ -6,15 +6,13 @@
 //!
 //! Data design: in, the copied records (coordinates relative to the copy pivot); out, text.
 //! A fragment holds what one selection holds (≤ 2^22 records); nothing is kept.
+//!
+//! Contents:
+//! - `pub fn encode`
+//! - `pub fn decode`
 
 use schemify_doc::RecordBuf;
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write};
-
-/// Whether a record kind is a drawable fragment record: a symbol pin, a symbol graphic or a
-/// schematic object (no params, impls, docs or bench records).
-fn drawable(kind: RecordKind) -> bool {
-    kind == RecordKind::Pin || matches!(kind.rank(), 2 | 3)
-}
 
 /// Writes `recs` as a fragment file. Records that are not drawable (`drawable`) are
 /// skipped; the rest are written in rank order, canonical, after `impl clipboard schematic`.
@@ -50,19 +48,6 @@ pub fn encode(recs: &[RecordBuf]) -> String {
     text
 }
 
-fn write_rec(d: &mut FormatDoc<'_>, r: &RecordBuf) {
-    d.begin_record(r.kind);
-    for f in &r.fields {
-        d.push_field(f);
-    }
-    for a in &r.attrs {
-        d.push_attr(&a.key);
-        for v in &a.values {
-            d.push_value(v);
-        }
-    }
-}
-
 /// Reads a fragment back: every record of ranks 1–3 (pins, symbol graphics, schematic
 /// objects), in file order.
 ///
@@ -87,6 +72,27 @@ pub fn decode(text: &str) -> Result<Vec<RecordBuf>, String> {
         return Err("the clipboard holds no schematic objects".into());
     }
     Ok(recs)
+}
+
+// ---- private ----
+
+/// Whether a record kind is a drawable fragment record: a symbol pin, a symbol graphic or a
+/// schematic object (no params, impls, docs or bench records).
+fn drawable(kind: RecordKind) -> bool {
+    kind == RecordKind::Pin || matches!(kind.rank(), 2 | 3)
+}
+
+fn write_rec(d: &mut FormatDoc<'_>, r: &RecordBuf) {
+    d.begin_record(r.kind);
+    for f in &r.fields {
+        d.push_field(f);
+    }
+    for a in &r.attrs {
+        d.push_attr(&a.key);
+        for v in &a.values {
+            d.push_value(v);
+        }
+    }
 }
 
 #[cfg(test)]

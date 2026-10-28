@@ -8,6 +8,12 @@
 //! cross-probes it into the open viewer ([`WavesView::add_trace`]). The dock lays out and
 //! routes input in its own coordinates; the editor shifts pointer events into them and
 //! `schemify-app` paints it below the editor (`Editor::picture` lends its tables).
+//!
+//! Contents:
+//! - `pub struct WavesView`, `WavesView::open`, `WavesView::update`, `WavesView::reload`,
+//!   `WavesView::add_trace`, `WavesView::traces`, `WavesView::picture`
+//! - `pub fn spice_device`
+//! - `pub fn current_probe`
 
 use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
 use schemify_ui::{
@@ -266,20 +272,6 @@ impl WavesView {
     }
 }
 
-/// The datasets of a `.raw` file (ngspice/Xyce/LTspice, binary or ASCII), `.step` blocks
-/// grouped; errors name `title`.
-fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<schemify_wave::RawPlot>, String> {
-    let plots = parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
-    let d = group_datasets(plots);
-    if d.len() > MAX_DATASETS {
-        return Err(format!(
-            "{title}: {} datasets (at most {MAX_DATASETS})",
-            d.len()
-        ));
-    }
-    Ok(d)
-}
-
 /// ngspice's name of the device emitted as `emitted`: lowercase, and inside a subcircuit
 /// its type letter and a dot in front (`X1.MM2` → `m.x1.mm2`, top-level `MM1` → `mm1`).
 pub fn spice_device(emitted: &str) -> String {
@@ -323,6 +315,22 @@ pub fn current_probe(emitted: &str, pin: &str) -> String {
     let out = format!("i(\"@{dev}[{param}]\")");
     assert!(out.len() > 6);
     out
+}
+
+// ---- private ----
+
+/// The datasets of a `.raw` file (ngspice/Xyce/LTspice, binary or ASCII), `.step` blocks
+/// grouped; errors name `title`.
+fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<schemify_wave::RawPlot>, String> {
+    let plots = parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
+    let d = group_datasets(plots);
+    if d.len() > MAX_DATASETS {
+        return Err(format!(
+            "{title}: {} datasets (at most {MAX_DATASETS})",
+            d.len()
+        ));
+    }
+    Ok(d)
 }
 
 #[cfg(test)]

@@ -20,11 +20,27 @@
 //! Determinism (AGENTS rule 4): no hash maps, fixed decimal formatting; arc end and control
 //! points are rounded to milli-units before printing, so platform `sin`/`cos` last-bit
 //! differences do not reach the bytes; font tables are written from ordered maps.
+//!
+//! Contents:
+//! - `pub struct Look`
+//! - `pub const PAPER`
+//! - `pub struct Page`, `Page::parse`, `Page::points`, `Page::name`
+//! - `pub fn subset`
+//! - `pub fn bounds`
+//! - `pub fn padded`
 
-use schemify_canvas::{CanvasPrims, LAYER_DEAD, LAYERS, LineStyle, Palette};
-use schemify_format::format_coord;
+mod eps;
+mod ops;
+mod pdf;
+mod svg;
+
+use schemify_canvas::{CanvasPrims, LAYER_DEAD, LAYERS, Palette};
 
 use crate::scene::Scene;
+
+pub use eps::eps;
+pub use pdf::pdf;
+pub use svg::{svg, svg_counts};
 
 /// How a drawing is colored: the canvas palette (layer colors, widths, fills) or black on
 /// white, with or without a background rectangle.
@@ -38,32 +54,30 @@ pub struct Look {
     pub transparent: bool,
 }
 
-impl Look {
-    /// `0xRRGGBB` of layer `l` as exported, or `None` when the layer is hidden (alpha 0) or
-    /// the row dead (`LAYER_DEAD`, a scene's removed row).
-    fn rgb(&self, l: u8) -> Option<u32> {
-        if l == LAYER_DEAD {
-            return None;
-        }
-        let c = self.palette.color[usize::from(l) % LAYERS];
-        if c & 0xff == 0 {
-            return None;
-        }
-        Some(if self.color { c >> 8 } else { 0 })
-    }
+/// Paper sizes a vector export fits its drawing to: `(name, width, height)` in points
+/// (1/72 in), portrait.
+pub const PAPER: [(&str, f64, f64); 6] = [
+    ("a4", 595.0, 842.0),
+    ("a3", 842.0, 1191.0),
+    ("a5", 420.0, 595.0),
+    ("letter", 612.0, 792.0),
+    ("legal", 612.0, 1008.0),
+    ("tabloid", 792.0, 1224.0),
+];
 
-    fn background(&self) -> u32 {
-        if self.color {
-            self.palette.background >> 8
-        } else {
-            0x00ff_ffff
-        }
-    }
-
-    fn filled(&self, l: u8) -> bool {
-        self.palette.fill & (1 << (u32::from(l) % 32)) != 0
-    }
+/// The page a PDF or EPS export is fitted to: a [`PAPER`] row and its orientation. The
+/// default is A4 landscape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Page {
+    /// Row of [`PAPER`].
+    pub paper: u8,
+    /// Portrait (else landscape).
+    pub portrait: bool,
 }
+
+/// PostScript names of the embedded UI faces (Type 42 resources, PDF `BaseFont`s), indexed
+/// like [`schemify_ui::ui_fonts`]; a PDF page names face `f` `/F<f + 1>`.
+const FONT_NAMES: [&str; 2] = ["SchemifyUI-NotoSans", "SchemifyUI-KaTeXMain"];
 
 /// The primitives of `sc` owned by objects with `keep[object]` set (the selection export).
 ///
@@ -188,247 +202,6 @@ pub fn padded(b: [i32; 4], pad: i32) -> [i32; 4] {
     ]
 }
 
-fn units(m: i64) -> String {
-    let mut s = String::new();
-    format_coord(
-        m.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        &mut s,
-    );
-    s
-}
-
-/// Arc end point at `deg_milli` (clockwise on screen, y down), rounded to milli-units.
-fn arc_point(cx: i32, cy: i32, r: i32, deg_milli: i64) -> (i64, i64) {
-    let t = (deg_milli as f64 / 1000.0).to_radians();
-    let r = f64::from(r);
-    (
-        i64::from(cx) + (r * t.cos()).round() as i64,
-        i64::from(cy) + (r * t.sin()).round() as i64,
-    )
-}
-
-fn xml_escape(s: &str, out: &mut String) {
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            c if c.is_control() => out.push(' '),
-            c => out.push(c),
-        }
-    }
-}
-
-/// The drawing `prims` inside world bounds `b` as an SVG document in xschem units (one user
-/// unit = one xschem unit). One SVG element per primitive, in canvas draw order (lines,
-/// rects, arcs, polylines, polygons, texts), hidden layers left out.
-///
-/// # Panics
-///
-/// Panics if `b` is inverted.
-pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
-    use std::fmt::Write;
-    assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
-    let (w, h) = (
-        i64::from(b[2]) - i64::from(b[0]),
-        i64::from(b[3]) - i64::from(b[1]),
-    );
-    let mut s = String::with_capacity(256 + prims.len() * 80);
-    let _ = writeln!(
-        s,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{} {} {} {}\" width=\"{}\" height=\"{}\">",
-        units(i64::from(b[0])),
-        units(i64::from(b[1])),
-        units(w.max(1)),
-        units(h.max(1)),
-        units(w.max(1)),
-        units(h.max(1))
-    );
-    // Stroke attributes in user units: the palette's pixels at one pixel per xschem unit,
-    // times the row's weight; a styled row also gets round caps/joins and its dashes.
-    let stroke = |l: u8, st: LineStyle| {
-        let w = look.palette.width[usize::from(l) % LAYERS].max(0.1);
-        let mut a = format!("stroke-width=\"{}\"", w * f32::from(st.weight()));
-        if st != LineStyle::PLAIN {
-            a.push_str(" stroke-linecap=\"round\" stroke-linejoin=\"round\"");
-        }
-        if st.dash() > 0 {
-            let d = 2.0 * f32::from(st.dash()) * w;
-            a.push_str(&format!(" stroke-dasharray=\"{d} {d}\""));
-        }
-        a
-    };
-    if !look.transparent {
-        let _ = writeln!(
-            s,
-            "<rect id=\"background\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"#{:06x}\"/>",
-            units(i64::from(b[0])),
-            units(i64::from(b[1])),
-            units(w.max(1)),
-            units(h.max(1)),
-            look.background()
-        );
-    }
-    let l = &prims.lines;
-    for i in 0..l.x0.len() {
-        let Some(c) = look.rgb(l.layer[i]) else {
-            continue;
-        };
-        let _ = writeln!(
-            s,
-            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#{c:06x}\" {}/>",
-            units(l.x0[i].into()),
-            units(l.y0[i].into()),
-            units(l.x1[i].into()),
-            units(l.y1[i].into()),
-            stroke(l.layer[i], l.style[i])
-        );
-    }
-    let r = &prims.rects;
-    for i in 0..r.x0.len() {
-        let Some(c) = look.rgb(r.layer[i]) else {
-            continue;
-        };
-        let (x0, x1) = (r.x0[i].min(r.x1[i]), r.x0[i].max(r.x1[i]));
-        let (y0, y1) = (r.y0[i].min(r.y1[i]), r.y0[i].max(r.y1[i]));
-        let fill = if look.filled(r.layer[i]) || r.style[i].fills() {
-            format!("#{c:06x}")
-        } else {
-            "none".to_owned()
-        };
-        let _ = writeln!(
-            s,
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
-            units(x0.into()),
-            units(y0.into()),
-            units(i64::from(x1) - i64::from(x0)),
-            units(i64::from(y1) - i64::from(y0)),
-            stroke(r.layer[i], r.style[i])
-        );
-    }
-    let a = &prims.arcs;
-    for i in 0..a.cx.len() {
-        let Some(c) = look.rgb(a.layer[i]) else {
-            continue;
-        };
-        let full = a.sweep[i].unsigned_abs() >= 360_000;
-        let fill = if full && (look.filled(a.layer[i]) || a.style[i].fills()) {
-            format!("#{c:06x}")
-        } else {
-            "none".to_owned()
-        };
-        if full {
-            let _ = writeln!(
-                s,
-                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
-                units(a.cx[i].into()),
-                units(a.cy[i].into()),
-                units(a.r[i].into()),
-                stroke(a.layer[i], a.style[i])
-            );
-            continue;
-        }
-        let start = i64::from(a.start[i]);
-        let end = start + i64::from(a.sweep[i]);
-        let p0 = arc_point(a.cx[i], a.cy[i], a.r[i], start);
-        let p1 = arc_point(a.cx[i], a.cy[i], a.r[i], end);
-        let large = u8::from(a.sweep[i].unsigned_abs() > 180_000);
-        let dir = u8::from(a.sweep[i] > 0);
-        let _ = writeln!(
-            s,
-            "<path d=\"M {} {} A {} {} 0 {large} {dir} {} {}\" fill=\"none\" stroke=\"#{c:06x}\" {}/>",
-            units(p0.0),
-            units(p0.1),
-            units(a.r[i].into()),
-            units(a.r[i].into()),
-            units(p1.0),
-            units(p1.1),
-            stroke(a.layer[i], a.style[i])
-        );
-    }
-    for (polys, closed) in [(&prims.polylines, false), (&prims.polygons, true)] {
-        let mut start = 0usize;
-        for (k, &end) in polys.end.iter().enumerate() {
-            let end = end as usize;
-            let layer = polys.layer[k];
-            let Some(c) = look.rgb(layer) else {
-                start = end;
-                continue;
-            };
-            let mut pts = String::new();
-            for j in start..end {
-                let _ = write!(
-                    pts,
-                    "{},{} ",
-                    units(polys.x[j].into()),
-                    units(polys.y[j].into())
-                );
-            }
-            let fill = if closed && (look.filled(layer) || polys.style[k].fills()) {
-                format!("#{c:06x}")
-            } else {
-                "none".to_owned()
-            };
-            let tag = if closed { "polygon" } else { "polyline" };
-            let _ = writeln!(
-                s,
-                "<{tag} points=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
-                pts.trim_end(),
-                stroke(layer, polys.style[k])
-            );
-            start = end;
-        }
-    }
-    let t = &prims.texts;
-    let mut start = 0usize;
-    for i in 0..t.x.len() {
-        let end = t.end[i] as usize;
-        let text = &t.text[start..end];
-        start = end;
-        let Some(c) = look.rgb(t.layer[i]) else {
-            continue;
-        };
-        let mut esc = String::new();
-        xml_escape(text, &mut esc);
-        let (x, y) = (units(t.x[i].into()), units(t.y[i].into()));
-        let rot = t.rot.get(i).copied().unwrap_or(0);
-        let turn = if rot == 0 {
-            String::new()
-        } else {
-            format!(" transform=\"rotate({} {x} {y})\"", u32::from(rot) * 90)
-        };
-        let _ = writeln!(
-            s,
-            "<text x=\"{x}\" y=\"{y}\" font-size=\"{}\" font-family=\"sans-serif\" dominant-baseline=\"hanging\" fill=\"#{c:06x}\"{turn}>{esc}</text>",
-            units(t.size[i].into())
-        );
-    }
-    s.push_str("</svg>\n");
-    s
-}
-
-/// Paper sizes a vector export fits its drawing to: `(name, width, height)` in points
-/// (1/72 in), portrait.
-pub const PAPER: [(&str, f64, f64); 6] = [
-    ("a4", 595.0, 842.0),
-    ("a3", 842.0, 1191.0),
-    ("a5", 420.0, 595.0),
-    ("letter", 612.0, 792.0),
-    ("legal", 612.0, 1008.0),
-    ("tabloid", 792.0, 1224.0),
-];
-
-/// The page a PDF or EPS export is fitted to: a [`PAPER`] row and its orientation. The
-/// default is A4 landscape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct Page {
-    /// Row of [`PAPER`].
-    pub paper: u8,
-    /// Portrait (else landscape).
-    pub portrait: bool,
-}
-
 impl Page {
     /// Parses `<paper> [portrait|landscape]` (`a3`, `letter portrait`, `A4-portrait`;
     /// case-insensitive, landscape by default). `None` for an unknown paper or word.
@@ -462,672 +235,52 @@ impl Page {
     }
 }
 
-/// Page coordinates of world bounds `b` fitted (aspect kept) into a `page` of points with a
-/// `margin`: `(scale points per milli-unit, x offset, y top)`. PDF and PostScript have y up.
-fn fit(b: [i32; 4], page: (f64, f64), margin: f64) -> (f64, f64, f64) {
-    let w = (f64::from(b[2]) - f64::from(b[0])).max(1.0);
-    let h = (f64::from(b[3]) - f64::from(b[1])).max(1.0);
-    let s = ((page.0 - 2.0 * margin) / w).min((page.1 - 2.0 * margin) / h);
-    let ox = margin + ((page.0 - 2.0 * margin) - w * s) / 2.0;
-    let top = page.1 - margin - ((page.1 - 2.0 * margin) - h * s) / 2.0;
-    (s, ox, top)
+// ---- private ----
+
+impl Look {
+    /// `0xRRGGBB` of layer `l` as exported, or `None` when the layer is hidden (alpha 0) or
+    /// the row dead (`LAYER_DEAD`, a scene's removed row).
+    fn rgb(&self, l: u8) -> Option<u32> {
+        if l == LAYER_DEAD {
+            return None;
+        }
+        let c = self.palette.color[usize::from(l) % LAYERS];
+        if c & 0xff == 0 {
+            return None;
+        }
+        Some(if self.color { c >> 8 } else { 0 })
+    }
+
+    fn background(&self) -> u32 {
+        if self.color {
+            self.palette.background >> 8
+        } else {
+            0x00ff_ffff
+        }
+    }
+
+    fn filled(&self, l: u8) -> bool {
+        self.palette.fill & (1 << (u32::from(l) % 32)) != 0
+    }
 }
 
-/// Which page-description language a vector page is written in: PDF content-stream
-/// operators or PostScript. Same geometry, two spellings.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Lang {
-    Pdf,
-    Ps,
-}
-
-/// Glyphs one face prints: glyph id → (advance in font units, a character it prints).
-/// Ordered, so the font tables written from it are deterministic.
-type Glyphs = std::collections::BTreeMap<u16, (u16, char)>;
-
-/// Glyphs the texts of a document print, per [`schemify_ui::ui_fonts`] face; a face with
-/// none is not embedded.
-type Used = [Glyphs; 2];
-
-/// PostScript names of the embedded UI faces (Type 42 resources, PDF `BaseFont`s), indexed
-/// like [`schemify_ui::ui_fonts`]; a PDF page names face `f` `/F<f + 1>`.
-const FONT_NAMES: [&str; 2] = ["SchemifyUI-NotoSans", "SchemifyUI-KaTeXMain"];
-
-/// Cubic Bézier approximation of an arc (world milli-units, angles in milli-degrees
-/// clockwise on screen, as [`arc_point`]): the start point, then three points per segment of
-/// at most 90°, each rounded to a milli-unit (so platform `sin`/`cos`/`tan` last-bit
-/// differences do not reach the bytes). Radial error below 0.03% of the radius.
-fn arc_beziers(cx: i32, cy: i32, r: i32, start: i64, sweep: i64) -> Vec<(i32, i32)> {
-    let sweep = sweep.clamp(-360_000, 360_000);
-    let n = sweep.unsigned_abs().div_ceil(90_000).max(1) as i64;
-    let rf = f64::from(r);
-    let at = |x: f64, y: f64| {
-        let q = |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-        (q(f64::from(cx) + x), q(f64::from(cy) + y))
-    };
-    let end = |d: i64| {
-        let p = arc_point(cx, cy, r, d);
-        let q = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
-        (q(p.0), q(p.1))
-    };
-    let mut out = Vec::with_capacity(1 + 3 * n as usize);
-    out.push(end(start));
-    for k in 0..n {
-        let d0 = start + sweep * k / n;
-        let d1 = start + sweep * (k + 1) / n;
-        let (a0, a1) = (
-            (d0 as f64 / 1000.0).to_radians(),
-            (d1 as f64 / 1000.0).to_radians(),
-        );
-        // Control points at 4/3 · tan(Δ/4) of the radius along the end tangents.
-        let kk = 4.0 / 3.0 * ((a1 - a0) / 4.0).tan() * rf;
-        let (c0, s0, c1, s1) = (a0.cos(), a0.sin(), a1.cos(), a1.sin());
-        out.push(at(rf * c0 - kk * s0, rf * s0 + kk * c0));
-        out.push(at(rf * c1 + kk * s1, rf * s1 - kk * c1));
-        out.push(end(d1));
-    }
-    assert_eq!(out.len(), 1 + 3 * n as usize);
-    out
-}
-
-/// Writes one page of `prims` (world bounds `b`) as content operators in `lang`; the glyphs
-/// its texts print are added to `used`.
-fn page_ops(
-    prims: &CanvasPrims,
-    b: [i32; 4],
-    look: &Look,
-    page: (f64, f64),
-    lang: Lang,
-    used: &mut Used,
-) -> String {
-    use std::fmt::Write;
-    assert!(
-        page.0 > 48.0 && page.1 > 48.0,
-        "a page wider than its margins"
-    );
-    let (s, ox, top) = fit(b, page, 24.0);
-    let px = |x: i32| ox + (f64::from(x) - f64::from(b[0])) * s;
-    let py = |y: i32| top - (f64::from(y) - f64::from(b[1])) * s;
-    let mut o = String::with_capacity(prims.len() * 40 + 256);
-    let color = |o: &mut String, c: u32, fill: bool| {
-        let (r, g, bl) = (
-            f64::from((c >> 16) & 0xff) / 255.0,
-            f64::from((c >> 8) & 0xff) / 255.0,
-            f64::from(c & 0xff) / 255.0,
-        );
-        let _ = match (lang, fill) {
-            (Lang::Pdf, false) => writeln!(o, "{r:.3} {g:.3} {bl:.3} RG"),
-            (Lang::Pdf, true) => writeln!(o, "{r:.3} {g:.3} {bl:.3} rg"),
-            (Lang::Ps, _) => writeln!(o, "{r:.3} {g:.3} {bl:.3} setrgbcolor"),
-        };
-    };
-    // Line width (and, for a dashed row, its dash, which `undash` resets after the stroke).
-    let width = |o: &mut String, l: u8, st: LineStyle| {
-        let w = f64::from(look.palette.width[usize::from(l) % LAYERS]).max(0.1) * 0.5;
-        let lw = w * f64::from(st.weight());
-        let _ = match lang {
-            Lang::Pdf => writeln!(o, "{lw:.2} w"),
-            Lang::Ps => writeln!(o, "{lw:.2} setlinewidth"),
-        };
-        if st.dash() > 0 {
-            let d = 2.0 * f64::from(st.dash()) * w;
-            let _ = match lang {
-                Lang::Pdf => writeln!(o, "[{d:.2} {d:.2}] 0 d"),
-                Lang::Ps => writeln!(o, "[{d:.2} {d:.2}] 0 setdash"),
-            };
-        }
-    };
-    let undash = |o: &mut String, st: LineStyle| {
-        if st.dash() > 0 {
-            o.push_str(if lang == Lang::Pdf {
-                "[] 0 d\n"
-            } else {
-                "[] 0 setdash\n"
-            });
-        }
-    };
-    let (mv, ln, stroke, close) = match lang {
-        Lang::Pdf => ("m", "l", "S", "h"),
-        Lang::Ps => ("moveto", "lineto", "stroke", "closepath"),
-    };
-    // Background, then a clip to the drawing box (a view export cuts what lies outside).
-    let (x0, y0, x1, y1) = (px(b[0]), py(b[3]), px(b[2]), py(b[1]));
-    if look.color {
-        color(&mut o, look.background(), true);
-        let _ = match lang {
-            Lang::Pdf => writeln!(o, "{x0:.2} {y0:.2} {:.2} {:.2} re f", x1 - x0, y1 - y0),
-            Lang::Ps => writeln!(
-                o,
-                "newpath {x0:.2} {y0:.2} moveto {x1:.2} {y0:.2} lineto {x1:.2} {y1:.2} lineto {x0:.2} {y1:.2} lineto closepath fill"
-            ),
-        };
-    }
-    let _ = match lang {
-        Lang::Pdf => writeln!(o, "{x0:.2} {y0:.2} {:.2} {:.2} re W n", x1 - x0, y1 - y0),
-        Lang::Ps => writeln!(
-            o,
-            "newpath {x0:.2} {y0:.2} moveto {x1:.2} {y0:.2} lineto {x1:.2} {y1:.2} lineto {x0:.2} {y1:.2} lineto closepath clip newpath"
-        ),
-    };
-    let l = &prims.lines;
-    for i in 0..l.x0.len() {
-        let Some(c) = look.rgb(l.layer[i]) else {
-            continue;
-        };
-        color(&mut o, c, false);
-        width(&mut o, l.layer[i], l.style[i]);
-        let _ = writeln!(
-            o,
-            "{:.2} {:.2} {mv} {:.2} {:.2} {ln} {stroke}",
-            px(l.x0[i]),
-            py(l.y0[i]),
-            px(l.x1[i]),
-            py(l.y1[i])
-        );
-        undash(&mut o, l.style[i]);
-    }
-    // One stroked (and, closed on a filled layer, filled) path built by the operators `body`.
-    let finish = |o: &mut String, body: &str, closed: bool, layer: u8, st: LineStyle, c: u32| {
-        let fill = closed && (look.filled(layer) || st.fills());
-        color(o, c, false);
-        if fill {
-            color(o, c, true);
-        }
-        width(o, layer, st);
-        if lang == Lang::Ps {
-            o.push_str("newpath ");
-        }
-        o.push_str(body);
-        if closed {
-            o.push_str(close);
-            o.push(' ');
-        }
-        let end = match (lang, fill) {
-            (Lang::Pdf, true) => "B",
-            (Lang::Ps, true) => "gsave fill grestore stroke",
-            _ => stroke,
-        };
-        let _ = writeln!(o, "{end}");
-        undash(o, st);
-    };
-    let path =
-        |o: &mut String, pts: &[(f64, f64)], closed: bool, layer: u8, st: LineStyle, c: u32| {
-            let mut body = String::with_capacity(pts.len() * 16);
-            for (k, p) in pts.iter().enumerate() {
-                let op = if k == 0 { mv } else { ln };
-                let _ = write!(body, "{:.2} {:.2} {op} ", p.0, p.1);
-            }
-            finish(o, &body, closed, layer, st, c);
-        };
-    let r = &prims.rects;
-    for i in 0..r.x0.len() {
-        let Some(c) = look.rgb(r.layer[i]) else {
-            continue;
-        };
-        let pts = [
-            (px(r.x0[i]), py(r.y0[i])),
-            (px(r.x1[i]), py(r.y0[i])),
-            (px(r.x1[i]), py(r.y1[i])),
-            (px(r.x0[i]), py(r.y1[i])),
-        ];
-        path(&mut o, &pts, true, r.layer[i], r.style[i], c);
-    }
-    let a = &prims.arcs;
-    for i in 0..a.cx.len() {
-        let Some(c) = look.rgb(a.layer[i]) else {
-            continue;
-        };
-        // True arcs: PostScript's `arc`/`arcn`, PDF cubic Béziers of at most 90° each.
-        let sweep = i64::from(a.sweep[i]).clamp(-360_000, 360_000);
-        let full = sweep.unsigned_abs() >= 360_000;
-        let mut body = String::with_capacity(128);
-        match lang {
-            Lang::Ps => {
-                // Page y is up: a clockwise screen sweep from `start` is a clockwise page turn
-                // (`arcn`) from the negated angle.
-                let start = i64::from(a.start[i]);
-                let (d0, d1) = (-start, -(start + sweep));
-                let op = if sweep >= 0 { "arcn" } else { "arc" };
-                let _ = write!(
-                    body,
-                    "{:.2} {:.2} {:.2} {:.3} {:.3} {op} ",
-                    px(a.cx[i]),
-                    py(a.cy[i]),
-                    f64::from(a.r[i]) * s,
-                    d0 as f64 / 1000.0,
-                    d1 as f64 / 1000.0
-                );
-            }
-            Lang::Pdf => {
-                let pts = arc_beziers(a.cx[i], a.cy[i], a.r[i], i64::from(a.start[i]), sweep);
-                let _ = write!(body, "{:.2} {:.2} m ", px(pts[0].0), py(pts[0].1));
-                for seg in pts[1..].chunks_exact(3) {
-                    let _ = write!(
-                        body,
-                        "{:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c ",
-                        px(seg[0].0),
-                        py(seg[0].1),
-                        px(seg[1].0),
-                        py(seg[1].1),
-                        px(seg[2].0),
-                        py(seg[2].1)
-                    );
-                }
-            }
-        }
-        finish(&mut o, &body, full, a.layer[i], a.style[i], c);
-    }
-    for (polys, closed) in [(&prims.polylines, false), (&prims.polygons, true)] {
-        let mut start = 0usize;
-        for (k, &end) in polys.end.iter().enumerate() {
-            let end = end as usize;
-            if let Some(c) = look.rgb(polys.layer[k]) {
-                let pts: Vec<(f64, f64)> = (start..end)
-                    .map(|j| (px(polys.x[j]), py(polys.y[j])))
-                    .collect();
-                path(&mut o, &pts, closed, polys.layer[k], polys.style[k], c);
-            }
-            start = end;
-        }
-    }
-    let t = &prims.texts;
-    let mut start = 0usize;
-    let mut glyphs: Vec<schemify_ui::FontGlyph> = Vec::new();
-    for i in 0..t.x.len() {
-        let end = t.end[i] as usize;
-        let text = &t.text[start..end];
-        start = end;
-        let Some(c) = look.rgb(t.layer[i]) else {
-            continue;
-        };
-        let size = (f64::from(t.size[i]) * s).max(0.5);
-        // The anchor is the text's top-left; the baseline sits 0.8 em below it, in the
-        // text's own (turned) frame. A clockwise screen turn is a negative page turn.
-        let (x, y) = (px(t.x[i]), py(t.y[i]));
-        let rot = t.rot.get(i).copied().unwrap_or(0) % 4;
-        let (cos, sin) = [(1, 0), (0, -1), (-1, 0), (0, 1)][usize::from(rot)];
-        // Glyphs of the embedded UI faces, one per character (no shaping), in runs of one
-        // face each; the text position advances by the glyph widths across runs.
-        glyphs.clear();
-        schemify_ui::ui_font_glyphs(text, &mut glyphs);
-        if glyphs.is_empty() {
-            continue; // an empty text prints nothing and must not name a font
-        }
-        for (ch, g) in text.chars().zip(&glyphs) {
-            used[usize::from(g.face)]
-                .entry(g.id)
-                .or_insert((g.advance, ch));
-        }
-        let mut shown = String::with_capacity(glyphs.len() * 16);
-        let mut face = u8::MAX;
-        for g in &glyphs {
-            if g.face != face {
-                face = g.face;
-                let _ = match lang {
-                    Lang::Pdf if shown.is_empty() => write!(shown, "/F{} {size:.2} Tf <", face + 1),
-                    Lang::Pdf => write!(shown, "> Tj /F{} {size:.2} Tf <", face + 1),
-                    Lang::Ps => write!(
-                        shown,
-                        "/{} findfont {size:.2} scalefont setfont ",
-                        FONT_NAMES[usize::from(face)]
-                    ),
-                };
-            }
-            let _ = match (lang, g.id) {
-                (Lang::Pdf, id) => write!(shown, "{id:04X}"),
-                (Lang::Ps, 0) => write!(shown, "/.notdef glyphshow "),
-                (Lang::Ps, id) => write!(shown, "/g{id} glyphshow "),
-            };
-        }
-        if lang == Lang::Pdf {
-            shown.push_str("> Tj ");
-        }
-        color(&mut o, c, true);
-        let base = size * 0.8;
-        let _ = match lang {
-            Lang::Pdf => writeln!(
-                o,
-                "BT {cos} {sin} {} {cos} {x:.2} {y:.2} Tm 0 {:.2} Td {shown}ET",
-                -sin, -base
-            ),
-            Lang::Ps => writeln!(
-                o,
-                "gsave {x:.2} {y:.2} translate {} rotate 0 {:.2} moveto {shown}grestore",
-                -90 * i32::from(rot),
-                -base
-            ),
-        };
-    }
-    o
-}
-
-/// ASCII85 (PDF `/ASCII85Decode`) of `bytes` with its `~>` end marker and a line break
-/// every 80 characters, so a PDF carrying a font stays 7-bit text.
-fn ascii85(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 5 / 4 + bytes.len() / 64 + 4);
-    let mut col = 0usize;
-    let mut push = |out: &mut String, c: u8| {
-        out.push(char::from(c));
-        col += 1;
-        if col == 80 {
-            out.push('\n');
-            col = 0;
-        }
-    };
-    for chunk in bytes.chunks(4) {
-        let mut word = [0u8; 4];
-        word[..chunk.len()].copy_from_slice(chunk);
-        let mut v = u32::from_be_bytes(word);
-        if chunk.len() == 4 && v == 0 {
-            push(&mut out, b'z');
-            continue;
-        }
-        let mut digits = [0u8; 5];
-        for d in digits.iter_mut().rev() {
-            *d = (v % 85) as u8 + b'!';
-            v /= 85;
-        }
-        for &d in &digits[..chunk.len() + 1] {
-            push(&mut out, d);
-        }
-    }
-    out.push_str("~>");
-    out
-}
-
-/// The `ToUnicode` CMap of the glyphs one face prints, so viewers extract and search the text.
-fn to_unicode(glyphs: &Glyphs) -> String {
-    use std::fmt::Write;
-    let rows: Vec<(u16, char)> = glyphs
-        .iter()
-        .filter(|(g, _)| **g != 0)
-        .map(|(g, (_, c))| (*g, *c))
-        .collect();
-    let mut s = String::from(
-        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
-         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
-         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
-         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
-    );
-    // At most 100 entries per block (PDF 32000-1 §9.10.3).
-    for block in rows.chunks(100) {
-        let _ = writeln!(s, "{} beginbfchar", block.len());
-        for &(g, c) in block {
-            let _ = write!(s, "<{g:04X}> <");
-            let mut units = [0u16; 2];
-            for u in c.encode_utf16(&mut units) {
-                let _ = write!(s, "{u:04X}");
-            }
-            s.push_str(">\n");
-        }
-        s.push_str("endbfchar\n");
-    }
-    s.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
-    s
-}
-
-/// The PDF objects of UI face `face`, numbered from `first`: the `Type0` font (the one a
-/// page names `/F<face + 1>`), its `CIDFontType2` (widths `W` of the glyphs it prints), the
-/// font descriptor, the `FontFile2` stream (the whole face, ASCII85) and the `ToUnicode` CMap.
-fn font_objects(first: usize, face: u8, glyphs: &Glyphs) -> [String; 5] {
-    use std::fmt::Write;
-    assert!(!glyphs.is_empty(), "only a face that prints is embedded");
-    let name = FONT_NAMES[usize::from(face)];
-    let info = schemify_ui::ui_font_info(face);
-    let upem = u32::from(info.upem);
-    let em = |v: i16| i64::from(v) * 1000 / i64::from(upem);
-    let mut w = String::new();
-    for (g, (adv, _)) in glyphs {
-        let _ = write!(w, "{g} [{}] ", (u32::from(*adv) * 1000 + upem / 2) / upem);
-    }
-    let font = schemify_ui::ui_fonts()[usize::from(face)];
-    let data = ascii85(font);
-    let cmap = to_unicode(glyphs);
-    let b = info.bbox;
-    [
-        format!(
-            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [{} 0 R] /ToUnicode {} 0 R >>",
-            first + 1,
-            first + 4
-        ),
-        format!(
-            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {} 0 R /CIDToGIDMap /Identity /W [{}] >>",
-            first + 2,
-            w.trim_end()
-        ),
-        format!(
-            "<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {} 0 R >>",
-            em(b[0]),
-            em(b[1]),
-            em(b[2]),
-            em(b[3]),
-            em(info.ascent),
-            em(info.descent),
-            em(info.cap_height),
-            first + 3
-        ),
-        format!(
-            "<< /Length {} /Length1 {} /Filter /ASCII85Decode >>\nstream\n{data}\nendstream",
-            data.len() + 1,
-            font.len()
-        ),
-        format!("<< /Length {} >>\nstream\n{cmap}endstream", cmap.len()),
-    ]
-}
-
-/// One PDF page per `(prims, world bounds)` drawing, each fitted to `page`. Texts print in
-/// the embedded UI faces (each a `Type0`/`CIDFontType2` font carrying the whole face as
-/// `FontFile2`, glyph ids as 2-byte codes, a `ToUnicode` map), picked per character in the
-/// canvas's fallback order, so non-ASCII text prints as on the canvas; a character neither
-/// face has prints `.notdef`. Only faces that print are embedded (Noto Sans ~190 KB, KaTeX
-/// Main ~65 KB as ASCII85); the file is 7-bit text.
-///
-/// # Panics
-///
-/// Panics if `pages` is empty or a bound is inverted.
-pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u8> {
-    use std::fmt::Write;
-    assert!(!pages.is_empty(), "a PDF has at least one page");
-    let size = page.points();
-    let mut used = Used::default();
-    let contents: Vec<String> = pages
-        .iter()
-        .map(|(prims, b)| {
-            assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
-            page_ops(prims, *b, look, size, Lang::Pdf, &mut used)
-        })
-        .collect();
-    // 1 catalog, 2 pages, (page, content) pairs from 3, then five objects per printing face.
-    let mut next = 3 + 2 * pages.len();
-    let mut fonts: [Option<usize>; 2] = [None; 2];
-    let mut resources = String::new();
-    for (f, glyphs) in used.iter().enumerate() {
-        if !glyphs.is_empty() {
-            fonts[f] = Some(next);
-            let _ = write!(resources, "/F{} {next} 0 R ", f + 1);
-            next += 5;
-        }
-    }
-    let resources = if resources.is_empty() {
-        "<< >>".to_owned()
-    } else {
-        format!("<< /Font << {resources}>> >>")
-    };
-    let mut objs: Vec<String> = Vec::with_capacity(next);
-    let kids: Vec<String> = (0..pages.len())
-        .map(|k| format!("{} 0 R", 3 + 2 * k))
-        .collect();
-    objs.push("<< /Type /Catalog /Pages 2 0 R >>".to_owned());
-    objs.push(format!(
-        "<< /Type /Pages /Kids [{}] /Count {} >>",
-        kids.join(" "),
-        pages.len()
-    ));
-    for (k, content) in contents.iter().enumerate() {
-        objs.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources {resources} /Contents {} 0 R >>",
-            size.0,
-            size.1,
-            4 + 2 * k
-        ));
-        objs.push(format!(
-            "<< /Length {} >>\nstream\n{content}endstream",
-            content.len()
-        ));
-    }
-    for (f, first) in fonts.iter().enumerate() {
-        if let Some(first) = *first {
-            assert_eq!(objs.len() + 1, first, "font objects are numbered in order");
-            objs.extend(font_objects(first, f as u8, &used[f]));
-        }
-    }
-    let mut out = String::from("%PDF-1.4\n");
-    let mut offsets = Vec::with_capacity(objs.len());
-    for (i, body) in objs.iter().enumerate() {
-        offsets.push(out.len());
-        let _ = write!(out, "{} 0 obj\n{body}\nendobj\n", i + 1);
-    }
-    let xref = out.len();
-    let _ = write!(out, "xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1);
-    for off in &offsets {
-        let _ = writeln!(out, "{off:010} 00000 n ");
-    }
-    let _ = write!(
-        out,
-        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-        objs.len() + 1
-    );
-    assert_eq!(offsets.len(), next - 1);
-    assert!(out.is_ascii(), "the PDF is 7-bit text");
-    out.into_bytes()
-}
-
-/// Longest `sfnts` string of a Type 42 font: PostScript strings hold at most 65535 bytes,
-/// and each must have an even length.
-const SFNTS_MAX: usize = 65_534;
-
-/// UI face `face` as a PostScript Type 42 font resource named `FONT_NAMES[face]`: the
-/// TrueType file as `sfnts` hex strings broken at table boundaries, `CharStrings` naming every
-/// glyph it prints (`/g<id>`) for `glyphshow`.
-///
-/// # Panics
-///
-/// Panics if a table of the face is longer than [`SFNTS_MAX`] (not the case for the shipped
-/// faces: the largest table, Noto Sans's `glyf`, is 63.6 KB).
-fn type42(face: u8, glyphs: &Glyphs) -> String {
-    use std::fmt::Write;
-    // ponytail: breaks at table boundaries only; split `glyf` at `loca` glyph boundaries if
-    // a UI face ever grows a table over 64 KB.
-    let name = FONT_NAMES[usize::from(face)];
-    let font = schemify_ui::ui_fonts()[usize::from(face)];
-    let info = schemify_ui::ui_font_info(face);
-    let be16 = |o: usize| usize::from(u16::from_be_bytes([font[o], font[o + 1]]));
-    let be32 = |o: usize| u32::from_be_bytes([font[o], font[o + 1], font[o + 2], font[o + 3]]);
-    let tables = be16(4);
-    assert!(
-        tables > 0 && 12 + 16 * tables <= font.len(),
-        "a table directory"
-    );
-    let mut cuts: Vec<usize> = (0..tables)
-        .map(|i| be32(12 + 16 * i + 8) as usize)
-        .collect();
-    cuts.push(font.len());
-    cuts.sort_unstable();
-    cuts.dedup();
-    let mut strings: Vec<&[u8]> = Vec::new();
-    let mut from = 0usize;
-    for (k, &cut) in cuts.iter().enumerate() {
-        // Extend the current string while the next cut still fits.
-        if cuts.get(k + 1).is_some_and(|&n| n - from <= SFNTS_MAX) {
-            continue;
-        }
-        assert!(
-            cut > from && cut - from <= SFNTS_MAX,
-            "a font table over 64 KB"
-        );
-        strings.push(&font[from..cut]);
-        from = cut;
-    }
-    assert_eq!(from, font.len(), "every byte of the face is in a string");
-    let u = f64::from(info.upem);
-    let b = info.bbox;
-    let mut s = format!(
-        "%%BeginResource: font {name}\n11 dict begin\n/FontName /{name} def\n/FontType 42 def\n\
-         /FontMatrix [1 0 0 1 0 0] def\n/FontBBox [{:.4} {:.4} {:.4} {:.4}] def\n/PaintType 0 def\n\
-         /Encoding 256 array 0 1 255 {{1 index exch /.notdef put}} for def\n\
-         /CharStrings {} dict dup begin\n/.notdef 0 def\n",
-        f64::from(b[0]) / u,
-        f64::from(b[1]) / u,
-        f64::from(b[2]) / u,
-        f64::from(b[3]) / u,
-        glyphs.len() + 1
-    );
-    for g in glyphs.keys().filter(|g| **g != 0) {
-        let _ = writeln!(s, "/g{g} {g} def");
-    }
-    s.push_str("end def\n/sfnts [\n");
-    for part in &strings {
-        s.push('<');
-        for (i, byte) in part.iter().enumerate() {
-            if i > 0 && i.is_multiple_of(64) {
-                s.push('\n');
-            }
-            let _ = write!(s, "{byte:02X}");
-        }
-        // An odd-length string ends in a pad byte the interpreter drops (Type 42).
-        if !part.len().is_multiple_of(2) {
-            s.push_str("00");
-        }
-        s.push_str(">\n");
-    }
-    s.push_str("] def\nFontName currentdict end definefont pop\n%%EndResource\n");
-    s
-}
-
-/// The drawing as Encapsulated PostScript (Level 2), fitted into a `page`-sized bounding
-/// box. Texts print in the embedded UI faces as Type 42 resources (only faces that print),
-/// so non-ASCII text prints as on the canvas.
-///
-/// # Panics
-///
-/// Panics if `b` is inverted.
-pub fn eps(prims: &CanvasPrims, b: [i32; 4], look: &Look, page: Page) -> String {
-    assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
-    let size = page.points();
-    let mut used = Used::default();
-    let body = page_ops(prims, b, look, size, Lang::Ps, &mut used);
-    let fonts: String = used
-        .iter()
-        .enumerate()
-        .filter(|(_, glyphs)| !glyphs.is_empty())
-        .map(|(f, glyphs)| type42(f as u8, glyphs))
-        .collect();
-    let out = format!(
-        "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 {} {}\n%%Creator: Schemify\n%%LanguageLevel: 2\n%%EndComments\n{fonts}gsave\n{body}grestore\nshowpage\n%%EOF\n",
-        size.0 as i32, size.1 as i32
-    );
-    assert!(out.is_ascii(), "the EPS is 7-bit text");
-    out
-}
-
-/// Primitive count per SVG element kind written by [`svg`]: `(lines, rects, circles + arc
-/// paths, polylines + polygons, texts)` — the oracle of an SVG export test parses the file
-/// back with this.
-pub fn svg_counts(svg: &str) -> [usize; 5] {
-    let count = |tag: &str| svg.matches(tag).count();
-    [
-        count("<line "),
-        // The background rectangle is `<rect id=…`, primitives are `<rect x=…`.
-        count("<rect x="),
-        count("<circle ") + count("<path "),
-        count("<polyline ") + count("<polygon "),
-        count("<text "),
-    ]
+/// Arc end point at `deg_milli` (clockwise on screen, y down), rounded to milli-units.
+fn arc_point(cx: i32, cy: i32, r: i32, deg_milli: i64) -> (i64, i64) {
+    let t = (deg_milli as f64 / 1000.0).to_radians();
+    let r = f64::from(r);
+    (
+        i64::from(cx) + (r * t.cos()).round() as i64,
+        i64::from(cy) + (r * t.sin()).round() as i64,
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::eps::SFNTS_MAX;
+    use super::ops::arc_beziers;
+    use super::pdf::ascii85;
     use super::*;
+    use schemify_canvas::LineStyle;
 
     fn look() -> Look {
         Look {

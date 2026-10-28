@@ -7,6 +7,14 @@
 //! changes); looked up by name once per command request (binary search). Names are
 //! `<menu>.<action>` words; a command that takes an argument may also be named
 //! `<name>.<word>` ([`Commands::resolve_arg`]).
+//!
+//! Contents:
+//! - `pub const PLUGIN_COMMANDS_MAX`
+//! - `pub enum Target`
+//! - `pub struct Commands`, `Commands::set_plugin_rows`, `Commands::resolve`,
+//!   `Commands::resolve_arg`
+//! - `pub enum Cmd`, `pub const CORE` (both from `commands!`), `Cmd::name`, `Cmd::file_kinds`,
+//!   `Cmd::accepts`, `Cmd::takes_suffix`
 
 use schemify_format::FileKind;
 use schemify_plugin::PluginId;
@@ -14,6 +22,24 @@ use schemify_plugin::abi::Kind;
 
 /// Plugin command rows (ARCHITECTURE: commands capacity 2^12).
 pub const PLUGIN_COMMANDS_MAX: usize = 1 << 12;
+
+/// Where a command name dispatches to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// A core command.
+    Core(Cmd),
+    /// A plugin's command: delivered as `Event::Command` to its owner.
+    Plugin(PluginId),
+    /// Nobody implements it (a binding to a command not built yet).
+    Unknown,
+}
+
+/// The `commands` table: core rows plus plugin rows.
+#[derive(Clone, Debug, Default)]
+pub struct Commands {
+    name: Vec<Box<str>>,
+    owner: Vec<PluginId>,
+}
 
 macro_rules! commands {
     ($($(#[$m:meta])* $V:ident = $name:literal,)*) => {
@@ -579,24 +605,6 @@ impl Cmd {
                 | Cmd::ImportProject
         )
     }
-}
-
-/// Where a command name dispatches to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Target {
-    /// A core command.
-    Core(Cmd),
-    /// A plugin's command: delivered as `Event::Command` to its owner.
-    Plugin(PluginId),
-    /// Nobody implements it (a binding to a command not built yet).
-    Unknown,
-}
-
-/// The `commands` table: core rows plus plugin rows.
-#[derive(Clone, Debug, Default)]
-pub struct Commands {
-    name: Vec<Box<str>>,
-    owner: Vec<PluginId>,
 }
 
 impl Commands {

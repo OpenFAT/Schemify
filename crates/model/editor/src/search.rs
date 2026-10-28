@@ -9,6 +9,11 @@
 //!
 //! Data design: in, one document's rank-3 tables (≤ 2^22 rows per kind) and the query;
 //! out, object keys or ops. One linear pass per kind; nothing kept.
+//!
+//! Contents:
+//! - `pub struct Query`
+//! - `pub fn find`
+//! - `pub fn replace`
 
 use schemify_doc::{Document, Op, TableId, Target};
 use schemify_format::RecordKind;
@@ -25,6 +30,70 @@ pub struct Query {
     /// Whole-value match instead of substring.
     pub exact: bool,
 }
+
+/// One matched field: the object, how to write it back, and its current text.
+struct Hit {
+    key: ObjKey,
+    kind: RecordKind,
+    /// `None`: positional field `index`; `Some(attr)`: that attribute's first value.
+    attr: Option<String>,
+    index: u32,
+    text: String,
+}
+
+/// Keys of the objects with a matching field, sorted and distinct.
+///
+/// # Panics
+///
+/// Panics if `q.value` is empty.
+pub fn find(doc: &Document, q: &Query) -> Vec<ObjKey> {
+    let mut keys: Vec<ObjKey> = hits(doc, q).into_iter().map(|h| h.key).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+/// Ops that replace every match of `q` with `with` (one transaction). A match whose
+/// replacement equals its text writes nothing.
+///
+/// # Panics
+///
+/// Panics if `q.value` is empty.
+pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
+    let s = doc.strings();
+    let mut ops = Vec::new();
+    for h in hits(doc, q) {
+        let new = q.replaced(&h.text, with);
+        if new == h.text {
+            continue;
+        }
+        let Some(loc) = crate::edit::loc_of(doc, h.key) else {
+            continue;
+        };
+        let id = match h.key.table {
+            TableId::Instances => doc.instances().id[loc.row as usize],
+            TableId::Labels => doc.labels().id[loc.row as usize],
+            TableId::Ports => doc.ports().id[loc.row as usize],
+            _ => doc.texts().id[loc.row as usize],
+        };
+        let target = Target::new(h.kind, &id.text(s));
+        ops.push(match h.attr {
+            Some(key) => Op::SetAttr {
+                target,
+                key,
+                values: vec![new],
+            },
+            None => Op::SetField {
+                target,
+                index: h.index,
+                value: new,
+            },
+        });
+    }
+    ops
+}
+
+// ---- private ----
 
 impl Query {
     fn hit(&self, text: &str) -> bool {
@@ -47,16 +116,6 @@ impl Query {
             text.replace(self.value.as_str(), with)
         }
     }
-}
-
-/// One matched field: the object, how to write it back, and its current text.
-struct Hit {
-    key: ObjKey,
-    kind: RecordKind,
-    /// `None`: positional field `index`; `Some(attr)`: that attribute's first value.
-    attr: Option<String>,
-    index: u32,
-    text: String,
 }
 
 fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
@@ -132,58 +191,6 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
         }
     }
     out
-}
-
-/// Keys of the objects with a matching field, sorted and distinct.
-///
-/// # Panics
-///
-/// Panics if `q.value` is empty.
-pub fn find(doc: &Document, q: &Query) -> Vec<ObjKey> {
-    let mut keys: Vec<ObjKey> = hits(doc, q).into_iter().map(|h| h.key).collect();
-    keys.sort_unstable();
-    keys.dedup();
-    keys
-}
-
-/// Ops that replace every match of `q` with `with` (one transaction). A match whose
-/// replacement equals its text writes nothing.
-///
-/// # Panics
-///
-/// Panics if `q.value` is empty.
-pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
-    let s = doc.strings();
-    let mut ops = Vec::new();
-    for h in hits(doc, q) {
-        let new = q.replaced(&h.text, with);
-        if new == h.text {
-            continue;
-        }
-        let Some(loc) = crate::edit::loc_of(doc, h.key) else {
-            continue;
-        };
-        let id = match h.key.table {
-            TableId::Instances => doc.instances().id[loc.row as usize],
-            TableId::Labels => doc.labels().id[loc.row as usize],
-            TableId::Ports => doc.ports().id[loc.row as usize],
-            _ => doc.texts().id[loc.row as usize],
-        };
-        let target = Target::new(h.kind, &id.text(s));
-        ops.push(match h.attr {
-            Some(key) => Op::SetAttr {
-                target,
-                key,
-                values: vec![new],
-            },
-            None => Op::SetField {
-                target,
-                index: h.index,
-                value: new,
-            },
-        });
-    }
-    ops
 }
 
 #[cfg(test)]

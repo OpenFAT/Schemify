@@ -11,6 +11,9 @@
 //! 3. Widths: coordinates `i32` milli-units (D33); components `u32` (elab).
 //! 4. Access: every connection point and wire of the cell is scanned per crossing.
 //! 5. Lifetime: one command. 6. Parallel: no (interactive, cold).
+//!
+//! Contents:
+//! - `Editor::make_subcircuit`
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -19,17 +22,18 @@ use schemify_doc::{DocHandle, Document, EditRequest, Op, PinDir, RecordBuf, Tabl
 use schemify_elab::{CellState, Name};
 use schemify_format::{FileKind, Orient, RecordKind};
 
-use super::Editor;
-use super::parity::{PITCH, symbol_records};
-use crate::checks;
-use crate::edit::{self, Ids};
+use crate::edit::Ids;
 use crate::geometry::Pt;
-use crate::platform;
 use crate::scene::ObjKey;
 use crate::wiring::{on_interior, route};
+use crate::{checks, edit, platform};
+
+use super::Editor;
+use super::symbol::{PITCH, symbol_records};
 
 /// Net of a connection point that belongs to no net (a noconn): foreign to every crossing.
 const NO_COMP: u32 = u32::MAX;
+
 /// Rings of grid offsets (pitch [`PITCH`]) searched around the selection for a place where
 /// the new instance's pins touch nothing: `(2 · RINGS + 1)²` candidates.
 const RINGS: i32 = 8;
@@ -59,6 +63,89 @@ struct Crossing {
     /// The net (elab component) in the parent.
     net: u32,
 }
+
+/// What `make_subcircuit` writes and commits: (new file, its text, the parent's ops, port
+/// count).
+type Plan = (PathBuf, String, Vec<Op>, usize);
+
+impl Editor {
+    /// Symbol → Make schematic and symbol from selected components: the selected schematic
+    /// objects (ports excepted: they stay the parent's interface) move into a new cell
+    /// `<cell>_sub<k>.shcomp` beside this one, with a port where each cut net touched the
+    /// rest and a symbol made from those ports (inputs left, outputs and inouts right). An
+    /// instance of it replaces the selection, placed where none of its pins touches the
+    /// remaining geometry, and each pin is wired to every point where its net's outside part
+    /// touched the moved objects, by wires that touch no other net; where no such wire exists,
+    /// or the parts met by name only, a label with the net's name joins them. One undo here;
+    /// the new file is written at once.
+    pub(super) fn make_subcircuit(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle) {
+        let sel: Vec<ObjKey> = self
+            .selection()
+            .iter()
+            .copied()
+            .filter(|k| {
+                matches!(
+                    k.table,
+                    TableId::Instances
+                        | TableId::Wires
+                        | TableId::Labels
+                        | TableId::Noconns
+                        | TableId::Texts
+                        | TableId::Shapes
+                )
+            })
+            .collect();
+        if sel.is_empty() {
+            self.session
+                .say("select the components to move into a new cell");
+            return;
+        }
+        let Some(path) = self.session.path(h).map(Path::to_path_buf) else {
+            return;
+        };
+        let centre = self.selection_pivot();
+        let width = self.opts.symbol_width;
+        let made = {
+            let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
+                self.session.say("the cell is not elaborated");
+                return;
+            };
+            let n = &cell.nets;
+            let stale = cell.inst_iface.len() != doc.instances().id.len()
+                || n.wire_net.len() != doc.wires().id.len()
+                || n.label_net.len() != doc.labels().id.len()
+                || n.port_net.len() != doc.ports().id.len();
+            if stale {
+                self.session.say("the cell is not elaborated");
+                return;
+            }
+            let mut ids = Ids::new(&mut self.rng);
+            plan(doc, cell, &sel, &path, centre, width, &mut ids)
+        };
+        let (file, text, ops, ports) = match made {
+            Ok(m) => m,
+            Err(e) => {
+                self.session.say(format!("make subcircuit: {e}"));
+                return;
+            }
+        };
+        if let Err(e) = platform::write_atomic(&file, text.as_bytes()) {
+            self.session.say(e);
+            return;
+        }
+        self.session.reindex(&file);
+        self.symbols.clear();
+        self.symbols_key = None;
+        self.invalidate_cells();
+        self.commit(reqs, h, "make subcircuit", ops);
+        self.set_selection(Vec::new());
+        self.set_partial(Vec::new());
+        self.session
+            .say(format!("new cell {} with {ports} port(s)", file.display()));
+    }
+}
+
+// ---- private ----
 
 /// Splits the cell's connection geometry at the selection `sel` and returns the nets the
 /// boundary cuts (by component) and the outside side.
@@ -274,87 +361,6 @@ fn clear_route(
     }
     None
 }
-
-impl Editor {
-    /// Symbol → Make schematic and symbol from selected components: the selected schematic
-    /// objects (ports excepted: they stay the parent's interface) move into a new cell
-    /// `<cell>_sub<k>.shcomp` beside this one, with a port where each cut net touched the
-    /// rest and a symbol made from those ports (inputs left, outputs and inouts right). An
-    /// instance of it replaces the selection, placed where none of its pins touches the
-    /// remaining geometry, and each pin is wired to every point where its net's outside part
-    /// touched the moved objects, by wires that touch no other net; where no such wire exists,
-    /// or the parts met by name only, a label with the net's name joins them. One undo here;
-    /// the new file is written at once.
-    pub(super) fn make_subcircuit(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle) {
-        let sel: Vec<ObjKey> = self
-            .selection()
-            .iter()
-            .copied()
-            .filter(|k| {
-                matches!(
-                    k.table,
-                    TableId::Instances
-                        | TableId::Wires
-                        | TableId::Labels
-                        | TableId::Noconns
-                        | TableId::Texts
-                        | TableId::Shapes
-                )
-            })
-            .collect();
-        if sel.is_empty() {
-            self.session
-                .say("select the components to move into a new cell");
-            return;
-        }
-        let Some(path) = self.session.path(h).map(Path::to_path_buf) else {
-            return;
-        };
-        let centre = self.selection_pivot();
-        let width = self.opts.symbol_width;
-        let made = {
-            let (Some(cell), Some(doc)) = (self.cell.as_ref(), self.session.project.doc(h)) else {
-                self.session.say("the cell is not elaborated");
-                return;
-            };
-            let n = &cell.nets;
-            let stale = cell.inst_iface.len() != doc.instances().id.len()
-                || n.wire_net.len() != doc.wires().id.len()
-                || n.label_net.len() != doc.labels().id.len()
-                || n.port_net.len() != doc.ports().id.len();
-            if stale {
-                self.session.say("the cell is not elaborated");
-                return;
-            }
-            let mut ids = Ids::new(&mut self.rng);
-            plan(doc, cell, &sel, &path, centre, width, &mut ids)
-        };
-        let (file, text, ops, ports) = match made {
-            Ok(m) => m,
-            Err(e) => {
-                self.session.say(format!("make subcircuit: {e}"));
-                return;
-            }
-        };
-        if let Err(e) = platform::write_atomic(&file, text.as_bytes()) {
-            self.session.say(e);
-            return;
-        }
-        self.session.reindex(&file);
-        self.symbols.clear();
-        self.symbols_key = None;
-        self.invalidate_cells();
-        self.commit(reqs, h, "make subcircuit", ops);
-        self.set_selection(Vec::new());
-        self.set_partial(Vec::new());
-        self.session
-            .say(format!("new cell {} with {ports} port(s)", file.display()));
-    }
-}
-
-/// What `make_subcircuit` writes and commits: (new file, its text, the parent's ops, port
-/// count).
-type Plan = (PathBuf, String, Vec<Op>, usize);
 
 /// Plans the subcircuit of `sel` in `doc` (see [`Editor::make_subcircuit`]); nothing is
 /// written.

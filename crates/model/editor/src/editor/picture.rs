@@ -5,6 +5,20 @@
 //! Owner: the editor. Reads the shell's UI tables, the scene, decor, markers, the parity
 //! extra, marks, overlay, the docs page's plot slots and the waves dock; writes nothing. Only
 //! the two text-shaping caches are lent mutably (glyph caches, no model state).
+//!
+//! Contents:
+//! - `pub struct UiView`
+//! - `pub struct CanvasPicture`
+//! - `pub struct GraphPicture`
+//! - `pub struct DockPicture`
+//! - `pub struct Picture`
+//! - `pub struct Raster`
+//! - `Editor::picture`
+//! - `Editor::painted`
+//! - `Editor::take_raster`
+//! - `Editor::rastered`
+//! - `Editor::ime_area`
+//! - `Editor::access_tree`
 
 use std::path::PathBuf;
 
@@ -211,6 +225,25 @@ impl Editor {
     }
 }
 
+impl Editor {
+    /// Where the input method's candidate window goes (the focused text field), in logical
+    /// px: `(x, y, w, h)`.
+    pub fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
+        let s = &self.shell;
+        let r = s.ui.ime_area(&s.tables, &s.layout)?;
+        assert!(r.w >= 0.0 && r.h >= 0.0);
+        Some((r.x, r.y, r.w, r.h))
+    }
+
+    /// The accessibility tree of this frame's UI (D6: the UI is data, so is its tree).
+    pub fn access_tree(&self) -> schemify_ui::accesskit::TreeUpdate {
+        let s = &self.shell;
+        schemify_ui::access::access_tree(&s.tables, &s.layout, &s.strings, &s.ui)
+    }
+}
+
+// ---- private ----
+
 /// Each filled plot slot of the docs page (`graph` nodes `graphs` names) with a drawable
 /// rectangle, over the run's plot slots `plots`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -239,21 +272,4 @@ fn graph_pictures<'a>(
     }
     assert!(out.len() <= graphs.len());
     out
-}
-
-impl Editor {
-    /// Where the input method's candidate window goes (the focused text field), in logical
-    /// px: `(x, y, w, h)`.
-    pub fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
-        let s = &self.shell;
-        let r = s.ui.ime_area(&s.tables, &s.layout)?;
-        assert!(r.w >= 0.0 && r.h >= 0.0);
-        Some((r.x, r.y, r.w, r.h))
-    }
-
-    /// The accessibility tree of this frame's UI (D6: the UI is data, so is its tree).
-    pub fn access_tree(&self) -> schemify_ui::accesskit::TreeUpdate {
-        let s = &self.shell;
-        schemify_ui::access::access_tree(&s.tables, &s.layout, &s.strings, &s.ui)
-    }
 }

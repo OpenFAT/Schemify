@@ -10,95 +10,28 @@
 //!
 //! Tables: the partial selection is the level's `ends` (`session::Level::ends`, written only
 //! here); a vertex drag is `Tool::Vertex`. Both run as steps of `Editor::gesture`.
+//!
+//! Contents:
+//! - `Editor::partial_ends`
+//! - `Editor::set_partial`
+//! - `Editor::box_partial`
+//! - `Editor::vertex_press`
+//! - `Editor::finish_vertex`
+//! - `Editor::gesture_overlay`
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
 use schemify_format::{RecordKind, format_coord, parse_coord};
 
-use super::{Editor, HIT_PX, Tool};
 use crate::edit;
 use crate::geometry::{Pt, Xform};
 use crate::scene::{LAYER_SEL, ObjKey};
 
+use super::Editor;
+use super::tool::{HIT_PX, Tool};
+
 /// Half side of the mark on a selected wire end, milli-units (xschem's pin box).
 const END_MARK: i32 = 2_500;
-
-/// First coordinate field and the form of a record vertex editing understands: a wire's or
-/// line's two ends (`line`), a rectangle (`rect`), a polygon (`poly`).
-fn form_of(rec: &RecordBuf) -> Option<(&str, usize)> {
-    match rec.kind {
-        RecordKind::Wire => Some(("line", 1)),
-        RecordKind::Line => Some(("line", 0)),
-        RecordKind::Rect => Some(("rect", 0)),
-        RecordKind::Poly => Some(("poly", 0)),
-        RecordKind::Shape => match rec.fields.get(1).map(String::as_str) {
-            Some(f @ ("line" | "rect" | "poly")) => Some((f, 2)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The vertices vertex editing moves, in field order: a wire's or line's two ends, a
-/// rectangle's four corners (`(x1, y1)`, `(x2, y1)`, `(x2, y2)`, `(x1, y2)`), a polygon's
-/// points. Empty for other kinds (arcs and circles have none) and for unparsable fields.
-fn vertices(rec: &RecordBuf) -> Vec<Pt> {
-    let Some((form, first)) = form_of(rec) else {
-        return Vec::new();
-    };
-    let nums: Option<Vec<i32>> = rec
-        .fields
-        .get(first..)
-        .unwrap_or(&[])
-        .iter()
-        .map(|t| parse_coord(t).ok())
-        .collect();
-    let Some(n) = nums.filter(|n| n.len() >= 4 && n.len().is_multiple_of(2)) else {
-        return Vec::new();
-    };
-    match form {
-        "rect" => vec![(n[0], n[1]), (n[2], n[1]), (n[2], n[3]), (n[0], n[3])],
-        "line" => vec![(n[0], n[1]), (n[2], n[3])],
-        _ => n.chunks_exact(2).map(|c| (c[0], c[1])).collect(),
-    }
-}
-
-/// `rec` with vertex `i` (see [`vertices`]) moved to `p`: a rectangle corner moves its two
-/// edges; the shared first and last point of a closed polygon move together. `None` when `i`
-/// is not a vertex or the result has no extent (a wire or line of zero length, a rectangle
-/// without area, two equal neighbouring polygon points).
-fn with_vertex(rec: &RecordBuf, i: usize, p: Pt) -> Option<RecordBuf> {
-    let (form, first) = form_of(rec)?;
-    let mut v = vertices(rec);
-    if i >= v.len() {
-        return None;
-    }
-    let mut out = rec.clone();
-    let mut set = |k: usize, val: i32| {
-        let slot = &mut out.fields[first + k];
-        slot.clear();
-        format_coord(val, slot);
-    };
-    if form == "rect" {
-        // Corner i owns x1 (corners 0, 3) or x2 (1, 2), and y1 (0, 1) or y2 (2, 3).
-        set(if i == 0 || i == 3 { 0 } else { 2 }, p.0);
-        set(if i <= 1 { 1 } else { 3 }, p.1);
-        let q = vertices(&out);
-        return (q[0].0 != q[2].0 && q[0].1 != q[2].1).then_some(out);
-    }
-    let last = v.len() - 1;
-    let closed_loop = form == "poly" && last >= 3 && v[0] == v[last];
-    for k in [
-        i,
-        if closed_loop && i == 0 { last } else { i },
-        if closed_loop && i == last { 0 } else { i },
-    ] {
-        set(2 * k, p.0);
-        set(2 * k + 1, p.1);
-        v[k] = p;
-    }
-    (!v.windows(2).any(|w| w[0] == w[1])).then_some(out)
-}
 
 impl Editor {
     /// The active level's partially selected wire ends (empty without a level).
@@ -281,6 +214,85 @@ impl Editor {
             }
         }
     }
+}
+
+// ---- private ----
+
+/// First coordinate field and the form of a record vertex editing understands: a wire's or
+/// line's two ends (`line`), a rectangle (`rect`), a polygon (`poly`).
+fn form_of(rec: &RecordBuf) -> Option<(&str, usize)> {
+    match rec.kind {
+        RecordKind::Wire => Some(("line", 1)),
+        RecordKind::Line => Some(("line", 0)),
+        RecordKind::Rect => Some(("rect", 0)),
+        RecordKind::Poly => Some(("poly", 0)),
+        RecordKind::Shape => match rec.fields.get(1).map(String::as_str) {
+            Some(f @ ("line" | "rect" | "poly")) => Some((f, 2)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The vertices vertex editing moves, in field order: a wire's or line's two ends, a
+/// rectangle's four corners (`(x1, y1)`, `(x2, y1)`, `(x2, y2)`, `(x1, y2)`), a polygon's
+/// points. Empty for other kinds (arcs and circles have none) and for unparsable fields.
+fn vertices(rec: &RecordBuf) -> Vec<Pt> {
+    let Some((form, first)) = form_of(rec) else {
+        return Vec::new();
+    };
+    let nums: Option<Vec<i32>> = rec
+        .fields
+        .get(first..)
+        .unwrap_or(&[])
+        .iter()
+        .map(|t| parse_coord(t).ok())
+        .collect();
+    let Some(n) = nums.filter(|n| n.len() >= 4 && n.len().is_multiple_of(2)) else {
+        return Vec::new();
+    };
+    match form {
+        "rect" => vec![(n[0], n[1]), (n[2], n[1]), (n[2], n[3]), (n[0], n[3])],
+        "line" => vec![(n[0], n[1]), (n[2], n[3])],
+        _ => n.chunks_exact(2).map(|c| (c[0], c[1])).collect(),
+    }
+}
+
+/// `rec` with vertex `i` (see [`vertices`]) moved to `p`: a rectangle corner moves its two
+/// edges; the shared first and last point of a closed polygon move together. `None` when `i`
+/// is not a vertex or the result has no extent (a wire or line of zero length, a rectangle
+/// without area, two equal neighbouring polygon points).
+fn with_vertex(rec: &RecordBuf, i: usize, p: Pt) -> Option<RecordBuf> {
+    let (form, first) = form_of(rec)?;
+    let mut v = vertices(rec);
+    if i >= v.len() {
+        return None;
+    }
+    let mut out = rec.clone();
+    let mut set = |k: usize, val: i32| {
+        let slot = &mut out.fields[first + k];
+        slot.clear();
+        format_coord(val, slot);
+    };
+    if form == "rect" {
+        // Corner i owns x1 (corners 0, 3) or x2 (1, 2), and y1 (0, 1) or y2 (2, 3).
+        set(if i == 0 || i == 3 { 0 } else { 2 }, p.0);
+        set(if i <= 1 { 1 } else { 3 }, p.1);
+        let q = vertices(&out);
+        return (q[0].0 != q[2].0 && q[0].1 != q[2].1).then_some(out);
+    }
+    let last = v.len() - 1;
+    let closed_loop = form == "poly" && last >= 3 && v[0] == v[last];
+    for k in [
+        i,
+        if closed_loop && i == 0 { last } else { i },
+        if closed_loop && i == last { 0 } else { i },
+    ] {
+        set(2 * k, p.0);
+        set(2 * k + 1, p.1);
+        v[k] = p;
+    }
+    (!v.windows(2).any(|w| w[0] == w[1])).then_some(out)
 }
 
 #[cfg(test)]
