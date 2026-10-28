@@ -137,23 +137,21 @@ impl Pump {
                 }
                 Msg::Call(conn, req) => (conn, req),
             };
-            let answer = match dispatch(ed, &req.method, &req.params) {
-                Dispatched::Queued(ticket) => Answer::Ticket(ticket),
-                Dispatched::Ready(Ok(v)) => {
-                    let Some(id) = &req.id else { continue };
-                    Answer::Line(rpc::result(id, &v))
-                }
-                Dispatched::Ready(Err((code, msg))) => {
-                    let Some(id) = &req.id else { continue };
+            let answer = match (dispatch(ed, &req.method, &req.params), &req.id) {
+                (Dispatched::Queued(ticket), Some(_)) => Answer::Ticket(ticket),
+                (Dispatched::Ready(Ok(v)), Some(id)) => Answer::Line(rpc::result(id, &v)),
+                (Dispatched::Ready(Err((code, msg))), Some(id)) => {
                     Answer::Line(rpc::error(id, code, &msg))
                 }
+                // A notification: nothing to answer, but a queued command still runs.
+                (Dispatched::Queued(ticket), None) => {
+                    self.unanswered.push(ticket);
+                    continue;
+                }
+                (Dispatched::Ready(_), None) => continue,
             };
-            match (req.id, answer) {
-                (Some(id), answer) => self.due.push(Due { conn, id, answer }),
-                // A notification: nothing to answer, but its command still runs.
-                (None, Answer::Ticket(ticket)) => self.unanswered.push(ticket),
-                (None, Answer::Line(_)) => unreachable!("a notification's result is dropped"),
-            }
+            let id = req.id.expect("a notification has no answer");
+            self.due.push(Due { conn, id, answer });
         }
         assert!(self.held() <= QUEUED_MAX);
     }
