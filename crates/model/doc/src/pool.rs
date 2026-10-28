@@ -126,6 +126,10 @@ impl Span {
     /// Returns the entries as an index range.
     #[must_use]
     pub fn range(self) -> Range<usize> {
+        debug_assert!(
+            self.start.checked_add(self.len).is_some(),
+            "a span ends inside the u32 pool"
+        );
         self.start as usize..(self.start + self.len) as usize
     }
 }
@@ -144,8 +148,16 @@ impl Pool {
 
     /// Returns the values of the first attribute line of `span` whose key is `key`.
     /// `strings` is the arena of the same document.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `span` is not a span of this pool.
     #[must_use]
     pub fn find_attr<'p>(&'p self, strings: &Strings, span: Span, key: &str) -> Option<&'p [Sym]> {
+        assert!(
+            span.range().end <= self.attr_key.len(),
+            "span of another pool"
+        );
         let key = strings.find(key)?;
         self.attrs(span).find(|(k, _)| *k == key).map(|(_, v)| v)
     }
@@ -199,6 +211,10 @@ impl Pool {
     /// Counts the entries a removed row leaves behind: its attribute lines with their
     /// values, plus `others` (comments, verbatim lines, coordinates).
     pub(crate) fn orphan(&mut self, attrs: Span, others: u32) {
+        assert!(
+            attrs.range().end <= self.attr_key.len(),
+            "span of another pool"
+        );
         let vals: u32 = attrs.range().map(|a| self.attr_vals[a].len).sum();
         self.dead = self.dead.saturating_add(attrs.len + vals + others);
         assert!(
@@ -294,6 +310,16 @@ impl<'src> Scratch<'src> {
     }
 
     pub(crate) fn view(&self, kind: RecordKind) -> RecView<'_> {
+        assert_eq!(
+            self.fields.len(),
+            self.field_milli.len(),
+            "field columns in step"
+        );
+        assert_eq!(
+            self.vals.len(),
+            self.val_milli.len(),
+            "value columns in step"
+        );
         RecView {
             kind,
             fields: &self.fields,
@@ -388,6 +414,10 @@ impl Sink for RecordBuf {
 
 /// Writes the attribute lines of `span` to `sink`.
 pub(crate) fn emit_attrs<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S) {
+    assert!(
+        span.range().end <= pool.attr_key.len(),
+        "span of another pool"
+    );
     for (key, vals) in pool.attrs(span) {
         sink.attr(strings.get(key));
         for v in vals {
@@ -398,6 +428,7 @@ pub(crate) fn emit_attrs<S: Sink>(span: Span, strings: &Strings, pool: &Pool, si
 
 /// Writes the lines of `span` to `sink` as comments.
 pub(crate) fn emit_comments<S: Sink>(span: Span, strings: &Strings, pool: &Pool, sink: &mut S) {
+    assert!(span.range().end <= pool.lines.len(), "span of another pool");
     for &l in &pool.lines[span.range()] {
         sink.comment(strings.get(l));
     }
@@ -423,5 +454,7 @@ impl Scratch<'_> {
         self.val_milli.clear();
         self.verbatim.clear();
         self.comments.clear();
+        assert!(self.fields.is_empty());
+        assert!(self.vals.is_empty());
     }
 }

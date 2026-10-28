@@ -542,6 +542,7 @@ fn commit(open: &mut Open, label: &str, unix_ms: u64, forward: Vec<Op>, inverse:
 }
 
 fn push_undo(open: &mut Open, entry: Entry) {
+    let seq = entry.seq;
     open.undo.push_back(entry);
     if open.undo.len() > UNDO_MAX {
         open.undo.pop_front();
@@ -551,4 +552,8 @@ fn push_undo(open: &mut Open, entry: Entry) {
         };
     }
     assert!(open.undo.len() <= UNDO_MAX);
+    assert!(
+        open.undo.back().is_some_and(|e| e.seq == seq),
+        "the pushed entry is on top"
+    );
 }

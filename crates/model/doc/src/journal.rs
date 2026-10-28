@@ -318,6 +318,10 @@ fn record_start_before(body: &str, line: u32) -> usize {
         offset += l.len();
     }
     assert!(start <= body.len());
+    assert!(
+        start == 0 || body.as_bytes()[start - 1] == b'\n',
+        "a record starts at a line start"
+    );
     start
 }
 

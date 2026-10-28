@@ -115,6 +115,7 @@ impl Document {
         let id = with_table!(self, t, |tab| tab.id_at(loc.row as usize, &self.strings));
         self.log.push(t, Write::Content, loc.row, id);
         assert_eq!(self.kind_at(loc), rec.kind);
+        assert_eq!(self.table_len(t), len + 1, "one row added");
         Ok(loc)
     }
 
@@ -151,8 +152,11 @@ impl Document {
             return Err(Code::E043);
         }
         self.check_key_free(rec, Some(loc))?;
+        let len = self.table_len(loc.table);
+        assert!((loc.row as usize) < len, "stale row");
         self.replace_row(loc, rec);
         assert_eq!(self.kind_at(loc), rec.kind);
+        assert_eq!(self.table_len(loc.table), len, "a put keeps the row count");
         Ok(loc)
     }
 
@@ -232,6 +236,7 @@ impl Document {
 
     /// Returns the record kind at `loc`.
     pub(crate) fn kind_at(&self, loc: Loc) -> RecordKind {
+        assert!((loc.row as usize) < self.table_len(loc.table), "stale row");
         with_table!(self, loc.table, |tab| tab.kind_at(loc.row as usize))
     }
 
@@ -357,6 +362,7 @@ impl Document {
     /// Returns the row's id.
     fn unindex(&mut self, loc: Loc) -> ObjId {
         let row = loc.row as usize;
+        assert!(row < self.table_len(loc.table), "stale row");
         let id = with_table!(self, loc.table, |tab| tab.id_at(row, &self.strings));
         if id != ObjId::NONE && self.by_id.get(&id) == Some(&loc) {
             self.by_id.remove(&id);

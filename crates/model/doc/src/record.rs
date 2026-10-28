@@ -161,6 +161,10 @@ pub(crate) fn check_record(rec: &RecordBuf, file: FileKind) -> Result<(), Record
         }
         check_shape(&schema.fields, &rec.fields)?;
     }
+    assert!(
+        schema.attrs.len() <= 32,
+        "`seen` has one bit per schema attribute"
+    );
     let mut seen: u32 = 0;
     for (i, a) in rec.attrs.iter().enumerate() {
         if !schemify_format::is_word(&a.key) {

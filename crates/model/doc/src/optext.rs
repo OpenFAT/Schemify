@@ -219,6 +219,11 @@ pub(crate) fn number<T: FromStr>(text: &str) -> Option<T> {
 // ---- private ----
 
 fn push_payload(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
+    let records = d.record_count();
+    assert!(
+        records > 1,
+        "a payload extends an op record after the header"
+    );
     for c in &rec.comments {
         d.push_comment(c);
     }
@@ -234,6 +239,7 @@ fn push_payload(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
     for v in &rec.verbatim {
         d.push_verbatim(v);
     }
+    assert_eq!(d.record_count(), records, "the payload starts no record");
 }
 
 fn push_target(d: &mut FormatDoc<'static>, t: &Target) {

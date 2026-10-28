@@ -200,11 +200,13 @@ impl Libs {
     ///
     /// # Panics
     ///
-    /// Only on a bug in this crate: a found row is a row.
+    /// Only on a bug in this crate: a project holds at most 2^8 libraries, so a row fits
+    /// the `u8` cell columns.
     #[must_use]
     pub fn find(&self, name: &str) -> Option<usize> {
+        assert!(self.name.len() <= LIBS_MAX, "libraries are bounded");
         let row = self.name.iter().position(|n| n == name);
-        assert!(row.is_none_or(|r| r < self.name.len()));
+        assert!(row.is_none_or(|r| r <= usize::from(u8::MAX)));
         row
     }
 }
@@ -242,6 +244,7 @@ impl Locked {
         self.resolved[row] = resolved.to_owned();
         self.hash[row] = hash.to_owned();
         assert_eq!(self.find(ty, name), Some(row));
+        assert_eq!(self.ty.len(), self.resolved.len(), "lock columns in step");
     }
 
     /// Writes the lockfile in canonical form.
@@ -251,6 +254,7 @@ impl Locked {
     /// Only on a bug in this crate: the format writer starts a lockfile with its header.
     #[must_use]
     pub fn write(&self) -> String {
+        assert_eq!(self.ty.len(), self.kind.len(), "lock columns in step");
         let mut d = FormatDoc::new(FileKind::Lock);
         for i in 0..self.ty.len() {
             d.begin_record(RecordKind::Locked);

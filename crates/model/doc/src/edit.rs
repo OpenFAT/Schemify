@@ -384,7 +384,9 @@ fn modify(doc: &mut Document, loc: Loc, prior: RecordBuf, rec: RecordBuf) -> Res
 /// Reads the target (the header has no `Loc`).
 fn read(doc: &Document, t: &Target) -> Result<(Option<Loc>, RecordBuf), Code> {
     if t.kind == RecordKind::Header {
-        return Ok((None, doc.header_record()));
+        let header = doc.header_record();
+        assert!(header.fields.is_empty(), "the header has no fields");
+        return Ok((None, header));
     }
     let loc = locate(doc, t)?;
     let rec = doc.record(loc);
@@ -431,6 +433,8 @@ fn assign_id(doc: &Document, rec: &mut RecordBuf, rng: &mut IdRng) {
     });
     rec.fields[0] = id.as_str().to_owned();
     assert_ne!(rec.fields[0], NEW_ID);
+    let taken = ObjId::find(&rec.fields[0], doc.strings()).and_then(|i| doc.find_id(i));
+    assert!(taken.is_none(), "a fresh id names no record yet");
 }
 
 /// Instance parameter semantics on a validated record: `E030` for an override of a

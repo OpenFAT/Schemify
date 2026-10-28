@@ -269,11 +269,14 @@ macro_rules! row_ops {
         }
         fn move_row(&mut self, from: usize, to: usize) {
             let len = self.len();
+            assert!(from < len, "stale source row");
+            assert!(to < len, "stale destination row");
             $( move_elem(&mut self.$col, from, to); )+
             assert!(self.columns_ok());
             assert_eq!(self.len(), len, "a move keeps every row");
         }
         fn owned(&self, row: usize) -> Owned {
+            assert!(row < self.len(), "stale row");
             Owned {
                 attrs: self.attrs[row],
                 others: self.comments[row].len $($( + self.$span[row].len )+)?,
@@ -310,6 +313,7 @@ impl Table for Pins {
         assert!(self.columns_ok());
     }
     fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
+        assert!(row < self.len(), "stale row");
         sink.begin(RecordKind::Pin);
         sink.field(strings.get(self.name[row]));
         sink.field(self.dir[row].as_str());
@@ -354,9 +358,22 @@ impl Table for Graphics {
         self.attrs.push(pool.push_attrs(rec, &[], strings));
         self.comments.push(pool.push_lines(rec.comments, strings));
         assert!(self.columns_ok());
+        assert_eq!(text == Sym::NONE, rec.kind != RecordKind::Stext);
     }
     fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
         let kind = self.shape[row];
+        let coords = self.coords[row].len;
+        match kind {
+            RecordKind::Arc => assert_eq!(coords, 3, "an arc stores cx cy r"),
+            RecordKind::Stext => assert_eq!(coords, 2, "an stext stores x y"),
+            RecordKind::Poly => assert!(coords.is_multiple_of(2), "a poly stores x y pairs"),
+            _ => {}
+        }
+        assert_eq!(
+            self.angles[row][0] == Sym::NONE,
+            kind != RecordKind::Arc,
+            "only arcs have angles"
+        );
         sink.begin(kind);
         for &c in &pool.coords[self.coords[row].range()] {
             sink.coord(c);
@@ -409,6 +426,8 @@ impl Table for Instances {
         assert!(self.columns_ok());
     }
     fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
+        assert!(row < self.len(), "stale row");
+        assert!(self.id[row] != ObjId::NONE, "every instance has an id");
         sink.begin(RecordKind::Inst);
         sink.id(self.id[row], strings);
         sink.field(strings.get(self.cell[row]));
@@ -449,8 +468,14 @@ impl Table for Wires {
         self.attrs.push(pool.push_attrs(rec, &[], strings));
         self.comments.push(pool.push_lines(rec.comments, strings));
         assert!(self.columns_ok());
+        assert!(a <= b, "endpoints are normalized (spec §4)");
     }
     fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
+        assert!(
+            (self.x1[row], self.y1[row]) <= (self.x2[row], self.y2[row]),
+            "endpoints are normalized (spec §4)"
+        );
+        assert!(self.id[row] != ObjId::NONE, "every wire has an id");
         sink.begin(RecordKind::Wire);
         sink.id(self.id[row], strings);
         for c in [self.x1[row], self.y1[row], self.x2[row], self.y2[row]] {
@@ -470,7 +495,7 @@ impl Placed {
             kind,
             RecordKind::Label | RecordKind::Port | RecordKind::Text
         ));
-        Placed {
+        let placed = Placed {
             kind,
             id: Vec::new(),
             x: Vec::new(),
@@ -479,7 +504,9 @@ impl Placed {
             text: Vec::new(),
             attrs: Vec::new(),
             comments: Vec::new(),
-        }
+        };
+        assert!(placed.columns_ok());
+        placed
     }
 }
 
@@ -501,6 +528,8 @@ impl Table for Placed {
         assert!(self.columns_ok());
     }
     fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
+        assert!(row < self.len(), "stale row");
+        assert!(self.id[row] != ObjId::NONE, "every placed record has an id");
         sink.begin(self.kind);
         sink.id(self.id[row], strings);
         sink.coord(self.x[row]);
@@ -530,6 +559,8 @@ impl Table for Noconns {
         assert!(self.columns_ok());
     }
     fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
+        assert!(row < self.len(), "stale row");
+        assert!(self.id[row] != ObjId::NONE, "every noconn has an id");
         sink.begin(RecordKind::Noconn);
         sink.id(self.id[row], strings);
         sink.coord(self.x[row]);
@@ -560,6 +591,11 @@ impl Table for Shapes {
         assert!(self.columns_ok());
     }
     fn emit<S: Sink>(&self, row: usize, strings: &Strings, pool: &Pool, sink: &mut S) {
+        assert!(
+            self.coords[row].len >= 3,
+            "a shape has values after its form"
+        );
+        assert!(self.id[row] != ObjId::NONE, "every shape has an id");
         sink.begin(RecordKind::Shape);
         sink.id(self.id[row], strings);
         sink.field(self.form[row].word());
@@ -599,6 +635,11 @@ impl Table for Records {
         let kind = self.kind[row];
         sink.begin(kind);
         let arity = kind.schema().fields.fixed.len();
+        assert!(arity <= 3, "text-only kinds have at most 3 fields");
+        debug_assert!(
+            self.fields[row][arity..].iter().all(|&f| f == Sym::NONE),
+            "slots past the arity are unused"
+        );
         for &f in &self.fields[row][..arity] {
             sink.field(strings.get(f));
         }
@@ -612,6 +653,10 @@ impl Table for Records {
         if self.kind[row].key() != KeyRule::Id {
             return ObjId::NONE;
         }
+        assert!(
+            self.fields[row][0] != Sym::NONE,
+            "an id-keyed row has its id field"
+        );
         let id = ObjId::find(strings.get(self.fields[row][0]), strings);
         id.expect("an id field was interned when the row was pushed")
     }

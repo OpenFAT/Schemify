@@ -236,7 +236,7 @@ fn commit_frames_leave_document_work_to_idle_steps_100k() {
     //    between them.
     let (mut worst, mut commits, mut compact) = (Duration::ZERO, 0, Duration::ZERO);
     while compact.is_zero() {
-        let ops = ids.iter().take(1000).map(|id| set(id, commits)).collect();
+        let ops: Vec<Op> = ids.iter().take(1000).map(|id| set(id, commits)).collect();
         worst = worst.max(commit(&mut p, ops));
         commits += 1;
         while p.idle_pending(Some(h)) {

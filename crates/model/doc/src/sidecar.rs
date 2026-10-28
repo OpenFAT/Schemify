@@ -363,7 +363,9 @@ fn prelude_len(open: &Open) -> usize {
         entries, last_seq, ..
     } = open.journal.prelude;
     let valid = entries > 0 && entries <= open.undo.len() && open.undo[entries - 1].seq == last_seq;
-    if valid { entries } else { 0 }
+    let len = if valid { entries } else { 0 };
+    assert!(len <= open.undo.len(), "the prelude describes undo entries");
+    len
 }
 
 /// Encodes about `budget` bytes more of the journal prelude: `hist` records of the undo

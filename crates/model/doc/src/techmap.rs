@@ -313,6 +313,11 @@ pub(crate) fn derive(
 
 /// Appends `rec` to `d` (comments dropped: a derived cell is never written to disk).
 fn push(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
+    assert!(
+        rec.kind != RecordKind::Unknown,
+        "a derived cell has known records"
+    );
+    let before = d.record_count();
     d.begin_record(rec.kind);
     for f in &rec.fields {
         d.push_field(f);
@@ -326,6 +331,7 @@ fn push(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
     for v in &rec.verbatim {
         d.push_verbatim(v);
     }
+    assert_eq!(d.record_count(), before + 1, "one record per push");
 }
 
 #[cfg(test)]

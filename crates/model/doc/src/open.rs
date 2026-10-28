@@ -279,18 +279,32 @@ impl Project {
     }
 
     /// Returns (undo depth, redo depth).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: each stack holds at most 2^16 entries.
     #[must_use]
     pub fn history_len(&self, h: DocHandle) -> (usize, usize) {
-        self.open_ref(h)
-            .map_or((0, 0), |o| (o.undo.len(), o.redo.len()))
+        let (undo, redo) = self
+            .open_ref(h)
+            .map_or((0, 0), |o| (o.undo.len(), o.redo.len()));
+        assert!(undo <= UNDO_MAX, "the undo stack is bounded");
+        assert!(redo <= UNDO_MAX, "the redo stack is bounded");
+        (undo, redo)
     }
 
     /// Returns the labels of the undo stack, oldest first (for undo menus).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: each stack holds at most 2^16 entries.
     #[must_use]
     pub fn undo_labels(&self, h: DocHandle) -> Vec<&str> {
-        self.open_ref(h).map_or(Vec::new(), |o| {
+        let labels: Vec<&str> = self.open_ref(h).map_or(Vec::new(), |o| {
             o.undo.iter().map(|e| e.label.as_str()).collect()
-        })
+        });
+        assert!(labels.len() <= UNDO_MAX, "the undo stack is bounded");
+        labels
     }
 
     /// Instance parameter overrides equal (as text) to the cell's default (D40): kept
@@ -383,6 +397,11 @@ impl Project {
 
 /// Returns whether the document differs from its last loaded/saved bytes.
 pub(crate) fn dirty(open: &Open) -> bool {
+    assert!(
+        open.saved_depth
+            .is_none_or(|d| d <= open.undo.len() + open.redo.len()),
+        "a reachable saved state lies on the undo/redo path"
+    );
     open.fixups || open.saved_depth != Some(open.undo.len())
 }
 
@@ -465,6 +484,7 @@ impl Project {
     }
 
     fn alloc(&mut self, open: Open) -> Result<DocHandle, Code> {
+        assert!(self.slots.len() <= DOCS_MAX);
         let index = match self.slots.iter().position(|s| s.open.is_none()) {
             Some(i) => i,
             None if self.slots.len() < DOCS_MAX => {
@@ -479,10 +499,12 @@ impl Project {
             generation: self.slots[index].generation,
         };
         assert!(self.open_ref(h).is_some());
+        assert!(index < DOCS_MAX, "slots are bounded");
         Ok(h)
     }
 
     fn slot_mut(&mut self, h: DocHandle) -> Option<&mut Slot> {
+        assert!(self.slots.len() <= DOCS_MAX);
         self.slots
             .get_mut(h.index as usize)
             .filter(|s| s.generation == h.generation && s.open.is_some())
