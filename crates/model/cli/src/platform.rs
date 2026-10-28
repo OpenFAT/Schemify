@@ -65,7 +65,7 @@ pub const CLIPBOARD_BYTES_MAX: usize = 64 << 20;
 #[derive(Debug)]
 pub struct Spawned {
     #[cfg(not(target_arch = "wasm32"))]
-    rx: Receiver<(i32, Vec<u8>)>,
+    receiver: Receiver<(i32, Vec<u8>)>,
     #[cfg(not(target_arch = "wasm32"))]
     taken: bool,
     #[cfg(target_arch = "wasm32")]
@@ -105,13 +105,16 @@ pub fn spawn_start(cwd: &Path, argv: Vec<String>, stdin: Vec<u8>) -> Spawned {
     assert!(!argv[0].is_empty(), "spawn needs a binary name");
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let (tx, rx) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let cwd = cwd.to_path_buf();
         // A failed send means the editor dropped the request (it shut down): nothing to do.
         thread::spawn(move || {
-            let _ = tx.send(imp::spawn(&cwd, &argv, &stdin));
+            let _ = sender.send(imp::spawn(&cwd, &argv, &stdin));
         });
-        Spawned { rx, taken: false }
+        Spawned {
+            receiver,
+            taken: false,
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -134,7 +137,7 @@ impl Spawned {
             if self.taken {
                 return None;
             }
-            let r = match self.rx.try_recv() {
+            let r = match self.receiver.try_recv() {
                 Ok(r) => r,
                 Err(TryRecvError::Empty) => return None,
                 // The worker died without sending (only on OOM): a failure, reported once.

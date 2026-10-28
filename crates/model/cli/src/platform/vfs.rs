@@ -57,7 +57,7 @@ pub(crate) struct Vfs {
     /// path changed again moves to the back in O(log n).
     stale: BTreeMap<u64, String>,
     stale_at: BTreeMap<String, u64>,
-    seq: u64,
+    sequence: u64,
 }
 
 /// Where an imported project goes, from [`Vfs::import_plan`].
@@ -111,7 +111,7 @@ impl Vfs {
             bytes: 0,
             stale: BTreeMap::new(),
             stale_at: BTreeMap::new(),
-            seq: 0,
+            sequence: 0,
         }
     }
 
@@ -461,7 +461,7 @@ impl Vfs {
     }
 
     fn mark(&mut self, key: &str) {
-        if let Some(old) = self.stale_at.insert(key.to_owned(), self.seq) {
+        if let Some(old) = self.stale_at.insert(key.to_owned(), self.sequence) {
             let gone = self.stale.remove(&old);
             assert_eq!(
                 gone.as_deref(),
@@ -469,9 +469,9 @@ impl Vfs {
                 "the reverse index points elsewhere"
             );
         }
-        let fresh = self.stale.insert(self.seq, key.to_owned());
-        assert!(fresh.is_none(), "sequence number {} reused", self.seq);
-        self.seq += 1;
+        let fresh = self.stale.insert(self.sequence, key.to_owned());
+        assert!(fresh.is_none(), "sequence number {} reused", self.sequence);
+        self.sequence += 1;
         assert_eq!(self.stale.len(), self.stale_at.len());
     }
 }

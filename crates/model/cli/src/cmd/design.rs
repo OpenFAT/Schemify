@@ -22,7 +22,7 @@ struct DesignArgs {
     configs: Vec<String>,
     corners: Vec<String>,
     sweeps: Vec<String>,
-    mc: Option<String>,
+    montecarlo: Option<String>,
     sets: Vec<(String, String)>,
     out: Option<String>,
     allow_errors: bool,
@@ -111,7 +111,7 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
         configs: &configs,
         corners: &corners,
         sweeps: &sweeps,
-        montecarlo: a.mc.as_deref(),
+        montecarlo: a.montecarlo.as_deref(),
         overrides: &sets,
     };
     let cell = Path::new(&a.cell);
@@ -133,13 +133,13 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
         dialect,
         &mut elab::no_funcs,
         |digest| {
-            let mut cfg = RunnerConfig::new(&root, digest);
-            cfg.lib_dirs = lib_dirs;
-            cfg.tools = spines::tools(config.table());
+            let mut runner_config = RunnerConfig::new(&root, digest);
+            runner_config.lib_dirs = lib_dirs;
+            runner_config.tools = spines::tools(config.table());
             if let Some(n) = a.jobs {
-                cfg.workers = n;
+                runner_config.workers = n;
             }
-            cfg
+            runner_config
         },
     );
     let mut r = started.map_err(|e| {
@@ -199,7 +199,7 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
             "--config" => a.configs.push(it.next()?.clone()),
             "--corner" => a.corners.push(it.next()?.clone()),
             "--sweep" => a.sweeps.push(it.next()?.clone()),
-            "--mc" => a.mc = Some(it.next()?.clone()),
+            "--mc" => a.montecarlo = Some(it.next()?.clone()),
             "--set" => {
                 let (k, v) = it.next()?.split_once('=')?;
                 a.sets.push((k.to_owned(), v.to_owned()));
@@ -240,10 +240,12 @@ fn open_design(file: &str) -> Result<Opened, u8> {
 /// Elaborates `o.top`, opening every cell elab asks for (`spines::elaborate_all`).
 fn elaborate_all(o: &mut Opened, req: &Request<'_>) -> Result<Elab, u8> {
     let top = o.top;
-    spines::elaborate_all(o, top, req, &mut elab::no_funcs).map_err(|e| {
+    let e = spines::elaborate_all(o, top, req, &mut elab::no_funcs).map_err(|e| {
         eprintln!("{e}");
         DESIGN_ERROR
-    })
+    })?;
+    assert!(e.needs_open.is_empty(), "elaborate_all opened every cell");
+    Ok(e)
 }
 
 /// Prints violations (`E`/`W`/`I code cell path param: detail`); returns whether any is an

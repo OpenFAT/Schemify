@@ -57,8 +57,8 @@ pub struct Run {
 /// The run spine up to submission (run spec §1–§4): opens every cell each selected config
 /// reaches, reads the plan, expands `select` (`None`: no jobs, for an optimizer or plugin
 /// requests that push their own), gates and hashes the design for `dialect`, and creates the
-/// results and the runner (`cfg` builds its configuration from the digest; an espice run
-/// starts `Tools::espice`). Jobs are not prepared yet.
+/// results and the runner (`runner_config` builds its configuration from the digest; an
+/// espice run starts `Tools::espice`). Jobs are not prepared yet.
 ///
 /// Cost: one [`elaborate_all`] per selected config (at least one), then the gate's.
 ///
@@ -77,7 +77,7 @@ pub fn start_run<C: Cells, F: Funcs>(
     env: &[(&str, &str)],
     dialect: Dialect,
     funcs: &mut F,
-    cfg: impl FnOnce(&Digest) -> RunnerConfig,
+    runner_config: impl FnOnce(&Digest) -> RunnerConfig,
 ) -> Result<Run, String> {
     assert!(SIMULATORS.contains(&dialect));
     // Open every cell each selected config reaches (configs select different impls, so
@@ -110,7 +110,7 @@ pub fn start_run<C: Cells, F: Funcs>(
             Blocked::Violations(v) => format!("run blocked: {}", v.join("; ")),
         })?;
     let results = Results::new(&plan, digest);
-    let mut config = cfg(&digest);
+    let mut config = runner_config(&digest);
     config.dialect = dialect;
     let run = Run {
         plan,

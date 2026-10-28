@@ -66,11 +66,11 @@ pub fn parse(text: &str) -> Result<Json, JsonError> {
         bytes: text.as_bytes(),
         at: 0,
     };
-    p.ws();
+    p.whitespace();
     let v = p.value(0)?;
-    p.ws();
+    p.whitespace();
     if p.at != p.bytes.len() {
-        return Err(p.err("trailing characters"));
+        return Err(p.error("trailing characters"));
     }
     assert_eq!(p.at, text.len(), "the whole text was read");
     Ok(v)
@@ -172,12 +172,12 @@ impl Json {
 // ---- private ----
 
 impl Parser<'_> {
-    fn err(&self, what: &'static str) -> JsonError {
+    fn error(&self, what: &'static str) -> JsonError {
         debug_assert!(self.at <= self.bytes.len());
         JsonError { at: self.at, what }
     }
 
-    fn ws(&mut self) {
+    fn whitespace(&mut self) {
         while self
             .bytes
             .get(self.at)
@@ -204,7 +204,7 @@ impl Parser<'_> {
 
     fn literal(&mut self, word: &str, v: Json) -> Result<Json, JsonError> {
         if !self.bytes[self.at..].starts_with(word.as_bytes()) {
-            return Err(self.err("unknown literal"));
+            return Err(self.error("unknown literal"));
         }
         self.at += word.len();
         Ok(v)
@@ -214,7 +214,7 @@ impl Parser<'_> {
     fn value(&mut self, depth: u32) -> Result<Json, JsonError> {
         debug_assert!(self.at <= self.bytes.len());
         if depth >= DEPTH_MAX {
-            return Err(self.err("nested too deep"));
+            return Err(self.error("nested too deep"));
         }
         match self.bytes.get(self.at) {
             Some(b'n') => self.literal("null", Json::Null),
@@ -224,7 +224,7 @@ impl Parser<'_> {
             Some(b'-' | b'0'..=b'9') => self.number(),
             Some(b'[') => self.array(depth),
             Some(b'{') => self.object(depth),
-            _ => Err(self.err("expected a value")),
+            _ => Err(self.error("expected a value")),
         }
     }
 
@@ -233,20 +233,20 @@ impl Parser<'_> {
         self.at += 1;
         assert!(depth < DEPTH_MAX, "`value` checked the depth");
         let mut items = Vec::new();
-        self.ws();
+        self.whitespace();
         if self.eat(b']') {
             return Ok(Json::Arr(items));
         }
         // Each pass consumes at least one byte or returns: bounded by the text.
         loop {
-            self.ws();
+            self.whitespace();
             items.push(self.value(depth + 1)?);
-            self.ws();
+            self.whitespace();
             if self.eat(b']') {
                 return Ok(Json::Arr(items));
             }
             if !self.eat(b',') {
-                return Err(self.err("expected `,` or `]`"));
+                return Err(self.error("expected `,` or `]`"));
             }
         }
     }
@@ -256,29 +256,29 @@ impl Parser<'_> {
         self.at += 1;
         assert!(depth < DEPTH_MAX, "`value` checked the depth");
         let mut members = Vec::new();
-        self.ws();
+        self.whitespace();
         if self.eat(b'}') {
             return Ok(Json::Obj(members));
         }
         // Each pass consumes at least one byte or returns: bounded by the text.
         loop {
-            self.ws();
+            self.whitespace();
             if self.bytes.get(self.at) != Some(&b'"') {
-                return Err(self.err("expected a member name"));
+                return Err(self.error("expected a member name"));
             }
             let key = self.string()?;
-            self.ws();
+            self.whitespace();
             if !self.eat(b':') {
-                return Err(self.err("expected `:`"));
+                return Err(self.error("expected `:`"));
             }
-            self.ws();
+            self.whitespace();
             members.push((key, self.value(depth + 1)?));
-            self.ws();
+            self.whitespace();
             if self.eat(b'}') {
                 return Ok(Json::Obj(members));
             }
             if !self.eat(b',') {
-                return Err(self.err("expected `,` or `}`"));
+                return Err(self.error("expected `,` or `}`"));
             }
         }
     }
@@ -291,17 +291,17 @@ impl Parser<'_> {
             Some(b'1'..=b'9') => {
                 self.digits();
             }
-            _ => return Err(self.err("expected a digit")),
+            _ => return Err(self.error("expected a digit")),
         }
         if self.eat(b'.') && self.digits() == 0 {
-            return Err(self.err("expected a digit after `.`"));
+            return Err(self.error("expected a digit after `.`"));
         }
         if self.eat(b'e') || self.eat(b'E') {
             if !self.eat(b'+') {
                 self.eat(b'-');
             }
             if self.digits() == 0 {
-                return Err(self.err("expected an exponent"));
+                return Err(self.error("expected an exponent"));
             }
         }
         assert!(self.at > start, "a number has at least one digit");
@@ -354,13 +354,13 @@ impl Parser<'_> {
                             out.push(self.unicode()?);
                             continue;
                         }
-                        _ => return Err(self.err("unknown escape")),
+                        _ => return Err(self.error("unknown escape")),
                     };
                     self.at += 1;
                     out.push(c);
                 }
-                Some(_) => return Err(self.err("control character in a string")),
-                None => return Err(self.err("unterminated string")),
+                Some(_) => return Err(self.error("control character in a string")),
+                None => return Err(self.error("unterminated string")),
             }
         }
     }
@@ -371,7 +371,7 @@ impl Parser<'_> {
             .get(self.at..self.at + 4)
             .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
         else {
-            return Err(self.err("`\\u` needs four hex digits"));
+            return Err(self.error("`\\u` needs four hex digits"));
         };
         self.at += 4;
         let text = std::str::from_utf8(h).expect("hex digits are ASCII");
@@ -384,17 +384,17 @@ impl Parser<'_> {
         let hi = self.hex4()?;
         let code = if (0xd800..0xdc00).contains(&hi) {
             if !(self.eat(b'\\') && self.eat(b'u')) {
-                return Err(self.err("lone surrogate"));
+                return Err(self.error("lone surrogate"));
             }
             let lo = self.hex4()?;
             if !(0xdc00..0xe000).contains(&lo) {
-                return Err(self.err("lone surrogate"));
+                return Err(self.error("lone surrogate"));
             }
             0x10000 + ((hi - 0xd800) << 10) + (lo - 0xdc00)
         } else {
             hi
         };
-        char::from_u32(code).ok_or(self.err("lone surrogate"))
+        char::from_u32(code).ok_or(self.error("lone surrogate"))
     }
 }
 
