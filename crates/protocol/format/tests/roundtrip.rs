@@ -3,7 +3,8 @@
 
 mod common;
 
-use common::{Rng, chunk_word, chunks, gen_doc, messy};
+use common::docgen::gen_doc;
+use common::{Rng, chunk_word, chunks, messy};
 use proptest::prelude::*;
 use schemify_format::{Document, FileKind, RecordKind, Shape, Ty, parse, parse_coord, write};
 
@@ -17,6 +18,8 @@ const RANK3: &[&str] = &[
     "constraint",
     "waive",
 ];
+
+// ---- private ----
 
 fn kind_of(seed: u64) -> FileKind {
     if seed.is_multiple_of(2) {

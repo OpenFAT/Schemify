@@ -3,6 +3,10 @@
 
 use schemify_format::{Code, NO_RECORD, parse};
 
+const BENCH: &str = "schemify 1 shbench\n";
+
+// ---- private ----
+
 /// Asserts `text` fails with `code` at `line:col` (col 0 = not checked) and that
 /// every reported diagnostic is an error.
 fn fails(text: &str, code: Code, line: u32, col: u32) {
@@ -18,8 +22,6 @@ fn fails(text: &str, code: Code, line: u32, col: u32) {
         assert_eq!(hit.col, col, "{err}");
     }
 }
-
-const BENCH: &str = "schemify 1 shbench\n";
 
 /// Every rank-2 graphic takes the stroke attributes `width` and `dash` (spec §4); they are
 /// numbers, so a word there is `E029`.

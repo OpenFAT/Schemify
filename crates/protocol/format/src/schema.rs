@@ -1,12 +1,26 @@
-//! Record schemas as data (spec §4).
+//! Record schemas: the types that describe spec §4 as data, and the lookups the reader,
+//! writer and merge make into the tables of `records.rs`.
 //!
 //! Every rule the reader enforces and every ordering decision the writer and the merge
-//! make comes from the tables in this file. Adding a record kind is one `RecordKind`
-//! variant, one `RECORDS` row and one entry in each file kind's list; no function body
-//! changes.
+//! make comes from those tables. Semantics beyond them (expressions, templates, cell
+//! references) belong to later layers (spec §6).
+//!
+//! Contents:
+//! - `pub enum FileKind`, `FileKind::ALL`, `FileKind::word`, `FileKind::from_word`,
+//!   `FileKind::records`, `FileKind::lookup`, `FileKind::rank_sorted` (crate)
+//! - `pub enum RecordKind`, `RecordKind::schema`, `RecordKind::word`, `RecordKind::rank`,
+//!   `RecordKind::key`
+//! - `pub enum KeyRule`, `pub enum Ty`, `Ty::check`, `pub enum Rest`
+//! - `pub struct Shape`, `Shape::check_arity`, `Shape::ty`
+//! - `pub struct AttrSchema`, `pub struct RecordSchema`, `RecordSchema::attr`,
+//!   `RecordSchema::knows_attr` (crate)
+//! - `pub const RANK_INHERIT: u8`, `pub const RANK_POSITIONAL: u8`,
+//!   `pub const SHAPE_FORMS: &[&str]`, `pub(crate) const RANK_MAX: u8`
+//! - `pub fn shape_arity(form: &str, n: usize) -> Option<bool>`
 
 use crate::diag::Code;
 use crate::id::is_id;
+use crate::records::{FILE_RECORDS, RECORDS};
 use crate::scalar::{CoordError, Orient, is_number, parse_coord};
 
 /// The file kinds of spec §1, named by the third word of the header line.
@@ -30,59 +44,6 @@ pub enum FileKind {
     /// `tech.map`: a PDK's technology-class map (pdk spec §6): one `class` record per
     /// (class, flavor) the PDK provides.
     Techmap,
-}
-
-const FILE_WORDS: [&str; 8] = [
-    "shprim", "shcomp", "shbench", "project", "lock", "config", "journal", "techmap",
-];
-
-impl FileKind {
-    /// Every file kind, in declaration order.
-    pub const ALL: [FileKind; 8] = [
-        FileKind::Shprim,
-        FileKind::Shcomp,
-        FileKind::Shbench,
-        FileKind::Project,
-        FileKind::Lock,
-        FileKind::Config,
-        FileKind::Journal,
-        FileKind::Techmap,
-    ];
-
-    /// Returns the header word (`shcomp`, `project`, ...).
-    pub fn word(self) -> &'static str {
-        FILE_WORDS[self as usize]
-    }
-
-    /// Parses a header kind word; `None` for anything not in spec §1.
-    pub fn from_word(word: &str) -> Option<FileKind> {
-        let i = FILE_WORDS.iter().position(|w| *w == word)?;
-        let kind = FileKind::ALL[i];
-        assert_eq!(kind.word(), word);
-        Some(kind)
-    }
-
-    /// Returns the record kinds this file kind allows, in canonical writer order.
-    /// The header is always allowed and is not listed.
-    pub fn records(self) -> &'static [RecordKind] {
-        FILE_RECORDS[self as usize]
-    }
-
-    /// Resolves a record word for this file kind. Words outside the kind's list are
-    /// `None`, even if another file kind knows them (`pin` in a `.shbench` is unknown).
-    pub fn lookup(self, word: &str) -> Option<RecordKind> {
-        let kind = self.records().iter().copied().find(|k| k.word() == word);
-        assert!(kind.is_none_or(|k| k != RecordKind::Header && k != RecordKind::Unknown));
-        kind
-    }
-
-    /// Returns whether the writer sorts rank `rank` of this file kind by (kind, key).
-    pub(crate) fn rank_sorted(self, rank: u8) -> bool {
-        assert!(rank <= RANK_MAX);
-        self.records()
-            .iter()
-            .any(|k| k.rank() == rank && k.schema().sorted)
-    }
 }
 
 /// Every record word the reader knows, across all file kinds.
@@ -148,38 +109,6 @@ pub enum RecordKind {
     Unknown,
 }
 
-impl RecordKind {
-    /// Returns this kind's schema row.
-    pub fn schema(self) -> &'static RecordSchema {
-        &RECORDS[self as usize]
-    }
-
-    /// Returns the record word (`"schemify"` for the header, `""` for `Unknown`).
-    pub fn word(self) -> &'static str {
-        self.schema().word
-    }
-
-    /// Returns the section rank; `Unknown` returns [`RANK_INHERIT`] because its rank is
-    /// that of the record before it.
-    pub fn rank(self) -> u8 {
-        self.schema().rank
-    }
-
-    /// Returns how records of this kind are identified for duplicate checks, merge and diff.
-    pub fn key(self) -> KeyRule {
-        self.schema().key
-    }
-}
-
-/// Rank sentinel of [`RecordKind::Unknown`]: the record takes the rank of the known
-/// record before it.
-pub const RANK_INHERIT: u8 = u8::MAX;
-/// Highest rank any record kind has.
-pub(crate) const RANK_MAX: u8 = 6;
-/// The one rank whose records have no identity (symbol graphics). Merge treats it as a
-/// single block.
-pub const RANK_POSITIONAL: u8 = 2;
-
 /// How a record is identified (spec §4 ids and names, research §3.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyRule {
@@ -239,6 +168,144 @@ pub struct Shape {
     pub rest: Rest,
 }
 
+/// A known attribute of a record kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttrSchema {
+    /// The attribute word.
+    pub key: &'static str,
+    /// Its values.
+    pub shape: Shape,
+    /// Missing → `E029`.
+    pub required: bool,
+    /// May appear more than once; merge then identifies each line by key + first value.
+    /// A second line of a non-repeatable attribute is `E024`.
+    pub repeat: bool,
+}
+
+/// Everything the format layer knows about one record kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordSchema {
+    /// The record word.
+    pub word: &'static str,
+    /// Section rank; records must appear in non-decreasing rank (`E023`).
+    pub rank: u8,
+    /// Identity rule.
+    pub key: KeyRule,
+    /// The writer sorts this kind by key (ranks 3 and 6, the lockfile); otherwise file
+    /// order is kept because it is semantic.
+    pub sorted: bool,
+    /// Positional values on the record line.
+    pub fields: Shape,
+    /// Known attributes. Unknown ones are kept and written after known ones (spec §5).
+    pub attrs: &'static [AttrSchema],
+    /// Any attribute word is a known attribute (instance param overrides, constraint
+    /// key/values, simulator settings).
+    pub open: bool,
+    /// The record may carry `| text` verbatim lines.
+    pub verbatim: bool,
+}
+
+/// Rank sentinel of [`RecordKind::Unknown`]: the record takes the rank of the known
+/// record before it.
+pub const RANK_INHERIT: u8 = u8::MAX;
+/// The one rank whose records have no identity (symbol graphics). Merge treats it as a
+/// single block.
+pub const RANK_POSITIONAL: u8 = 2;
+/// The forms of a rank-3 `shape` (spec §4 rank 3), in [`shape_arity`] order.
+pub const SHAPE_FORMS: &[&str] = &["line", "rect", "arc", "circle", "poly"];
+/// Highest rank any record kind has.
+pub(crate) const RANK_MAX: u8 = 6;
+/// Header words of [`FileKind`], in declaration order.
+const FILE_WORDS: [&str; 8] = [
+    "shprim", "shcomp", "shbench", "project", "lock", "config", "journal", "techmap",
+];
+
+/// Whether `n` values may follow `shape <id> <form>`: 4 for `line`/`rect` (two corners), 5
+/// for `arc` (center, radius, start and sweep degrees), 3 for `circle`, an even count ≥ 4
+/// for `poly`. `None` for a form outside [`SHAPE_FORMS`].
+pub fn shape_arity(form: &str, n: usize) -> Option<bool> {
+    let ok = match form {
+        "line" | "rect" => n == 4,
+        "arc" => n == 5,
+        "circle" => n == 3,
+        "poly" => n >= 4 && n.is_multiple_of(2),
+        _ => return None,
+    };
+    Some(ok)
+}
+
+impl FileKind {
+    /// Every file kind, in declaration order.
+    pub const ALL: [FileKind; 8] = [
+        FileKind::Shprim,
+        FileKind::Shcomp,
+        FileKind::Shbench,
+        FileKind::Project,
+        FileKind::Lock,
+        FileKind::Config,
+        FileKind::Journal,
+        FileKind::Techmap,
+    ];
+
+    /// Returns the header word (`shcomp`, `project`, ...).
+    pub fn word(self) -> &'static str {
+        FILE_WORDS[self as usize]
+    }
+
+    /// Parses a header kind word; `None` for anything not in spec §1.
+    pub fn from_word(word: &str) -> Option<FileKind> {
+        let i = FILE_WORDS.iter().position(|w| *w == word)?;
+        let kind = FileKind::ALL[i];
+        assert_eq!(kind.word(), word);
+        Some(kind)
+    }
+
+    /// Returns the record kinds this file kind allows, in canonical writer order.
+    /// The header is always allowed and is not listed.
+    pub fn records(self) -> &'static [RecordKind] {
+        FILE_RECORDS[self as usize]
+    }
+
+    /// Resolves a record word for this file kind. Words outside the kind's list are
+    /// `None`, even if another file kind knows them (`pin` in a `.shbench` is unknown).
+    pub fn lookup(self, word: &str) -> Option<RecordKind> {
+        let kind = self.records().iter().copied().find(|k| k.word() == word);
+        assert!(kind.is_none_or(|k| k != RecordKind::Header && k != RecordKind::Unknown));
+        kind
+    }
+
+    /// Returns whether the writer sorts rank `rank` of this file kind by (kind, key).
+    pub(crate) fn rank_sorted(self, rank: u8) -> bool {
+        assert!(rank <= RANK_MAX);
+        self.records()
+            .iter()
+            .any(|k| k.rank() == rank && k.schema().sorted)
+    }
+}
+
+impl RecordKind {
+    /// Returns this kind's schema row.
+    pub fn schema(self) -> &'static RecordSchema {
+        &RECORDS[self as usize]
+    }
+
+    /// Returns the record word (`"schemify"` for the header, `""` for `Unknown`).
+    pub fn word(self) -> &'static str {
+        self.schema().word
+    }
+
+    /// Returns the section rank; `Unknown` returns [`RANK_INHERIT`] because its rank is
+    /// that of the record before it.
+    pub fn rank(self) -> u8 {
+        self.schema().rank
+    }
+
+    /// Returns how records of this kind are identified for duplicate checks, merge and diff.
+    pub fn key(self) -> KeyRule {
+        self.schema().key
+    }
+}
+
 impl Ty {
     /// Checks value `v` against this slot type (spec §3); returns a coordinate's
     /// milli-units (`None` for the other types). The reader and the `doc` crate's record
@@ -249,9 +316,8 @@ impl Ty {
     /// `E029` with the expected form; `E022` for a coordinate with more than 3
     /// fractional digits or outside i32 milli-units.
     pub fn check(self, v: &str) -> Result<Option<i32>, (Code, &'static str)> {
-        let ok = match self {
-            Ty::Any => true,
-            Ty::Id | Ty::IdRef => is_id(v),
+        let (ok, detail) = match self {
+            Ty::Any => (true, ""),
             Ty::Coord => {
                 return parse_coord(v).map(Some).map_err(|e| match e {
                     CoordError::NotNumber => (Code::E029, "expected a coordinate number"),
@@ -261,25 +327,23 @@ impl Ty {
                     ),
                 });
             }
-            Ty::Number => is_number(v),
-            Ty::Orient => Orient::parse(v).is_some(),
-            Ty::Bool => v == "true" || v == "false",
-            Ty::Choice(words) => words.contains(&v),
+            Ty::Id | Ty::IdRef => (
+                is_id(v),
+                "expected an id (1-13 lowercase Crockford base32 chars)",
+            ),
+            Ty::Number => (is_number(v), "expected a number `-?digits(.digits)?`"),
+            Ty::Orient => (
+                Orient::parse(v).is_some(),
+                "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
+            ),
+            Ty::Bool => (v == "true" || v == "false", "expected true or false"),
+            Ty::Choice(words) => (words.contains(&v), "value not in the allowed set"),
         };
         if ok {
-            return Ok(None);
+            Ok(None)
+        } else {
+            Err((Code::E029, detail))
         }
-        Err((
-            Code::E029,
-            match self {
-                Ty::Id | Ty::IdRef => "expected an id (1-13 lowercase Crockford base32 chars)",
-                Ty::Number => "expected a number `-?digits(.digits)?`",
-                Ty::Orient => "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
-                Ty::Bool => "expected true or false",
-                // `Any` always passes and `Coord` returned above.
-                Ty::Choice(_) | Ty::Any | Ty::Coord => "value not in the allowed set",
-            },
-        ))
     }
 }
 
@@ -320,43 +384,6 @@ impl Shape {
     }
 }
 
-/// A known attribute of a record kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AttrSchema {
-    /// The attribute word.
-    pub key: &'static str,
-    /// Its values.
-    pub shape: Shape,
-    /// Missing → `E029`.
-    pub required: bool,
-    /// May appear more than once; merge then identifies each line by key + first value.
-    /// A second line of a non-repeatable attribute is `E024`.
-    pub repeat: bool,
-}
-
-/// Everything the format layer knows about one record kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RecordSchema {
-    /// The record word.
-    pub word: &'static str,
-    /// Section rank; records must appear in non-decreasing rank (`E023`).
-    pub rank: u8,
-    /// Identity rule.
-    pub key: KeyRule,
-    /// The writer sorts this kind by key (ranks 3 and 6, the lockfile); otherwise file
-    /// order is kept because it is semantic.
-    pub sorted: bool,
-    /// Positional values on the record line.
-    pub fields: Shape,
-    /// Known attributes. Unknown ones are kept and written after known ones (spec §5).
-    pub attrs: &'static [AttrSchema],
-    /// Any attribute word is a known attribute (instance param overrides, constraint
-    /// key/values, simulator settings).
-    pub open: bool,
-    /// The record may carry `| text` verbatim lines.
-    pub verbatim: bool,
-}
-
 impl RecordSchema {
     /// Finds a known attribute by word, with its index in [`RecordSchema::attrs`].
     pub fn attr(&self, key: &str) -> Option<(usize, &'static AttrSchema)> {
@@ -371,613 +398,5 @@ impl RecordSchema {
     /// Returns whether the writer treats attribute `key` as known (written first).
     pub(crate) fn knows_attr(&self, key: &str) -> bool {
         self.open || self.attr(key).is_some()
-    }
-}
-
-// ---------------------------------------------------------------- table builders
-
-const A: Ty = Ty::Any;
-const C: Ty = Ty::Coord;
-const N: Ty = Ty::Number;
-const B: Ty = Ty::Bool;
-
-// Table builders run at compile time, so their asserts cost nothing at runtime.
-
-const fn fixed(fixed: &'static [Ty]) -> Shape {
-    assert!(
-        fixed.len() <= 8,
-        "the reader's shape check assumes short shapes"
-    );
-    Shape {
-        fixed,
-        rest: Rest::None,
-    }
-}
-
-const fn attr(key: &'static str, values: &'static [Ty]) -> AttrSchema {
-    assert!(!key.is_empty() && key.as_bytes()[0].is_ascii_alphabetic());
-    assert!(values.len() <= 8);
-    AttrSchema {
-        key,
-        shape: fixed(values),
-        required: false,
-        repeat: false,
-    }
-}
-
-const fn repeat(key: &'static str, values: &'static [Ty]) -> AttrSchema {
-    assert!(
-        !key.is_empty() && !values.is_empty(),
-        "repeatable lines are told apart by value 0"
-    );
-    AttrSchema {
-        key,
-        shape: fixed(values),
-        required: false,
-        repeat: true,
-    }
-}
-
-/// An attribute of one or more values: `fixed`, then any number of `Any`.
-const fn many(key: &'static str, fixed: &'static [Ty]) -> AttrSchema {
-    assert!(!key.is_empty() && fixed.len() <= 8);
-    AttrSchema {
-        key,
-        shape: Shape {
-            fixed,
-            rest: Rest::Many(A),
-        },
-        required: false,
-        repeat: false,
-    }
-}
-
-const fn required(key: &'static str, values: &'static [Ty]) -> AttrSchema {
-    assert!(!key.is_empty() && !values.is_empty());
-    AttrSchema {
-        key,
-        shape: fixed(values),
-        required: true,
-        repeat: false,
-    }
-}
-
-const fn rec(
-    word: &'static str,
-    rank: u8,
-    key: KeyRule,
-    fields: Shape,
-    attrs: &'static [AttrSchema],
-) -> RecordSchema {
-    assert!(rank <= RANK_MAX && !word.is_empty());
-    assert!(
-        attrs.len() <= 32,
-        "the reader tracks attributes in a u32 bitmask"
-    );
-    let sorted = matches!(rank, 3 | 6);
-    RecordSchema {
-        word,
-        rank,
-        key,
-        sorted,
-        fields,
-        attrs,
-        open: false,
-        verbatim: false,
-    }
-}
-
-const fn verbatim(mut r: RecordSchema) -> RecordSchema {
-    assert!(!r.verbatim);
-    r.verbatim = true;
-    r
-}
-
-const fn open(mut r: RecordSchema) -> RecordSchema {
-    assert!(!r.open);
-    r.open = true;
-    r
-}
-
-const fn sorted(mut r: RecordSchema) -> RecordSchema {
-    assert!(
-        !r.sorted && !matches!(r.key, KeyRule::Position),
-        "positional records have no sort key"
-    );
-    r.sorted = true;
-    r
-}
-
-const SOURCE: Ty = Ty::Choice(&["path", "git", "url"]);
-/// A `lib` source: the plugin sources plus `map` (`lib tech map <relpath>`, pdk spec §5).
-const LIB_SOURCE: Ty = Ty::Choice(&["path", "git", "url", "map"]);
-const LAYER: AttrSchema = attr("layer", &[N]);
-const FILL: AttrSchema = attr("fill", &[B]);
-const DASH: AttrSchema = attr("dash", &[N]);
-const WIDTH: AttrSchema = attr("width", &[N]);
-const DOC: AttrSchema = attr("doc", &[A]);
-const UNIT: AttrSchema = attr("unit", &[A]);
-const MIN: AttrSchema = attr("min", &[A]);
-const MAX: AttrSchema = attr("max", &[A]);
-const CACHED: AttrSchema = attr("cached", &[A, A]);
-const PLACED: &[Ty] = &[Ty::Id, C, C, Ty::Orient, A];
-/// The forms of a rank-3 `shape` (spec §4 rank 3), in [`shape_arity`] order.
-pub const SHAPE_FORMS: &[&str] = &["line", "rect", "arc", "circle", "poly"];
-
-/// Whether `n` values may follow `shape <id> <form>`: 4 for `line`/`rect` (two corners), 5
-/// for `arc` (center, radius, start and sweep degrees), 3 for `circle`, an even count ≥ 4
-/// for `poly`. `None` for a form outside [`SHAPE_FORMS`].
-pub fn shape_arity(form: &str, n: usize) -> Option<bool> {
-    let ok = match form {
-        "line" | "rect" => n == 4,
-        "arc" => n == 5,
-        "circle" => n == 3,
-        "poly" => n >= 4 && n.is_multiple_of(2),
-        _ => return None,
-    };
-    Some(ok)
-}
-
-/// Header attributes: the union over all cell kinds (spec §4 rank 0). A kind-specific
-/// attribute in another kind (`corner` in a `.shcomp`) is still kept; this list only
-/// decides that it is written before unknown attributes.
-const HEADER_ATTRS: &[AttrSchema] = &[
-    DOC,
-    attr("default", &[A]),
-    attr("prefix", &[A]),
-    attr("category", &[A]),
-    attr("provenance", &[A]),
-    attr("corner", &[A]),
-    attr("config", &[A]),
-];
-
-use KeyRule::{Header as KH, Id as KI, Name as KN, Position as KP, TypeName as KT};
-
-/// One row per [`RecordKind`], in declaration order.
-static RECORDS: [RecordSchema; RecordKind::Unknown as usize + 1] = [
-    // Header: fields are `<version> <kind>`, checked by the lexer, not by shape.
-    rec("schemify", 0, KH, fixed(&[A, A]), HEADER_ATTRS),
-    // rank 1: symbol interface
-    rec(
-        "pin",
-        1,
-        KN,
-        fixed(&[A, Ty::Choice(&["in", "out", "inout"]), C, C]),
-        &[
-            attr("domain", &[Ty::Choice(&["analog", "digital", "real"])]),
-            attr("inherit", &[A]),
-            attr("number", &[A]),
-        ],
-    ),
-    rec(
-        "param",
-        1,
-        KN,
-        fixed(&[A, A]),
-        &[
-            attr(
-                "kind",
-                &[Ty::Choice(&["number", "int", "bool", "string", "choice"])],
-            ),
-            UNIT,
-            MIN,
-            MAX,
-            attr("step", &[A]),
-            attr("grid", &[A]),
-            many("choices", &[A]),
-            attr("computed", &[A]),
-            attr("show", &[A]),
-            attr("valid", &[A]),
-            DOC,
-            CACHED,
-        ],
-    ),
-    rec(
-        "impl",
-        1,
-        KN,
-        fixed(&[A, A]),
-        &[
-            repeat("format", &[A, A]),
-            attr("model", &[A]),
-            attr("file", &[A]),
-        ],
-    ),
-    // rank 2: symbol graphics, draw order
-    rec("line", 2, KP, fixed(&[C, C, C, C]), &[LAYER, DASH, WIDTH]),
-    rec(
-        "rect",
-        2,
-        KP,
-        fixed(&[C, C, C, C]),
-        &[LAYER, FILL, DASH, WIDTH],
-    ),
-    rec(
-        "arc",
-        2,
-        KP,
-        fixed(&[C, C, C, N, N]),
-        &[LAYER, FILL, DASH, WIDTH],
-    ),
-    rec(
-        "circle",
-        2,
-        KP,
-        fixed(&[C, C, C]),
-        &[LAYER, FILL, DASH, WIDTH],
-    ),
-    rec(
-        "poly",
-        2,
-        KP,
-        Shape {
-            fixed: &[C, C, C, C],
-            rest: Rest::Pairs(C),
-        },
-        &[LAYER, FILL, DASH, WIDTH, attr("closed", &[B])],
-    ),
-    rec(
-        "stext",
-        2,
-        KP,
-        fixed(&[C, C, Ty::Orient, A]),
-        &[
-            attr("size", &[N]),
-            attr("hcenter", &[]),
-            attr("vcenter", &[]),
-            LAYER,
-        ],
-    ),
-    // rank 3: schematic, kinds in writer order, each sorted by id
-    open(rec(
-        "inst",
-        3,
-        KI,
-        fixed(&[Ty::Id, A]),
-        &[
-            required("at", &[C, C, Ty::Orient]),
-            required("name", &[A]),
-            repeat("inherit", &[A, A]),
-            repeat("cached", &[A, A, A]),
-        ],
-    )),
-    rec(
-        "wire",
-        3,
-        KI,
-        fixed(&[Ty::Id, C, C, C, C]),
-        &[attr("bus", &[B])],
-    ),
-    rec("label", 3, KI, fixed(PLACED), &[]),
-    rec("port", 3, KI, fixed(PLACED), &[]),
-    rec("noconn", 3, KI, fixed(&[Ty::Id, C, C]), &[]),
-    rec("text", 3, KI, fixed(PLACED), &[attr("size", &[N])]),
-    rec(
-        "shape",
-        3,
-        KI,
-        Shape {
-            fixed: &[Ty::Id, Ty::Choice(SHAPE_FORMS)],
-            rest: Rest::Many(C),
-        },
-        &[LAYER, FILL, DASH, WIDTH, attr("closed", &[B])],
-    ),
-    open(rec(
-        "constraint",
-        3,
-        KI,
-        fixed(&[Ty::Id, A]),
-        &[repeat("member", &[Ty::IdRef])],
-    )),
-    rec(
-        "waive",
-        3,
-        KI,
-        fixed(&[Ty::Id, Ty::IdRef, A]),
-        &[required("reason", &[A])],
-    ),
-    // rank 4: docs, document order
-    verbatim(rec("prose", 4, KI, fixed(&[Ty::Id]), &[])),
-    rec(
-        "var",
-        4,
-        KN,
-        fixed(&[A, A]),
-        &[
-            UNIT,
-            MIN,
-            MAX,
-            DOC,
-            CACHED,
-            // `dist gauss|uniform <spread> [rel]` (run spec §3).
-            AttrSchema {
-                key: "dist",
-                shape: Shape {
-                    fixed: &[Ty::Choice(&["gauss", "uniform"]), A],
-                    rest: Rest::Optional(Ty::Choice(&["rel"])),
-                },
-                required: false,
-                repeat: false,
-            },
-        ],
-    ),
-    // rank 5: impl bodies
-    verbatim(rec("body", 5, KN, fixed(&[A]), &[])),
-    // rank 6: bench, sorted by (kind, name)
-    rec(
-        "corner",
-        6,
-        KN,
-        fixed(&[A]),
-        &[
-            repeat("lib", &[A, A]),
-            repeat("include", &[A]),
-            repeat("set", &[A, A]),
-            attr("temp", &[A]),
-        ],
-    ),
-    rec(
-        "config",
-        6,
-        KN,
-        fixed(&[A]),
-        &[
-            many("order", &[A]),
-            repeat("cell", &[A, A]),
-            repeat("inst", &[A, A]),
-        ],
-    ),
-    rec(
-        "sweep",
-        6,
-        KN,
-        fixed(&[A]),
-        &[
-            attr("var", &[A]),
-            many("values", &[A]),
-            attr("lin", &[A, A, A]),
-            attr("log", &[A, A, A]),
-        ],
-    ),
-    rec(
-        "montecarlo",
-        6,
-        KN,
-        fixed(&[A]),
-        &[attr("samples", &[N]), attr("seed", &[N])],
-    ),
-    rec(
-        "optimize",
-        6,
-        KN,
-        fixed(&[A]),
-        &[
-            attr("algo", &[A]),
-            // `<output> min|max|target <expr> [weight <w>]`: run checks the tail.
-            AttrSchema {
-                repeat: true,
-                ..many("goal", &[A, Ty::Choice(&["min", "max", "target"])])
-            },
-            repeat("vary", &[A]),
-            repeat("config", &[A]),
-            repeat("corner", &[A]),
-            attr("budget", &[N]),
-            attr("seed", &[N]),
-        ],
-    ),
-    rec("output", 6, KN, fixed(&[A, A]), &[UNIT]),
-    rec("spec", 6, KN, fixed(&[A]), &[MIN, MAX]),
-    verbatim(rec("code", 6, KN, fixed(&[A, A]), &[])),
-    // project manifest
-    rec(
-        "lib",
-        1,
-        KN,
-        Shape {
-            fixed: &[A, LIB_SOURCE, A],
-            rest: Rest::Optional(A),
-        },
-        &[attr("subdir", &[A])],
-    ),
-    rec(
-        "plugin",
-        1,
-        KN,
-        Shape {
-            fixed: &[A, SOURCE, A],
-            rest: Rest::Optional(A),
-        },
-        &[repeat("grant", &[A])],
-    ),
-    rec("set", 1, KN, fixed(&[A, A]), &[]),
-    // lockfile
-    sorted(rec(
-        "locked",
-        1,
-        KT,
-        fixed(&[Ty::Choice(&["lib", "plugin"]), A, A, A, A]),
-        &[],
-    )),
-    // user config
-    rec("key", 1, KN, fixed(&[A, A]), &[]),
-    open(rec(
-        "sim",
-        1,
-        KN,
-        fixed(&[A]),
-        &[attr("path", &[A]), many("args", &[])],
-    )),
-    rec("plugin", 1, KN, fixed(&[A]), &[]),
-    // techmap
-    rec(
-        "class",
-        1,
-        KT,
-        fixed(&[A, A]),
-        &[
-            required("cell", &[A]),
-            repeat("param", &[A, A]),
-            attr("vdd", &[A]),
-            repeat("limits", &[A, Ty::Choice(&["min", "max"]), A]),
-        ],
-    ),
-    // Unknown: kept verbatim; identified by its word and first field.
-    RecordSchema {
-        word: "",
-        rank: RANK_INHERIT,
-        key: KN,
-        sorted: false,
-        fields: Shape {
-            fixed: &[],
-            rest: Rest::Many(A),
-        },
-        attrs: &[],
-        open: true,
-        verbatim: true,
-    },
-];
-
-use RecordKind as R;
-
-const SYMBOL: [RecordKind; 9] = [
-    R::Pin,
-    R::Param,
-    R::Impl,
-    R::Line,
-    R::Rect,
-    R::Arc,
-    R::Circle,
-    R::Poly,
-    R::Stext,
-];
-const BENCH: [RecordKind; 8] = [
-    R::Corner,
-    R::Config,
-    R::Sweep,
-    R::Montecarlo,
-    R::Optimize,
-    R::Output,
-    R::Spec,
-    R::Code,
-];
-
-/// Allowed record kinds per [`FileKind`], in declaration order of `FileKind`.
-static FILE_RECORDS: [&[RecordKind]; 8] = [
-    // shprim: symbol, docs, bodies
-    &concat::<9, 3, 12>(SYMBOL, [R::Prose, R::Var, R::Body]),
-    // shcomp: symbol, schematic, docs, bodies, code (D17 as amended 2026-10-11: netlist
-    // text emitted inside each of the component's definitions)
-    &concat::<9, 13, 22>(
-        SYMBOL,
-        [
-            R::Inst,
-            R::Wire,
-            R::Label,
-            R::Port,
-            R::Noconn,
-            R::Text,
-            R::Shape,
-            R::Constraint,
-            R::Waive,
-            R::Prose,
-            R::Var,
-            R::Body,
-            R::Code,
-        ],
-    ),
-    // shbench: schematic without ports, docs, bench
-    &concat::<10, 8, 18>(
-        [
-            R::Inst,
-            R::Wire,
-            R::Label,
-            R::Noconn,
-            R::Text,
-            R::Shape,
-            R::Constraint,
-            R::Waive,
-            R::Prose,
-            R::Var,
-        ],
-        BENCH,
-    ),
-    &[R::Lib, R::Plugin, R::Set],
-    &[R::Locked],
-    &[R::Set, R::Key, R::Sim, R::PluginOrder],
-    // journal: no known words, every record is free-form
-    &[],
-    // techmap
-    &[R::Class],
-];
-
-const fn concat<const X: usize, const Y: usize, const Z: usize>(
-    x: [RecordKind; X],
-    y: [RecordKind; Y],
-) -> [RecordKind; Z] {
-    assert!(X + Y == Z);
-    let mut out = [RecordKind::Unknown; Z];
-    let mut i = 0;
-    while i < X {
-        out[i] = x[i];
-        i += 1;
-    }
-    while i < Z {
-        out[i] = y[i - X];
-        i += 1;
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn table_rows_are_consistent() {
-        for fk in FileKind::ALL {
-            assert_eq!(FileKind::from_word(fk.word()), Some(fk));
-            let kinds = fk.records();
-            for (i, k) in kinds.iter().enumerate() {
-                assert!(*k != R::Header && *k != R::Unknown);
-                // A word resolves to exactly one kind per file kind.
-                assert_eq!(fk.lookup(k.word()), Some(*k));
-                // Listed order is rank order, so the writer's kind order is the spec's.
-                if i > 0 {
-                    assert!(kinds[i - 1].rank() <= k.rank());
-                    assert!(kinds[i - 1] < *k);
-                }
-                // A rank is either entirely sorted or entirely file-order.
-                let peers = kinds.iter().filter(|p| p.rank() == k.rank());
-                assert!(
-                    peers
-                        .clone()
-                        .all(|p| p.schema().sorted == k.schema().sorted)
-                );
-                // Positional identity is exactly the positional rank.
-                assert_eq!(k.key() == KeyRule::Position, k.rank() == RANK_POSITIONAL);
-                assert!(k.rank() <= RANK_MAX);
-                // Attribute dedup in the reader uses a u32 bitmask.
-                assert!(k.schema().attrs.len() <= 32);
-            }
-        }
-        assert_eq!(FileKind::from_word("schematic"), None);
-        assert_eq!(FileKind::Shbench.lookup("pin"), None);
-        // D17 as amended: a component carries `code`; the other bench tables stay
-        // bench-only, and a primitive has neither.
-        assert_eq!(FileKind::Shcomp.lookup("code"), Some(R::Code));
-        for w in [
-            "corner",
-            "config",
-            "sweep",
-            "montecarlo",
-            "optimize",
-            "output",
-            "spec",
-        ] {
-            assert_eq!(FileKind::Shcomp.lookup(w), None, "{w}");
-        }
-        assert_eq!(FileKind::Shprim.lookup("code"), None);
-        assert_eq!(FileKind::Config.lookup("plugin"), Some(R::PluginOrder));
-        assert_eq!(FileKind::Project.lookup("plugin"), Some(R::Plugin));
     }
 }

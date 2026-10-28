@@ -8,6 +8,8 @@ use schemify_format::{Document, FileKind, RecordKind, merge3, parse, write};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+// ---- private ----
+
 /// The research §1 synthetic mix: 35% instances (name + 5 params), 45% wires,
 /// 12% labels, 8% texts, on a grid of √n·150 units.
 fn design(n: usize, seed: u64) -> String {

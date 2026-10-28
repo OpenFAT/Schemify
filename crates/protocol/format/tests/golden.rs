@@ -33,6 +33,8 @@ const FIXTURES: &[(&str, &str, FileKind)] = &[
     ("config", include_str!("fixtures/config"), FileKind::Config),
 ];
 
+// ---- private ----
+
 #[test]
 fn fixtures_are_canonical_fixed_points() {
     for (name, text, kind) in FIXTURES {

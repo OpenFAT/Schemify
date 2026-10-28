@@ -1,11 +1,13 @@
-//! File-level numbers, coordinates and orientation (spec §3).
-
-/// Milli-units per xschem unit: a coordinate `12.5` is stored as `12500` (D33).
-pub(crate) const MILLI_PER_UNIT: i32 = 1000;
-
-/// Largest integer part a representable coordinate can have: `2^31 / 1000`, rounded up.
-/// Accumulation stops past it, so the i64 accumulator never overflows.
-const COORD_WHOLE_MAX: i64 = 2_147_484;
+//! File-level numbers, coordinates and orientation: text ↔ i32 milli-units and
+//! [`Orient`] (spec §3, D33).
+//!
+//! Contents:
+//! - `pub enum CoordError`
+//! - `pub enum Orient`, `Orient::parse`, `Orient::as_str`, `Orient::mirrored`,
+//!   `Orient::quarter_turns`
+//! - `pub fn is_number(s: &str) -> bool`
+//! - `pub fn parse_coord(s: &str) -> Result<i32, CoordError>`
+//! - `pub fn format_coord(milli: i32, out: &mut String)`
 
 /// Why [`parse_coord`] rejected its input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +17,39 @@ pub enum CoordError {
     /// More than 3 significant fractional digits, or outside the i32 milli-unit range (`E022`).
     NotRepresentable,
 }
+
+/// Symbol placement: an optional mirror followed by a clockwise quarter-turn rotation
+/// (spec §3). The discriminant is `quarter_turns + 4 * mirrored`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+#[allow(missing_docs)] // variant names are the file words
+pub enum Orient {
+    R0,
+    R90,
+    R180,
+    R270,
+    MR0,
+    MR90,
+    MR180,
+    MR270,
+}
+
+/// Milli-units per xschem unit: a coordinate `12.5` is stored as `12500` (D33).
+const MILLI_PER_UNIT: i64 = 1000;
+/// Largest integer part a representable coordinate can have: `2^31 / 1000`, rounded up.
+/// Accumulation stops past it, so the i64 accumulator never overflows.
+const COORD_WHOLE_MAX: i64 = 2_147_484;
+/// File words and values of [`Orient`], in discriminant order.
+const ORIENTS: [(&str, Orient); 8] = [
+    ("R0", Orient::R0),
+    ("R90", Orient::R90),
+    ("R180", Orient::R180),
+    ("R270", Orient::R270),
+    ("MR0", Orient::MR0),
+    ("MR90", Orient::MR90),
+    ("MR180", Orient::MR180),
+    ("MR270", Orient::MR270),
+];
 
 /// Returns whether `s` is a file-level number literal: `-?digits(.digits)?`, with no
 /// exponent, no `+` and no SI suffix (those belong to expressions). Any number of
@@ -71,7 +106,7 @@ pub fn parse_coord(s: &str) -> Result<i32, CoordError> {
     if !exact || whole > COORD_WHOLE_MAX {
         return Err(CoordError::NotRepresentable);
     }
-    let milli = whole * i64::from(MILLI_PER_UNIT) + frac;
+    let milli = whole * MILLI_PER_UNIT + frac;
     let value = if negative { -milli } else { milli };
     assert!(value.unsigned_abs() <= (COORD_WHOLE_MAX as u64 + 1) * 1000);
     i32::try_from(value).map_err(|_| CoordError::NotRepresentable)
@@ -113,46 +148,17 @@ pub fn format_coord(milli: i32, out: &mut String) {
     assert!(out.len() > before && !out.ends_with('.'));
 }
 
-/// Symbol placement: an optional mirror followed by a clockwise quarter-turn rotation
-/// (spec §3). The discriminant is `quarter_turns + 4 * mirrored`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-#[allow(missing_docs)] // variant names are the file words
-pub enum Orient {
-    R0,
-    R90,
-    R180,
-    R270,
-    MR0,
-    MR90,
-    MR180,
-    MR270,
-}
-
-const ORIENT_WORDS: [&str; 8] = ["R0", "R90", "R180", "R270", "MR0", "MR90", "MR180", "MR270"];
-const ORIENTS: [Orient; 8] = [
-    Orient::R0,
-    Orient::R90,
-    Orient::R180,
-    Orient::R270,
-    Orient::MR0,
-    Orient::MR90,
-    Orient::MR180,
-    Orient::MR270,
-];
-
 impl Orient {
     /// Parses a file word; case-sensitive, so `r90` is `None`.
     pub fn parse(word: &str) -> Option<Orient> {
-        let i = ORIENT_WORDS.iter().position(|w| *w == word)?;
-        let o = ORIENTS[i];
-        assert_eq!(o as usize, i, "table order is discriminant order");
-        Some(o)
+        let (_, o) = ORIENTS.iter().find(|(w, _)| *w == word)?;
+        assert_eq!(o.as_str(), word, "table order is discriminant order");
+        Some(*o)
     }
 
     /// Returns the file word.
     pub fn as_str(self) -> &'static str {
-        ORIENT_WORDS[self as usize]
+        ORIENTS[self as usize].0
     }
 
     /// Returns whether x is negated before rotating.
@@ -298,7 +304,7 @@ mod tests {
 
     #[test]
     fn orientations_round_trip() {
-        for (i, o) in ORIENTS.iter().enumerate() {
+        for (i, (_, o)) in ORIENTS.iter().enumerate() {
             assert_eq!(Orient::parse(o.as_str()), Some(*o));
             assert_eq!(o.mirrored(), i >= 4);
             assert_eq!(usize::from(o.quarter_turns()), i % 4);
