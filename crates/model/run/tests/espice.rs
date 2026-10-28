@@ -10,6 +10,36 @@ use common::{project, run_dialect, tmp};
 use schemify_elab::Dialect;
 use schemify_run::{Jobs, NO_SAMPLE, Plan, RunnerConfig, SimCommand, State};
 
+/// `vgain`: out = k·in (k = 3 by default), its source the impl `body`.
+const VGAIN: &str = "schemify 1 shprim\n\npin in inout 0 0\npin out inout 0 20\n\nparam k 3\n\n\
+impl va veriloga\n  model vgain_m\n\nbody va\n  | `include \"disciplines.vams\"\n  \
+| module vgain(in, out);\n  |   inout in, out;\n  |   electrical in, out;\n  \
+|   parameter real k = 3;\n  |   analog V(out) <+ k * V(in);\n  | endmodule\n";
+
+/// `vhalf`: out = in/2, its source the `file` `va/vhalf.va`, which takes the factor from
+/// its own include `inc/half.vams`.
+const VHALF: &str = "schemify 1 shprim\n\npin in inout 0 0\npin out inout 0 20\n\n\
+impl va veriloga\n  model vhalf_m\n  file va/vhalf.va\n";
+
+const VHALF_VA: &str = "`include \"disciplines.vams\"\n`include \"inc/half.vams\"\n\
+module vhalf(in, out);\n  inout in, out;\n  electrical in, out;\n  analog V(out) <+ `HALF * V(in);\n\
+endmodule\n";
+
+const BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa ./vgain\n  at 0 0 R0\n  name N1\n  k 4\n\
+inst 0aaaab ./vhalf\n  at 100 0 R0\n  name N2\n\n\
+label 0bbbba 0 0 R0 in\nlabel 0bbbbb 0 20 R0 y\nlabel 0bbbbc 100 0 R0 in\nlabel 0bbbbd 100 20 R0 z\n\n\
+output vy \"v(y)\"\noutput vz \"v(z)\"\n\ncode op spice\n  | V1 in 0 0.5\n  | .op\n";
+
+/// A BSIM-CMG fin cell as pdk-manager generates it for ASAP7 (pdk spec §2.2), its source
+/// the kit's `bsimcmg.va` (copied into the test project's `va/`).
+const FIN: &str = "schemify 1 shprim\n\npin d inout 0 -30\npin g in -20 0\npin s inout 0 30\npin b in 20 0\n\n\
+param model nmos_rvt\n  kind string\nparam nfin 1\nparam nf 1\nparam m 1\n\nimpl osdi veriloga\n  \
+format spice \"N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}\"\n  \
+format espice \"N{name} {d} {g} {s} {b} 0 {model} nfin={nfin} nf={nf} mfactor={m}\"\n  \
+file va/bsimcmg.va\n";
+
+// ---- private ----
+
 /// Whether `espice` runs from PATH; skips (or fails under `SCHEMIFY_REQUIRE_ESPICE`).
 fn have_espice() -> bool {
     let found = std::process::Command::new("espice")
@@ -25,25 +55,6 @@ fn have_espice() -> bool {
     }
     found
 }
-
-/// `vgain`: out = k·in (k = 3 by default), its source the impl `body`.
-const VGAIN: &str = "schemify 1 shprim\n\npin in inout 0 0\npin out inout 0 20\n\nparam k 3\n\n\
-impl va veriloga\n  model vgain_m\n\nbody va\n  | `include \"disciplines.vams\"\n  \
-| module vgain(in, out);\n  |   inout in, out;\n  |   electrical in, out;\n  \
-|   parameter real k = 3;\n  |   analog V(out) <+ k * V(in);\n  | endmodule\n";
-
-/// `vhalf`: out = in/2, its source the `file` `va/vhalf.va`, which takes the factor from
-/// its own include `inc/half.vams`.
-const VHALF: &str = "schemify 1 shprim\n\npin in inout 0 0\npin out inout 0 20\n\n\
-impl va veriloga\n  model vhalf_m\n  file va/vhalf.va\n";
-const VHALF_VA: &str = "`include \"disciplines.vams\"\n`include \"inc/half.vams\"\n\
-module vhalf(in, out);\n  inout in, out;\n  electrical in, out;\n  analog V(out) <+ `HALF * V(in);\n\
-endmodule\n";
-
-const BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa ./vgain\n  at 0 0 R0\n  name N1\n  k 4\n\
-inst 0aaaab ./vhalf\n  at 100 0 R0\n  name N2\n\n\
-label 0bbbba 0 0 R0 in\nlabel 0bbbbb 0 20 R0 y\nlabel 0bbbbc 100 0 R0 in\nlabel 0bbbbd 100 20 R0 z\n\n\
-output vy \"v(y)\"\noutput vz \"v(z)\"\n\ncode op spice\n  | V1 in 0 0.5\n  | .op\n";
 
 /// The vgain bench of the user's flow: v(y) = 4 × 0.5 = 2 (inline body, the instance's
 /// `k=4` on its `N` line), v(z) = 0.25 (`file` and its include, copied beside it), through
@@ -87,14 +98,6 @@ fn espice_simulates_verilog_a_bodies_and_files() {
     assert!((vy - 2.0).abs() < 1e-9, "v(y) {vy}");
     assert!((vz - 0.25).abs() < 1e-9, "v(z) {vz}");
 }
-
-/// A BSIM-CMG fin cell as pdk-manager generates it for ASAP7 (pdk spec §2.2), its source
-/// the kit's `bsimcmg.va` (copied into the test project's `va/`).
-const FIN: &str = "schemify 1 shprim\n\npin d inout 0 -30\npin g in -20 0\npin s inout 0 30\npin b in 20 0\n\n\
-param model nmos_rvt\n  kind string\nparam nfin 1\nparam nf 1\nparam m 1\n\nimpl osdi veriloga\n  \
-format spice \"N{name} {d} {g} {s} {b} {model} nfin={nfin} nf={nf} m={m}\"\n  \
-format espice \"N{name} {d} {g} {s} {b} 0 {model} nfin={nfin} nf={nf} mfactor={m}\"\n  \
-file va/bsimcmg.va\n";
 
 /// Two ASAP7 inverters, input low (`y0`) and high (`y1`), through the real ESPice: the
 /// BSIM-CMG source and its seven `` `include``s copied into the job, the thermal port

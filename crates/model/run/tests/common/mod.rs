@@ -1,11 +1,14 @@
 //! Fixtures shared by the run integration tests: an RC bench, project setup, the run
 //! spine end to end, and a fake simulator.
+//!
+//! Contents: `RES`, `CAP`, `RC_BENCH`, `FAKE`, `sh`, `cfg`, `project`, `rc`, `tmp`, `run`,
+//! `run_env`, `run_dialect`, `have_ngspice`, `have`, `first_of`.
 #![allow(dead_code)] // each test binary uses a subset
 
 use schemify_doc::{Digest, DocHandle, Project};
 use schemify_elab::{Dialect, no_funcs};
-use schemify_run::{Jobs, Plan, Results, Runner, RunnerConfig, design, prepare};
-use std::path::PathBuf;
+use schemify_run::{Jobs, Plan, Results, Runner, RunnerConfig, SimCommand, design, prepare};
+use std::path::{Path, PathBuf};
 
 pub const RES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\n\
 impl spice spice\n  format spice \"{name} {A} {B} {R}\"\n";
@@ -68,6 +71,33 @@ code tran spice
   | .ic v(out)=0
   | .tran 1u 5m 0 1u uic
 "#;
+
+/// Reads `.param R=` from the netlist and writes a two-point ASCII raw file with
+/// v(out) going linearly from 0 to R over 1 s; sleeps a PID-dependent few ms so jobs
+/// finish out of order.
+pub const FAKE: &str = r#"R=$(sed -n 's/^\.param R=//p' "$1")
+sleep "0.0$(($$ % 7))"
+printf 'Title: fake\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: 2\nNo. Points: 2\nVariables:\n 0 time time\n 1 v(out) voltage\nValues:\n0 0\n 0\n1 1\n %s\n' "$R" > "$2"
+"#;
+
+/// The fake simulator: `sh -c <script> fake {netlist} {raw}`.
+pub fn sh(script: &str) -> SimCommand {
+    SimCommand {
+        path: "sh".into(),
+        args: ["-c", script, "fake", "{netlist}", "{raw}"]
+            .map(String::from)
+            .to_vec(),
+        env: Vec::new(),
+    }
+}
+
+/// A runner config under `dir` that runs `sim` for every simulator, `workers` at once.
+pub fn cfg(dir: &Path, d: &Digest, sim: SimCommand, workers: u16) -> RunnerConfig {
+    let mut c = RunnerConfig::new(dir, d);
+    c.tools.set_sims(&sim);
+    c.workers = workers;
+    c
+}
 
 /// Indexes and opens `files` (relpath, text) as the project's own library; returns the
 /// project and the handle of the one `.shbench`.

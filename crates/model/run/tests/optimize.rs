@@ -9,6 +9,8 @@ mod common;
 use common::project;
 use schemify_run::{Jobs, OptRun, Plan, Results, State};
 
+// ---- private ----
+
 /// An ASCII raw file of one point holding `v(f)` and `v(g)`.
 fn raw(f: f64, g: f64) -> Vec<u8> {
     format!(
