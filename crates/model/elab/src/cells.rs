@@ -1,5 +1,11 @@
-//! Reading cells out of a `doc::Project`: display names, the row of an open document,
-//! and the readable-interface check every instance resolution goes through.
+//! A `doc::Project` in, facts about its cells out: display names, the row of an open
+//! document, and the readable-interface check every instance resolution goes through.
+//! Cites netlist spec §1 (resolution) and pdk spec §5 (`tech:` cells).
+//!
+//! Contents:
+//! - `pub(crate) fn display(project: &Project, row: usize) -> (String, String)`
+//! - `pub(crate) fn readable(project, found, cellref) -> Result<usize, String>`
+//! - `pub(crate) fn row_of(project: &Project, doc: &Document) -> Option<usize>`
 
 use schemify_doc::{Document, Project};
 
@@ -47,6 +53,7 @@ pub(crate) fn readable(
     if project.interface(row).is_none() {
         return Err(format!("`{cellref}` has no readable interface"));
     }
+    assert!(row < project.cells().lib.len(), "a resolved row is a cell");
     Ok(row)
 }
 
@@ -54,7 +61,11 @@ pub(crate) fn readable(
 /// Cost: a scan of the rows of `doc`'s kind.
 pub(crate) fn row_of(project: &Project, doc: &Document) -> Option<usize> {
     let cells = project.cells();
-    (0..cells.lib.len())
+    let row = (0..cells.lib.len())
         .filter(|&r| cells.kind[r] == doc.kind())
-        .find(|&r| project.interface(r).is_some_and(|d| std::ptr::eq(d, doc)))
+        .find(|&r| project.interface(r).is_some_and(|d| std::ptr::eq(d, doc)));
+    if let Some(r) = row {
+        assert_eq!(cells.kind[r], doc.kind());
+    }
+    row
 }

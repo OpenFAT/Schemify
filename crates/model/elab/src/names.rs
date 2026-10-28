@@ -1,28 +1,29 @@
-//! The elaboration string arena: every name elab derives (net and bit names, instance
-//! element names, cell names, parameter value text) is a [`Name`] into one [`Names`].
+//! The elaboration string arena: text in, [`Name`] handles out. Every name elab derives
+//! (net and bit names, instance element names, cell names, parameter value text) is a
+//! [`Name`] into one [`Names`]; plus the text helpers that build names (decimal, FNV-1a,
+//! base32) and the one key sort every sorted output shares.
 //!
-//! `doc` interns per document; elab output spans many documents, so it owns one arena
-//! per output ([`crate::Elab`], [`crate::CellState`]). Same shape as `doc`'s arena: one
-//! byte buffer plus an open-addressing table with a deterministic hash (no random
-//! state, so it behaves the same on `wasm32-unknown-unknown`).
+//! `doc` interns per document; elab output spans many documents, so it owns one arena per
+//! output ([`crate::Elab`], [`crate::CellState`]). Same shape as `doc`'s arena: one byte
+//! buffer plus an open-addressing table with a deterministic hash (no random state, so it
+//! behaves the same on `wasm32-unknown-unknown`). Cites netlist spec §6 (FNV-1a 64 and
+//! base32 specialization names).
+//!
+//! Contents:
+//! - `pub struct Name`, `Name::NONE`
+//! - `pub const NAMES_MAX`
+//! - `pub struct Names`: `len`, `is_empty`, `get`, `find`, `cmp`, `sort_by_text`, `sort`,
+//!   `pub(crate)` `reserve`, `intern`, `intern_batch`
+//! - `pub(crate) fn fnv1a64(bytes: &[u8]) -> u64`
+//! - `pub(crate) fn push_base32(h: u64, chars: u32, out: &mut String)`
+//! - `pub(crate) fn push_decimal(v: u32, out: &mut String)`
+//! - `pub(crate) fn radix_sort(v: Vec<(u64, u32)>) -> Vec<(u64, u32)>`
 
 use std::cmp::Ordering;
 
 /// Handle of a string in a [`Names`] arena; valid only for the arena that made it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name(pub u32);
-
-impl Name {
-    /// "No name" in optional columns.
-    pub const NONE: Name = Name(u32::MAX);
-}
-
-impl Default for Name {
-    /// [`Name::NONE`].
-    fn default() -> Name {
-        Name::NONE
-    }
-}
 
 /// Most strings one arena holds (2^26: a 1M-instance flat cell interns ~4 per instance).
 pub const NAMES_MAX: u32 = 1 << 26;
@@ -39,10 +40,31 @@ pub struct Names {
     table: Vec<u64>,
 }
 
-/// A table entry: `(hash, name + 1)`.
-#[inline]
-fn entry(h: u32, n: Name) -> u64 {
-    (u64::from(h) << 32) | u64::from(n.0 + 1)
+/// Batches below this intern one by one: the slot-order sweep pays off only once the
+/// table outgrows the cache.
+const BATCH_MIN: usize = 1 << 12;
+
+/// Inputs below this [`radix_sort`] hands to `sort_unstable`.
+const RADIX_MIN: usize = 1 << 12;
+
+/// Bits per radix digit of [`radix_sort`] (6 passes cover a 64-bit key).
+const KEY_DIGIT_BITS: u32 = 11;
+
+/// Bits per radix digit of the batch's home-slot sort: two passes cover 2^28 slots, more
+/// than [`NAMES_MAX`] at load 1/2 needs.
+const SLOT_DIGIT_BITS: u32 = 14;
+const _: () = assert!((1u64 << (2 * SLOT_DIGIT_BITS)) >= 2 * NAMES_MAX as u64);
+
+impl Name {
+    /// "No name" in optional columns.
+    pub const NONE: Name = Name(u32::MAX);
+}
+
+impl Default for Name {
+    /// [`Name::NONE`].
+    fn default() -> Name {
+        Name::NONE
+    }
 }
 
 impl Names {
@@ -74,36 +96,6 @@ impl Names {
             return None;
         }
         self.probe(text, hash(text)).ok()
-    }
-
-    /// Where `text` (hashing to `h`) is: `Ok(name)`, or `Err(empty slot)` to put it in.
-    /// The table is never full (load factor below 1/2), so the probe ends.
-    fn probe(&self, text: &str, h: u32) -> Result<Name, usize> {
-        let mask = self.table.len() - 1;
-        let mut slot = h as usize & mask;
-        for _ in 0..self.table.len() {
-            let e = self.table[slot];
-            if e == 0 {
-                return Err(slot);
-            }
-            let n = Name((e as u32) - 1);
-            if (e >> 32) as u32 == h && self.get(n) == text {
-                return Ok(n);
-            }
-            slot = (slot + 1) & mask;
-        }
-        unreachable!("the table is never full");
-    }
-
-    /// Makes room for `additional` more names without growing the table on the way (a
-    /// caller about to intern a known volume, e.g. one name per instance).
-    pub(crate) fn reserve(&mut self, additional: usize) {
-        let want = ((self.ends.len() + additional) * 2).next_power_of_two();
-        while self.table.len() < want {
-            self.grow();
-        }
-        self.ends.reserve(additional);
-        assert!((self.ends.len() + additional) * 2 <= self.table.len());
     }
 
     /// Compares two names bytewise by text (the order every sorted output uses).
@@ -146,10 +138,25 @@ impl Names {
         assert_eq!(rows.len(), v.len());
     }
 
+    /// Makes room for `additional` more names without growing the table on the way (a
+    /// caller about to intern a known volume, e.g. one name per instance).
+    pub(crate) fn reserve(&mut self, additional: usize) {
+        let want = ((self.ends.len() + additional) * 2).next_power_of_two();
+        while self.table.len() < want {
+            self.grow();
+        }
+        self.ends.reserve(additional);
+        assert!((self.ends.len() + additional) * 2 <= self.table.len());
+    }
+
     /// Interns `text`; equal text always yields the same name.
     ///
     /// Cost: one hash and one probe sequence (absent text is placed where the lookup
     /// ended); amortized O(1).
+    ///
+    /// # Panics
+    ///
+    /// Panics past [`NAMES_MAX`] names or 4 GiB of text.
     pub(crate) fn intern(&mut self, text: &str) -> Name {
         if (self.ends.len() + 1) * 2 > self.table.len() {
             self.grow();
@@ -159,14 +166,7 @@ impl Names {
             Ok(n) => return n,
             Err(slot) => slot,
         };
-        assert!(self.len() < NAMES_MAX, "name arena holds 2^26 names");
-        assert!(
-            self.bytes.len() + text.len() < u32::MAX as usize,
-            "name arena exceeds 4 GiB"
-        );
-        let n = Name(self.len());
-        self.bytes.push_str(text);
-        self.ends.push(self.bytes.len() as u32);
+        let n = self.append(text);
         self.table[slot] = entry(h, n);
         debug_assert_eq!(self.get(n), text);
         n
@@ -183,48 +183,15 @@ impl Names {
     /// Cost: O(n) passes over the batch plus the probe sequences.
     pub(crate) fn intern_batch(&mut self, texts: &[&str], out: &mut Vec<Name>) {
         let n = texts.len();
-        if n < 1 << 12 {
+        if n < BATCH_MIN {
             out.extend(texts.iter().map(|t| self.intern(t)));
             return;
         }
         assert!(n < NAMES_MAX as usize, "a batch fits the arena");
         self.reserve(n); // the table grows once, here
         let mask = self.table.len() - 1;
-        // Items `(hash << 32) | index`, sorted by (home slot, index): LSD radix on the slot,
-        // 14-bit digits (≤ 2^27 slots). Each item carries its hash, so the slot-order passes
-        // read the items and the table sequentially and touch a text only on a hash match.
-        let mut items: Vec<u64> = texts
-            .iter()
-            .enumerate()
-            .map(|(k, t)| u64::from(hash(t)) << 32 | k as u64)
-            .collect();
         let slot = |item: u64| (item >> 32) as usize & mask;
-        let mut tmp = vec![0u64; n];
-        for shift in [0u32, 14] {
-            if (mask >> shift) == 0 {
-                break;
-            }
-            let digit = |item: u64| slot(item) >> shift & 0x3fff;
-            let mut count = vec![0u32; (1 << 14) + 1];
-            for &it in &items {
-                count[digit(it) + 1] += 1;
-            }
-            for d in 0..1 << 14 {
-                count[d + 1] += count[d];
-            }
-            for &it in &items {
-                let d = digit(it);
-                tmp[count[d] as usize] = it;
-                count[d] += 1;
-            }
-            std::mem::swap(&mut items, &mut tmp);
-        }
-        drop(tmp);
-        debug_assert!(
-            items
-                .windows(2)
-                .all(|w| (slot(w[0]), w[0] as u32) < (slot(w[1]), w[1] as u32))
-        );
+        let items = slot_order(texts, mask);
         // Pass 1, slot order: an existing name, NEW, or DUP of the first occurrence of the
         // same text in the batch (equal texts share a home slot: one run, index order).
         const NEW: u32 = u32::MAX;
@@ -233,24 +200,11 @@ impl Names {
         let mut run = 0;
         for at in 0..n {
             let (it, k) = (items[at], items[at] as u32 as usize);
-            let h = (it >> 32) as u32;
             if at > 0 && slot(items[at - 1]) != slot(it) {
                 run = at;
             }
-            let mut sl = slot(it);
-            loop {
-                let e = self.table[sl];
-                if e == 0 {
-                    break;
-                }
-                let name = Name((e as u32) - 1);
-                if (e >> 32) as u32 == h && self.get(name) == texts[k] {
-                    res[at] = name.0;
-                    break;
-                }
-                sl = (sl + 1) & mask;
-            }
-            if res[at] != NEW {
+            if let Ok(name) = self.probe_from(texts[k], (it >> 32) as u32, slot(it)) {
+                res[at] = name.0;
                 continue;
             }
             let earlier = (run..at).find(|&j| {
@@ -272,15 +226,8 @@ impl Names {
         for k in 0..n {
             let r = by_k[k];
             by_k[k] = if r == NEW {
-                assert!(self.len() < NAMES_MAX, "name arena holds 2^26 names");
-                assert!(
-                    self.bytes.len() + texts[k].len() < u32::MAX as usize,
-                    "name arena exceeds 4 GiB"
-                );
-                self.bytes.push_str(texts[k]);
-                self.ends.push(self.bytes.len() as u32);
-                self.len() - 1
-            } else if r & DUP != 0 && r != NEW {
+                self.append(texts[k]).0
+            } else if r & DUP != 0 {
                 by_k[(r & !DUP) as usize] // an earlier index: already numbered
             } else {
                 r
@@ -288,10 +235,7 @@ impl Names {
         }
         // Pass 3, slot order: place the new names (linear probing from the home slot keeps
         // every entry reachable whatever the insertion order).
-        for at in 0..n {
-            if res[at] != NEW {
-                continue;
-            }
+        for at in (0..n).filter(|&at| res[at] == NEW) {
             let it = items[at];
             let mut sl = slot(it);
             while self.table[sl] != 0 {
@@ -304,6 +248,135 @@ impl Names {
             self.ends.len() * 2 <= self.table.len(),
             "load stays below 1/2"
         );
+    }
+}
+
+/// FNV-1a 64 (netlist spec §6 specialization names).
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Appends the first `chars` base32 digits of `h`, most significant first, in the
+/// Crockford lowercase alphabet the format uses for ids.
+///
+/// # Panics
+///
+/// Panics unless `chars` is 1..=13 (13 digits hold 64 bits).
+pub(crate) fn push_base32(h: u64, chars: u32, out: &mut String) {
+    assert!((1..=13).contains(&chars));
+    let before = out.len();
+    for i in 0..chars {
+        let shift = 64i32 - 5 * (i as i32 + 1);
+        let digit = if shift >= 0 {
+            (h >> shift) & 31
+        } else {
+            (h << -shift) & 31
+        };
+        out.push(char::from(schemify_format::ID_ALPHABET[digit as usize]));
+    }
+    assert_eq!(out.len() - before, chars as usize);
+}
+
+/// Appends `v` in decimal (what `to_string` writes, without its allocation: generated net
+/// names are built once per unnamed bit).
+pub(crate) fn push_decimal(mut v: u32, out: &mut String) {
+    let mut digits = [0u8; 10];
+    let mut n = 0;
+    loop {
+        digits[n] = b'0' + (v % 10) as u8;
+        n += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    assert!(n <= digits.len());
+    out.extend(digits[..n].iter().rev().map(|&d| char::from(d)));
+}
+
+/// Sorts `(key, index)` pairs whose indices are ascending, so ties keep index order as a
+/// `(key, index)` sort would: LSD radix on the key for large inputs, `sort_unstable` below
+/// 2^12 pairs.
+///
+/// Why: about a third of `sort_unstable`'s time at 10^6 nodes (the two node sorts were a
+/// quarter of a flat 1M-instance elaboration).
+pub(crate) fn radix_sort(mut v: Vec<(u64, u32)>) -> Vec<(u64, u32)> {
+    if v.len() < RADIX_MIN {
+        v.sort_unstable();
+        return v;
+    }
+    const DIGITS: usize = 64usize.div_ceil(KEY_DIGIT_BITS as usize);
+    let digit = |k: u64, d: usize| {
+        ((k >> (d as u32 * KEY_DIGIT_BITS)) & ((1 << KEY_DIGIT_BITS) - 1)) as usize
+    };
+    let mut counts = vec![[0u32; 1 << KEY_DIGIT_BITS]; DIGITS];
+    for &(k, _) in &v {
+        for (d, c) in counts.iter_mut().enumerate() {
+            c[digit(k, d)] += 1;
+        }
+    }
+    let mut tmp = vec![(0u64, 0u32); v.len()];
+    for (d, c) in counts.iter_mut().enumerate() {
+        // A digit every key shares (the high bits of a narrow coordinate range) is skipped.
+        if c.iter().any(|&n| n as usize == v.len()) {
+            continue;
+        }
+        let mut sum = 0;
+        for n in c.iter_mut() {
+            (*n, sum) = (sum, sum + *n);
+        }
+        for &e in &v {
+            let slot = &mut c[digit(e.0, d)];
+            tmp[*slot as usize] = e;
+            *slot += 1;
+        }
+        std::mem::swap(&mut v, &mut tmp);
+    }
+    debug_assert!(v.windows(2).all(|w| w[0] < w[1]));
+    v
+}
+
+// ---- private ----
+
+impl Names {
+    /// Where `text` (hashing to `h`) is: `Ok(name)`, or `Err(empty slot)` to put it in.
+    fn probe(&self, text: &str, h: u32) -> Result<Name, usize> {
+        self.probe_from(text, h, h as usize & (self.table.len() - 1))
+    }
+
+    /// [`Names::probe`] starting at `slot`. The table is never full (load factor below
+    /// 1/2), so the probe ends within one lap.
+    fn probe_from(&self, text: &str, h: u32, mut slot: usize) -> Result<Name, usize> {
+        let mask = self.table.len() - 1;
+        assert!(self.table.len().is_power_of_two());
+        for _ in 0..self.table.len() {
+            let e = self.table[slot];
+            if e == 0 {
+                return Err(slot);
+            }
+            let n = Name((e as u32) - 1);
+            if (e >> 32) as u32 == h && self.get(n) == text {
+                return Ok(n);
+            }
+            slot = (slot + 1) & mask;
+        }
+        unreachable!("the table is never full");
+    }
+
+    /// Appends `text` as the next name (not yet in the table).
+    fn append(&mut self, text: &str) -> Name {
+        assert!(self.len() < NAMES_MAX, "name arena holds 2^26 names");
+        assert!(
+            self.bytes.len() + text.len() < u32::MAX as usize,
+            "name arena exceeds 4 GiB"
+        );
+        self.bytes.push_str(text);
+        self.ends.push(self.bytes.len() as u32);
+        Name(self.len() - 1)
     }
 
     /// Doubles the table, re-placing entries by their stored hashes (no text is read).
@@ -318,8 +391,54 @@ impl Names {
             }
             self.table[slot] = e;
         }
-        assert!(self.ends.len() * 2 <= self.table.len() && self.table.len().is_power_of_two());
+        assert!(self.ends.len() * 2 <= self.table.len());
+        assert!(self.table.len().is_power_of_two());
     }
+}
+
+/// A table entry: `(hash, name + 1)`.
+fn entry(h: u32, n: Name) -> u64 {
+    (u64::from(h) << 32) | u64::from(n.0 + 1)
+}
+
+/// Items `(hash << 32) | index` of `texts`, sorted by (home slot under `mask`, index): LSD
+/// radix on the slot. Each item carries its hash, so the slot-order passes read the items
+/// and the table sequentially and touch a text only on a hash match.
+fn slot_order(texts: &[&str], mask: usize) -> Vec<u64> {
+    let n = texts.len();
+    let mut items: Vec<u64> = texts
+        .iter()
+        .enumerate()
+        .map(|(k, t)| u64::from(hash(t)) << 32 | k as u64)
+        .collect();
+    let slot = |item: u64| (item >> 32) as usize & mask;
+    let mut tmp = vec![0u64; n];
+    for shift in [0, SLOT_DIGIT_BITS] {
+        if (mask >> shift) == 0 {
+            break;
+        }
+        let digit = |item: u64| slot(item) >> shift & ((1 << SLOT_DIGIT_BITS) - 1);
+        let mut count = vec![0u32; (1 << SLOT_DIGIT_BITS) + 1];
+        for &it in &items {
+            count[digit(it) + 1] += 1;
+        }
+        for d in 0..1 << SLOT_DIGIT_BITS {
+            count[d + 1] += count[d];
+        }
+        for &it in &items {
+            let d = digit(it);
+            tmp[count[d] as usize] = it;
+            count[d] += 1;
+        }
+        std::mem::swap(&mut items, &mut tmp);
+    }
+    debug_assert!(
+        items
+            .windows(2)
+            .all(|w| (slot(w[0]), w[0] as u32) < (slot(w[1]), w[1] as u32))
+    );
+    assert_eq!(items.len(), n);
+    items
 }
 
 /// Multiply-rotate hash over 8-byte words, folded to 32 bits; deterministic on every target.
@@ -337,30 +456,6 @@ fn hash(text: &str) -> u32 {
     h = (h.rotate_left(5) ^ u64::from_le_bytes(tail)).wrapping_mul(K);
     // The product's high bits are the well-mixed ones.
     ((h ^ (h >> 29)) >> 32) as u32 ^ (h as u32)
-}
-
-/// FNV-1a 64 (netlist spec §6 specialization names).
-pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
-
-/// Appends the first `chars` base32 digits of `h`, most significant first, in the
-/// Crockford lowercase alphabet the format uses for ids.
-pub(crate) fn push_base32(h: u64, chars: u32, out: &mut String) {
-    assert!((1..=13).contains(&chars));
-    for i in 0..chars {
-        let shift = 64i32 - 5 * (i as i32 + 1);
-        let digit = if shift >= 0 {
-            (h >> shift) & 31
-        } else {
-            (h << -shift) & 31
-        };
-        out.push(char::from(schemify_format::ID_ALPHABET[digit as usize]));
-    }
 }
 
 #[cfg(test)]
@@ -454,5 +549,15 @@ mod tests {
         s.clear();
         push_base32(1 << 59, 2, &mut s);
         assert_eq!(s, "10");
+    }
+
+    /// Oracle: `to_string`, at the digit-count boundaries.
+    #[test]
+    fn decimal_equals_to_string() {
+        for v in [0, 9, 10, 99, 100, 65_535, 1 << 31, u32::MAX] {
+            let mut s = String::from("x");
+            push_decimal(v, &mut s);
+            assert_eq!(s, format!("x{v}"));
+        }
     }
 }

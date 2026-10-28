@@ -1,6 +1,7 @@
-//! The annotation overlay (ARCHITECTURE § Unifying abstractions): one table of marks
-//! keyed by hierarchical path or object id, fed by `annotation_requests` from checks,
-//! plugins (`contribute annotations`), OP back-annotation and LVS cross-probing.
+//! Annotation requests in, the overlay out (ARCHITECTURE § Unifying abstractions): one
+//! table of marks keyed by hierarchical path or object id, fed by `annotation_requests`
+//! from checks, plugins (`contribute annotations`), OP back-annotation and LVS
+//! cross-probing. No spec clause: the overlay is ARCHITECTURE's.
 //!
 //! Immediate mode, like plugin contributions: a request carries a source's complete
 //! set, which replaces everything that source contributed before; an empty set
@@ -10,11 +11,18 @@
 //! The table is an ordered map (target, source, severity, text) → count, so a patch of a few
 //! marks costs O(changes · log rows) on an overlay of 10^5 marks (a 100k-object cell with
 //! floating pins), and every reader sees the same deterministic order.
+//!
+//! Contents:
+//! - `pub const ANNOTATIONS_MAX`
+//! - `pub struct Mark`, `pub struct AnnotationRequest`
+//! - `pub struct Annotations`: `replace`, `patch`, `iter`, `on`, `on_by`, `has_source`,
+//!   `count_of`, `len`, `is_empty`
+//! - `pub fn violation_marks(v: &Violations, names: &Names, ids) -> AnnotationRequest`
 
+use crate::names::{Name, Names};
+use crate::violations::{Severity, Violations};
+use schemify_doc::ObjId;
 use std::collections::BTreeMap;
-
-use crate::check::{Severity, Violations};
-use crate::names::Names;
 
 /// Most marks the overlay holds (ARCHITECTURE capacity).
 pub const ANNOTATIONS_MAX: usize = 1 << 20;
@@ -39,27 +47,6 @@ pub struct AnnotationRequest {
     pub marks: Vec<Mark>,
 }
 
-/// One row of the overlay, ordered by (target, source, severity, text).
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Row {
-    mark: Mark,
-    source: String,
-}
-
-impl Ord for Row {
-    fn cmp(&self, o: &Row) -> std::cmp::Ordering {
-        let (a, b) = (&self.mark, &o.mark);
-        (&a.target, &self.source, a.severity, &a.text)
-            .cmp(&(&b.target, &o.source, b.severity, &b.text))
-    }
-}
-
-impl PartialOrd for Row {
-    fn partial_cmp(&self, o: &Row) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(o))
-    }
-}
-
 /// The overlay: every mark with its source, sorted by (target, source, severity, text) so
 /// render and plugins see a deterministic order. Equal marks of one source are kept as a
 /// count.
@@ -70,6 +57,13 @@ pub struct Annotations {
     sources: BTreeMap<String, usize>,
     /// Marks in all (counts included).
     len: usize,
+}
+
+/// One row of the overlay, ordered by (target, source, severity, text).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Row {
+    mark: Mark,
+    source: String,
 }
 
 impl Annotations {
@@ -123,6 +117,97 @@ impl Annotations {
         assert!(self.len <= ANNOTATIONS_MAX);
     }
 
+    /// Every mark with its source, in (target, source, severity, text) order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Mark)> + '_ {
+        self.rows
+            .iter()
+            .flat_map(|(r, &c)| std::iter::repeat_n((r.source.as_str(), &r.mark), c as usize))
+    }
+
+    /// The marks on `target`, every source's, in order.
+    ///
+    /// Cost: O(log rows + marks on it).
+    pub fn on<'a>(&'a self, target: &str) -> impl Iterator<Item = &'a Mark> + 'a {
+        self.range_of(target, "", false)
+    }
+
+    /// The marks `source` has on `target`, in order.
+    ///
+    /// Cost: O(log rows + marks on the target).
+    pub fn on_by<'a>(&'a self, target: &str, source: &str) -> impl Iterator<Item = &'a Mark> + 'a {
+        self.range_of(target, source, true)
+    }
+
+    /// Whether `source` has a mark.
+    pub fn has_source(&self, source: &str) -> bool {
+        self.sources.contains_key(source)
+    }
+
+    /// How many marks `source` has.
+    pub fn count_of(&self, source: &str) -> usize {
+        self.sources.get(source).copied().unwrap_or(0)
+    }
+
+    /// Number of marks.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether there is no mark.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Ord for Row {
+    fn cmp(&self, o: &Row) -> std::cmp::Ordering {
+        let (a, b) = (&self.mark, &o.mark);
+        (&a.target, &self.source, a.severity, &a.text)
+            .cmp(&(&b.target, &o.source, b.severity, &b.text))
+    }
+}
+
+impl PartialOrd for Row {
+    fn partial_cmp(&self, o: &Row) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+/// Turns violations into the `checks` source's request: one mark per violation on its
+/// path when it has one, else on its object id; findings about neither (a net name,
+/// a request problem) target the cell name.
+pub fn violation_marks(
+    v: &Violations,
+    names: &Names,
+    ids: impl Fn(u32) -> String,
+) -> AnnotationRequest {
+    let marks = v
+        .rows
+        .iter()
+        .map(|r| {
+            let target = if r.path != Name::NONE {
+                names.get(r.path).to_owned()
+            } else if r.object != ObjId::NONE {
+                ids(r.object.0)
+            } else {
+                names.get(r.cell).to_owned()
+            };
+            Mark {
+                target,
+                severity: r.code.severity(),
+                text: format!("{} {}", r.code.as_str(), r.detail),
+            }
+        })
+        .collect();
+    AnnotationRequest {
+        source: "checks".to_owned(),
+        marks,
+    }
+}
+
+// ---- private ----
+
+impl Annotations {
     fn add(&mut self, source: &str, mark: Mark) {
         if self.len >= ANNOTATIONS_MAX {
             return;
@@ -148,27 +233,6 @@ impl Annotations {
         );
     }
 
-    /// Every mark with its source, in (target, source, severity, text) order.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &Mark)> + '_ {
-        self.rows
-            .iter()
-            .flat_map(|(r, &c)| std::iter::repeat_n((r.source.as_str(), &r.mark), c as usize))
-    }
-
-    /// The marks on `target`, every source's, in order.
-    ///
-    /// Cost: O(log rows + marks on it).
-    pub fn on<'a>(&'a self, target: &str) -> impl Iterator<Item = &'a Mark> + 'a {
-        self.range_of(target, "", false)
-    }
-
-    /// The marks `source` has on `target`, in order.
-    ///
-    /// Cost: O(log rows + marks on the target).
-    pub fn on_by<'a>(&'a self, target: &str, source: &str) -> impl Iterator<Item = &'a Mark> + 'a {
-        self.range_of(target, source, true)
-    }
-
     /// The marks on `target` from the first row of `source` on (only `source`'s when `only`).
     fn range_of<'a>(
         &'a self,
@@ -189,58 +253,6 @@ impl Annotations {
             .range(from..)
             .take_while(move |(r, _)| r.mark.target == t && (!only || r.source == src))
             .flat_map(|(r, &c)| std::iter::repeat_n(&r.mark, c as usize))
-    }
-
-    /// Whether `source` has a mark.
-    pub fn has_source(&self, source: &str) -> bool {
-        self.sources.contains_key(source)
-    }
-
-    /// How many marks `source` has.
-    pub fn count_of(&self, source: &str) -> usize {
-        self.sources.get(source).copied().unwrap_or(0)
-    }
-
-    /// Number of marks.
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Whether there is no mark.
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-/// Turns violations into the `checks` source's request: one mark per violation on its
-/// path when it has one, else on its object id; findings about neither (a net name,
-/// a request problem) target the cell name.
-pub fn violation_marks(
-    v: &Violations,
-    names: &Names,
-    ids: impl Fn(u32) -> String,
-) -> AnnotationRequest {
-    let marks = v
-        .rows
-        .iter()
-        .map(|r| {
-            let target = if r.path != crate::names::Name::NONE {
-                names.get(r.path).to_owned()
-            } else if r.object != schemify_doc::ObjId::NONE {
-                ids(r.object.0)
-            } else {
-                names.get(r.cell).to_owned()
-            };
-            Mark {
-                target,
-                severity: r.code.severity(),
-                text: format!("{} {}", r.code.as_str(), r.detail),
-            }
-        })
-        .collect();
-    AnnotationRequest {
-        source: "checks".to_owned(),
-        marks,
     }
 }
 

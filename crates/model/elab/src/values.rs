@@ -1,22 +1,26 @@
-//! Compiled expressions with their scope already resolved ([`Progs`]), the owned value
-//! type every graph node holds ([`Val`]), and the one evaluation step (D20 plugin
-//! calls with the `cached` fallback).
+//! Expression text in, compiled programs with their scope already resolved out
+//! ([`Progs`]); plus the owned value type every graph node holds ([`Val`]) and the one
+//! evaluation step (D20 plugin calls with the `cached` fallback).
 //!
 //! Scope references are resolved once per program, not once per use: a program's
 //! identifiers become [`Ref`]s into "the params, then the vars" of the scope the
 //! program is written in (expr spec §4). A graph then turns refs into node indices
-//! with arithmetic, which is what keeps a 10^5-instance cell cheap to build.
+//! with arithmetic, which is what keeps a 10^5-instance cell cheap to build. Cites expr
+//! spec §4 and §7 (canonical text), format spec §2 (string escapes) and §6 (expression
+//! and template positions), D20 (cached stand-ins).
+//!
+//! Contents:
+//! - `pub enum Val`: `value`, `from_value`, `is_err`, `as_f64`, `write_text`,
+//!   `pub(crate) parse_cached`
+//! - `pub trait Funcs`, `pub fn no_funcs`
+//! - `pub fn cached_text(v: &Val, out: &mut String)`
+//! - `pub(crate) type Ref`, `pub(crate) const VAR`, `pub(crate) const NONE`
+//! - `pub(crate) enum Syntax`, `pub(crate) enum Code`
+//! - `pub(crate) struct Progs`: `push`, `refs`, `eval`
 
 use schemify_expr::{
     Code as XCode, Error as XError, Mode, PluginValue, Program, Scratch, Span, Template, Value,
 };
-
-/// A scope reference: param `k` is `k`, var `v` is `VAR | v`.
-pub(crate) type Ref = u32;
-/// Tag bit of a var reference.
-pub(crate) const VAR: Ref = 1 << 31;
-/// "No such index" in optional `u32` columns.
-pub(crate) const NONE: u32 = u32::MAX;
 
 /// A value as elab stores it: owned, so it outlives the evaluation scratch.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +39,62 @@ pub enum Val {
     Err(Box<XError>),
     /// A node this one depends on failed; reported there, not here.
     Upstream,
+}
+
+/// The plugin function registry (D20): returns `None` when `"ns.f"` is not loaded,
+/// else the call's result: a [`Value`]`<'static>` (numbers, bools) or an owned [`Val`]
+/// (strings too). Must be pure. Implemented for every matching closure.
+pub trait Funcs {
+    /// What a call returns.
+    type Out: PluginValue;
+    /// Calls `name` with `args`; `None` when no loaded plugin exports it.
+    fn call(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<Self::Out, XError>>;
+}
+
+/// A scope reference: param `k` is `k`, var `v` is `VAR | v`.
+pub(crate) type Ref = u32;
+
+/// Tag bit of a var reference.
+pub(crate) const VAR: Ref = 1 << 31;
+
+/// "No such index" in optional `u32` columns.
+pub(crate) const NONE: u32 = u32::MAX;
+
+/// How a program's text is read (format spec §6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Syntax {
+    /// Expression positions (number/int/bool params, vars, bounds).
+    Expr,
+    /// Template positions (string/choice params).
+    Template,
+}
+
+/// One compiled program of a [`Progs`] table.
+#[derive(Clone, Debug)]
+pub(crate) enum Code {
+    /// An expression position's program.
+    Expr(Program),
+    /// A template position's program (renders to a `str`).
+    Tmpl(Template),
+    /// Compile error, or `X004` from scope resolution.
+    Bad(Box<XError>),
+}
+
+/// A table of compiled programs with resolved scope references (CSR) and the D20
+/// `cached` value of the record each came from.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Progs {
+    pub(crate) code: Vec<Code>,
+    /// CSR offsets (`programs + 1`) into `refs`.
+    pub(crate) ref_start: Vec<u32>,
+    /// Each program's scope references, in its identifier order.
+    pub(crate) refs: Vec<Ref>,
+    /// The record's `cached` value: the D20 stand-in when a plugin function is missing.
+    pub(crate) cached: Vec<Option<Val>>,
+    /// The value of a program with no inputs and no plugin call (a literal, `2*3`):
+    /// computed once when compiled, so evaluating it is a copy (a flat netlist's 10^6
+    /// overrides are mostly literals).
+    pub(crate) konst: Vec<Option<Val>>,
 }
 
 impl Val {
@@ -127,84 +187,16 @@ impl PluginValue for Val {
     }
 }
 
-/// Appends the `cached` text of `v` (D20, docs-page §6): its canonical text, a string quoted
-/// with the format §2 escapes so it never reads back as a number or a bool.
-///
-/// # Panics
-///
-/// Panics on the error states and on `cnum` (neither is cached).
-pub fn cached_text(v: &Val, out: &mut String) {
-    let start = out.len();
-    match v {
-        Val::Str(s) => {
-            out.push('"');
-            for c in s.chars() {
-                match c {
-                    '"' => out.push_str(r#"\""#),
-                    '\\' => out.push_str(r"\\"),
-                    '\n' => out.push_str(r"\n"),
-                    '\t' => out.push_str(r"\t"),
-                    c => out.push(c),
-                }
-            }
-            out.push('"');
-        }
-        Val::Cnum(..) => panic!("a cnum is not cached"),
-        _ => v.write_text(out),
+impl<F, R> Funcs for F
+where
+    F: FnMut(&str, &[Value<'_>]) -> Option<Result<R, XError>>,
+    R: PluginValue,
+{
+    type Out = R;
+
+    fn call(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<R, XError>> {
+        self(name, args)
     }
-    debug_assert!(out.len() > start);
-}
-
-/// The text of a quoted `cached` string (the inverse of [`cached_text`]); `None` when `t` is
-/// not one.
-fn unquote(t: &str) -> Option<String> {
-    let body = t.strip_prefix('"')?.strip_suffix('"')?;
-    let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next()? {
-            'n' => out.push('\n'),
-            't' => out.push('\t'),
-            e @ ('"' | '\\') => out.push(e),
-            _ => return None,
-        }
-    }
-    Some(out)
-}
-
-/// How a program's text is read (format spec §6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Syntax {
-    /// Expression positions (number/int/bool params, vars, bounds).
-    Expr,
-    /// Template positions (string/choice params).
-    Template,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum Code {
-    Expr(Program),
-    Tmpl(Template),
-    /// Compile error, or `X004` from scope resolution.
-    Bad(Box<XError>),
-}
-
-/// A table of compiled programs with resolved scope references (CSR) and the D20
-/// `cached` value of the record each came from.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Progs {
-    pub(crate) code: Vec<Code>,
-    pub(crate) ref_start: Vec<u32>,
-    pub(crate) refs: Vec<Ref>,
-    pub(crate) cached: Vec<Option<Val>>,
-    /// The value of a program with no inputs and no plugin call (a literal, `2*3`):
-    /// computed once when compiled, so evaluating it is a copy (a flat netlist's 10^6
-    /// overrides are mostly literals).
-    pub(crate) konst: Vec<Option<Val>>,
 }
 
 impl Progs {
@@ -317,32 +309,61 @@ impl Progs {
     }
 }
 
-/// The plugin function registry (D20): returns `None` when `"ns.f"` is not loaded,
-/// else the call's result: a [`Value`]`<'static>` (numbers, bools) or an owned [`Val`]
-/// (strings too). Must be pure. Implemented for every matching closure.
-pub trait Funcs {
-    /// What a call returns.
-    type Out: PluginValue;
-    /// Calls `name` with `args`; `None` when no loaded plugin exports it.
-    fn call(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<Self::Out, XError>>;
-}
-
-impl<F, R> Funcs for F
-where
-    F: FnMut(&str, &[Value<'_>]) -> Option<Result<R, XError>>,
-    R: PluginValue,
-{
-    type Out = R;
-
-    fn call(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<R, XError>> {
-        self(name, args)
+/// Appends the `cached` text of `v` (D20, docs-page §6): its canonical text, a string quoted
+/// with the format §2 escapes so it never reads back as a number or a bool.
+///
+/// # Panics
+///
+/// Panics on the error states and on `cnum` (neither is cached).
+pub fn cached_text(v: &Val, out: &mut String) {
+    let start = out.len();
+    match v {
+        Val::Str(s) => {
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str(r#"\""#),
+                    '\\' => out.push_str(r"\\"),
+                    '\n' => out.push_str(r"\n"),
+                    '\t' => out.push_str(r"\t"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
+        Val::Cnum(..) => panic!("a cnum is not cached"),
+        _ => v.write_text(out),
     }
+    debug_assert!(out.len() > start);
 }
 
 /// A registry with no plugin functions loaded: every `ns.f(...)` falls back to its
 /// record's `cached` value (unverified) or fails with `X006`.
 pub fn no_funcs(_name: &str, _args: &[Value<'_>]) -> Option<Result<Value<'static>, XError>> {
     None
+}
+
+// ---- private ----
+
+/// The text of a quoted `cached` string (the inverse of [`cached_text`]); `None` when `t` is
+/// not one.
+fn unquote(t: &str) -> Option<String> {
+    let body = t.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            e @ ('"' | '\\') => out.push(e),
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 fn plugin<F: Funcs>(

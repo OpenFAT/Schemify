@@ -50,6 +50,12 @@
 //! assert!(matches!(e.insts.target[row], Target::Leaf(_)));
 //! assert_eq!(e.names.get(e.insts.param_text[e.params_of(row).start]), "2000");
 //! ```
+//!
+//! # Contents
+//!
+//! The re-exports below (each documented where it is defined), and the hidden
+//! `test_support` module: `pub fn set_serial(serial: bool)`,
+//! `pub fn iface(doc, cell, names) -> Iface`.
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -58,22 +64,26 @@
 #![allow(clippy::needless_range_loop)]
 
 mod annotate;
+mod bits;
 mod cells;
 mod check;
 mod connect;
 mod elaborate;
+mod eval;
 mod graph;
 mod iface;
 mod live;
 mod names;
+mod netcheck;
 mod netexpr;
+mod nets;
 mod ports;
 mod state;
 mod values;
+mod violations;
 
 pub use annotate::{ANNOTATIONS_MAX, AnnotationRequest, Annotations, Mark, violation_marks};
-pub use check::{Code, Severity, VIOLATIONS_MAX, Violation, Violations};
-pub use connect::{CellNets, Ignore, NO_NET, connect, global_labels, place};
+pub use connect::connect;
 pub use elaborate::{
     Bench, COMPUTED, CornerLine, DEFAULT, DEPTH_MAX, Defs, Dialect, Elab, Impls, Insts, OVERRIDDEN,
     Request, Target, elaborate,
@@ -81,27 +91,14 @@ pub use elaborate::{
 pub use graph::Graph;
 pub use iface::{Domain, Iface, ParamKind};
 pub use names::{NAMES_MAX, Name, Names};
-pub use netexpr::{WIDTH_MAX, is_global};
+pub use netexpr::WIDTH_MAX;
+pub use nets::{CellNets, Ignore, NO_NET, global_labels, place};
 pub use ports::{PORTS_MAX, PortError, impl_ports};
+pub use violations::{Code, Severity, VIOLATIONS_MAX, Violation, Violations};
 // `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use schemify_doc::PinDir;
 pub use state::{CellState, NetChange, Recomputed};
 pub use values::{Funcs, Val, cached_text, no_funcs};
-
-/// Cells with at least this many instances elaborate on two threads: connectivity beside
-/// the graph, element names beside the geometry.
-const PARALLEL_MIN: usize = 1 << 15;
-
-/// Forces the serial order everywhere (the D37 jobs = 1 vs N oracle).
-static SERIAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Whether a cell of `instances` instances uses a second thread: large enough to pay for
-/// one, on a target that has them, unless forced serial. Results never depend on it.
-fn parallel_ok(instances: usize) -> bool {
-    cfg!(not(target_family = "wasm"))
-        && instances >= PARALLEL_MIN
-        && !SERIAL.load(std::sync::atomic::Ordering::Relaxed)
-}
 
 #[doc(hidden)]
 pub mod test_support {
@@ -120,4 +117,21 @@ pub mod test_support {
     ) -> crate::Iface {
         crate::Iface::from_doc(doc, cell, cell, u32::MAX, true, names)
     }
+}
+
+/// Cells with at least this many instances elaborate on two threads: connectivity beside
+/// the graph, element names beside the geometry.
+const PARALLEL_MIN: usize = 1 << 15;
+
+/// Forces the serial order everywhere (the D37 jobs = 1 vs N oracle).
+static SERIAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// ---- private ----
+
+/// Whether a cell of `instances` instances uses a second thread: large enough to pay for
+/// one, on a target that has them, unless forced serial. Results never depend on it.
+fn parallel_ok(instances: usize) -> bool {
+    cfg!(not(target_family = "wasm"))
+        && instances >= PARALLEL_MIN
+        && !SERIAL.load(std::sync::atomic::Ordering::Relaxed)
 }
