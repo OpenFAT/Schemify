@@ -14,7 +14,7 @@
 
 use std::ops::Range;
 
-use schemify_canvas::{Arcs, CanvasPrims, LAYERS, Lines, Polys, chain};
+use schemify_canvas::{Arcs, CanvasPrims, LAYERS, LineStyle, Lines, Polys, chain};
 
 use super::ear::ear_clip;
 use super::pens::Pens;
@@ -306,37 +306,58 @@ pub(super) fn edge_fields(p: &Polys, k: usize, j: usize, closed: bool, c: u32, s
 impl InstanceRows {
     /// Repacks 1:1 column `c` (0 lines, 1 rects, 2 arcs) of source `src` whole.
     fn repack(&mut self, src: usize, c: usize, t: &CanvasPrims) {
+        let (l, r, a) = (&t.lines, &t.rects, &t.arcs);
         match c {
-            0 => self.repack_with(src, c, t.lines.x0.len(), |i, p| {
-                seg_row(&t.lines, i, false, p)
-            }),
-            1 => self.repack_with(src, c, t.rects.x0.len(), |i, p| {
-                seg_row(&t.rects, i, true, p)
-            }),
-            _ => self.repack_with(src, c, t.arcs.cx.len(), |i, p| arc_row(&t.arcs, i, p)),
+            0 => self.repack_with(
+                src,
+                c,
+                (&l.layer, &l.style),
+                |_| false,
+                |i, co, st| seg_fields(l, i, co, st),
+            ),
+            1 => self.repack_with(
+                src,
+                c,
+                (&r.layer, &r.style),
+                |_| true,
+                |i, co, st| seg_fields(r, i, co, st),
+            ),
+            _ => self.repack_with(
+                src,
+                c,
+                (&a.layer, &a.style),
+                |i| a.sweep[i].abs() >= 360_000,
+                |i, co, st| arc_fields(a, i, co, st),
+            ),
         }
     }
 
-    /// Repacks the `n` rows of column `c` of source `src`, `row_of` packing each: one pass
-    /// keys each row by its layer (or [`NO_KEY`]) and counts the layers, the layout places the
-    /// layer ranges, and one pass writes each live row into the next slot of its layer. Each
-    /// row's pen comes from the cached [`Pens`].
+    /// Repacks column `c` of source `src` (its `layer` and `style` columns, `closed(i)` when
+    /// row `i` may fill, `fields(i, colour, style word)` its words): one pass keys each row by
+    /// its layer (or [`NO_KEY`]) and counts the layers, the layout places the layer ranges,
+    /// and one pass writes each live row into the next slot of its layer. Each row's pen comes
+    /// from the cached [`Pens`]; the key pass reads only the layer and style columns.
     ///
     /// Cost: O(rows); about 10 ns a row (`pack_100k_whole`).
     fn repack_with(
         &mut self,
         src: usize,
         c: usize,
-        n: usize,
-        mut row_of: impl FnMut(usize, &mut Pens) -> Option<Packed>,
+        (layer, style): (&[u8], &[LineStyle]),
+        closed: impl Fn(usize) -> bool,
+        fields: impl Fn(usize, u32, u32) -> [u32; 7],
     ) {
         let kind = ONE_TO_ONE[c];
-        let words = STRIDE[kind] / 4;
+        let (n, stride) = (layer.len(), STRIDE[kind]);
+        assert_eq!(style.len(), n, "columns in step");
         let (keys, pens) = (&mut self.keys, &mut self.pens);
         keys.clear();
         let mut count = [0u32; LAYERS];
         for i in 0..n {
-            let k = row_of(i, pens).map_or(NO_KEY, |(l, _)| l as u8);
+            let k = match pens.get(layer[i], style[i], closed(i)) {
+                Some(_) => layer[i],
+                None => NO_KEY,
+            };
             if k != NO_KEY {
                 count[usize::from(k)] += 1;
             }
@@ -352,11 +373,16 @@ impl InstanceRows {
                 slots.push(NO_SLOT);
                 continue;
             }
-            let (l, fields) = row_of(i, pens).expect("keyed live");
+            let (co, st) = pens.get(k, style[i], closed(i)).expect("keyed live");
+            let l = usize::from(k);
             debug_assert!(table.used[l] < table.cap[l], "laid out for every row");
             let s = table.start[l] + table.used[l];
             table.used[l] += 1;
-            row(&mut table.bytes, STRIDE[kind], s as usize, &fields[..words]);
+            let at = s as usize * stride;
+            let out = &mut table.bytes[at..at + stride];
+            for (b, f) in out.chunks_exact_mut(4).zip(fields(i, co, st)) {
+                b.copy_from_slice(&f.to_ne_bytes());
+            }
             slots.push(s);
         }
         assert_eq!(table.used, count, "every live row placed");
