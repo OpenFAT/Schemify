@@ -5,13 +5,13 @@
 
 mod common;
 
-use common::{Session, U};
+use common::{Session, U, Ui};
 use schemify_editor::scene::LAYER_MISSING;
 use schemify_ui::{InputEvent, InputEvents};
 
 /// The sheet open under the Modern preset; every placed cell resolves.
 fn sheet(tag: &str) -> Session {
-    let mut s = Session::open("symbols", "sheet.shcomp", tag, true);
+    let mut s = Session::open("symbols", "sheet.shcomp", tag, Ui::Default);
     s.run("view.theme_modern", "");
     let missing = s.ed.scene().prims.rects.layer.iter();
     assert!(

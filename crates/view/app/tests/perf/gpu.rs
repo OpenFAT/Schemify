@@ -11,7 +11,7 @@ use schemify_render::wgpu;
 use schemify_render::{Batch, GpuPainter};
 use schemify_ui::{Button, InputEvent, InputEvents};
 
-use super::{Bench, Gpu, event, key_event, schematic};
+use super::{Bench, Gpu, Measure, event, key_event, schematic};
 use crate::common::{U, VIEW, fixture};
 
 impl Bench {
@@ -229,7 +229,8 @@ fn gpu_editor_frame_matches_cpu_frame() {
             .flat_map(|c| [c.r, c.g, c.b, c.a])
             .collect();
         let (mut sum, mut far) = (0u64, 0usize);
-        for (p, q) in gpu.chunks_exact(4).zip(cpu.chunks_exact(4)) {
+        let pixel_pairs = gpu.chunks_exact(4).zip(cpu.chunks_exact(4));
+        for (p, q) in pixel_pairs {
             let d = [
                 p[0].abs_diff(q[0]),
                 p[1].abs_diff(q[1]),
@@ -270,7 +271,7 @@ fn gpu_editor_frame_matches_cpu_frame() {
     compare(&mut b, "open");
     b.window(&event(InputEvent::PointerMove { x: 500.0, y: 380.0 }), 16);
     compare(&mut b, "hover");
-    b.click_node("menu.tools", 300, false);
+    b.click_node("menu.tools", 300, Measure::Skip);
     compare(&mut b, "menu");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -314,7 +315,7 @@ fn cpu_frames_100k() {
         times: Vec<(f64, f64)>,
     }
     impl Cpu {
-        fn frame(&mut self, ev: &InputEvents, dt: u64, measure: bool) {
+        fn frame(&mut self, ev: &InputEvents, dt: u64, measure: Measure) {
             self.now += dt;
             let t = Instant::now();
             self.ed.update(ev, VIEW, self.now);
@@ -324,7 +325,7 @@ fn cpu_frames_100k() {
             let t = Instant::now();
             std::hint::black_box(self.p.finish(Color::BLACK));
             let raster = t.elapsed().as_secs_f64() * 1e3;
-            if measure {
+            if measure == Measure::Record {
                 self.times.push((painted, raster));
             }
         }
@@ -333,16 +334,16 @@ fn cpu_frames_100k() {
                 if self.ed.wake_ms().is_none() {
                     break;
                 }
-                self.frame(&InputEvents::default(), 200, false);
+                self.frame(&InputEvents::default(), 200, Measure::Skip);
             }
         }
         /// A click on a wire of tile `k`, as `frame_times` selects.
-        fn select(&mut self, k: i32, measure: bool) {
+        fn select(&mut self, k: i32, measure: Measure) {
             let at = self.ed.to_screen((70 * U + 200 * U * (k % 4), -30 * U));
             self.frame(
                 &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
                 50,
-                false,
+                Measure::Skip,
             );
             let mut click = event(InputEvent::PointerDown {
                 x: at.0,
@@ -376,7 +377,7 @@ fn cpu_frames_100k() {
         now: 0,
         times: Vec::new(),
     };
-    c.frame(&InputEvents::default(), 1000, false);
+    c.frame(&InputEvents::default(), 1000, Measure::Skip);
     c.settle();
     let (cx, cy) = (640.0f32, 400.0f32);
     // Pan: as `frame_times`.
@@ -384,7 +385,7 @@ fn cpu_frames_100k() {
     c.frame(
         &event(InputEvent::PointerMove { x: 300.0, y: cy }),
         8,
-        false,
+        Measure::Skip,
     );
     c.frame(
         &event(InputEvent::PointerDown {
@@ -393,12 +394,16 @@ fn cpu_frames_100k() {
             button: mid,
         }),
         8,
-        false,
+        Measure::Skip,
     );
     let mut x = 300.0f32;
     for i in 0..240 {
         x += if (i / 120) % 2 == 0 { 6.0 } else { -6.0 };
-        c.frame(&event(InputEvent::PointerMove { x, y: cy }), 8, true);
+        c.frame(
+            &event(InputEvent::PointerMove { x, y: cy }),
+            8,
+            Measure::Record,
+        );
     }
     c.frame(
         &event(InputEvent::PointerUp {
@@ -407,11 +412,15 @@ fn cpu_frames_100k() {
             button: mid,
         }),
         8,
-        false,
+        Measure::Skip,
     );
     report_cpu("pan", &mut c.times);
     // Zoom bursts: as `frame_times`.
-    c.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    c.frame(
+        &event(InputEvent::PointerMove { x: cx, y: cy }),
+        8,
+        Measure::Skip,
+    );
     for burst in 0..10 {
         let dy = if burst % 2 == 0 { 1.0 } else { -1.0 };
         for _ in 0..6 {
@@ -421,19 +430,19 @@ fn cpu_frames_100k() {
                 dx: 0.0,
                 dy,
             };
-            c.frame(&event(wheel), 16, true);
+            c.frame(&event(wheel), 16, Measure::Record);
         }
     }
     report_cpu("zoom", &mut c.times);
     // Select a wire (click), then delete and undo: as `frame_times`.
     for k in 0..12 {
-        c.select(k, true);
+        c.select(k, Measure::Record);
     }
     report_cpu("select", &mut c.times);
     for k in 0..12 {
-        c.select(k, false);
-        c.frame(&key_event("Del"), 500, true);
-        c.frame(&key_event("U"), 500, true);
+        c.select(k, Measure::Skip);
+        c.frame(&key_event("Del"), 500, Measure::Record);
+        c.frame(&key_event("U"), 500, Measure::Record);
     }
     report_cpu("edit", &mut c.times);
     // Hover zoomed in: as `interactions`.
@@ -444,13 +453,13 @@ fn cpu_frames_100k() {
             dx: 0.0,
             dy: 1.0,
         };
-        c.frame(&event(wheel), 16, false);
+        c.frame(&event(wheel), 16, Measure::Skip);
     }
     c.settle();
     for i in 0..240 {
         let x = 200.0 + (i % 120) as f32 * 4.0;
         let y = cy + (i / 120) as f32 * 3.0;
-        c.frame(&event(InputEvent::PointerMove { x, y }), 8, true);
+        c.frame(&event(InputEvent::PointerMove { x, y }), 8, Measure::Record);
     }
     report_cpu("hover", &mut c.times);
     let _ = std::fs::remove_dir_all(&dir);

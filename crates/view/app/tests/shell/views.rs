@@ -4,13 +4,13 @@
 use schemify_ui::{Button, InputEvent, InputEvents};
 
 use super::node_prop;
-use crate::common::{self, Session, U, VIEW};
+use crate::common::{self, Session, U, Ui, VIEW};
 
 /// The editor on the inverter fixture (top cell with two `inv` sub-cell instances), dark
 /// theme, default UI. Re-bless with `SCHEMIFY_BLESS=1`.
 #[test]
 fn golden_editor_dark() {
-    let mut s = Session::open("inv", "top.shcomp", "golden", true);
+    let mut s = Session::open("inv", "top.shcomp", "golden", Ui::Default);
     let px = s.render();
     common::check_golden("editor_dark", px);
 }
@@ -19,7 +19,7 @@ fn golden_editor_dark() {
 /// Ctrl+W returns to the schematic.
 #[test]
 fn waves_window_opens_a_raw_file_and_closes() {
-    let mut s = Session::open("inv", "top.shcomp", "waves", true);
+    let mut s = Session::open("inv", "top.shcomp", "waves", Ui::Default);
     let raw = concat!(
         env!("SCHEMIFY_ROOT"),
         "/crates/model/wave/tests/fixtures/rc_tran.bin.raw"
@@ -37,7 +37,7 @@ fn waves_window_opens_a_raw_file_and_closes() {
 /// The same with a selection and the light canvas (Shift+O), to pin marks and the palette.
 #[test]
 fn golden_editor_light_selection() {
-    let mut s = Session::open("inv", "top.shcomp", "golden-light", true);
+    let mut s = Session::open("inv", "top.shcomp", "golden-light", Ui::Default);
     s.click((10 * U, 0));
     s.key("Shift+O");
     assert!(s.ed.opts().light);
@@ -49,7 +49,7 @@ fn golden_editor_light_selection() {
 /// over the dark and light canvas: one golden each. Toggling it twice restores the parity look.
 #[test]
 fn golden_editor_modern() {
-    let mut s = Session::open("inv", "top.shcomp", "golden-modern", true);
+    let mut s = Session::open("inv", "top.shcomp", "golden-modern", Ui::Default);
     let rgb = |px: &schemify_render::Pixmap, x, y| {
         let c = px.sample(x, y);
         (c.r, c.g, c.b)
@@ -92,7 +92,7 @@ fn golden_editor_modern() {
 /// the same size (live strings), so a long session cannot fill it.
 #[test]
 fn pointer_moves_do_not_grow_the_ui_string_table() {
-    let mut s = Session::open("inv", "top.shcomp", "strings", true);
+    let mut s = Session::open("inv", "top.shcomp", "strings", Ui::Default);
     s.move_to((0, 0));
     let len = s.ed.shell().strings().len();
     for i in 0..300 {
@@ -121,7 +121,7 @@ fn pointer_moves_do_not_grow_the_ui_string_table() {
 /// shrinks), clamped to the allowed range; a press away from it is the editor's.
 #[test]
 fn waves_dock_divider_drags() {
-    let mut s = Session::open("inv", "top.shcomp", "dock-split", true);
+    let mut s = Session::open("inv", "top.shcomp", "dock-split", Ui::Default);
     let raw = concat!(
         env!("SCHEMIFY_ROOT"),
         "/crates/model/wave/tests/fixtures/rc_tran.bin.raw"
@@ -171,7 +171,7 @@ fn waves_dock_divider_drags() {
 /// Schematic greyed out (a `.shprim` has none).
 #[test]
 fn golden_primitive_modern() {
-    let mut s = Session::open("rc", "res.shprim", "golden-prim", true);
+    let mut s = Session::open("rc", "res.shprim", "golden-prim", Ui::Default);
     s.run("view.theme_modern", "");
     common::check_golden("primitive_modern", s.render());
 }
@@ -198,7 +198,7 @@ fn st(style: &str, disabled: &str) -> (String, String) {
 fn view_switcher_follows_the_file_kind() {
     use schemify_editor::session::View;
     // .shcomp: both sides; clicking switches and the `on` style follows.
-    let mut s = Session::open("inv", "top.shcomp", "switch-comp", true);
+    let mut s = Session::open("inv", "top.shcomp", "switch-comp", Ui::Default);
     assert_eq!(s.ed.active().map(|a| a.1), Some(View::Schematic));
     let [sch, sym, _] = switch_state(&s);
     assert_eq!((sch, sym), (st("viewsw-on", "0"), st("viewsw", "0")));
@@ -214,7 +214,7 @@ fn view_switcher_follows_the_file_kind() {
     assert_ne!(switch_state(&s)[2].0, docs_before);
 
     // .shprim: no schematic.
-    let mut p = Session::open("rc", "res.shprim", "switch-prim", true);
+    let mut p = Session::open("rc", "res.shprim", "switch-prim", Ui::Default);
     assert_eq!(p.ed.active().map(|a| a.1), Some(View::Symbol));
     let [sch, sym, _] = switch_state(&p);
     assert_eq!((sch, sym), (st("viewsw-off", "1"), st("viewsw-on", "0")));
@@ -229,7 +229,7 @@ fn view_switcher_follows_the_file_kind() {
     assert!(p.status().contains("no schematic"), "{}", p.status());
 
     // .shbench: no symbol.
-    let mut b = Session::open("rc", "tb.shbench", "switch-bench", true);
+    let mut b = Session::open("rc", "tb.shbench", "switch-bench", Ui::Default);
     assert_eq!(b.ed.active().map(|a| a.1), Some(View::Schematic));
     let [sch, sym, _] = switch_state(&b);
     assert_eq!((sch, sym), (st("viewsw-on", "0"), st("viewsw-off", "1")));
@@ -244,7 +244,7 @@ fn view_switcher_follows_the_file_kind() {
 fn view_switcher_floats_over_the_canvas() {
     use schemify_editor::session::View;
     use schemify_ui::{FLOAT_INSET, Layer};
-    let mut s = Session::open("rc", "res.shprim", "switch-float", true);
+    let mut s = Session::open("rc", "res.shprim", "switch-float", Ui::Default);
     let sh = &s.ed.shell();
     let row = |id: &str| {
         let n = sh
@@ -285,7 +285,7 @@ fn view_switcher_floats_over_the_canvas() {
     s.move_screen(off.x + 3.0, off.y + off.h / 2.0);
     assert_eq!(probe(&mut s, off), off0, "a disabled button does not");
     // Modal: with the insert-symbol chooser open, clicking the switcher does nothing.
-    let mut m = Session::open("inv", "top.shcomp", "switch-modal", true);
+    let mut m = Session::open("inv", "top.shcomp", "switch-modal", Ui::Default);
     m.key("Ins");
     assert!(!m.ed.shell().ui().dialog().is_none(), "a dialog is open");
     m.click_node("switch.symbol");

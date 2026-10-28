@@ -9,7 +9,7 @@ mod common;
 mod prose;
 mod values;
 
-use common::Session;
+use common::{Session, Ui};
 use schemify_elab::{CellState, Val};
 use schemify_expr::{Scratch, Template, Value};
 
@@ -17,7 +17,7 @@ use schemify_expr::{Scratch, Template, Value};
 const WASM: &[u8] = include_bytes!("../fixtures/ota/plugins/gmid_lut.wasm");
 
 fn open(tag: &str) -> Session {
-    let mut s = Session::open("ota", "ota.shcomp", tag, true);
+    let mut s = Session::open("ota", "ota.shcomp", tag, Ui::Default);
     s.frame(Default::default());
     s
 }

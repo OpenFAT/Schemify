@@ -6,7 +6,7 @@ use schemify_render::Batch;
 use schemify_render::gpu::InstanceRows;
 use schemify_ui::{Button, Chord, InputEvent, InputEvents};
 
-use super::{Bench, Gpu, budget, event, schematic, tick_stats};
+use super::{Bench, Gpu, Measure, budget, event, schematic, tick_stats};
 use crate::common::{U, VIEW, fixture};
 
 /// Every other interactive frame on an `n`-object schematic, zoomed in so objects are big
@@ -45,14 +45,18 @@ fn interactions(n: u32) {
             if b.ed.wake_ms().is_none() {
                 break;
             }
-            b.frame(&InputEvents::default(), 200, false);
+            b.frame(&InputEvents::default(), 200, Measure::Skip);
         }
         assert_eq!(b.ed.wake_ms(), None, "settled");
     };
-    b.frame(&InputEvents::default(), 1000, false);
+    b.frame(&InputEvents::default(), 1000, Measure::Skip);
     settle(&mut b);
     let (cx, cy) = (640.0f32, 400.0f32);
-    b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    b.frame(
+        &event(InputEvent::PointerMove { x: cx, y: cy }),
+        8,
+        Measure::Skip,
+    );
     for _ in 0..8 {
         let wheel = InputEvent::Wheel {
             x: cx,
@@ -60,14 +64,14 @@ fn interactions(n: u32) {
             dx: 0.0,
             dy: 1.0,
         };
-        b.frame(&event(wheel), 16, false);
+        b.frame(&event(wheel), 16, Measure::Skip);
     }
     settle(&mut b);
     // Hover: 4 px per frame across the canvas.
     for i in 0..240 {
         let x = 200.0 + (i % 120) as f32 * 4.0;
         let y = cy + (i / 120) as f32 * 3.0;
-        b.frame(&event(InputEvent::PointerMove { x, y }), 8, true);
+        b.frame(&event(InputEvent::PointerMove { x, y }), 8, Measure::Record);
     }
     let [hover, hover95, _] = b.report("hover");
     // Select: wires of the tiles around the view's center.
@@ -95,29 +99,29 @@ fn interactions(n: u32) {
         b.frame(
             &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
             50,
-            false,
+            Measure::Skip,
         );
         let mut click = event(press(at));
         click.push(release(at));
-        b.frame(&click, 500, true);
+        b.frame(&click, 500, Measure::Record);
         assert_eq!(b.ed.selection().len(), 1, "a wire under the pointer");
         b.ticks();
     }
     let [select, ..] = b.report("select");
     // Drag the selected wire (past the double-click time), then drop it.
     let at = wire(&b, 11);
-    b.frame(&event(press(at)), 1000, false);
+    b.frame(&event(press(at)), 1000, Measure::Skip);
     for i in 1..=60 {
         let to = InputEvent::PointerMove {
             x: at.0 + i as f32 * 2.0,
             y: at.1 + i as f32,
         };
-        b.frame(&event(to), 8, true);
+        b.frame(&event(to), 8, Measure::Record);
     }
     assert!(!b.ed.overlay().is_empty(), "the move preview");
     let [drag, drag95, _] = b.report("drag");
     let to = (at.0 + 120.0, at.1 + 60.0);
-    b.frame(&event(release(to)), 8, true);
+    b.frame(&event(release(to)), 8, Measure::Record);
     b.report("drop");
     eprintln!("  after the drop: {}", tick_stats(b.ticks()));
     // Open the Tools menu (a click on its title), close it.
@@ -125,8 +129,8 @@ fn interactions(n: u32) {
         chord: Chord::parse("Escape").expect("chord"),
     });
     for _ in 0..8 {
-        b.click_node("menu.tools", 300, true);
-        b.frame(&escape, 300, false);
+        b.click_node("menu.tools", 300, Measure::Record);
+        b.frame(&escape, 300, Measure::Skip);
     }
     let [menu, ..] = b.report("menu");
     // Type into the first field of an instance's properties dialog, one character a frame.
@@ -137,16 +141,16 @@ fn interactions(n: u32) {
     });
     click.push(press(inst));
     click.push(release(inst));
-    b.frame(&click, 500, false);
+    b.frame(&click, 500, Measure::Skip);
     let q = event(InputEvent::Key {
         chord: Chord::parse("q").expect("chord"),
     });
-    b.frame(&q, 300, false);
-    b.click_node("dialog.props.val.0", 300, false);
+    b.frame(&q, 300, Measure::Skip);
+    b.click_node("dialog.props.val.0", 300, Measure::Skip);
     for i in 0..60 {
         let mut ev = InputEvents::default();
         ev.push_text(if i % 2 == 0 { "a" } else { "b" });
-        b.frame(&ev, 30, true);
+        b.frame(&ev, 30, Measure::Record);
     }
     let [typing, typing95, _] = b.report("type");
     // At 100k only (the select-all rounds are the slow part at 1M).
@@ -154,10 +158,10 @@ fn interactions(n: u32) {
         // Unselect (HANDOFF bug 3): select everything, then an Alt-drag box around the whole
         // schematic drops it all; the release frame is measured (O(selected × hits) before the
         // sort and binary search: ~10^10 comparisons at 100k).
-        b.frame(&escape, 300, false);
-        b.frame(&escape, 300, false);
+        b.frame(&escape, 300, Measure::Skip);
+        b.frame(&escape, 300, Measure::Skip);
         b.ed.command("view.zoom_full", "");
-        b.frame(&InputEvents::default(), 300, false);
+        b.frame(&InputEvents::default(), 300, Measure::Skip);
         for _ in 0..2 {
             let wheel = InputEvent::Wheel {
                 x: cx,
@@ -165,7 +169,7 @@ fn interactions(n: u32) {
                 dx: 0.0,
                 dy: -1.0,
             };
-            b.frame(&event(wheel), 16, false);
+            b.frame(&event(wheel), 16, Measure::Skip);
         }
         settle(&mut b);
         let side = (f64::from(n / 10).sqrt().ceil() as i32).max(1);
@@ -186,7 +190,7 @@ fn interactions(n: u32) {
         let mut resident = Vec::new();
         for _ in 0..12 {
             b.ed.command("edit.select_all", "");
-            b.frame(&InputEvents::default(), 300, false);
+            b.frame(&InputEvents::default(), 300, Measure::Skip);
             b.ticks();
             resident.extend(rss());
             let all = b.ed.selection().len();
@@ -194,15 +198,15 @@ fn interactions(n: u32) {
             let mut down = event(alt(schemify_ui::Mods::ALT));
             down.push(InputEvent::PointerMove { x: lo.0, y: lo.1 });
             down.push(press(lo));
-            b.frame(&down, 1000, false);
+            b.frame(&down, 1000, Measure::Skip);
             b.frame(
                 &event(InputEvent::PointerMove { x: hi.0, y: hi.1 }),
                 8,
-                false,
+                Measure::Skip,
             );
-            b.frame(&event(release(hi)), 8, true);
+            b.frame(&event(release(hi)), 8, Measure::Record);
             assert!(b.ed.selection().is_empty(), "the box unselected everything");
-            b.frame(&event(alt(0)), 8, false);
+            b.frame(&event(alt(0)), 8, Measure::Skip);
             b.ticks();
         }
         if let (Some(first), Some(last)) = (resident.get(1), resident.last()) {

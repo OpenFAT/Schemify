@@ -9,7 +9,7 @@ use schemify_render::Batch;
 use schemify_render::gpu::InstanceRows;
 use schemify_ui::{Button, InputEvent, InputEvents};
 
-use super::{Bench, Gpu, budget, event, id, key_event, schematic, tick_stats};
+use super::{Bench, Gpu, Measure, budget, event, id, key_event, schematic, tick_stats};
 use crate::common::{self, U, VIEW, fixture};
 
 /// D39 "param edit → recompute + redraw ≤ 8 ms for 1k dependents": a var edited on the docs
@@ -114,14 +114,18 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
             if b.ed.wake_ms().is_none() {
                 break;
             }
-            b.frame(&InputEvents::default(), 200, false);
+            b.frame(&InputEvents::default(), 200, Measure::Skip);
         }
         assert_eq!(b.ed.wake_ms(), None, "settled");
     };
-    b.frame(&InputEvents::default(), 1000, false);
+    b.frame(&InputEvents::default(), 1000, Measure::Skip);
     settle(&mut b);
     let (cx, cy) = (640.0f32, 400.0f32);
-    b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    b.frame(
+        &event(InputEvent::PointerMove { x: cx, y: cy }),
+        8,
+        Measure::Skip,
+    );
     for _ in 0..8 {
         let wheel = InputEvent::Wheel {
             x: cx,
@@ -129,7 +133,7 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
             dx: 0.0,
             dy: 1.0,
         };
-        b.frame(&event(wheel), 16, false);
+        b.frame(&event(wheel), 16, Measure::Skip);
     }
     settle(&mut b);
     let cam = b.ed.camera();
@@ -155,11 +159,11 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
         b.frame(
             &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
             50,
-            false,
+            Measure::Skip,
         );
         let mut c = event(press(at));
         c.push(release(at));
-        b.frame(&c, 500, false);
+        b.frame(&c, 500, Measure::Skip);
         b.ticks();
     };
     let mut out = Vec::new();
@@ -174,10 +178,10 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
     let at = wire(&b, 0);
     click(&mut b, at);
     assert_eq!(b.ed.selection().len(), 1, "a wire under the pointer");
-    b.frame(&key_event("Del"), 500, true);
+    b.frame(&key_event("Del"), 500, Measure::Record);
     ticks.extend(b.ticks());
     done(&mut b, "first", &mut ticks);
-    b.frame(&key_event("U"), 500, false);
+    b.frame(&key_event("U"), 500, Measure::Skip);
     b.ticks();
     // Delete, undo, redo (then undo again, so the document stays as it was).
     let objs = b.ed.scene().objs.len();
@@ -192,12 +196,12 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
             ("U", &mut undo, &mut tundo, objs),
             ("Shift+U", &mut redo, &mut tredo, objs - 1),
         ] {
-            b.frame(&key_event(key), 500, true);
+            b.frame(&key_event(key), 500, Measure::Record);
             times.push(b.cpu.pop().expect("measured"));
             assert_eq!(b.ed.scene().objs.len(), len, "{key}");
             t.extend(b.ticks());
         }
-        b.frame(&key_event("U"), 500, false);
+        b.frame(&key_event("U"), 500, Measure::Skip);
         b.ticks();
     }
     for (what, times, t) in [
@@ -213,17 +217,21 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
     for k in 0..12 {
         let at = wire(&b, k);
         click(&mut b, at);
-        b.frame(&event(press(at)), 1000, false);
+        b.frame(&event(press(at)), 1000, Measure::Skip);
         for i in 1..=8 {
             let to = InputEvent::PointerMove {
                 x: at.0 + i as f32 * 2.0,
                 y: at.1 + i as f32,
             };
-            b.frame(&event(to), 8, false);
+            b.frame(&event(to), 8, Measure::Skip);
         }
-        b.frame(&event(release((at.0 + 16.0, at.1 + 8.0))), 8, true);
+        b.frame(
+            &event(release((at.0 + 16.0, at.1 + 8.0))),
+            8,
+            Measure::Record,
+        );
         ticks.extend(b.ticks());
-        b.frame(&key_event("U"), 500, false);
+        b.frame(&key_event("U"), 500, Measure::Skip);
         b.ticks();
     }
     done(&mut b, "move", &mut ticks);
@@ -237,21 +245,21 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
                 y: from.1,
             }),
             50,
-            false,
+            Measure::Skip,
         );
-        b.frame(&key_event("w"), 300, false);
+        b.frame(&key_event("w"), 300, Measure::Skip);
         let to = (from.0 + 30.0, from.1);
         b.frame(
             &event(InputEvent::PointerMove { x: to.0, y: to.1 }),
             50,
-            false,
+            Measure::Skip,
         );
         let mut c = event(press(to));
         c.push(release(to));
-        b.frame(&c, 500, true);
+        b.frame(&c, 500, Measure::Record);
         ticks.extend(b.ticks());
-        b.frame(&key_event("Escape"), 300, false);
-        b.frame(&key_event("U"), 500, false);
+        b.frame(&key_event("Escape"), 300, Measure::Skip);
+        b.frame(&key_event("U"), 500, Measure::Skip);
         b.ticks();
     }
     done(&mut b, "wire", &mut ticks);
@@ -261,9 +269,9 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
         for k in 0..12 {
             let inst = b.ed.to_screen((tx + 200 * U * (k % 4 - 2), ty));
             click(&mut b, inst);
-            b.frame(&key_event("q"), 300, false);
-            b.click_node(&format!("dialog.props.val.{field}"), 300, false);
-            b.frame(&key_event("Ctrl+A"), 30, false);
+            b.frame(&key_event("q"), 300, Measure::Skip);
+            b.click_node(&format!("dialog.props.val.{field}"), 300, Measure::Skip);
+            b.frame(&key_event("Ctrl+A"), 30, Measure::Skip);
             // A new value each time (an unchanged field commits nothing): unique names and,
             // every other time, the name of another instance (a duplicate, E009).
             let mut ev = InputEvents::default();
@@ -272,8 +280,8 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
                 0 => format!("MX{k}"),
                 _ => format!("{}", 2 + k),
             });
-            b.frame(&ev, 30, false);
-            b.click_node("dialog.props.ok", 300, true);
+            b.frame(&ev, 30, Measure::Skip);
+            b.click_node("dialog.props.ok", 300, Measure::Record);
             ticks.extend(b.ticks());
         }
         done(&mut b, what, &mut ticks);
@@ -349,7 +357,7 @@ fn shared_var_edit_frames_100k() {
         instances: Vec::new(),
     };
     for _ in 0..8 {
-        b.frame(&InputEvents::default(), 1000, false);
+        b.frame(&InputEvents::default(), 1000, Measure::Skip);
     }
     let (h, _) = b.ed.active().expect("a document");
     // Fitted to the window (every dependent on screen), then zoomed in as `edit_frames`.
@@ -364,7 +372,11 @@ fn shared_var_edit_frames_100k() {
         if view == "zoomed" && !zoomed {
             zoomed = true;
             let (cx, cy) = (640.0f32, 400.0f32);
-            b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+            b.frame(
+                &event(InputEvent::PointerMove { x: cx, y: cy }),
+                8,
+                Measure::Skip,
+            );
             for _ in 0..8 {
                 let wheel = InputEvent::Wheel {
                     x: cx,
@@ -372,13 +384,13 @@ fn shared_var_edit_frames_100k() {
                     dx: 0.0,
                     dy: 1.0,
                 };
-                b.frame(&event(wheel), 16, false);
+                b.frame(&event(wheel), 16, Measure::Skip);
             }
             for _ in 0..256 {
                 if b.ed.wake_ms().is_none() {
                     break;
                 }
-                b.frame(&InputEvents::default(), 200, false);
+                b.frame(&InputEvents::default(), 200, Measure::Skip);
             }
         }
         let mut ticks = Vec::new();
@@ -397,7 +409,7 @@ fn shared_var_edit_frames_100k() {
                 }),
                 unix_ms: 0,
             }]);
-            b.frame(&InputEvents::default(), 500, true);
+            b.frame(&InputEvents::default(), 500, Measure::Record);
             let st = b.ed.cell().expect("elaborated");
             assert_eq!(
                 st.revalued.len(),

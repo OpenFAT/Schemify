@@ -8,7 +8,7 @@ use schemify_render::Batch;
 use schemify_render::gpu::InstanceRows;
 use schemify_ui::{Button, Chord, InputEvent, InputEvents};
 
-use super::{Bench, Gpu, budget, event, schematic, tick_stats};
+use super::{Bench, Gpu, Measure, budget, event, schematic, tick_stats};
 use crate::common::{U, VIEW, fixture};
 
 /// Pan (middle drag), zoom (wheel notches) and a local edit (delete a wire, undo) on an
@@ -50,14 +50,14 @@ fn frame_times(n: u32) {
         instances: Vec::new(),
     };
     // The whole schematic in view (zoom full), first frame packs the rows.
-    b.frame(&InputEvents::default(), 1000, false);
+    b.frame(&InputEvents::default(), 1000, Measure::Skip);
 
     // Pan: a middle-button drag, 6 px per 8 ms frame, 720 px one way then back.
     let (cx, cy) = (640.0f32, 400.0f32);
     b.frame(
         &event(InputEvent::PointerMove { x: 300.0, y: cy }),
         8,
-        false,
+        Measure::Skip,
     );
     let mid = Button::Middle;
     b.frame(
@@ -67,12 +67,16 @@ fn frame_times(n: u32) {
             button: mid,
         }),
         8,
-        false,
+        Measure::Skip,
     );
     let mut x = 300.0f32;
     for i in 0..240 {
         x += if (i / 120) % 2 == 0 { 6.0 } else { -6.0 };
-        b.frame(&event(InputEvent::PointerMove { x, y: cy }), 8, true);
+        b.frame(
+            &event(InputEvent::PointerMove { x, y: cy }),
+            8,
+            Measure::Record,
+        );
     }
     b.frame(
         &event(InputEvent::PointerUp {
@@ -81,13 +85,17 @@ fn frame_times(n: u32) {
             button: mid,
         }),
         8,
-        false,
+        Measure::Skip,
     );
     let [pan, _, pan99] = b.report("pan");
 
     // Zoom: bursts of 6 wheel notches at the pointer, 16 ms apart, alternately in and out.
     // The wheel turns where the pointer is (as winit reports it).
-    b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    b.frame(
+        &event(InputEvent::PointerMove { x: cx, y: cy }),
+        8,
+        Measure::Skip,
+    );
     for burst in 0..10 {
         let dy = if burst % 2 == 0 { 1.0 } else { -1.0 };
         for _ in 0..6 {
@@ -97,7 +105,7 @@ fn frame_times(n: u32) {
                 dx: 0.0,
                 dy,
             };
-            b.frame(&event(wheel), 16, true);
+            b.frame(&event(wheel), 16, Measure::Record);
         }
         assert_eq!(
             b.ed.wake_ms(),
@@ -114,12 +122,12 @@ fn frame_times(n: u32) {
             chord: Chord::parse(c).expect("chord"),
         })
     };
-    let select = |b: &mut Bench, k: i32, measure: bool| {
+    let select = |b: &mut Bench, k: i32, measure: Measure| {
         let at = b.ed.to_screen((70 * U + 200 * U * (k % 4), -30 * U));
         b.frame(
             &event(InputEvent::PointerMove { x: at.0, y: at.1 }),
             50,
-            false,
+            Measure::Skip,
         );
         let down = InputEvent::PointerDown {
             x: at.0,
@@ -137,7 +145,7 @@ fn frame_times(n: u32) {
         assert_eq!(b.ed.selection().len(), 1, "a wire under the pointer");
     };
     for k in 0..12 {
-        select(&mut b, k, true);
+        select(&mut b, k, Measure::Record);
         b.ticks();
     }
     let [select50, ..] = b.report("select");
@@ -145,13 +153,13 @@ fn frame_times(n: u32) {
     // after the frame, before the next input.
     let mut ticks = Vec::new();
     for k in 0..12 {
-        select(&mut b, k, false);
+        select(&mut b, k, Measure::Skip);
         ticks.extend(b.ticks());
         let before = b.ed.scene().objs.len();
-        b.frame(&key("Del"), 500, true);
+        b.frame(&key("Del"), 500, Measure::Record);
         assert_eq!(b.ed.scene().objs.len(), before - 1, "deleted");
         ticks.extend(b.ticks());
-        b.frame(&key("U"), 500, true);
+        b.frame(&key("U"), 500, Measure::Record);
         assert_eq!(b.ed.scene().objs.len(), before, "undone");
         ticks.extend(b.ticks());
     }
@@ -230,20 +238,28 @@ fn grid_lag(scale: f64, step: f32, grid: bool) {
     if !grid {
         b.ed.command("options.draw_grid", "");
     }
-    b.frame(&InputEvents::default(), 1000, false);
+    b.frame(&InputEvents::default(), 1000, Measure::Skip);
     let (cx, cy) = (640.0f32, 400.0f32);
-    b.frame(&event(InputEvent::PointerMove { x: cx, y: cy }), 8, false);
+    b.frame(
+        &event(InputEvent::PointerMove { x: cx, y: cy }),
+        8,
+        Measure::Skip,
+    );
     let mid = Button::Middle;
     let down = InputEvent::PointerDown {
         x: cx,
         y: cy,
         button: mid,
     };
-    b.frame(&event(down), 8, false);
+    b.frame(&event(down), 8, Measure::Skip);
     let mut x = cx;
     for i in 0..240 {
         x += if (i / 60) % 2 == 0 { step } else { -step };
-        b.frame(&event(InputEvent::PointerMove { x, y: cy }), 8, true);
+        b.frame(
+            &event(InputEvent::PointerMove { x, y: cy }),
+            8,
+            Measure::Record,
+        );
         whole(&b);
     }
     let up = InputEvent::PointerUp {
@@ -251,7 +267,7 @@ fn grid_lag(scale: f64, step: f32, grid: bool) {
         y: cy,
         button: mid,
     };
-    b.frame(&event(up), 8, false);
+    b.frame(&event(up), 8, Measure::Skip);
     b.report("pan");
     for burst in 0..10 {
         let dy = if burst % 2 == 0 { 1.0 } else { -1.0 };
@@ -262,7 +278,7 @@ fn grid_lag(scale: f64, step: f32, grid: bool) {
                 dx: 0.0,
                 dy,
             };
-            b.frame(&event(wheel), 16, true);
+            b.frame(&event(wheel), 16, Measure::Record);
             whole(&b);
         }
     }

@@ -13,7 +13,7 @@ mod bytes;
 mod common;
 mod snapshot;
 
-use common::{Session, U, VIEW};
+use common::{Session, U, Ui, VIEW};
 use schemify_canvas::{CanvasPrims, LAYER_DEAD};
 use schemify_editor::checks;
 use schemify_render::peniko::Color;
@@ -148,7 +148,8 @@ fn paint(s: &mut Session, p: &mut CpuPainter) -> Pixmap {
 fn compare(a: &Pixmap, b: &Pixmap) -> (u8, usize) {
     let mut worst = 0u8;
     let mut off = 0usize;
-    for (x, y) in a.data().iter().zip(b.data()) {
+    let pixel_pairs = a.data().iter().zip(b.data());
+    for (x, y) in pixel_pairs {
         let d = [
             x.r.abs_diff(y.r),
             x.g.abs_diff(y.g),
@@ -211,8 +212,18 @@ fn markers_match(s: &Session, ctx: &str) {
 }
 
 fn walk(seed: u64, steps: usize) {
-    let mut kept = Session::open("inv", "top.shcomp", &format!("canvas-kept-{seed}"), true);
-    let mut fresh = Session::open("inv", "top.shcomp", &format!("canvas-fresh-{seed}"), true);
+    let mut kept = Session::open(
+        "inv",
+        "top.shcomp",
+        &format!("canvas-kept-{seed}"),
+        Ui::Default,
+    );
+    let mut fresh = Session::open(
+        "inv",
+        "top.shcomp",
+        &format!("canvas-fresh-{seed}"),
+        Ui::Default,
+    );
     let (w, h) = (VIEW.0 as u16, VIEW.1 as u16);
     let mut rows = CpuPainter::new(w, h, 1.0);
     let (mut rng_a, mut rng_b) = (Rng(seed), Rng(seed));
@@ -250,7 +261,7 @@ fn a_kept_canvas_equals_a_fresh_pack() {
 /// such a frame (it sleeps until input while `wake_ms` is `None`).
 #[test]
 fn an_idle_frame_does_no_work() {
-    let mut s = Session::open("inv", "top.shcomp", "idle", true);
+    let mut s = Session::open("inv", "top.shcomp", "idle", Ui::Default);
     let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
     for _ in 0..8 {
         schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);

@@ -1,10 +1,10 @@
 //! Tools parity: join/trim, break wires, align to grid.
 
-use crate::common::{self, Session, U};
+use crate::common::{self, Session, U, Ui};
 
 #[test]
 fn join_trim_merges_cuts_and_is_idempotent() {
-    let mut s = Session::open("inv", "top.shcomp", "trim", true);
+    let mut s = Session::open("inv", "top.shcomp", "trim", Ui::Default);
     // Two collinear touching wires and a duplicate.
     for (a, b) in [
         ((300, 0), (340, 0)),
@@ -38,7 +38,7 @@ fn join_trim_merges_cuts_and_is_idempotent() {
 
 #[test]
 fn break_wires_at_pins_and_at_the_pointer() {
-    let mut s = Session::open("inv", "top.shcomp", "break", true);
+    let mut s = Session::open("inv", "top.shcomp", "break", Ui::Default);
     // A wire across x2's IN pin (100, 0) from (60, 0) to (120, 0)... w00001 ends there; draw
     // a long one through x1's VSS pin (0, 30): from (-20, 30) to (20, 30).
     s.move_to((-20 * U, 30 * U));
@@ -69,7 +69,7 @@ fn break_wires_at_pins_and_at_the_pointer() {
 
 #[test]
 fn align_to_grid_snaps_coordinates() {
-    let mut s = Session::open("inv", "top.shcomp", "align", true);
+    let mut s = Session::open("inv", "top.shcomp", "align", Ui::Default);
     s.run("view.set_snap_value", "1");
     s.click((150 * U, 0));
     s.move_to((150 * U, 0));

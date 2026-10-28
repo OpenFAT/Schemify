@@ -5,7 +5,7 @@ use schemify_canvas::LAYER_DEAD;
 
 use super::{Rng, markers_match};
 
-use crate::common::{self, Session, U};
+use crate::common::{self, Session, U, Ui};
 
 /// Oracle for the patched plugin snapshot (`Host::snapshot`, whose debug build compares every
 /// fill with a full refill on documents this small): random edits of a schematic of floating
@@ -205,8 +205,9 @@ fn same_as_reopened(s: &mut Session, ctx: &str) {
 /// after it (D39). Without plugins there is no snapshot to refill.
 #[test]
 fn an_edit_refills_the_plugin_snapshot_on_the_next_tick() {
-    for plugins in [true, false] {
-        let mut s = Session::open("inv", "top.shcomp", &format!("snap-{plugins}"), plugins);
+    for ui in [Ui::Default, Ui::Bare] {
+        let plugins = ui == Ui::Default;
+        let mut s = Session::open("inv", "top.shcomp", &format!("snap-{plugins}"), ui);
         s.frame(Default::default());
         assert_eq!(s.ed.wake_ms(), None, "idle after opening");
         let before = s.text();

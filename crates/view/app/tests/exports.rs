@@ -10,7 +10,7 @@ mod common;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use common::{Session, U, copy_dir, fixture};
+use common::{Session, U, Ui, copy_dir, fixture};
 use schemify_config::Startup;
 use schemify_editor::editor::{Editor, Options};
 use schemify_ui::InputEvents;
@@ -44,7 +44,7 @@ fn open_with_config(dir: &Path, file: &str, init: &str) -> Session {
 
 #[test]
 fn png_exports_scale_and_cover_the_whole_drawing() {
-    let mut s = Session::open("inv", "top.shcomp", "png-scale", true);
+    let mut s = Session::open("inv", "top.shcomp", "png-scale", Ui::Default);
     let one = s.dir.join("one.png");
     s.run("file.image_export.png_export", one.to_str().unwrap());
     let (w, h) = png_size(&one);
@@ -83,7 +83,7 @@ fn png_exports_scale_and_cover_the_whole_drawing() {
 
 #[test]
 fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
-    let mut s = Session::open("inv", "top.shcomp", "export-page", true);
+    let mut s = Session::open("inv", "top.shcomp", "export-page", Ui::Default);
     let pdf = s.dir.join("a.pdf");
     s.run(
         "file.image_export.pdf_ps_export_full",
@@ -151,7 +151,7 @@ fn packages_view_shows_pack_status() {
     assert!(body.contains("ghost: path - missing"), "{body}");
     assert!(body.contains("run `schemify pack sync`"), "{body}");
     // Negative space: without a user config there is nothing to list.
-    let mut clean = Session::open_clean("inv", "top.shcomp", "packages-clean", true);
+    let mut clean = Session::open_clean("inv", "top.shcomp", "packages-clean", Ui::Default);
     clean.run("tools.package_status", "");
     let v = clean.ed.session().text_view().expect("a packages tab");
     assert!(v.body.contains("no user config"), "{}", v.body);

@@ -47,7 +47,8 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
     let key = |o: u32| -> Option<ObjKey> { (o != u32::MAX).then(|| sc.objs.key[o as usize]) };
     // Dead rows (an update's removals, kept in place) draw nothing: not part of the picture.
     let live = |layer: &[u8], i: usize| layer[i] != LAYER_DEAD;
-    for i in (0..p.lines.x0.len()).filter(|&i| live(&p.lines.layer, i)) {
+    let live_lines = (0..p.lines.x0.len()).filter(|&i| live(&p.lines.layer, i));
+    for i in live_lines {
         let l = &p.lines;
         let k = key(sc.owner.lines[i]);
         rows.push(format!(
@@ -55,7 +56,8 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
             l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i], l.style[i]
         ));
     }
-    for i in (0..p.rects.x0.len()).filter(|&i| live(&p.rects.layer, i)) {
+    let live_rects = (0..p.rects.x0.len()).filter(|&i| live(&p.rects.layer, i));
+    for i in live_rects {
         let r = &p.rects;
         let k = key(sc.owner.rects[i]);
         rows.push(format!(
@@ -64,7 +66,8 @@ fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
         ));
     }
     let mut dots = Vec::new();
-    for i in (0..p.arcs.cx.len()).filter(|&i| live(&p.arcs.layer, i)) {
+    let live_arcs = (0..p.arcs.cx.len()).filter(|&i| live(&p.arcs.layer, i));
+    for i in live_arcs {
         let a = &p.arcs;
         match key(sc.owner.arcs[i]) {
             None => dots.push((a.cx[i], a.cy[i])),

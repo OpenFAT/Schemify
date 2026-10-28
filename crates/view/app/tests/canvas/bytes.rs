@@ -1,6 +1,6 @@
 //! Idle, pan and zoom frames write no instance bytes and no UI bytes.
 
-use crate::common::{Session, VIEW};
+use crate::common::{Session, Ui, VIEW};
 
 /// A pan or zoom frame writes no instance row, only the camera (D39): after the first frame
 /// packs the canvas, the rows a middle drag's and a wheel notch's frames leave to upload are
@@ -12,7 +12,7 @@ fn a_pan_or_zoom_frame_writes_no_instance_bytes() {
     use schemify_render::kurbo::Affine;
     use schemify_render::{Batch, GpuPainter};
     use schemify_ui::{Button, InputEvent};
-    let mut s = Session::open("inv", "top.shcomp", "zero-bytes", true);
+    let mut s = Session::open("inv", "top.shcomp", "zero-bytes", Ui::Default);
     let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
     // One frame painted as the window paints it; returns the row bytes it left to upload and
     // its camera, then takes the rows as the GPU does.
@@ -80,7 +80,7 @@ fn idle_and_pan_frames_write_no_ui_bytes() {
     use schemify_render::kurbo::Affine;
     use schemify_render::{Batch, GpuPainter};
     use schemify_ui::{Button, InputEvent};
-    let mut s = Session::open("inv", "top.shcomp", "ui-bytes", true);
+    let mut s = Session::open("inv", "top.shcomp", "ui-bytes", Ui::Default);
     let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
     // One frame painted as the window paints it (until its glyphs settle); returns the UI
     // bytes it left to upload, taken as the GPU takes them.

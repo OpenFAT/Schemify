@@ -2,7 +2,7 @@
 
 use schemify_editor::commands::Target;
 
-use crate::common::Session;
+use crate::common::{Session, Ui};
 
 const UI: &str = include_str!(concat!(
     env!("SCHEMIFY_ROOT"),
@@ -36,7 +36,7 @@ fn named_commands() -> Vec<&'static str> {
 #[test]
 #[allow(clippy::absurd_extreme_comparisons)] // the ratchet reached 0; `<=` stays its form
 fn every_default_ui_command_resolves() {
-    let s = Session::open("inv", "top.shcomp", "parity", true);
+    let s = Session::open("inv", "top.shcomp", "parity", Ui::Default);
     let names = named_commands();
     assert!(names.len() > 200, "the records were read: {}", names.len());
     let unresolved: Vec<&str> = names

@@ -1,7 +1,10 @@
 //! Headless editor harness: a copy of the fixture project in a temp directory, scripted
 //! input batches through the real frame spine, and CPU rendering.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses its own part of the harness"
+)]
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +19,22 @@ pub const VIEW: (f32, f32) = (1280.0, 800.0);
 
 /// One xschem unit in milli-units.
 pub const U: i32 = 1000;
+
+/// Whether a session loads the default UI plugin (D6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ui {
+    /// The default UI plugin's menus, toolbar and keymap, as the editor starts.
+    Default,
+    /// No default UI plugin (`--no-default-ui`): the bare shell.
+    Bare,
+}
+
+/// A pointer button's edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Edge {
+    Down,
+    Up,
+}
 
 /// Copies `tests/fixtures/<name>` into a fresh temp directory and returns its path. Tests
 /// never open a fixture in place: a GUI session on a fixture leaves `.schemify/` state (a
@@ -65,28 +84,23 @@ impl Session {
     /// user config only pins the simulator (the default, espice), so no frame depends on
     /// which simulators this machine has installed (detection, run spec §5): the status bar
     /// names it in every golden.
-    pub fn open(name: &str, file: &str, tag: &str, default_ui: bool) -> Session {
+    pub fn open(name: &str, file: &str, tag: &str, ui: Ui) -> Session {
         let dir = fixture(name, tag);
         let init = dir.join("init.lua");
         std::fs::write(&init, "schemify.opt.simulator = \"espice\"\n").expect("init.lua");
-        Session::open_with(dir, file, default_ui, schemify_config::Startup::File(init))
+        Session::open_with(dir, file, ui, schemify_config::Startup::File(init))
     }
 
     /// As [`Session::open`] with no user config at all (`--clean`): the simulator is then
     /// detected from this machine's `PATH`.
-    pub fn open_clean(name: &str, file: &str, tag: &str, default_ui: bool) -> Session {
+    pub fn open_clean(name: &str, file: &str, tag: &str, ui: Ui) -> Session {
         let dir = fixture(name, tag);
-        Session::open_with(dir, file, default_ui, schemify_config::Startup::Clean)
+        Session::open_with(dir, file, ui, schemify_config::Startup::Clean)
     }
 
-    fn open_with(
-        dir: PathBuf,
-        file: &str,
-        default_ui: bool,
-        config: schemify_config::Startup,
-    ) -> Session {
+    fn open_with(dir: PathBuf, file: &str, ui: Ui, config: schemify_config::Startup) -> Session {
         let ed = Editor::new(Options {
-            no_default_ui: !default_ui,
+            no_default_ui: ui == Ui::Bare,
             path: Some(dir.join(file)),
             seed: 7,
             config,
@@ -153,23 +167,22 @@ impl Session {
         self.send([InputEvent::PointerMove { x, y }]);
     }
 
-    fn button(&mut self, p: Pt, down: bool, button: Button, mods: u8) {
+    fn button(&mut self, p: Pt, edge: Edge, button: Button, mods: u8) {
         let (x, y) = self.ed.to_screen(p);
         self.send([
             InputEvent::Mods { mods: Mods(mods) },
             InputEvent::PointerMove { x, y },
-            if down {
-                InputEvent::PointerDown { x, y, button }
-            } else {
-                InputEvent::PointerUp { x, y, button }
+            match edge {
+                Edge::Down => InputEvent::PointerDown { x, y, button },
+                Edge::Up => InputEvent::PointerUp { x, y, button },
             },
         ]);
     }
 
     /// Left click (press + release) at world point `p` with modifier bits `mods`.
     pub fn click_mods(&mut self, p: Pt, mods: u8) {
-        self.button(p, true, Button::Left, mods);
-        self.button(p, false, Button::Left, mods);
+        self.button(p, Edge::Down, Button::Left, mods);
+        self.button(p, Edge::Up, Button::Left, mods);
         self.send([InputEvent::Mods {
             mods: Mods::default(),
         }]);
@@ -182,12 +195,12 @@ impl Session {
 
     /// Left drag from `a` to `b` (world), in steps.
     pub fn drag(&mut self, a: Pt, b: Pt, mods: u8) {
-        self.button(a, true, Button::Left, mods);
+        self.button(a, Edge::Down, Button::Left, mods);
         for k in 1..=4 {
             let p = (a.0 + (b.0 - a.0) * k / 4, a.1 + (b.1 - a.1) * k / 4);
             self.move_to(p);
         }
-        self.button(b, false, Button::Left, mods);
+        self.button(b, Edge::Up, Button::Left, mods);
     }
 
     /// Clicks the UI node `id` (menus, dialog buttons, list rows).

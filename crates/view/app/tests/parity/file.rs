@@ -3,11 +3,11 @@
 use schemify_editor::editor::{Editor, Options, Tool};
 use schemify_ui::InputEvents;
 
-use crate::common::{self, Session, U};
+use crate::common::{self, Session, U, Ui};
 
 #[test]
 fn save_as_moves_editing_to_the_new_file() {
-    let mut s = Session::open("inv", "top.shcomp", "saveas", true);
+    let mut s = Session::open("inv", "top.shcomp", "saveas", Ui::Default);
     let original = std::fs::read_to_string(s.dir.join("top.shcomp")).unwrap();
     s.click((150 * U, 0)); // x2
     s.key("Del");
@@ -111,7 +111,7 @@ fn recent_files_persist_and_reopen() {
 
 #[test]
 fn merge_inserts_a_cell_schematic_at_the_pointer() {
-    let mut s = Session::open("inv", "top.shcomp", "merge", true);
+    let mut s = Session::open("inv", "top.shcomp", "merge", Ui::Default);
     let before = s.text();
     s.move_to((400 * U, 0));
     s.key("b");
@@ -140,7 +140,7 @@ fn merge_inserts_a_cell_schematic_at_the_pointer() {
 
 #[test]
 fn delete_files_needs_a_second_pick() {
-    let mut s = Session::open("inv", "top.shcomp", "delete", true);
+    let mut s = Session::open("inv", "top.shcomp", "delete", Ui::Default);
     s.run("file.save_as", "spare");
     let spare = s.dir.join("spare.shcomp");
     assert!(spare.exists());
@@ -182,7 +182,7 @@ fn delete_files_needs_a_second_pick() {
 
 #[test]
 fn image_exports_png_svg_pdf_eps() {
-    let mut s = Session::open("inv", "top.shcomp", "export", true);
+    let mut s = Session::open("inv", "top.shcomp", "export", Ui::Default);
     let png = s.dir.join("out.png");
     s.run("file.image_export.png_export", png.to_str().unwrap());
     let bytes = std::fs::read(&png).unwrap_or_else(|_| panic!("{}", s.status()));
@@ -240,7 +240,7 @@ fn image_exports_png_svg_pdf_eps() {
 /// reports.
 #[test]
 fn export_project_zips_the_listed_files() {
-    let mut s = Session::open("inv", "top.shcomp", "export_project", true);
+    let mut s = Session::open("inv", "top.shcomp", "export_project", Ui::Default);
     s.run("file.export_project", "");
     let name = s.dir.file_name().unwrap().to_str().unwrap().to_owned();
     let zip = s.dir.join(".schemify/export").join(format!("{name}.zip"));

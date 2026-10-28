@@ -8,7 +8,7 @@ use schemify_editor::scene::ObjKey;
 use schemify_ui::{InputEvents, Kind, Prop};
 
 use super::{activate, marker_rects, node_kind, open, open_with};
-use crate::common::{Session, U, fixture};
+use crate::common::{Session, U, Ui, fixture};
 
 /// The checks overlay mirrors elab's violations of the active level: one mark per violation
 /// (source `checks`), one marker per violation whose object is drawn; an edit that adds
@@ -326,7 +326,7 @@ fn open_text(s: &mut Session, body: String) {
 #[test]
 fn a_long_text_tab_lays_out_a_window_of_lines() {
     use schemify_editor::session::TEXT_WINDOW;
-    let mut s = Session::open("inv", "top.shcomp", "textwin", true);
+    let mut s = Session::open("inv", "top.shcomp", "textwin", Ui::Default);
     let mut body: Vec<String> = (0..16_384)
         .map(|i| format!("R{i} n{i} n{} {}k", i + 1, i % 97))
         .collect();
@@ -398,7 +398,7 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
 /// A short text tab is one body node with the whole text and no spacers, as before windowing.
 #[test]
 fn a_short_text_tab_is_one_node() {
-    let mut s = Session::open("inv", "top.shcomp", "textshort", true);
+    let mut s = Session::open("inv", "top.shcomp", "textshort", Ui::Default);
     let body = "* netlist\nR1 a b 1k\n.end".to_owned();
     open_text(&mut s, body.clone());
     s.frame(InputEvents::default());

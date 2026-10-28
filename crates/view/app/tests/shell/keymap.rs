@@ -5,7 +5,7 @@ use schemify_editor::commands::{CORE, Commands, Target};
 use schemify_ui::Chord;
 
 use super::node_prop;
-use crate::common::Session;
+use crate::common::{Session, Ui};
 
 /// Expected chords from xschem's canvas key table (`fixtures/xschem_keys.md`, captured by
 /// running xschem 3.4.7): every row except graph-only, cadence-only, placeholder and Tk-dialog rows.
@@ -15,7 +15,8 @@ fn inventory_chords() -> Vec<(String, String)> {
     let start = text.find("### 2.1").expect("§2.1");
     let end = text[start..].find("### 2.2").expect("§2.2") + start;
     let mut out = Vec::new();
-    for row in text[start..end].lines().filter(|l| l.starts_with("| ")) {
+    let table_rows = text[start..end].lines().filter(|l| l.starts_with("| "));
+    for row in table_rows {
         let cols: Vec<&str> = row
             .split(" | ")
             .map(|c| c.trim_matches(['|', ' ']))
@@ -60,7 +61,7 @@ fn inventory_chords() -> Vec<(String, String)> {
 
 #[test]
 fn keymap_covers_the_xschem_inventory() {
-    let s = Session::open("inv", "top.shcomp", "keys", true);
+    let s = Session::open("inv", "top.shcomp", "keys", Ui::Default);
     let keymap = &s.ed.shell().tables().keymap;
     let expected = inventory_chords();
     assert!(
@@ -203,7 +204,7 @@ fn commands_grey_out_on_the_wrong_file_kind() {
     use schemify_ui::Prop;
     let disabled = |s: &Session, id: &str| node_prop(s, id, Prop::Disabled) == "1";
     // A component: no simulation, no optimizer; symbol generation available.
-    let mut c = Session::open("inv", "top.shcomp", "grey-comp", true);
+    let mut c = Session::open("inv", "top.shcomp", "grey-comp", Ui::Default);
     for id in [
         "sim.simulate",
         "sim.optimize",
@@ -220,14 +221,14 @@ fn commands_grey_out_on_the_wrong_file_kind() {
     c.run("sim.simulate", "");
     assert!(c.status().contains("needs a .shbench"), "{}", c.status());
     // A bench: simulation on, symbol generation and new-bench off.
-    let b = Session::open("rc", "tb.shbench", "grey-bench", true);
+    let b = Session::open("rc", "tb.shbench", "grey-bench", Ui::Default);
     for id in ["sim.simulate", "sim.optimize", "tb.simulate"] {
         assert!(!disabled(&b, id), "{id} enabled in a .shbench");
     }
     assert!(disabled(&b, "symbol.make_symbol_from_schematic"));
     assert!(disabled(&b, "sim.new_bench"));
     // A primitive: no schematic-to-symbol either.
-    let p = Session::open("rc", "res.shprim", "grey-prim", true);
+    let p = Session::open("rc", "res.shprim", "grey-prim", Ui::Default);
     assert!(disabled(&p, "symbol.make_symbol_from_schematic"));
     assert!(disabled(&p, "sim.simulate"));
 }

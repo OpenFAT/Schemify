@@ -6,7 +6,7 @@
 //! connectivity before and after (as partitions), and seeded random inputs.
 
 mod common;
-use common::{Session, U, lines};
+use common::{Session, U, Ui, lines};
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -106,7 +106,7 @@ fn text_rots(s: &Session, text: &str) -> Vec<u8> {
 /// partial selection follows the move, and a plain box selects no wire ends.
 #[test]
 fn a_ctrl_box_selects_inside_wire_ends_and_a_move_stretches_them() {
-    let mut s = Session::open("inv", "top.shcomp", "partial", true);
+    let mut s = Session::open("inv", "top.shcomp", "partial", Ui::Default);
     let original = s.text();
     let before = nets(&s);
     s.drag((90 * U, -45 * U), (190 * U, 40 * U), CTRL);
@@ -161,7 +161,7 @@ fn a_ctrl_box_selects_inside_wire_ends_and_a_move_stretches_them() {
 /// shape changes nothing.
 #[test]
 fn dragging_a_vertex_moves_only_that_point() {
-    let mut s = Session::open("inv", "top.shcomp", "vertex", true);
+    let mut s = Session::open("inv", "top.shcomp", "vertex", Ui::Default);
     let original = s.text();
     s.click((30 * U, -70 * U)); // w00006, the VDD rail
     s.drag((140 * U, -70 * U), (140 * U, -90 * U), 0);
@@ -216,7 +216,7 @@ fn dragging_a_vertex_moves_only_that_point() {
 /// never draws a text upside down: a composed R180 is drawn upright (0).
 #[test]
 fn symbol_texts_turn_with_instances_and_their_orientation() {
-    let mut s = Session::open("inv", "top.shcomp", "stext", true);
+    let mut s = Session::open("inv", "top.shcomp", "stext", Ui::Default);
     assert_eq!(text_rots(&s, "inv"), [0, 0], "x1 and x2 upright");
     s.click((10 * U, 0)); // x1
     s.key("Shift+R");
@@ -355,7 +355,7 @@ fn make_subcircuit_rewires_and_keeps_connectivity() {
     ];
     let mut rng = Lcg(0x5eb5);
     for case in 0..8 {
-        let mut s = Session::open("inv", "top.shcomp", &format!("subckt{case}"), true);
+        let mut s = Session::open("inv", "top.shcomp", &format!("subckt{case}"), Ui::Default);
         let original = s.text();
         let before = nets(&s);
         let mask = 1 + rng.below(31);
@@ -411,7 +411,7 @@ fn make_subcircuit_rewires_and_keeps_connectivity() {
 /// right, the four nets wired to the new instance (no label added).
 #[test]
 fn make_subcircuit_symbol_sides_follow_pin_directions() {
-    let mut s = Session::open("inv", "top.shcomp", "subcktdir", true);
+    let mut s = Session::open("inv", "top.shcomp", "subcktdir", Ui::Default);
     let labels = lines(&s.text(), "label ").len();
     s.click((150 * U, 0));
     s.key("Ctrl+Shift+H");
@@ -441,7 +441,7 @@ fn make_subcircuit_symbol_sides_follow_pin_directions() {
 fn join_trim_keeps_connectivity_over_diagonal_and_attributed_wires() {
     let mut rng = Lcg(0xd1a9);
     for case in 0..8 {
-        let mut s = Session::open("inv", "top.shcomp", &format!("trimdiag{case}"), true);
+        let mut s = Session::open("inv", "top.shcomp", &format!("trimdiag{case}"), Ui::Default);
         let text = s.text();
         let mut wires = String::new();
         for k in 0..10 {
@@ -510,7 +510,7 @@ fn join_trim_keeps_connectivity_over_diagonal_and_attributed_wires() {
 /// whose attributes differ never merge.
 #[test]
 fn join_trim_merges_diagonals_and_equal_attributes_only() {
-    let mut s = Session::open("inv", "top.shcomp", "trimattrs", true);
+    let mut s = Session::open("inv", "top.shcomp", "trimattrs", Ui::Default);
     let wires = "wire z00001 300 0 310 10\nwire z00002 310 10 320 20\n\
                  wire z00003 300 50 310 50\n  class power\nwire z00004 310 50 320 50\n  class power\n\
                  wire z00005 300 80 310 80\n  bus true\nwire z00006 310 80 320 80\n";

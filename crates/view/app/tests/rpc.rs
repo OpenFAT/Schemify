@@ -7,7 +7,7 @@ mod common;
 
 use std::io::{BufRead, BufReader, Write};
 
-use common::Session;
+use common::{Session, Ui};
 use schemify_app::serve::Pump;
 use schemify_cli::rpc::{INVALID_PARAMS, Json, Listener, METHOD_NOT_FOUND};
 use schemify_editor::commands::CORE;
@@ -18,7 +18,7 @@ use schemify_ui::InputEvents;
 /// queued (not refused), suffix arguments included; anything else is "method not found".
 #[test]
 fn every_registered_command_is_reachable() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-reach", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-reach", Ui::Default);
     let Json::Arr(names) = rpc::methods(&s.ed) else {
         panic!("rpc.methods is a list")
     };
@@ -32,7 +32,8 @@ fn every_registered_command_is_reachable() {
         "the default UI's own commands are listed too"
     );
     let none = Json::Arr(Vec::new());
-    for name in names.iter().filter(|n| *n != "rpc.methods") {
+    let queued = names.iter().filter(|n| *n != "rpc.methods");
+    for name in queued {
         assert!(
             matches!(rpc::dispatch(&mut s.ed, name, &none), Dispatched::Queued(_)),
             "{name}"
@@ -68,7 +69,7 @@ fn every_registered_command_is_reachable() {
 /// event arrives as a notification; a malformed line gets its error in line with the rest.
 #[test]
 fn a_socket_client_drives_the_editor() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-sock", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-sock", Ui::Default);
     let listener = schemify_cli::rpc::listen("127.0.0.1:0").unwrap();
     #[allow(irrefutable_let_patterns)] // TCP is the only kind on Windows
     let Listener::Tcp(tcp) = &listener else {
@@ -236,7 +237,7 @@ impl Client {
 /// nothing answers an empty status rather than the previous command's.
 #[test]
 fn each_answer_carries_its_own_status() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-status", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-status", Ui::Default);
     let mut c = Client::connect(&s);
     assert_eq!(
         c.status(&mut s, "edit.pop", &[]),
@@ -323,7 +324,7 @@ fn out_of_fuel_is_reported_not_silent() {
 /// without an argument it opens the chooser as before.
 #[test]
 fn file_open_with_an_argument_opens_that_cell() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-open", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-open", Ui::Default);
     let mut c = Client::connect(&s);
     let active = |s: &Session| s.ed.session().name(s.ed.active().unwrap().0);
     assert_eq!(active(&s), "top.shcomp");

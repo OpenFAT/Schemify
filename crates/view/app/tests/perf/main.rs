@@ -253,6 +253,15 @@ impl Gpu {
     }
 }
 
+/// Whether a benchmark frame's times go into the samples.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Measure {
+    /// A measured frame: its times are recorded.
+    Record,
+    /// A warm-up or set-up frame: run, not recorded.
+    Skip,
+}
+
 /// One benchmark run: the editor, its frame batch, the clock, and the samples.
 struct Bench {
     ed: Editor,
@@ -275,7 +284,7 @@ struct Bench {
 
 impl Bench {
     /// One frame as the window runs it; records its times when `measure`.
-    fn frame(&mut self, ev: &InputEvents, dt_ms: u64, measure: bool) {
+    fn frame(&mut self, ev: &InputEvents, dt_ms: u64, measure: Measure) {
         self.now += dt_ms;
         let t = Instant::now();
         self.ed.update(ev, VIEW, self.now);
@@ -292,7 +301,7 @@ impl Bench {
             (times, g.pipes.take_batch_uploaded())
         });
         self.rows.frame = None; // the render took it; without a GPU nobody does
-        if measure {
+        if measure == Measure::Record {
             self.cpu.push(cpu);
             if let Some(((v, g), (atlas, instances))) = rendered {
                 self.render.push(v);
@@ -352,7 +361,7 @@ impl Bench {
                 break;
             }
             let (c, v, g) = (self.cpu.len(), self.render.len(), self.gpu_ms.len());
-            self.frame(&InputEvents::default(), 1, true);
+            self.frame(&InputEvents::default(), 1, Measure::Record);
             out.push(self.cpu[c]);
             self.cpu.truncate(c);
             self.render.truncate(v);
@@ -365,7 +374,7 @@ impl Bench {
     }
 
     /// A click on UI node `id` (its center) as one frame.
-    fn click_node(&mut self, id: &str, dt_ms: u64, measure: bool) {
+    fn click_node(&mut self, id: &str, dt_ms: u64, measure: Measure) {
         let s = self.ed.shell();
         let sym = s
             .strings()

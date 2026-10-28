@@ -2,7 +2,7 @@
 
 use schemify_editor::scene::{self, Objects, Scene};
 
-use crate::common::{Session, U};
+use crate::common::{Session, U, Ui};
 
 fn covers(objs: &Objects, i: usize, p: (f64, f64), tol: f64) -> bool {
     let g = objs.geom[i];
@@ -91,7 +91,7 @@ fn check_hits(sc: &Scene) {
 
 #[test]
 fn every_primitive_is_hittable_schematic_and_symbol() {
-    let mut s = Session::open("inv", "top.shcomp", "hits", true);
+    let mut s = Session::open("inv", "top.shcomp", "hits", Ui::Default);
     check_hits(s.ed.scene());
     s.click((10 * U, 0));
     s.key("e");
@@ -104,7 +104,7 @@ fn every_primitive_is_hittable_schematic_and_symbol() {
 
 #[test]
 fn box_select_is_consistent_with_point_hits() {
-    let s = Session::open("inv", "top.shcomp", "boxes", true);
+    let s = Session::open("inv", "top.shcomp", "boxes", Ui::Default);
     let sc = s.ed.scene();
     let objs = &sc.objs;
     let e = sc.extent.map(f64::from);

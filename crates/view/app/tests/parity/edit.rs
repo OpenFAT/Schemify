@@ -9,7 +9,7 @@ use schemify_editor::editor::{Editor, Options, Tool};
 use schemify_ui::{InputEvent, InputEvents};
 
 use super::{Lcg, SHIFT};
-use crate::common::{self, Session, U};
+use crate::common::{self, Session, U, Ui};
 
 /// Property (docs/dev/testing.md): after a kissing move (Shift+M) of any instance subset by any
 /// grid offset, every pair of pins (instance pins and ports) connected before is still
@@ -19,7 +19,7 @@ use crate::common::{self, Session, U};
 fn stretch_and_kissing_moves_keep_pins_connected() {
     let mut rng = Lcg(0x5eed);
     for case in 0..12 {
-        let mut s = Session::open("inv", "top.shcomp", &format!("stretch{case}"), true);
+        let mut s = Session::open("inv", "top.shcomp", &format!("stretch{case}"), Ui::Default);
         let before = super::pin_nets(&s);
         let original = s.text();
         let picks = 1 + rng.below(3);
@@ -60,7 +60,7 @@ fn stretch_and_kissing_moves_keep_pins_connected() {
 
 #[test]
 fn stretch_moves_wire_ends_and_plain_moves_do_not() {
-    let mut s = Session::open("inv", "top.shcomp", "stretchends", true);
+    let mut s = Session::open("inv", "top.shcomp", "stretchends", Ui::Default);
     s.click((150 * U, 0)); // x2: pins (100,0) (180,0) (140,-30) (140,30)
     s.move_to((150 * U, 0));
     s.key("Ctrl+M");
@@ -93,13 +93,13 @@ fn clipboard_copy_paste_equals_duplicate() {
     };
     // The clipboard holds the records relative to the anchors' snapped centroid (70, 40); a
     // duplicate grabbed there and dropped where the paste lands moves by the same offset.
-    let mut a = Session::open("inv", "top.shcomp", "clipa", true);
+    let mut a = Session::open("inv", "top.shcomp", "clipa", Ui::Default);
     pick(&mut a);
     a.key("Ctrl+C");
     a.move_to((170 * U, 40 * U));
     a.key("Ctrl+V");
     a.click((170 * U, 40 * U));
-    let mut b = Session::open("inv", "top.shcomp", "clipb", true);
+    let mut b = Session::open("inv", "top.shcomp", "clipb", Ui::Default);
     pick(&mut b);
     b.move_to((70 * U, 40 * U));
     b.key("c");
@@ -108,7 +108,7 @@ fn clipboard_copy_paste_equals_duplicate() {
     assert_eq!(a.text(), b.text());
     assert_ne!(
         a.text(),
-        Session::open("inv", "top.shcomp", "clipc", true).text()
+        Session::open("inv", "top.shcomp", "clipc", Ui::Default).text()
     );
     // The fragment text round-trips the clipboard records.
     let recs: Vec<schemify_doc::RecordBuf> = {
@@ -131,7 +131,7 @@ fn clipboard_copy_paste_equals_duplicate() {
 /// search empty; one undo restores the file.
 #[test]
 fn search_replace_all_leaves_nothing_to_find() {
-    let mut s = Session::open("inv", "top.shcomp", "search", true);
+    let mut s = Session::open("inv", "top.shcomp", "search", Ui::Default);
     let original = s.text();
     let (h, _) = s.ed.active().unwrap();
     let queries = [
@@ -178,7 +178,7 @@ fn search_replace_all_leaves_nothing_to_find() {
 
 #[test]
 fn schematic_shapes_draw_and_undo() {
-    let mut s = Session::open("inv", "top.shcomp", "shapes", true);
+    let mut s = Session::open("inv", "top.shcomp", "shapes", Ui::Default);
     let original = s.text();
     s.move_to((300 * U, 0));
     s.key("l");
@@ -237,7 +237,7 @@ fn schematic_shapes_draw_and_undo() {
 
 #[test]
 fn symbol_view_draws_arcs_circles_and_polygons_as_graphics() {
-    let mut s = Session::open("inv", "top.shcomp", "symgfx", true);
+    let mut s = Session::open("inv", "top.shcomp", "symgfx", Ui::Default);
     s.key("Ctrl+Shift+N");
     s.move_to((0, 0));
     s.key("Ctrl+Shift+C");
@@ -255,7 +255,7 @@ fn symbol_view_draws_arcs_circles_and_polygons_as_graphics() {
 
 #[test]
 fn context_menu_variants_run_their_rows() {
-    let mut s = Session::open("inv", "top.shcomp", "ctx", true);
+    let mut s = Session::open("inv", "top.shcomp", "ctx", Ui::Default);
     super::right_click(&mut s, (200 * U, 40 * U), 0);
     assert_eq!(super::dialog(&s), "dialog.ctx");
     assert!(super::composed(&s, "dialog.ctx.row.13") && !super::composed(&s, "dialog.ctx.row.14"));
@@ -294,7 +294,7 @@ fn context_menu_variants_run_their_rows() {
 
 #[test]
 fn persistent_wire_mode_chains_segments() {
-    let mut s = Session::open("inv", "top.shcomp", "persist", true);
+    let mut s = Session::open("inv", "top.shcomp", "persist", Ui::Default);
     s.run("options.persistent_wire_line_place_command", "");
     s.move_to((300 * U, 0));
     s.key("w");
@@ -313,7 +313,7 @@ fn persistent_wire_mode_chains_segments() {
 
 #[test]
 fn crosshair_snap_cursor_and_axes_draw_in_the_overlay() {
-    let mut s = Session::open("inv", "top.shcomp", "cross", true);
+    let mut s = Session::open("inv", "top.shcomp", "cross", Ui::Default);
     s.move_to((33 * U, 12 * U));
     let base = s.ed.overlay().lines.x0.len();
     s.key("Alt+X");
@@ -338,7 +338,7 @@ fn crosshair_snap_cursor_and_axes_draw_in_the_overlay() {
 
 #[test]
 fn chooser_lists_scroll_past_24_rows() {
-    let mut s = Session::open("inv", "top.shcomp", "scroll", true);
+    let mut s = Session::open("inv", "top.shcomp", "scroll", Ui::Default);
     s.key("Ctrl+O");
     assert!(
         super::composed(&s, "dialog.choose.row.25"),
@@ -423,7 +423,7 @@ fn crash_recovery_asks_to_recover_or_discard() {
 
 #[test]
 fn rotated_texts_draw_turned() {
-    let mut s = Session::open("inv", "top.shcomp", "rot", true);
+    let mut s = Session::open("inv", "top.shcomp", "rot", Ui::Default);
     s.click((-60 * U, -125 * U)); // the annotation text
     assert_eq!(s.ed.selection()[0].table, TableId::Texts);
     s.key("Alt+R");

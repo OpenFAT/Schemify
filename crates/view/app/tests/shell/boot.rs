@@ -4,11 +4,11 @@
 use schemify_ui::Kind;
 
 use super::node_prop;
-use crate::common::{self, Session, U, VIEW};
+use crate::common::{self, Session, U, Ui, VIEW};
 
 #[test]
 fn boots_without_the_default_ui_plugin() {
-    let mut s = Session::open("inv", "top.shcomp", "bare", false);
+    let mut s = Session::open("inv", "top.shcomp", "bare", Ui::Bare);
     let n = &s.ed.shell().tables().nodes;
     let kinds: Vec<Kind> = (0..n.len()).map(|i| n.kind()[i]).collect();
     // The core base also holds the docs pane (D21: docs render without plugins); a cell
@@ -46,7 +46,7 @@ fn boots_without_the_default_ui_plugin() {
 /// A plugin-owned command (the default UI's `help.keys`, bound to `/`) re-contributes UI.
 #[test]
 fn default_ui_plugin_owns_its_commands() {
-    let mut s = Session::open("inv", "top.shcomp", "helpkeys", true);
+    let mut s = Session::open("inv", "top.shcomp", "helpkeys", Ui::Default);
     let panel = |s: &Session| {
         let id = s.ed.shell().strings().find("keys.panel");
         id.and_then(|id| s.ed.shell().tables().nodes.find(id))
@@ -112,7 +112,7 @@ fn manifest_plugins_load_in_order_and_receive_commands() {
 #[test]
 fn help_menu_is_schemify_branded_without_duplicates() {
     use schemify_ui::Prop;
-    let s = Session::open("inv", "top.shcomp", "help-menu", true);
+    let s = Session::open("inv", "top.shcomp", "help-menu", Ui::Default);
     let sh = &s.ed.shell();
     assert!(
         sh.strings()

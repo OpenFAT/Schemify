@@ -6,11 +6,11 @@ use std::path::Path;
 use schemify_doc::TableId;
 use schemify_ui::InputEvents;
 
-use crate::common::{self, Session, U};
+use crate::common::{self, Session, U, Ui};
 
 #[test]
 fn highlight_menu_duplicates_overlaps_and_selection() {
-    let mut s = Session::open("inv", "top.shcomp", "hilite", true);
+    let mut s = Session::open("inv", "top.shcomp", "hilite", Ui::Default);
     // Rename x2 to x1: a duplicate.
     s.run("file.save", "");
     s.click((150 * U, 0));
@@ -54,7 +54,7 @@ fn highlight_menu_duplicates_overlaps_and_selection() {
 
 #[test]
 fn compare_schematics_outlines_the_differences() {
-    let mut s = Session::open("inv", "top.shcomp", "compare", true);
+    let mut s = Session::open("inv", "top.shcomp", "compare", Ui::Default);
     s.run("file.save_as", "top_b");
     // Change the copy: delete the VDD rail wire, move the VSS rail wire (clicks off the
     // labels' anchors: a press on a connection point starts a wire).
@@ -95,7 +95,7 @@ fn compare_schematics_outlines_the_differences() {
 
 #[test]
 fn symbol_menu_makes_symbols_schematics_labels_and_pins() {
-    let mut s = Session::open("inv", "top.shcomp", "symbol", true);
+    let mut s = Session::open("inv", "top.shcomp", "symbol", Ui::Default);
     // Make symbol from schematic: IN left, OUT right, a box and the name.
     s.key("a");
     let t = s.text();
@@ -168,7 +168,7 @@ fn symbol_menu_makes_symbols_schematics_labels_and_pins() {
 
 #[test]
 fn view_options_shape_the_palette_and_the_ui() {
-    let mut s = Session::open("inv", "top.shcomp", "view", true);
+    let mut s = Session::open("inv", "top.shcomp", "view", Ui::Default);
     assert!(super::composed(&s, "menubar") && super::composed(&s, "toolbar"));
     s.key("\\");
     assert!(
@@ -240,7 +240,7 @@ fn view_options_shape_the_palette_and_the_ui() {
 
 #[test]
 fn properties_menu_ignore_header_and_edit_file() {
-    let mut s = Session::open("inv", "top.shcomp", "props", true);
+    let mut s = Session::open("inv", "top.shcomp", "props", Ui::Default);
     let original = s.text();
     s.click((150 * U, 0));
     s.key("Shift+T");
@@ -280,7 +280,7 @@ fn properties_menu_ignore_header_and_edit_file() {
 
 #[test]
 fn simulation_help_and_waves_commands() {
-    let mut s = Session::open("inv", "top.shcomp", "simhelp", true);
+    let mut s = Session::open("inv", "top.shcomp", "simhelp", Ui::Default);
     s.run("simulation.edit_netlist", "");
     let title = s.ed.session().text_view().map(|v| v.title.clone());
     assert_eq!(title.as_deref(), Some("top.sp (netlist)"), "{}", s.status());
@@ -328,7 +328,7 @@ fn simulation_help_and_waves_commands() {
 /// The default-UI menus reach the new commands: File → Image export → SVG, by clicks.
 #[test]
 fn menus_reach_parity_commands() {
-    let mut s = Session::open("inv", "top.shcomp", "menus", true);
+    let mut s = Session::open("inv", "top.shcomp", "menus", Ui::Default);
     s.click_node("menu.file");
     s.click_node("menu.file.image_export");
     s.click_node("file.image_export.svg_export");

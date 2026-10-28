@@ -7,7 +7,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::*;
+use common::{Session, U, Ui, fixture};
 use schemify_config::Startup;
 use schemify_editor::editor::{Editor, Options};
 use schemify_editor::plugins::Host;
@@ -85,7 +85,7 @@ fn clean_startup_and_config_errors() {
         s.status()
     );
     // The default (tests, `--clean`) never runs a user config.
-    let clean = Session::open("inv", "top.shcomp", "userconfig-clean", true);
+    let clean = Session::open("inv", "top.shcomp", "userconfig-clean", Ui::Default);
     assert_eq!(clean.ed.opts().snap, 10 * U);
 }
 

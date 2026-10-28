@@ -6,13 +6,13 @@ use schemify_editor::editor::Tool;
 use schemify_ui::InputEvents;
 
 use super::{CTRL, Lcg, SHIFT};
-use crate::common::{self, Session, U};
+use crate::common::{self, Session, U, Ui};
 
 /// Ctrl+drag stretches; a stretch breaks a direct pin-to-pin contact, a kissing move keeps it
 /// with a new wire.
 #[test]
 fn kissing_keeps_direct_pin_contacts_that_stretch_breaks() {
-    let mut s = Session::open("inv", "top.shcomp", "kiss", true);
+    let mut s = Session::open("inv", "top.shcomp", "kiss", Ui::Default);
     // Ctrl+drag on the selected x2: its wires follow.
     s.click((150 * U, 0));
     s.drag((150 * U, 0), (150 * U, 40 * U), CTRL);
@@ -62,7 +62,7 @@ fn kissing_keeps_direct_pin_contacts_that_stretch_breaks() {
 fn join_trim_keeps_connectivity_over_random_wires() {
     let mut rng = Lcg(0x7713);
     for case in 0..8 {
-        let mut s = Session::open("inv", "top.shcomp", &format!("trimprop{case}"), true);
+        let mut s = Session::open("inv", "top.shcomp", &format!("trimprop{case}"), Ui::Default);
         let mut text = s.text();
         let mut wires = String::new();
         for k in 0..8 {
@@ -118,7 +118,7 @@ fn join_trim_keeps_connectivity_over_random_wires() {
 
 #[test]
 fn auto_trim_joins_after_each_wire() {
-    let mut s = Session::open("inv", "top.shcomp", "autotrim", true);
+    let mut s = Session::open("inv", "top.shcomp", "autotrim", Ui::Default);
     s.run("options.auto_join_trim_wires", "");
     s.move_to((300 * U, 0));
     s.key("w");
@@ -136,7 +136,7 @@ fn auto_trim_joins_after_each_wire() {
 
 #[test]
 fn make_subcircuit_moves_the_selection_into_a_new_cell() {
-    let mut s = Session::open("inv", "top.shcomp", "subckt", true);
+    let mut s = Session::open("inv", "top.shcomp", "subckt", Ui::Default);
     let before = s.text();
     s.click((150 * U, 0)); // x2
     s.key("Ctrl+Shift+H");
@@ -160,7 +160,7 @@ fn make_subcircuit_moves_the_selection_into_a_new_cell() {
 
 #[test]
 fn pins_ports_and_labels_from_highlighted_nets() {
-    let mut s = Session::open("inv", "top.shcomp", "netlists", true);
+    let mut s = Session::open("inv", "top.shcomp", "netlists", Ui::Default);
     // A new port EN: Alt+H makes it a symbol pin (in, at the port's position).
     s.move_to((300 * U, -40 * U));
     s.key("Ctrl+P");
@@ -197,7 +197,7 @@ fn pins_ports_and_labels_from_highlighted_nets() {
 
 #[test]
 fn select_connected_crosses_or_stops_at_junctions() {
-    let mut s = Session::open("inv", "top.shcomp", "conn", true);
+    let mut s = Session::open("inv", "top.shcomp", "conn", Ui::Default);
     // A T on the VDD rail at (30, -70).
     s.move_to((30 * U, -70 * U));
     s.key("w");
@@ -225,7 +225,7 @@ fn select_connected_crosses_or_stops_at_junctions() {
 
 #[test]
 fn unselect_area_removes_boxed_objects() {
-    let mut s = Session::open("inv", "top.shcomp", "unsel", true);
+    let mut s = Session::open("inv", "top.shcomp", "unsel", Ui::Default);
     s.key("Ctrl+A");
     let n = s.ed.selection().len();
     s.key("Shift+D");
@@ -245,7 +245,7 @@ fn unselect_area_removes_boxed_objects() {
 
 #[test]
 fn compare_swap_and_toggle() {
-    let mut s = Session::open("inv", "top.shcomp", "swap", true);
+    let mut s = Session::open("inv", "top.shcomp", "swap", Ui::Default);
     s.run("file.save_as", "top_b");
     s.click((30 * U, -70 * U));
     s.key("Del");
@@ -274,7 +274,7 @@ fn compare_swap_and_toggle() {
 
 #[test]
 fn highlight_decor_options_and_auto_highlight() {
-    let mut s = Session::open("inv", "top.shcomp", "hdecor", true);
+    let mut s = Session::open("inv", "top.shcomp", "hdecor", Ui::Default);
     s.run("highlight.auto_highlight_net_pins", "");
     s.click((60 * U, 0)); // a wire of `mid`
     assert_eq!(s.ed.highlight_keys().len(), 1, "{}", s.status());
@@ -305,7 +305,7 @@ fn highlight_decor_options_and_auto_highlight() {
 
 #[test]
 fn view_palette_follows_fill_colors_widths_and_symbol_modes() {
-    let mut s = Session::open("inv", "top.shcomp", "palette", true);
+    let mut s = Session::open("inv", "top.shcomp", "palette", Ui::Default);
     let base = s.ed.view_palette();
     s.run("view.toggle_fill_pattern", "");
     assert_eq!(s.ed.view_palette().fill, 0);
@@ -339,7 +339,7 @@ fn view_palette_follows_fill_colors_widths_and_symbol_modes() {
 
 #[test]
 fn small_commands_tabs_panels_graphs_and_recent() {
-    let mut s = Session::open("inv", "top.shcomp", "small", true);
+    let mut s = Session::open("inv", "top.shcomp", "small", Ui::Default);
     s.run("file.create_new_window_tab", "");
     assert_eq!(s.ed.session().tabs().len(), 2);
     s.run("view.show_hide.show_erc_info_window", "");
