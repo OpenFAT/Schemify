@@ -2,7 +2,8 @@
 //! braces. All holes compile into one [`Program`] with one root per hole, so
 //! a template binds its identifiers once, like a single expression.
 
-use crate::compile::{Compiler, Mode, Program};
+use crate::compile::Compiler;
+use crate::program::{Mode, Program};
 use crate::eval::{self, PluginValue, Scratch, V, str_at};
 use crate::text::{write_int, write_num};
 use crate::{Code, Error, Span, Value};

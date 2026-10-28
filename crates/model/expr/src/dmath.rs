@@ -11,7 +11,7 @@
 
 use core::ops::{Add, Div, Mul, MulAssign, Neg, Sub};
 
-use crate::compile::Builtin;
+use crate::builtin::Builtin;
 
 type C = Complex;
 
@@ -176,13 +176,9 @@ pub(crate) fn complex(b: Builtin, z: C) -> C {
 
 /// The elementary function spelled `name`, if it is one.
 fn by_name(name: &str) -> Option<Builtin> {
-    use Builtin::*;
-    Builtin::lookup(name).map(|(b, _, _)| b).filter(|b| {
-        matches!(
-            b,
-            Sqrt | Exp | Ln | Log10 | Sin | Cos | Tan | Asin | Acos | Atan | Sinh | Cosh | Tanh
-        )
-    })
+    Builtin::lookup(name)
+        .map(|(b, _, _)| b)
+        .filter(|b| b.elementary())
 }
 
 /// Real elementary function by source name (`"sin"`, …); `None` if `name`

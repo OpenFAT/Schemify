@@ -1,7 +1,11 @@
-//! The one expression language (D12): parameters, derived params, conditions,
-//! netlist templates, docs variables, outputs/specs and the waveform calculator.
+//! The one expression language (D12): source text → a compiled [`Program`] →
+//! a [`Value`], a column, or rendered template text. Parameters, derived
+//! params, conditions, netlist templates, docs variables, outputs/specs and
+//! the waveform calculator all go through it.
 //!
-//! Pure and total. Owns no tables. Normative spec: `docs/spec/expr.md`.
+//! Pure and total; owns no tables. Normative spec: `docs/spec/expr.md`
+//! (§1 values, §2 lexical, §3 grammar, §4 semantics, §5 builtins, §6
+//! templates, §7 number text, §8 codes); D19, D20, D23, D32.
 //!
 //! # Pipeline
 //!
@@ -43,6 +47,19 @@
 //! t.render(&inputs, &mut Scratch::default(), &mut out).unwrap();
 //! assert_eq!(out, "R1 a b r=2500");
 //! ```
+//!
+//! Contents:
+//! - `pub enum Value`, `pub enum Code`, `pub struct Span`, `pub struct Error`
+//! - `pub(crate) const MAX_NODES`, `MAX_DEPTH`, `MAX_STR_BYTES`, `MAX_PLUGIN_ARGS`
+//! - `Code::as_str(self) -> &'static str`, `Code::is_warning(self) -> bool`
+//! - `Span::new(start, end) -> Span`, `Span::join(self, other) -> Span`
+//! - `Error::new(code, span, msg) -> Error`, `Error::bare(code, msg) -> Error`,
+//!   `Error::at(self, span) -> Error`
+//! - re-exports: [`Program`], [`Mode`], [`SignalKind`], [`op_parts`], [`Scratch`],
+//!   [`PluginValue`], [`Template`], [`Segment`], [`Plot`], [`Column`],
+//!   [`CalcResult`], [`ColKind`], [`ColOut`], [`AxisOut`], [`Deps`], [`Cycle`],
+//!   [`topo_order`], [`topo_order_all`], [`reverse`], [`affected`],
+//!   [`parse_num`], [`write_num`], [`write_int`], `dmath`
 #![forbid(unsafe_code)]
 
 // Data design (the six DOD questions):
@@ -61,15 +78,20 @@
 // 6. Parallel: programs are immutable (`Send + Sync`); one `Scratch` per
 //    thread evaluates disjoint instances independently.
 
+mod builtin;
 mod calc;
+mod column;
 mod compile;
 #[doc(hidden)]
 pub mod dmath;
 mod eval;
 mod fft;
 mod graph;
+mod kernel;
 mod lex;
+mod measure;
 mod parse;
+mod program;
 mod spectre;
 mod template;
 mod text;
@@ -77,20 +99,11 @@ mod text;
 use core::fmt;
 
 pub use calc::{AxisOut, CalcResult, ColKind, ColOut, Column, Plot};
-pub use compile::{Mode, Program, SignalKind, op_parts};
 pub use eval::{PluginValue, Scratch};
 pub use graph::{Cycle, Deps, affected, reverse, topo_order, topo_order_all};
+pub use program::{Mode, Program, SignalKind, op_parts};
 pub use template::{Segment, Template};
 pub use text::{parse_num, write_int, write_num};
-
-/// Maximum AST nodes per expression (spec §3); more is [`Code::X002`].
-pub const MAX_NODES: usize = 65_536;
-/// Maximum syntactic nesting depth per expression (spec §3); more is [`Code::X002`].
-pub const MAX_DEPTH: u32 = 256;
-/// Maximum byte length of any string value (spec §1); longer is [`Code::X002`].
-pub const MAX_STR_BYTES: usize = 1 << 20;
-/// Maximum arguments to a plugin function `ns.f(…)`; more is [`Code::X008`].
-pub const MAX_PLUGIN_ARGS: usize = 16;
 
 /// A scalar value: what identifiers are bound to and what scalar evaluation returns.
 ///
@@ -112,7 +125,7 @@ pub enum Value<'a> {
         /// Imaginary part.
         im: f64,
     },
-    /// `str`: UTF-8, at most [`MAX_STR_BYTES`].
+    /// `str`: UTF-8, at most 1 MiB (spec §1).
     Str(&'a str),
 }
 
@@ -121,7 +134,7 @@ pub enum Value<'a> {
 pub enum Code {
     /// Bad number literal or SI suffix.
     X001,
-    /// Expression too large or too deep, or a string over [`MAX_STR_BYTES`].
+    /// Expression too large or too deep, or a string over 1 MiB.
     X002,
     /// Type error.
     X003,
@@ -142,6 +155,43 @@ pub enum Code {
     /// Column length or sweep-axis mismatch.
     X011,
 }
+
+/// Byte range `[start, end)` in the source text that was compiled (for a
+/// [`Template`], the whole template text). Empty when the error has no source
+/// position (dependency cycles, caller-made errors).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Span {
+    /// First byte.
+    pub start: u32,
+    /// One past the last byte.
+    pub end: u32,
+}
+
+/// An expression error: code, where, and a human-readable message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Error {
+    /// Spec §8 code.
+    pub code: Code,
+    /// Offending source range; empty when not tied to source.
+    pub span: Span,
+    /// Message naming the offending token, identifier, function or cycle.
+    pub msg: String,
+}
+
+/// Maximum AST nodes per expression (spec §3); more is [`Code::X002`].
+pub(crate) const MAX_NODES: usize = 65_536;
+/// Maximum syntactic nesting depth per expression (spec §3); more is [`Code::X002`].
+pub(crate) const MAX_DEPTH: u32 = 256;
+/// Maximum byte length of any string value (spec §1); longer is [`Code::X002`].
+pub(crate) const MAX_STR_BYTES: usize = 1 << 20;
+/// Maximum arguments to a plugin function `ns.f(…)` (spec §5); more is [`Code::X008`].
+pub(crate) const MAX_PLUGIN_ARGS: usize = 16;
+
+// Child indices and string ranges are u32 (data design 3).
+const _: () = assert!(MAX_NODES <= u32::MAX as usize);
+const _: () = assert!(MAX_STR_BYTES < u32::MAX as usize);
+// A plugin call's argument count is an op's u8 `sub`.
+const _: () = assert!(MAX_PLUGIN_ARGS <= u8::MAX as usize);
 
 impl Code {
     /// Returns the code as written in reports (`"X004"`).
@@ -167,18 +217,11 @@ impl Code {
     }
 }
 
-/// Byte range `[start, end)` in the source text that was compiled (for a
-/// [`Template`], the whole template text). Empty when the error has no source
-/// position (dependency cycles, caller-made errors).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Span {
-    /// First byte.
-    pub start: u32,
-    /// One past the last byte.
-    pub end: u32,
-}
-
 impl Span {
+    /// The span `[start, end)`.
+    ///
+    /// # Panics
+    /// If `start > end` or `end` does not fit in u32 (sources are < 4 GiB).
     pub(crate) fn new(start: usize, end: usize) -> Span {
         assert!(start <= end, "span start {start} after end {end}");
         assert!(end <= u32::MAX as usize, "source longer than 4 GiB");
@@ -188,23 +231,15 @@ impl Span {
         }
     }
 
+    /// The smallest span covering both.
     pub(crate) fn join(self, other: Span) -> Span {
-        Span {
+        let s = Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
-        }
+        };
+        debug_assert!(s.start <= s.end);
+        s
     }
-}
-
-/// An expression error: code, where, and a human-readable message.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Error {
-    /// Spec §8 code.
-    pub code: Code,
-    /// Offending source range; empty when not tied to source.
-    pub span: Span,
-    /// Message naming the offending token, identifier, function or cycle.
-    pub msg: String,
 }
 
 impl Error {
@@ -216,6 +251,12 @@ impl Error {
             span,
             msg: msg.into(),
         }
+    }
+
+    /// An error not yet tied to source: the op that raised it spans it later
+    /// ([`Error::at`]).
+    pub(crate) fn bare(code: Code, msg: impl Into<String>) -> Error {
+        Error::new(code, Span::default(), msg)
     }
 
     /// Replaces an empty span (errors raised away from the source) with `span`.

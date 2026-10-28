@@ -1,384 +1,45 @@
-//! Compile: flat AST → stack bytecode.
+//! Compile (spec §3–§5): a parsed [`Ast`] → [`Program`] bytecode.
 //!
 //! Done once per expression, so evaluation does no name lookup, no arity
 //! check and no work on constant subexpressions:
-//! - identifiers become input slots (first-occurrence order), `v()`/`i()`
+//! - identifiers become input slots (first-occurrence order), `v()`/`i()`/`op()`
 //!   become signal slots, `ns.f()` become plugin slots;
 //! - builtin names, arity and mode are checked (`X006`, `X008`);
 //! - every constant subtree is folded by running the scalar evaluator on it.
 //!   A folding error in a subtree that is always evaluated is reported here
-//!   (static type and range checking); under a lazy branch it is left for
-//!   runtime, so `false && 1/0` stays legal.
+//!   (spec §4 static checking); under a lazy branch it is left for runtime, so
+//!   `false && 1/0` stays legal.
 //!
-//! Lazy operators compile to bracketed jumps (`Cond … Else … EndCond`,
-//! `And … EndAnd`, `Or … EndOr`). The scalar evaluator jumps; the calculator
-//! evaluator, given a column condition, runs both arms and selects per element.
+//! Code generation is an explicit work stack, so a 65 536-node chain never
+//! recurses.
+//!
+//! Contents:
+//! - `pub(crate) struct Compiler`
+//! - `Compiler::new(mode: Mode) -> Compiler`,
+//!   `Compiler::add_root(&mut self, src: &str, start: usize, end: usize) -> Result<(), Error>`,
+//!   `Compiler::roots_len(&self) -> u32`, `Compiler::finish(self) -> Program`
 
 use std::collections::BTreeMap;
 
+use crate::builtin::{Builtin, VARIADIC, phys};
 use crate::eval::{self, Scratch, V};
 use crate::parse::{Ast, BinOp, Node, parse};
-use crate::{Code, Error, MAX_PLUGIN_ARGS, Span, Value};
+use crate::program::{Mode, Name, Op, OpKind, Program, SignalKind};
+use crate::{Code, Error, MAX_PLUGIN_ARGS, Span};
 
-/// Evaluation mode an expression is compiled for (spec §1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// Params, vars, templates, specs: no columns; calculator-only functions are `X006`.
-    Scalar,
-    /// Outputs and graph traces: columns over a result set's sweep axis.
-    Calc,
-}
-
-/// Kind of a result signal referenced as `v(net)` or `i(dev)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SignalKind {
-    /// `v(net)`: node voltage.
-    V,
-    /// `i(dev)`: device current.
-    I,
-    /// `op(inst, param)`: a device's DC operating-point value, one number; the
-    /// signal name is `<inst>[<param>]` (split it with [`op_parts`]).
-    Op,
-}
-
-/// Splits an [`SignalKind::Op`] signal name `<inst>[<param>]` into its
-/// instance path and parameter (`("x1/m2", "gm")`).
-///
-/// # Panics
-/// If `name` is not shaped so; the compiler only makes such names.
-pub fn op_parts(name: &str) -> (&str, &str) {
-    let (inst, rest) = name.rsplit_once('[').expect("an op signal name");
-    let param = rest.strip_suffix(']').expect("an op signal name");
-    assert!(!inst.is_empty() && !param.is_empty());
-    (inst, param)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OpKind {
-    Const,
-    Input,
-    Signal,
-    Axis,
-    Neg,
-    Not,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
-    Pow,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    /// Pops a bool; false jumps to `arg` (start of the else arm).
-    Cond,
-    /// End of the then arm; jumps to `arg` (the matching `EndCond`).
-    Else,
-    EndCond,
-    /// Pops a bool; false pushes false and jumps to `arg` (past `EndAnd`).
-    And,
-    /// Checks the right operand is bool.
-    EndAnd,
-    /// Pops a bool; true pushes true and jumps to `arg` (past `EndOr`).
-    Or,
-    EndOr,
-    /// `sub` = builtin id, `arg` = argc.
-    Call,
-    /// `sub` = argc, `arg` = plugin slot.
-    Plugin,
-}
-
-/// One instruction. AoS: the evaluator reads kind and operands together.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Op {
-    pub kind: OpKind,
-    pub sub: u8,
-    pub arg: u32,
-}
-
-/// Byte range of a name or string constant in [`Program::pool`].
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Name {
-    pub start: u32,
-    pub len: u32,
-}
-
-/// Builtin functions (spec §5). Discriminants index [`BUILTINS`]; everything
-/// from `V` up to `Op` is calculator-only (`Steps`, appended later, is scalar).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Builtin {
-    Abs,
-    Sqrt,
-    Exp,
-    Ln,
-    Log10,
-    Sin,
-    Cos,
-    Tan,
-    Asin,
-    Acos,
-    Atan,
-    Atan2,
-    Sinh,
-    Cosh,
-    Tanh,
-    Floor,
-    Ceil,
-    Round,
-    Int,
-    Min,
-    Max,
-    Clamp,
-    Sign,
-    Pow,
-    If,
-    Snap,
-    Eng,
-    Str,
-    Num,
-    Len,
-    Re,
-    Im,
-    Mag,
-    Ph,
-    Db,
-    Conj,
-    Cplx,
-    SpectreSource,
-    V,
-    I,
-    X,
-    Deriv,
-    Integ,
-    Avg,
-    Rms,
-    Ymax,
-    Ymin,
-    Pp,
-    At,
-    Cross,
-    Delay,
-    Settle,
-    Fft,
-    GainMargin,
-    PhaseMargin,
-    Op,
-    Steps,
-}
-
-const VARIADIC: u32 = u32::MAX;
-
-/// `(name, builtin, min args, max args)`, in discriminant order.
-pub(crate) const BUILTINS: [(&str, Builtin, u32, u32); 57] = [
-    ("abs", Builtin::Abs, 1, 1),
-    ("sqrt", Builtin::Sqrt, 1, 1),
-    ("exp", Builtin::Exp, 1, 1),
-    ("ln", Builtin::Ln, 1, 1),
-    ("log10", Builtin::Log10, 1, 1),
-    ("sin", Builtin::Sin, 1, 1),
-    ("cos", Builtin::Cos, 1, 1),
-    ("tan", Builtin::Tan, 1, 1),
-    ("asin", Builtin::Asin, 1, 1),
-    ("acos", Builtin::Acos, 1, 1),
-    ("atan", Builtin::Atan, 1, 1),
-    ("atan2", Builtin::Atan2, 2, 2),
-    ("sinh", Builtin::Sinh, 1, 1),
-    ("cosh", Builtin::Cosh, 1, 1),
-    ("tanh", Builtin::Tanh, 1, 1),
-    ("floor", Builtin::Floor, 1, 1),
-    ("ceil", Builtin::Ceil, 1, 1),
-    ("round", Builtin::Round, 1, 1),
-    ("int", Builtin::Int, 1, 1),
-    ("min", Builtin::Min, 2, VARIADIC),
-    ("max", Builtin::Max, 2, VARIADIC),
-    ("clamp", Builtin::Clamp, 3, 3),
-    ("sign", Builtin::Sign, 1, 1),
-    ("pow", Builtin::Pow, 2, 2),
-    ("if", Builtin::If, 3, 3),
-    ("snap", Builtin::Snap, 2, 2),
-    ("eng", Builtin::Eng, 1, 2),
-    ("str", Builtin::Str, 1, 1),
-    ("num", Builtin::Num, 1, 1),
-    ("len", Builtin::Len, 1, 1),
-    ("re", Builtin::Re, 1, 1),
-    ("im", Builtin::Im, 1, 1),
-    ("mag", Builtin::Mag, 1, 1),
-    ("ph", Builtin::Ph, 1, 1),
-    ("db", Builtin::Db, 1, 1),
-    ("conj", Builtin::Conj, 1, 1),
-    ("cplx", Builtin::Cplx, 2, 2),
-    ("spectre_source", Builtin::SpectreSource, 1, 1),
-    ("v", Builtin::V, 1, 1),
-    ("i", Builtin::I, 1, 1),
-    ("x", Builtin::X, 0, 0),
-    ("deriv", Builtin::Deriv, 1, 1),
-    ("integ", Builtin::Integ, 1, 1),
-    ("avg", Builtin::Avg, 1, 1),
-    ("rms", Builtin::Rms, 1, 1),
-    ("ymax", Builtin::Ymax, 1, 1),
-    ("ymin", Builtin::Ymin, 1, 1),
-    ("pp", Builtin::Pp, 1, 1),
-    ("at", Builtin::At, 2, 2),
-    ("cross", Builtin::Cross, 2, 4),
-    ("delay", Builtin::Delay, 4, 4),
-    ("settle", Builtin::Settle, 2, 2),
-    ("fft", Builtin::Fft, 1, 1),
-    ("gain_margin", Builtin::GainMargin, 1, 1),
-    ("phase_margin", Builtin::PhaseMargin, 1, 1),
-    ("op", Builtin::Op, 2, 2),
-    ("steps", Builtin::Steps, 4, VARIADIC),
-];
-
-impl Builtin {
-    pub(crate) fn from_id(id: u8) -> Builtin {
-        let b = BUILTINS[id as usize].1;
-        debug_assert_eq!(b as u8, id);
-        b
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        BUILTINS[self as usize].0
-    }
-
-    pub(crate) fn lookup(name: &str) -> Option<(Builtin, u32, u32)> {
-        // `V(out)` / `I(v1)`: SPICE habit, the only case-insensitive names.
-        let name = match name {
-            "V" => "v",
-            "I" => "i",
-            n => n,
-        };
-        BUILTINS
-            .iter()
-            .find(|row| row.0 == name)
-            .map(|&(_, b, lo, hi)| (b, lo, hi))
-    }
-
-    pub(crate) fn calc_only(self) -> bool {
-        // `steps` was appended after the calculator block (discriminants are stable).
-        self as u8 >= Builtin::V as u8 && self != Builtin::Steps
-    }
-}
-
-/// `phys.*` constants (spec §5; SI 2019 exact values, CODATA 2022 for eps0).
-fn phys(name: &str) -> Option<f64> {
-    Some(match name {
-        "k" => 1.380_649e-23,
-        "q" => 1.602_176_634e-19,
-        "h" => 6.626_070_15e-34,
-        "c" => 299_792_458.0,
-        "eps0" => 8.854_187_818_8e-12,
-        "kelvin0" => 273.15,
-        _ => return None,
-    })
-}
-
-/// A compiled expression (or the holes of a [`crate::Template`]): immutable,
-/// cheap to evaluate repeatedly, `Send + Sync`.
-#[derive(Clone, Debug)]
-pub struct Program {
-    pub(crate) ops: Vec<Op>,
-    /// Parallel to `ops`; read only when an error is raised.
-    pub(crate) spans: Vec<Span>,
-    /// Folded constants and literals. `V::Str` ranges point into `pool`.
-    pub(crate) consts: Vec<V>,
-    pub(crate) pool: String,
-    pub(crate) idents: Vec<Name>,
-    pub(crate) ident_spans: Vec<Span>,
-    pub(crate) signals: Vec<(SignalKind, Name)>,
-    /// Parallel to `signals`: the call that first names each one.
-    pub(crate) signal_spans: Vec<Span>,
-    /// `(namespace, function)` per plugin slot.
-    pub(crate) plugins: Vec<(Name, Name)>,
-    /// Code range per root: one for an expression, one per template hole.
-    pub(crate) roots: Vec<(u32, u32)>,
-    pub(crate) mode: Mode,
-}
-
-impl Program {
-    /// Compiles one expression.
-    ///
-    /// # Errors
-    /// Any lexical or parse error (`X001`, `X002`, `X009`), unknown function
-    /// or calculator-only function in [`Mode::Scalar`] (`X006`), wrong arity
-    /// (`X008`), unknown `phys.*` constant (`X004`), and any error raised by a
-    /// constant subexpression that is always evaluated (`X003`, `X010`, …).
-    pub fn compile(src: &str, mode: Mode) -> Result<Program, Error> {
-        let mut c = Compiler::new(mode);
-        c.add_root(src, 0, src.len())?;
-        let p = c.finish();
-        assert_eq!(p.roots.len(), 1);
-        Ok(p)
-    }
-
-    /// Identifier names in input-slot order: the order [`Program::eval`]
-    /// expects its inputs in. Each name appears once. `phys.*` constants are
-    /// not identifiers; other namespaced names (`a.b`) are, verbatim.
-    pub fn idents(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
-        self.idents.iter().map(|n| self.name(*n))
-    }
-
-    /// Signals referenced by `v(…)`/`i(…)`, in the slot order
-    /// [`Plot::signals`](crate::Plot::signals) must follow. Empty in scalar mode.
-    pub fn signals(&self) -> impl ExactSizeIterator<Item = (SignalKind, &str)> + '_ {
-        self.signals.iter().map(|&(k, n)| (k, self.name(n)))
-    }
-
-    /// The source span of the call that first names signal `k` (`v(out)`,
-    /// `op("M1", "gm")`): callers that fail to bind a signal report it there.
-    ///
-    /// # Panics
-    /// If `k >= signals().len()`.
-    pub fn signal_span(&self, k: usize) -> Span {
-        self.signal_spans[k]
-    }
-
-    /// Plugin functions `(namespace, name)` in slot order: the slot number a
-    /// plugin callback receives indexes this list. Non-empty means the value
-    /// depends on plugins, so callers caching values per D20 key on it.
-    pub fn plugin_fns(&self) -> impl ExactSizeIterator<Item = (&str, &str)> + '_ {
-        self.plugins
-            .iter()
-            .map(|&(ns, f)| (self.name(ns), self.name(f)))
-    }
-
-    /// Resolves every identifier through `lookup` into `out` (cleared first),
-    /// ready to pass to [`Program::eval`]. Resolution order across scopes
-    /// (spec §4) is the caller's: chain layers inside `lookup`.
-    ///
-    /// # Errors
-    /// `X004` naming the first identifier `lookup` does not know, spanned at
-    /// its first occurrence.
-    pub fn bind<'a>(
-        &self,
-        out: &mut Vec<Value<'a>>,
-        mut lookup: impl FnMut(&str) -> Option<Value<'a>>,
-    ) -> Result<(), Error> {
-        out.clear();
-        for (i, name) in self.idents().enumerate() {
-            let v = lookup(name).ok_or_else(|| {
-                Error::new(
-                    Code::X004,
-                    self.ident_spans[i],
-                    format!("unknown identifier `{name}`"),
-                )
-            })?;
-            out.push(v);
-        }
-        assert_eq!(out.len(), self.idents.len());
-        Ok(())
-    }
-
-    pub(crate) fn name(&self, n: Name) -> &str {
-        &self.pool[n.start as usize..(n.start + n.len) as usize]
-    }
-
-    pub(crate) fn plugin_name(&self, slot: u32) -> String {
-        let (ns, f) = self.plugins[slot as usize];
-        format!("{}.{}", self.name(ns), self.name(f))
-    }
+/// Builds one [`Program`] from one or more roots (a template adds one per
+/// hole). Lives for one compile call.
+pub(crate) struct Compiler {
+    prog: Program,
+    /// Name → slot, so each identifier, signal and plugin gets one slot.
+    idents: BTreeMap<String, u32>,
+    signals: BTreeMap<(SignalKind, String), u32>,
+    plugins: BTreeMap<(String, String), u32>,
+    work: Vec<Frame>,
+    /// Per finished node on the work path: is it a constant?
+    done: Vec<bool>,
+    /// The folding evaluator's memory.
+    scratch: Scratch,
 }
 
 /// Work item of the iterative code generator: `phase` counts children done.
@@ -394,18 +55,8 @@ struct Frame {
     lazy: bool,
 }
 
-pub(crate) struct Compiler {
-    prog: Program,
-    idents: BTreeMap<String, u32>,
-    signals: BTreeMap<(SignalKind, String), u32>,
-    plugins: BTreeMap<(String, String), u32>,
-    work: Vec<Frame>,
-    /// Per finished node on the work path: is it a constant?
-    done: Vec<bool>,
-    scratch: Scratch,
-}
-
 impl Compiler {
+    /// An empty compiler for `mode`.
     pub(crate) fn new(mode: Mode) -> Compiler {
         Compiler {
             prog: Program {
@@ -430,36 +81,14 @@ impl Compiler {
         }
     }
 
-    /// Emits a load of signal `(kind, name)`, adding it on first use.
-    fn signal(&mut self, kind: SignalKind, name: &str, span: Span) {
-        let next = self.prog.signals.len() as u32;
-        let slot = *self.signals.entry((kind, name.to_string())).or_insert(next);
-        if slot == next {
-            let nm = self.intern(name);
-            self.prog.signals.push((kind, nm));
-            self.prog.signal_spans.push(span);
-        }
-        assert!((slot as usize) < self.prog.signals.len());
-        self.emit(OpKind::Signal, 0, slot, span);
-        self.done.push(false);
-    }
-
-    pub(crate) fn finish(self) -> Program {
-        let p = self.prog;
-        assert_eq!(p.ops.len(), p.spans.len());
-        assert_eq!(p.idents.len(), p.ident_spans.len());
-        assert_eq!(p.signals.len(), p.signal_spans.len());
-        p
-    }
-
-    pub(crate) fn roots_len(&self) -> u32 {
-        self.prog.roots.len() as u32
-    }
-
-    /// Parses and compiles `src[start..end]` as one more root.
+    /// Parses and compiles `src[start..end]` as one more root. Spans stay
+    /// absolute offsets into `src`.
+    ///
+    /// # Errors
+    /// As [`Program::compile`]; the compiler is then unusable.
     pub(crate) fn add_root(&mut self, src: &str, start: usize, end: usize) -> Result<(), Error> {
         let ast = parse(src, start, end)?;
-        let code_start = self.prog.ops.len() as u32;
+        let code_start = self.here();
         self.work.clear();
         self.done.clear();
         self.work.push(Frame {
@@ -473,64 +102,32 @@ impl Compiler {
             self.step(&ast, src, f)?;
         }
         assert_eq!(self.done.len(), 1, "root did not produce exactly one value");
-        self.prog
-            .roots
-            .push((code_start, self.prog.ops.len() as u32));
+        assert!(self.here() > code_start, "a root emits code");
+        self.prog.roots.push((code_start, self.here()));
         Ok(())
     }
 
-    fn emit(&mut self, kind: OpKind, sub: u8, arg: u32, span: Span) -> u32 {
-        self.prog.ops.push(Op { kind, sub, arg });
-        self.prog.spans.push(span);
-        self.prog.ops.len() as u32 - 1
+    /// Roots compiled so far: the index the next [`Compiler::add_root`] gets.
+    pub(crate) fn roots_len(&self) -> u32 {
+        self.prog.roots.len() as u32
     }
 
-    fn here(&self) -> u32 {
-        self.prog.ops.len() as u32
+    /// The finished program.
+    pub(crate) fn finish(self) -> Program {
+        let p = self.prog;
+        assert_eq!(p.ops.len(), p.spans.len());
+        assert_eq!(p.idents.len(), p.ident_spans.len());
+        assert_eq!(p.signals.len(), p.signal_spans.len());
+        p
     }
+}
 
-    fn intern(&mut self, s: &str) -> Name {
-        intern(&mut self.prog.pool, s)
-    }
+// ---- private ----
 
-    fn leaf_const(&mut self, v: V, span: Span) {
-        let k = self.prog.consts.len() as u32;
-        self.prog.consts.push(v);
-        self.emit(OpKind::Const, 0, k, span);
-        self.done.push(true);
-    }
-
-    fn input(&mut self, name: &str, span: Span) {
-        let next = self.prog.idents.len() as u32;
-        let slot = *self.idents.entry(name.to_string()).or_insert(next);
-        if slot == next {
-            let n = self.intern(name);
-            self.prog.idents.push(n);
-            self.prog.ident_spans.push(span);
-        }
-        self.emit(OpKind::Input, 0, slot, span);
-        self.done.push(false);
-    }
-
-    fn child(&mut self, parent: Frame, next_phase: u32, child: u32, lazy: bool) {
-        self.work.push(Frame {
-            phase: next_phase,
-            ..parent
-        });
-        let start = self.here();
-        self.work.push(Frame {
-            node: child,
-            phase: 0,
-            start,
-            aux: 0,
-            lazy: parent.lazy || lazy,
-        });
-    }
-
+impl Compiler {
     fn step(&mut self, ast: &Ast, src: &str, mut f: Frame) -> Result<(), Error> {
         let n = f.node as usize;
         let span = ast.span[n];
-        let text = &src[span.start as usize..span.end as usize];
         let (a, b) = (ast.a[n], ast.b[n]);
         if f.phase == 0 {
             f.start = self.here();
@@ -542,12 +139,12 @@ impl Compiler {
             Node::False => self.leaf_const(V::Bool(false), span),
             Node::Pi => self.leaf_const(V::Num(core::f64::consts::PI), span),
             Node::Str => {
-                let s = &ast.pool[a as usize..(a + b) as usize];
-                let name = self.intern(s);
+                let name = intern(&mut self.prog.pool, ast.str_lit(n));
                 self.leaf_const(V::Str(name.start, name.len), span);
             }
-            Node::Ident => self.input(text, span),
+            Node::Ident => self.input(ast.text(src, n), span),
             Node::NsIdent => {
+                let text = ast.text(src, n);
                 let (ns, name) = text.split_once('.').expect("lexer guarantees a dot");
                 if ns != "phys" {
                     self.input(text, span);
@@ -565,12 +162,8 @@ impl Compiler {
             Node::Neg | Node::Not => match f.phase {
                 0 => self.child(f, 1, a, false),
                 _ => {
-                    let kind = if ast.kind[n] == Node::Neg {
-                        OpKind::Neg
-                    } else {
-                        OpKind::Not
-                    };
-                    self.emit(kind, 0, 0, span);
+                    let neg = ast.kind[n] == Node::Neg;
+                    self.emit(if neg { OpKind::Neg } else { OpKind::Not }, 0, 0, span);
                     self.finish_node(f, 1, true)?;
                 }
             },
@@ -611,6 +204,69 @@ impl Compiler {
         Ok(())
     }
 
+    fn here(&self) -> u32 {
+        self.prog.ops.len() as u32
+    }
+
+    fn emit(&mut self, kind: OpKind, sub: u8, arg: u32, span: Span) -> u32 {
+        self.prog.ops.push(Op { kind, sub, arg });
+        self.prog.spans.push(span);
+        debug_assert_eq!(self.prog.ops.len(), self.prog.spans.len());
+        self.here() - 1
+    }
+
+    fn leaf_const(&mut self, v: V, span: Span) {
+        let k = self.prog.consts.len() as u32;
+        self.prog.consts.push(v);
+        self.emit(OpKind::Const, 0, k, span);
+        self.done.push(true);
+    }
+
+    /// Emits a load of identifier `name`, adding its slot on first use.
+    fn input(&mut self, name: &str, span: Span) {
+        let next = self.prog.idents.len() as u32;
+        let slot = *self.idents.entry(name.to_string()).or_insert(next);
+        if slot == next {
+            let n = intern(&mut self.prog.pool, name);
+            self.prog.idents.push(n);
+            self.prog.ident_spans.push(span);
+        }
+        assert!((slot as usize) < self.prog.idents.len());
+        self.emit(OpKind::Input, 0, slot, span);
+        self.done.push(false);
+    }
+
+    /// Emits a load of signal `(kind, name)`, adding its slot on first use.
+    fn signal(&mut self, kind: SignalKind, name: &str, span: Span) {
+        let next = self.prog.signals.len() as u32;
+        let slot = *self.signals.entry((kind, name.to_string())).or_insert(next);
+        if slot == next {
+            let nm = intern(&mut self.prog.pool, name);
+            self.prog.signals.push((kind, nm));
+            self.prog.signal_spans.push(span);
+        }
+        assert!((slot as usize) < self.prog.signals.len());
+        self.emit(OpKind::Signal, 0, slot, span);
+        self.done.push(false);
+    }
+
+    /// Re-queues `parent` at `next_phase`, then compiles `child` first.
+    fn child(&mut self, parent: Frame, next_phase: u32, child: u32, lazy: bool) {
+        debug_assert!(next_phase > parent.phase);
+        self.work.push(Frame {
+            phase: next_phase,
+            ..parent
+        });
+        let start = self.here();
+        self.work.push(Frame {
+            node: child,
+            phase: 0,
+            start,
+            aux: 0,
+            lazy: parent.lazy || lazy,
+        });
+    }
+
     /// `c ? t : e` and `if(c, t, e)`: both arms are lazy.
     fn ternary(&mut self, mut f: Frame, [c, t, e]: [u32; 3], span: Span) -> Result<(), Error> {
         match f.phase {
@@ -638,44 +294,28 @@ impl Compiler {
         let n = f.node as usize;
         let x = ast.a[n] as usize;
         let argc = ast.b[n];
-        let arg = |k: u32| ast.extra[x + 1 + k as usize];
+        let arg = |k: u32| ast.extra[x + 1 + k as usize] as usize;
         let name = &src[span.start as usize..ast.extra[x] as usize];
         // Looked up again each phase: `aux` belongs to `if`'s jump patching.
         let (builtin, lo, hi) = Builtin::lookup(name)
             .ok_or_else(|| Error::new(Code::X006, span, format!("unknown function `{name}`")))?;
         if f.phase == 0 {
-            if argc < lo || argc > hi {
-                let want = match (lo, hi) {
-                    (lo, hi) if lo == hi => format!("{lo}"),
-                    (lo, VARIADIC) => format!("at least {lo}"),
-                    (lo, hi) => format!("{lo} to {hi}"),
-                };
-                return Err(Error::new(
-                    Code::X008,
-                    span,
-                    format!("`{name}` takes {want} arguments, got {argc}"),
-                ));
-            }
-            if builtin.calc_only() && self.prog.mode == Mode::Scalar {
-                return Err(Error::new(
-                    Code::X006,
-                    span,
-                    format!("`{name}` is only available in calculator mode"),
-                ));
-            }
+            check_call(self.prog.mode, builtin, name, argc, (lo, hi), span)?;
         }
         match builtin {
-            Builtin::If => return self.ternary(f, [arg(0), arg(1), arg(2)], span),
+            Builtin::If => {
+                let args = [arg(0), arg(1), arg(2)].map(|a| a as u32);
+                return self.ternary(f, args, span);
+            }
             Builtin::V | Builtin::I => {
-                let a = arg(0) as usize;
-                let a_span = ast.span[a];
+                let a = arg(0);
                 let net = match ast.kind[a] {
-                    Node::Str => &ast.pool[ast.a[a] as usize..(ast.a[a] + ast.b[a]) as usize],
-                    Node::Ident | Node::NsIdent => &src[a_span.start as usize..a_span.end as usize],
+                    Node::Str => ast.str_lit(a),
+                    Node::Ident | Node::NsIdent => ast.text(src, a),
                     _ => {
                         return Err(Error::new(
                             Code::X003,
-                            a_span,
+                            ast.span[a],
                             format!("`{name}` takes a signal name (identifier or string)"),
                         ));
                     }
@@ -689,22 +329,15 @@ impl Compiler {
             }
             Builtin::Op => {
                 // Both arguments are names taken verbatim, like `v`/`i`'s.
-                let text = |k: u32| {
-                    let a = arg(k) as usize;
-                    match ast.kind[a] {
-                        Node::Str => {
-                            Some(&ast.pool[ast.a[a] as usize..(ast.a[a] + ast.b[a]) as usize])
-                        }
-                        Node::Ident => {
-                            Some(&src[ast.span[a].start as usize..ast.span[a].end as usize])
-                        }
-                        _ => None,
-                    }
+                let text = |a: usize| match ast.kind[a] {
+                    Node::Str => Some(ast.str_lit(a)),
+                    Node::Ident => Some(ast.text(src, a)),
+                    _ => None,
                 };
-                let inst = text(0).filter(|i| {
+                let inst = text(arg(0)).filter(|i| {
                     !i.is_empty() && !i.contains(|c: char| c.is_whitespace() || c == ']')
                 });
-                let param = text(1).filter(|p| {
+                let param = text(arg(1)).filter(|p| {
                     !p.is_empty() && p.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric())
                 });
                 let (Some(inst), Some(param)) = (inst, param) else {
@@ -720,7 +353,7 @@ impl Compiler {
                 self.emit(OpKind::Axis, 0, 0, span);
                 self.done.push(false);
             }
-            _ if f.phase < argc => self.child(f, f.phase + 1, arg(f.phase), false),
+            _ if f.phase < argc => self.child(f, f.phase + 1, arg(f.phase) as u32, false),
             _ => {
                 self.emit(OpKind::Call, builtin as u8, argc, span);
                 self.finish_node(f, argc as usize, !builtin.calc_only())?;
@@ -761,7 +394,10 @@ impl Compiler {
             .entry((ns.to_string(), name.to_string()))
             .or_insert(next);
         if slot == next {
-            let (a, b) = (self.intern(ns), self.intern(name));
+            let (a, b) = (
+                intern(&mut self.prog.pool, ns),
+                intern(&mut self.prog.pool, name),
+            );
             self.prog.plugins.push((a, b));
         }
         self.emit(OpKind::Plugin, argc as u8, slot, span);
@@ -813,9 +449,42 @@ impl Compiler {
     }
 }
 
+/// Arity (`X008`) and mode (`X006`) of a builtin call with `argc` arguments.
+fn check_call(
+    mode: Mode,
+    builtin: Builtin,
+    name: &str,
+    argc: u32,
+    (lo, hi): (u32, u32),
+    span: Span,
+) -> Result<(), Error> {
+    debug_assert!(lo <= hi);
+    if argc < lo || argc > hi {
+        let want = match (lo, hi) {
+            (lo, hi) if lo == hi => format!("{lo}"),
+            (lo, VARIADIC) => format!("at least {lo}"),
+            (lo, hi) => format!("{lo} to {hi}"),
+        };
+        return Err(Error::new(
+            Code::X008,
+            span,
+            format!("`{name}` takes {want} arguments, got {argc}"),
+        ));
+    }
+    if builtin.calc_only() && mode == Mode::Scalar {
+        return Err(Error::new(
+            Code::X006,
+            span,
+            format!("`{name}` is only available in calculator mode"),
+        ));
+    }
+    Ok(())
+}
+
 fn intern(pool: &mut String, s: &str) -> Name {
     let start = pool.len() as u32;
     pool.push_str(s);
+    debug_assert!(pool.len() <= u32::MAX as usize, "program pool past 4 GiB");
     Name {
         start,
         len: s.len() as u32,
