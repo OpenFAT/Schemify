@@ -181,6 +181,11 @@ impl PluginEvents {
     /// for `PluginId(u32::MAX)`, which is never assigned.
     pub fn push(&mut self, target: Option<PluginId>, event: &Event<'_>) -> Result<(), Code> {
         debug_assert_eq!(self.target.len(), self.ends.len());
+        debug_assert_eq!(
+            snapshot::row_start(&self.ends, self.ends.len()),
+            self.bytes.len(),
+            "the last event ends the byte run"
+        );
         if self.target.len() >= EVENTS_MAX {
             return Err(Code::Space);
         }
@@ -196,6 +201,10 @@ impl PluginEvents {
                 return Err(Code::Space);
             }
         };
+        debug_assert!(
+            self.bytes.len() > before,
+            "an event encodes to at least its word"
+        );
         self.target.push(target.map_or(BROADCAST, |id| id.0));
         self.ends.push(end);
         debug_assert_eq!(self.target.len(), self.ends.len());

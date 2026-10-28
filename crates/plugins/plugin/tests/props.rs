@@ -103,31 +103,34 @@ struct Model {
 
 /// One set member, its key derived independently of the host.
 fn member(kind: Kind, name: u8, variant: u8) -> Member {
-    let n = ["a", "b", "c", "d"][name as usize % 4];
+    let word = ["a", "b", "c", "d"][name as usize % 4];
     let (text, key) = match kind {
         Kind::Ui => match variant % 3 {
             0 => (
-                format!("node {n} item\n  label \"{n}\""),
-                format!("node {n}"),
+                format!("node {word} item\n  label \"{word}\""),
+                format!("node {word}"),
             ),
-            1 => (format!("remove {n}"), format!("node {n}")),
+            1 => (format!("remove {word}"), format!("node {word}")),
             _ => (
-                format!("set {n} label x{variant}"),
-                format!("set {n} label"),
+                format!("set {word} label x{variant}"),
+                format!("set {word} label"),
             ),
         },
         Kind::Commands => (
-            format!("command cmd.{n} \"L{variant}\""),
-            format!("command cmd.{n}"),
+            format!("command cmd.{word} \"L{variant}\""),
+            format!("command cmd.{word}"),
         ),
         Kind::Keymap => (
-            format!("key ctrl+{n} cmd.{n}{variant}"),
-            format!("key ctrl+{n}"),
+            format!("key ctrl+{word} cmd.{word}{variant}"),
+            format!("key ctrl+{word}"),
         ),
-        Kind::Annotations => (format!("mark {n} warn \"m{variant}\""), format!("mark {n}")),
+        Kind::Annotations => (
+            format!("mark {word} warn \"m{variant}\""),
+            format!("mark {word}"),
+        ),
         Kind::Functions => (
-            format!("function ns.{n} {variant} 2"),
-            format!("function ns.{n}"),
+            format!("function ns.{word} {variant} 2"),
+            format!("function ns.{word}"),
         ),
         _ => unreachable!("not generated"),
     };

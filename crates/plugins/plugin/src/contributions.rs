@@ -269,6 +269,10 @@ pub(crate) fn line_values(line: &str) -> Result<Vec<String>, Code> {
 pub(crate) fn truncate(s: &str, max: usize) -> &str {
     let end = s.floor_char_boundary(max);
     debug_assert!(end <= max);
+    debug_assert!(
+        end == s.len() || max - end < 4,
+        "cuts at most one partial character"
+    );
     &s[..end]
 }
 
@@ -276,8 +280,14 @@ pub(crate) fn truncate(s: &str, max: usize) -> &str {
 
 impl Contributions {
     fn find(&self, plugin: PluginId, kind: Kind, scope: &str) -> Option<usize> {
-        (0..self.len())
-            .find(|&i| self.plugin[i] == plugin && self.kind[i] == kind && *self.scope[i] == *scope)
+        let matches =
+            |i: usize| self.plugin[i] == plugin && self.kind[i] == kind && *self.scope[i] == *scope;
+        let found = (0..self.len()).find(|&i| matches(i));
+        debug_assert!(
+            found.is_none_or(|i| !(i + 1..self.len()).any(matches)),
+            "one row per (plugin, kind, scope)"
+        );
+        found
     }
 
     fn remove(&mut self, i: usize) {
@@ -318,16 +328,18 @@ fn record_key(kind: Kind, document: &FormatDoc<'_>, record: u32) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     #[test]
     fn set_records_key_and_validate() {
         let body =
             "node a item\n  parent menu\nremove b\nset c label \"x y\"\nstyle s\n  color red";
-        let recs = set_records(Kind::Ui, body).unwrap();
-        let keys: Vec<&str> = recs.iter().map(|r| r.key.as_str()).collect();
+        let records = set_records(Kind::Ui, body).unwrap();
+        let keys: Vec<&str> = records.iter().map(|record| record.key.as_str()).collect();
         assert_eq!(keys, ["node a", "node b", "set c label", "style s"]);
-        assert_eq!(recs[0].text, "node a item\n  parent menu");
+        assert_eq!(records[0].text, "node a item\n  parent menu");
         assert_eq!(set_records(Kind::Ui, "command x y"), Err(Code::Parse));
         assert_eq!(set_records(Kind::Ui, "node"), Err(Code::Parse));
         assert_eq!(set_records(Kind::Ui, "  orphan x"), Err(Code::Parse));
@@ -368,7 +380,7 @@ mod tests {
         #[test]
         fn abi_and_format_lexers_agree(line in "[ a-z0-9\"\\\\#|:.{}u\\-]{0,24}") {
             let abi: Result<Vec<String>, Code> = text::values(&line)
-                .map(|v| v.map(std::borrow::Cow::into_owned))
+                .map(|value| value.map(Cow::into_owned))
                 .collect();
             proptest::prop_assert_eq!(line_values(&line), abi);
         }
@@ -376,42 +388,45 @@ mod tests {
 
     #[test]
     fn contributions_replace_and_clear() {
-        let mut c = Contributions::new();
-        let p = PluginId(1);
-        c.set(p, Kind::Ui, "", "node a x").unwrap();
-        let e = c.epoch();
-        c.set(p, Kind::Ui, "", "node a x").unwrap();
-        assert_eq!(c.epoch(), e, "identical set is not a change");
-        c.set(p, Kind::Ui, "", "node b x").unwrap();
-        assert_eq!(c.get(p, Kind::Ui, ""), Some("node b x"));
-        c.set(p, Kind::Annotations, "erc", "mark a info b").unwrap();
-        assert_eq!(c.len(), 2);
-        c.set(p, Kind::Ui, "", "").unwrap();
-        assert_eq!(c.get(p, Kind::Ui, ""), None);
-        let e = c.epoch();
-        c.remove_plugin(PluginId(2));
-        assert_eq!(c.epoch(), e, "removing nothing is not a change");
-        c.remove_plugin(p);
-        assert!(c.is_empty());
-        assert_ne!(c.epoch(), e);
+        let mut table = Contributions::new();
+        let plugin = PluginId(1);
+        table.set(plugin, Kind::Ui, "", "node a x").unwrap();
+        let epoch = table.epoch();
+        table.set(plugin, Kind::Ui, "", "node a x").unwrap();
+        assert_eq!(table.epoch(), epoch, "identical set is not a change");
+        table.set(plugin, Kind::Ui, "", "node b x").unwrap();
+        assert_eq!(table.get(plugin, Kind::Ui, ""), Some("node b x"));
+        table
+            .set(plugin, Kind::Annotations, "erc", "mark a info b")
+            .unwrap();
+        assert_eq!(table.len(), 2);
+        table.set(plugin, Kind::Ui, "", "").unwrap();
+        assert_eq!(table.get(plugin, Kind::Ui, ""), None);
+        let epoch = table.epoch();
+        table.remove_plugin(PluginId(2));
+        assert_eq!(table.epoch(), epoch, "removing nothing is not a change");
+        table.remove_plugin(plugin);
+        assert!(table.is_empty());
+        assert_ne!(table.epoch(), epoch);
     }
 
     #[test]
     fn contributions_are_bounded() {
-        let mut c = Contributions::new();
+        let mut table = Contributions::new();
         for i in 0..CONTRIBUTIONS_MAX {
-            c.set(
-                PluginId(1),
-                Kind::Annotations,
-                &format!("s{i}"),
-                "mark a info b",
-            )
-            .unwrap();
+            table
+                .set(
+                    PluginId(1),
+                    Kind::Annotations,
+                    &format!("s{i}"),
+                    "mark a info b",
+                )
+                .unwrap();
         }
-        let full = c.set(PluginId(1), Kind::Annotations, "over", "mark a info b");
+        let full = table.set(PluginId(1), Kind::Annotations, "over", "mark a info b");
         assert_eq!(full, Err(Code::Space));
-        assert_eq!(c.len(), CONTRIBUTIONS_MAX);
-        assert_eq!(c.get(PluginId(1), Kind::Annotations, "over"), None);
+        assert_eq!(table.len(), CONTRIBUTIONS_MAX);
+        assert_eq!(table.get(PluginId(1), Kind::Annotations, "over"), None);
     }
 
     #[test]

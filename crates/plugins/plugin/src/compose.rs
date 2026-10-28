@@ -206,7 +206,9 @@ impl Composed {
     /// command for routing `Event::Command`. O(records of `kind`).
     #[must_use]
     pub fn find(&self, kind: Kind, key: &str) -> Option<&ComposedRecord> {
-        self.of(kind).iter().find(|record| &*record.key == key)
+        let found = self.of(kind).iter().find(|record| &*record.key == key);
+        debug_assert!(found.is_none_or(|record| record.kind == kind));
+        found
     }
 }
 

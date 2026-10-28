@@ -318,10 +318,9 @@ fn missing(name: &str, error: impl Display) -> Failure {
 }
 
 fn failure(code: Code, detail: impl Display) -> Failure {
-    Failure {
-        code,
-        detail: detail.to_string(),
-    }
+    let detail = detail.to_string();
+    debug_assert!(!detail.is_empty(), "every failure says what failed");
+    Failure { code, detail }
 }
 
 /// Copies `input` into a buffer from the guest's `schemify_alloc`; returns its (ptr, len).
@@ -358,7 +357,9 @@ fn read_output(store: &Store<Context>, ptr: u32, len: u32, out: &mut Vec<u8>) ->
     out.resize(len as usize, 0);
     memory
         .read(store, ptr as usize, out)
-        .map_err(|_| Code::Range)
+        .map_err(|_| Code::Range)?;
+    debug_assert_eq!(out.len(), len as usize);
+    Ok(())
 }
 
 fn trap_code(t: TrapCode) -> Code {

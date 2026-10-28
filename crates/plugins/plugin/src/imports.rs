@@ -242,6 +242,7 @@ fn eval(mut caller: Caller<'_, Context>, doc: u32, ptr: u32, len: u32) -> i32 {
     if !context.snapshots.has_doc(doc) {
         return Code::Gone.neg();
     }
+    debug_assert!(context.room.evals <= EVALS_MAX);
     if context.room.evals == 0 {
         return Code::Space.neg();
     }
@@ -285,6 +286,7 @@ fn log(mut caller: Caller<'_, Context>, level: u32, ptr: u32, len: u32) {
         });
         return;
     }
+    debug_assert!(context.room.logs <= LOGS_MAX);
     context.room.logs -= 1;
     debug_assert_eq!(bytes.len(), len as usize);
     // A lossy decode turns at most 3 cut bytes into one U+FFFD, which `truncate` then cuts.
@@ -343,6 +345,7 @@ fn request(mut caller: Caller<'_, Context>, op: IoOp, target: GuestSlice, data: 
     }
     // `authorize` checked the arity: one path or URL, an argv, or nothing.
     debug_assert!(args.len() <= 1 || op == IoOp::Spawn);
+    debug_assert!(context.room.io <= IO_MAX);
     if context.room.io == 0 {
         return Code::Space.neg();
     }

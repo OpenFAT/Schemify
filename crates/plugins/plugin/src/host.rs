@@ -95,7 +95,7 @@ impl Plugins {
     pub fn new() -> Plugins {
         let engine = runtime::engine();
         let linker = imports::linker(&engine);
-        Plugins {
+        let plugins = Plugins {
             engine,
             linker,
             ids: Vec::new(),
@@ -118,7 +118,14 @@ impl Plugins {
             composed_epoch: 0,
             health: Health::default(),
             scratch: Vec::new(),
-        }
+        };
+        plugins.assert_rows();
+        debug_assert_eq!(
+            plugins.composed_epoch,
+            plugins.contributions.epoch(),
+            "nothing to compose yet"
+        );
+        plugins
     }
 
     /// Validates, links and instantiates a module, checks its ABI version, and queues `Event::Load`
@@ -262,7 +269,15 @@ impl Plugins {
     /// unavailable until it finishes).
     #[must_use]
     pub fn busy(&self, id: PluginId) -> bool {
-        self.row(id).is_some_and(|row| self.jobs[row].is_some())
+        let busy = self.row(id).is_some_and(|row| self.jobs[row].is_some());
+        debug_assert!(
+            !busy
+                || self
+                    .row(id)
+                    .is_some_and(|row| self.stores[row].data().memory.is_none()),
+            "a busy plugin's instance is on its worker, an idle stand-in here"
+        );
+        busy
     }
 
     /// Returns `(given, finished)` for `id`: how many events [`deliver`](crate::deliver) has handed
@@ -344,6 +359,7 @@ impl Plugins {
         let text = std::str::from_utf8(&self.scratch).map_err(|_| Code::Parse)?;
         result.clear();
         result.push_str(text);
+        debug_assert_eq!(result.len(), self.scratch.len());
         Ok(())
     }
 
@@ -389,6 +405,7 @@ impl Plugins {
     /// its own event table is non-empty.
     #[must_use]
     pub fn has_pending(&self) -> bool {
+        debug_assert_eq!(self.pending.len(), self.deferred.len());
         self.pending
             .iter()
             .chain(&self.deferred)
@@ -417,10 +434,18 @@ impl Plugins {
         debug_assert_eq!(rows, self.jobs.len());
         debug_assert_eq!(rows, self.given.len());
         debug_assert_eq!(rows, self.finished.len());
+        // Ids are issued in increasing order and rows keep load order, so the id column is
+        // strictly increasing and below the next id to issue.
+        debug_assert!(self.ids.windows(2).all(|pair| pair[0] < pair[1]));
+        debug_assert!(self.ids.last().is_none_or(|last| last.0 < self.next_id));
     }
 
     /// Counts one aborted call of row `row`.
     pub(crate) fn strike(&mut self, row: usize, code: Code) {
+        debug_assert!(
+            matches!(code, Code::Fuel | Code::Trap | Code::Range | Code::Space),
+            "only a guest abort strikes, not {code:?}"
+        );
         self.strikes[row] = self.strikes[row].saturating_add(1);
         self.last_abort[row] = code;
         debug_assert!(self.strikes[row] > 0);
@@ -452,6 +477,13 @@ impl Plugins {
         self.health.overrides = overrides;
         self.composed_epoch = self.contributions.epoch();
         debug_assert!(
+            self.health
+                .overrides
+                .iter()
+                .all(|replaced| self.ids.contains(&replaced.winner)),
+            "only loaded plugins win"
+        );
+        debug_assert!(
             self.composed
                 .records
                 .iter()
@@ -467,6 +499,7 @@ impl Plugins {
     /// is detached; its result is dropped when it ends.
     fn remove_row(&mut self, row: usize) {
         let rows = self.ids.len();
+        assert!(row < rows, "row {row} of {rows}");
         let id = self.ids.remove(row);
         self.names.remove(row);
         self.fuel.remove(row);

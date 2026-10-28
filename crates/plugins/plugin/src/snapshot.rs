@@ -196,12 +196,14 @@ impl Snapshots {
     /// Returns the row count (that of column 0; [`Snapshots::check`] verifies the rest).
     #[must_use]
     pub fn rows(&self, table: Table) -> u32 {
+        debug_assert!(self.is_lent(), "placeholder snapshots");
         rows_of(table, 0, &self.tables[table as usize].columns[0])
     }
 
     /// Returns the table's epoch; it advances on every `fill*` and `splice*`.
     #[must_use]
     pub fn epoch(&self, table: Table) -> u32 {
+        debug_assert!(self.is_lent(), "placeholder snapshots");
         self.tables[table as usize].epoch
     }
 
@@ -222,7 +224,7 @@ impl Snapshots {
             let mut counts = columns
                 .iter()
                 .enumerate()
-                .map(|(i, c)| rows_of(table, i, c));
+                .map(|(index, stored)| rows_of(table, index, stored));
             if !counts.all(|count| count == rows) {
                 return Err(table);
             }
@@ -232,7 +234,9 @@ impl Snapshots {
 
     /// Allocation-free stand-in kept in a plugin's store while the real value is not lent.
     pub(crate) fn placeholder() -> Snapshots {
-        Snapshots { tables: Vec::new() }
+        let placeholder = Snapshots { tables: Vec::new() };
+        debug_assert!(!placeholder.is_lent());
+        placeholder
     }
 
     /// Returns whether this is the full table set (not a placeholder).
@@ -264,13 +268,13 @@ impl Snapshots {
         start: u32,
         count: u32,
     ) -> Result<&[u8], Code> {
-        let (table, c) = self.column(table, column)?;
+        let (table, stored) = self.column(table, column)?;
         let width = usize::from(table.columns()[column as usize].ty.width());
         if width == 0 {
             return Err(Code::Column);
         }
-        let rows = row_range(rows_of(table, column as usize, c), start, count)?;
-        let bytes = &c.bytes[rows.start * width..rows.end * width];
+        let rows = row_range(rows_of(table, column as usize, stored), start, count)?;
+        let bytes = &stored.bytes[rows.start * width..rows.end * width];
         debug_assert_eq!(bytes.len(), count as usize * width);
         Ok(bytes)
     }
@@ -287,8 +291,11 @@ impl Snapshots {
         start: u32,
         count: u32,
     ) -> Result<usize, Code> {
-        let (rows, c) = self.string_rows(table, column, start, count)?;
-        let (first, last) = (row_start(&c.ends, rows.start), row_start(&c.ends, rows.end));
+        let (rows, stored) = self.string_rows(table, column, start, count)?;
+        let (first, last) = (
+            row_start(&stored.ends, rows.start),
+            row_start(&stored.ends, rows.end),
+        );
         debug_assert!(first <= last, "string ends are non-decreasing");
         Ok(4 * rows.len() + (last - first))
     }
@@ -307,12 +314,12 @@ impl Snapshots {
         count: u32,
         dst: &mut [u8],
     ) {
-        let (rows, c) = self
+        let (rows, stored) = self
             .string_rows(table, column, start, count)
             .expect("validated by strings_len");
         let mut at = 0;
         for i in rows {
-            let string = &c.bytes[row_start(&c.ends, i)..c.ends[i] as usize];
+            let string = &stored.bytes[row_start(&stored.ends, i)..stored.ends[i] as usize];
             let len = u32::try_from(string.len()).expect("< 4 GiB");
             dst[at..at + 4].copy_from_slice(&len.to_le_bytes());
             dst[at + 4..at + 4 + string.len()].copy_from_slice(string);
@@ -339,16 +346,16 @@ impl Snapshots {
         start: u32,
         count: u32,
     ) -> Result<(Range<usize>, &Column), Code> {
-        let (table, c) = self.column(table, column)?;
+        let (table, stored) = self.column(table, column)?;
         if table.columns()[column as usize].ty != ColType::Str {
             return Err(Code::Column);
         }
-        let rows = row_range(rows_of(table, column as usize, c), start, count)?;
+        let rows = row_range(rows_of(table, column as usize, stored), start, count)?;
         debug_assert!(
-            rows.end <= c.ends.len(),
+            rows.end <= stored.ends.len(),
             "a string column's rows are its ends"
         );
-        Ok((rows, c))
+        Ok((rows, stored))
     }
 
     /// Column `column` of `table` for writing, after checking it holds `ty`; advances the
@@ -370,28 +377,29 @@ impl Snapshots {
 
     /// Column `column` of raw table id `table`, as a guest names it.
     fn column(&self, table: u32, column: u32) -> Result<(Table, &Column), Code> {
+        debug_assert!(self.is_lent(), "placeholder snapshots");
         let table = Table::from_raw(table).ok_or(Code::Table)?;
         debug_assert_eq!(
             self.tables[table as usize].columns.len(),
             table.columns().len(),
             "`new` builds one column per §4 column"
         );
-        let c = self.tables[table as usize]
+        let stored = self.tables[table as usize]
             .columns
             .get(column as usize)
             .ok_or(Code::Column)?;
-        Ok((table, c))
+        Ok((table, stored))
     }
 }
 
 /// Row count of column `column` of `table`, from its wire form.
-fn rows_of(table: Table, column: usize, c: &Column) -> u32 {
+fn rows_of(table: Table, column: usize, stored: &Column) -> u32 {
     let rows = match table.columns()[column].ty.width() {
-        0 => c.ends.len(),
+        0 => stored.ends.len(),
         width => {
             let width = usize::from(width);
-            debug_assert_eq!(c.bytes.len() % width, 0, "a column holds whole rows");
-            c.bytes.len() / width
+            debug_assert_eq!(stored.bytes.len() % width, 0, "a column holds whole rows");
+            stored.bytes.len() / width
         }
     };
     u32::try_from(rows).expect("fill caps rows at ROWS_MAX")
@@ -414,32 +422,42 @@ mod tests {
 
     #[test]
     fn columns_slice_and_validate() {
-        let mut s = Snapshots::new();
-        s.fill::<u32>(Table::Docs, col::docs::HANDLE, &[7, 9]);
-        s.fill::<u8>(Table::Docs, col::docs::KIND, &[1, 2]);
-        s.fill::<u8>(Table::Docs, col::docs::DIRTY, &[0, 1]);
-        s.fill_strings(Table::Docs, col::docs::PATH, &["a.shcomp", "b.shbench"]);
-        assert_eq!(s.check(), Err(Table::Docs));
-        s.fill_strings(Table::Docs, col::docs::CELL, &["a", ""]);
-        assert_eq!(s.check(), Ok(()));
-        assert_eq!(s.rows(Table::Docs), 2);
-        assert_eq!(s.epoch(Table::Docs), 5);
-        assert!(s.has_doc(9) && !s.has_doc(8));
+        let mut snapshots = Snapshots::new();
+        snapshots.fill::<u32>(Table::Docs, col::docs::HANDLE, &[7, 9]);
+        snapshots.fill::<u8>(Table::Docs, col::docs::KIND, &[1, 2]);
+        snapshots.fill::<u8>(Table::Docs, col::docs::DIRTY, &[0, 1]);
+        snapshots.fill_strings(Table::Docs, col::docs::PATH, &["a.shcomp", "b.shbench"]);
+        assert_eq!(snapshots.check(), Err(Table::Docs));
+        snapshots.fill_strings(Table::Docs, col::docs::CELL, &["a", ""]);
+        assert_eq!(snapshots.check(), Ok(()));
+        assert_eq!(snapshots.rows(Table::Docs), 2);
+        assert_eq!(snapshots.epoch(Table::Docs), 5);
+        assert!(snapshots.has_doc(9));
+        assert!(!snapshots.has_doc(8));
         let nine = &9u32.to_le_bytes()[..];
-        assert_eq!(s.column_bytes(0, col::docs::HANDLE, 1, 1), Ok(nine));
-        assert_eq!(s.column_bytes(0, col::docs::HANDLE, 1, 2), Err(Code::Range));
-        let wrap = s.column_bytes(0, col::docs::HANDLE, u32::MAX, 2);
+        assert_eq!(snapshots.column_bytes(0, col::docs::HANDLE, 1, 1), Ok(nine));
+        assert_eq!(
+            snapshots.column_bytes(0, col::docs::HANDLE, 1, 2),
+            Err(Code::Range)
+        );
+        let wrap = snapshots.column_bytes(0, col::docs::HANDLE, u32::MAX, 2);
         assert_eq!(wrap, Err(Code::Range));
-        assert_eq!(s.column_bytes(0, col::docs::PATH, 0, 1), Err(Code::Column));
-        assert_eq!(s.column_bytes(0, 99, 0, 0), Err(Code::Column));
-        assert_eq!(s.column_bytes(99, 0, 0, 0), Err(Code::Table));
-        let n = s.strings_len(0, col::docs::CELL, 0, 2).unwrap();
-        assert_eq!(n, 4 + 1 + 4);
-        let mut buf = vec![0; n];
-        s.write_strings(0, col::docs::CELL, 0, 2, &mut buf);
-        assert_eq!(buf, [1, 0, 0, 0, b'a', 0, 0, 0, 0]);
-        assert_eq!(s.strings_len(0, col::docs::CELL, 2, 0), Ok(0));
-        assert_eq!(s.strings_len(0, col::docs::HANDLE, 0, 1), Err(Code::Column));
+        assert_eq!(
+            snapshots.column_bytes(0, col::docs::PATH, 0, 1),
+            Err(Code::Column)
+        );
+        assert_eq!(snapshots.column_bytes(0, 99, 0, 0), Err(Code::Column));
+        assert_eq!(snapshots.column_bytes(99, 0, 0, 0), Err(Code::Table));
+        let need = snapshots.strings_len(0, col::docs::CELL, 0, 2).unwrap();
+        assert_eq!(need, 4 + 1 + 4);
+        let mut wire = vec![0; need];
+        snapshots.write_strings(0, col::docs::CELL, 0, 2, &mut wire);
+        assert_eq!(wire, [1, 0, 0, 0, b'a', 0, 0, 0, 0]);
+        assert_eq!(snapshots.strings_len(0, col::docs::CELL, 2, 0), Ok(0));
+        assert_eq!(
+            snapshots.strings_len(0, col::docs::HANDLE, 0, 1),
+            Err(Code::Column)
+        );
     }
 
     /// Oracle: random splices of a fixed-width and a string column equal fills of the same
@@ -447,37 +465,43 @@ mod tests {
     #[test]
     fn splices_equal_fills_of_the_spliced_rows() {
         let mut seed = 0x2545_f491_4f6c_dd1du64;
-        let mut next = |m: u64| {
+        let mut next = |modulus: u64| {
             seed ^= seed << 13;
             seed ^= seed >> 7;
             seed ^= seed << 17;
-            seed % m
+            seed % modulus
         };
         let (mut ids, mut names): (Vec<u32>, Vec<String>) = (Vec::new(), Vec::new());
-        let mut s = Snapshots::new();
+        let mut snapshots = Snapshots::new();
         for step in 0..400 {
-            let n = ids.len() as u64;
-            let a = next(n + 1) as usize;
-            let b = a + next(n - a as u64 + 1).min(3) as usize;
-            let k = next(4) as usize;
-            let new_ids: Vec<u32> = (0..k).map(|_| next(1000) as u32).collect();
-            let new_names: Vec<String> = (0..k).map(|_| "x".repeat(next(5) as usize)).collect();
-            ids.splice(a..b, new_ids.iter().copied());
-            names.splice(a..b, new_names.iter().cloned());
-            let epoch = s.epoch(Table::Wires);
-            s.splice::<u32>(Table::Wires, col::wires::ID, a..b, &new_ids);
-            s.splice_strings(Table::Labels, col::labels::TEXT, a..b, &new_names);
-            assert_eq!(s.epoch(Table::Wires), epoch.wrapping_add(1), "step {step}");
-            let mut f = Snapshots::new();
-            f.fill::<u32>(Table::Wires, col::wires::ID, &ids);
-            f.fill_strings(Table::Labels, col::labels::TEXT, &names);
-            let col =
-                |x: &Snapshots, t: Table, c: u32| x.tables[t as usize].columns[c as usize].clone();
-            for (t, c) in [
+            let rows = ids.len() as u64;
+            let start = next(rows + 1) as usize;
+            let end = start + next(rows - start as u64 + 1).min(3) as usize;
+            let count = next(4) as usize;
+            let new_ids: Vec<u32> = (0..count).map(|_| next(1000) as u32).collect();
+            let new_names: Vec<String> = (0..count).map(|_| "x".repeat(next(5) as usize)).collect();
+            ids.splice(start..end, new_ids.iter().copied());
+            names.splice(start..end, new_names.iter().cloned());
+            let epoch = snapshots.epoch(Table::Wires);
+            snapshots.splice::<u32>(Table::Wires, col::wires::ID, start..end, &new_ids);
+            snapshots.splice_strings(Table::Labels, col::labels::TEXT, start..end, &new_names);
+            assert_eq!(
+                snapshots.epoch(Table::Wires),
+                epoch.wrapping_add(1),
+                "step {step}"
+            );
+            let mut filled = Snapshots::new();
+            filled.fill::<u32>(Table::Wires, col::wires::ID, &ids);
+            filled.fill_strings(Table::Labels, col::labels::TEXT, &names);
+            let stored = |from: &Snapshots, table: Table, column: u32| {
+                from.tables[table as usize].columns[column as usize].clone()
+            };
+            for (table, column) in [
                 (Table::Wires, col::wires::ID),
                 (Table::Labels, col::labels::TEXT),
             ] {
-                let (got, want) = (col(&s, t, c), col(&f, t, c));
+                let got = stored(&snapshots, table, column);
+                let want = stored(&filled, table, column);
                 assert_eq!(
                     (got.bytes, got.ends),
                     (want.bytes, want.ends),

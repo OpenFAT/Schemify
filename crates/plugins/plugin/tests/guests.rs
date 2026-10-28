@@ -363,10 +363,12 @@ fn pure_calls_deny_imports_and_route_through_the_registry() {
         "table_len is denied in a pure call"
     );
 
-    let f = &world.plugins.composed().functions;
-    let row = f.find("gmid.width").unwrap();
-    assert_eq!((f.plugin[row], f.fn_id[row], f.arity[row]), (gmid, 0, 3));
-    assert_eq!(f.find("gmid.length"), None);
+    let functions = &world.plugins.composed().functions;
+    let row = functions.find("gmid.width").unwrap();
+    assert_eq!(functions.plugin[row], gmid);
+    assert_eq!(functions.fn_id[row], 0);
+    assert_eq!(functions.arity[row], 3);
+    assert_eq!(functions.find("gmid.length"), None);
     for (args, want) in [
         ("10 2 0.5", "25"),
         ("3 1 1", "2.25"),
