@@ -280,6 +280,11 @@ impl Optimizer {
     pub fn tell_failed(&mut self) -> Result<f64, OptError> {
         let nan = vec![f64::NAN; self.objectives.len()];
         self.advance(&nan, UNEVALUATED)?;
+        debug_assert_eq!(
+            self.scores.last(),
+            Some(&UNEVALUATED),
+            "a failure scores worst"
+        );
         Ok(UNEVALUATED)
     }
 
@@ -500,6 +505,11 @@ impl OptRun {
     /// Returns whether the budget is spent and nothing is pending.
     #[must_use]
     pub fn done(&self) -> bool {
+        debug_assert_eq!(
+            self.eval_job.len() as u32,
+            self.opt.n_evals(),
+            "`step` records the job of every evaluation it tells"
+        );
         self.pending.is_none() && self.opt.ask().is_none()
     }
 

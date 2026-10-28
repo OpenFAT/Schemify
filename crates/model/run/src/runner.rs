@@ -307,6 +307,10 @@ impl Runner {
     /// Returns whether any job is queued, compiling or running, or a compiler runs.
     #[must_use]
     pub fn busy(&self) -> bool {
+        debug_assert!(
+            self.waiting.len() + self.running.len() <= usize::from(self.config.workers),
+            "a job holds a worker slot from admission to exit"
+        );
         !self.queue.is_empty()
             || !self.waiting.is_empty()
             || !self.running.is_empty()
