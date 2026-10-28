@@ -38,6 +38,8 @@ pub struct CpuPainter {
     /// The UI's rows per source, and the calls of the row being recorded.
     ui: [CpuRows; ui_rows::SOURCES],
     rec: Option<Vec<Call>>,
+    /// Clip layers open in `ctx`: every push is popped before the frame is rasterized.
+    clips: u32,
     /// Rows recorded so far (the rest were replayed): tests count them.
     pub recorded: u64,
 }
@@ -111,6 +113,7 @@ impl CpuPainter {
             canvas: None,
             ui: Default::default(),
             rec: None,
+            clips: 0,
             recorded: 0,
         }
     }
@@ -120,10 +123,11 @@ impl CpuPainter {
     /// # Panics
     ///
     /// Panics inside a canvas ([`Painter::canvas_begin`] without its
-    /// [`Painter::canvas_end`]) or while a UI row is recorded.
+    /// [`Painter::canvas_end`]), while a UI row is recorded, or with a clip left open.
     pub fn reset(&mut self) {
         assert!(self.canvas.is_none(), "no canvas left open");
         assert!(self.rec.is_none(), "no UI row left recording");
+        assert_eq!(self.clips, 0, "every clip of the frame was popped");
         self.ctx.reset();
     }
 
@@ -131,11 +135,13 @@ impl CpuPainter {
     ///
     /// # Panics
     ///
-    /// Panics inside a canvas or while a UI row is recorded (a frame painted halfway).
+    /// Panics inside a canvas, while a UI row is recorded, or with a clip left open (a frame
+    /// painted halfway).
     #[must_use]
     pub fn finish(&mut self, background: Color) -> vello_cpu::Pixmap {
         assert!(self.canvas.is_none(), "the canvas was ended");
         assert!(self.rec.is_none(), "no UI row left recording");
+        assert_eq!(self.clips, 0, "every clip of the frame was popped");
         let (w, h) = (self.ctx.width(), self.ctx.height());
         let mut pixmap = vello_cpu::Pixmap::new(w, h);
         pixmap.data_mut().fill(background.premultiply().to_rgba8());
@@ -204,7 +210,7 @@ impl Painter for CpuPainter {
     fn pop_clip(&mut self) {
         match &mut self.rec {
             Some(rec) => rec.push(Call::Pop),
-            None => self.ctx.pop_layer(),
+            None => self.pop(),
         }
     }
 
@@ -229,6 +235,7 @@ impl Painter for CpuPainter {
         canvas::draw_grid(self, view, &cam, frame.grid, frame.grid_color, &mut paths);
         self.paths = paths;
         self.canvas = Some(OpenCanvas { view, cam });
+        debug_assert!(self.clips > 0, "the canvas draws inside its clip");
         true
     }
 
@@ -336,7 +343,7 @@ impl CpuPainter {
                 glyphs,
             } => self.draw_glyphs(font, *px, coords, *color, *at, glyphs),
             Call::Clip(r) => self.clip(*r),
-            Call::Pop => self.ctx.pop_layer(),
+            Call::Pop => self.pop(),
             Call::Image(image, r) => self.draw_image(image, *r),
         }
     }
@@ -375,6 +382,7 @@ impl CpuPainter {
         glyphs: &[Glyph],
     ) {
         debug_assert!(self.rec.is_none(), "drawn, not recorded");
+        debug_assert!(px > 0.0, "glyphs with a size");
         self.ctx.set_transform(self.base * at);
         self.ctx.set_paint(color);
         let run = self
@@ -390,10 +398,21 @@ impl CpuPainter {
         debug_assert!(self.rec.is_none(), "drawn, not recorded");
         self.ctx.set_transform(self.base);
         self.ctx.push_clip_layer(&r.to_path(0.1));
+        self.clips += 1;
+    }
+
+    /// Ends the innermost clip layer.
+    fn pop(&mut self) {
+        debug_assert!(self.rec.is_none(), "drawn, not recorded");
+        assert!(self.clips > 0, "a pop_clip without its push_clip");
+        self.ctx.pop_layer();
+        self.clips -= 1;
     }
 
     fn draw_image(&mut self, image: &ImageData, r: Rect) {
         debug_assert!(self.rec.is_none(), "drawn, not recorded");
+        debug_assert!(image.width > 0, "an image has pixels");
+        debug_assert!(image.height > 0, "an image has pixels");
         // ponytail: converts (copies) the pixels on every draw; the CPU path draws goldens
         // and the GPU-less fallback only. Cache the pixmap beside the blob if that changes.
         let brush = vello_cpu::Image {
