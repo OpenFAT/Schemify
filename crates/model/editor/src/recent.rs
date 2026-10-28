@@ -59,12 +59,22 @@ pub fn load(dir: &Path) -> Vec<PathBuf> {
 ///
 /// # Panics
 ///
-/// Never: the list is cut to [`RECENT_MAX`].
+/// If `list` holds more than [`RECENT_MAX`] entries.
 pub fn push(list: &mut Vec<PathBuf>, path: PathBuf) {
+    assert!(
+        list.len() <= RECENT_MAX,
+        "a recent list of {} entries",
+        list.len()
+    );
     list.retain(|p| *p != path);
     list.insert(0, path);
     list.truncate(RECENT_MAX);
     assert!(list.len() <= RECENT_MAX);
+    assert_eq!(
+        list.iter().filter(|p| **p == list[0]).count(),
+        1,
+        "one copy, in front"
+    );
 }
 
 /// The list as file text.

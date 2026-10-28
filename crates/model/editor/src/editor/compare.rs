@@ -35,6 +35,10 @@ pub(crate) struct Compare {
 impl Editor {
     /// Starts comparing the active document with indexed cell `row`.
     pub(super) fn compare_with(&mut self, row: usize) {
+        assert!(
+            row < self.session.project.cells().lib.len(),
+            "cell row {row}"
+        );
         self.compare = Some(Compare {
             row,
             on: true,
@@ -118,6 +122,12 @@ impl Editor {
                 cm.key = Some((h, epoch, 0));
             }
         }
+        assert!(
+            self.compare
+                .as_ref()
+                .is_none_or(|c| !c.on || view != View::Schematic || c.key.is_some()),
+            "a shown comparison is current"
+        );
         if out.is_empty() && self.extra.is_empty() {
             return false; // nothing drawn before or now
         }
@@ -178,6 +188,10 @@ impl Editor {
                 }
             }
         }
+        assert!(
+            changed + removed.len() <= d.changes.len(),
+            "one mark per change at most"
+        );
         scene::preview_records(&removed, Xform::IDENTITY, out);
         // Preview prims come on the selection layer: recolor them as removed (error layer).
         for l in &mut out.lines.layer {

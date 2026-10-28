@@ -142,6 +142,7 @@ impl Editor {
             return;
         }
         let anchors: Vec<Pt> = recs.iter().filter_map(crate::geometry::anchor).collect();
+        assert!(anchors.len() <= recs.len(), "one anchor per record at most");
         let n = anchors.len().max(1) as f64;
         let c = anchors.iter().fold((0.0, 0.0), |a, p| {
             (a.0 + f64::from(p.0) / n, a.1 + f64::from(p.1) / n)
@@ -168,6 +169,7 @@ impl Editor {
     pub(super) fn delete_cell(&mut self, row: usize) {
         let p = &self.session.project;
         let cells = p.cells();
+        assert!(row < cells.lib.len(), "cell row {row}");
         let lib = cells.lib[row];
         let Some(dir) = self.session.lib_dir(lib) else {
             self.session.say("the bundled core library is read-only");
@@ -283,6 +285,10 @@ impl Editor {
                 }
             }
         }
+        assert!(
+            graphics || ops.len() <= d.changes.len(),
+            "one op per change"
+        );
         if ops.is_empty() {
             self.session.say("edit file: no change");
         }

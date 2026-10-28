@@ -88,6 +88,10 @@ impl Editor {
                     self.settle();
                     self.quit = true;
                 }
+                assert!(
+                    self.quit || self.confirm == Some(Cmd::Quit),
+                    "quit or ask first"
+                );
             }
             Cmd::TabSelect => {
                 let i = node
@@ -100,6 +104,7 @@ impl Editor {
             }
             Cmd::TabNext | Cmd::TabPrev => {
                 let n = self.session.tabs().len();
+                assert!(n > 0, "an active document has a tab");
                 let i = if cmd == Cmd::TabNext {
                     (self.session.active() + 1) % n
                 } else {

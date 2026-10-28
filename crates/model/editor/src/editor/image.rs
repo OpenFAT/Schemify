@@ -59,6 +59,19 @@ impl Editor {
     /// scale; SVG, PDF and EPS of the drawing, the selection or the visible area, PDF and EPS
     /// fitted to the export page; a PDF page per schematic of the hierarchy).
     pub(super) fn export(&mut self, h: DocHandle, cmd: Cmd, arg: &str) {
+        assert!(
+            matches!(
+                cmd,
+                Cmd::ExportPng
+                    | Cmd::ExportPngFull
+                    | Cmd::ExportSvg
+                    | Cmd::ExportPdf
+                    | Cmd::ExportPdfFull
+                    | Cmd::ExportPdfHier
+                    | Cmd::ExportEps
+            ),
+            "{cmd:?} is no export"
+        );
         let look = self.export_look();
         let page = self.opts.export_page;
         let pad = 10 * UNIT;

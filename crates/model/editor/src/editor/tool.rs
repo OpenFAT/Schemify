@@ -174,11 +174,14 @@ impl Form {
 
 /// Snaps `to` onto the constraint axis through `from`.
 pub(super) fn constrain(from: Pt, to: Pt, c: u8) -> Pt {
-    match c {
+    assert!(c <= 2, "free, horizontal or vertical");
+    let p = match c {
         1 => (to.0, from.1),
         2 => (from.0, to.1),
         _ => to,
-    }
+    };
+    debug_assert!(c != 1 || p.1 == from.1, "a horizontal constraint keeps y");
+    p
 }
 
 impl Editor {
@@ -229,6 +232,7 @@ impl Editor {
                                 (true, false) => u8::from(!self.opts.stretch),
                                 (false, _) => u8::from(self.opts.stretch),
                             };
+                            assert!(stretch <= 2, "plain, stretch or kissing move");
                             self.tool = if on_selected {
                                 Tool::Move {
                                     from: world,

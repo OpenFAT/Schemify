@@ -216,6 +216,10 @@ impl Editor {
                 };
                 let ops = self.with_doc(h, |d, _| docs::move_block(d, row, toward));
                 if !ops.is_empty() {
+                    assert!(
+                        toward == Toward::Later || row > 0,
+                        "the first block has none above"
+                    );
                     self.page.sel = Some(match toward {
                         Toward::Earlier => row - 1,
                         Toward::Later => row + 1,
