@@ -82,6 +82,19 @@ pub(crate) struct Ctx<'a> {
     pub(crate) inst_iface: &'a [u32],
 }
 
+impl<'a> Ctx<'a> {
+    /// The context of `doc` whose own interface is `ifaces[0]`.
+    pub(crate) fn new(doc: &'a Document, ifaces: &'a [Iface], inst_iface: &'a [u32]) -> Ctx<'a> {
+        assert_eq!(inst_iface.len(), doc.instances().id.len());
+        Ctx {
+            doc,
+            own: &ifaces[0],
+            ifaces,
+            inst_iface,
+        }
+    }
+}
+
 /// The incremental state. See the module docs.
 #[derive(Debug, Default)]
 pub(crate) struct Live {
