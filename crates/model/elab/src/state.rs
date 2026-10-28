@@ -127,6 +127,11 @@ impl CellState {
     ///
     /// Cost: connectivity O(n log n) in objects, graph O(nodes + edges), one full
     /// evaluation and the checks.
+    ///
+    /// # Panics
+    ///
+    /// Panics only on a broken internal invariant: a cell row the project calls readable
+    /// without an indexed interface.
     pub fn build<F: Funcs>(project: &Project, h: DocHandle, funcs: &mut F) -> Option<CellState> {
         let doc = project.doc(h)?;
         let mut st = CellState::default();

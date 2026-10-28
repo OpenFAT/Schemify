@@ -51,7 +51,10 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
             let p = &rule.path;
             p.len() > path.len() && p.starts_with(&path) && p.as_bytes()[path.len()] == b'/'
         });
-        let known = self.memo.get(&(ci, tuple.key.clone())).filter(|_| !sensitive);
+        let known = self
+            .memo
+            .get(&(ci, tuple.key.clone()))
+            .filter(|_| !sensitive);
         if let Some(&d) = known {
             return Some(d);
         }
@@ -201,7 +204,10 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
         }
         assert_eq!(self.stack.pop(), Some(ci), "the stack unwinds in order");
         let d = self.finish_def(ci, tuple, sensitive, out, is_top);
-        assert!((d as usize) < self.defs.cell.len(), "finish_def returns a definition");
+        assert!(
+            (d as usize) < self.defs.cell.len(),
+            "finish_def returns a definition"
+        );
         Some(d)
     }
 }
@@ -245,7 +251,11 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
                 flags,
             });
         }
-        assert_eq!(out.len() - p0 as usize, f.param_name.len(), "one entry per param");
+        assert_eq!(
+            out.len() - p0 as usize,
+            f.param_name.len(),
+            "one entry per param"
+        );
         p0..out.len() as u32
     }
 

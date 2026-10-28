@@ -321,7 +321,11 @@ pub fn elaborate<F: Funcs>(
         out.top == NONE || (out.top as usize) < out.defs.cell.len(),
         "the top is a definition"
     );
-    assert_eq!(out.defs.used.len(), out.defs.cell.len(), "one used flag per definition");
+    assert_eq!(
+        out.defs.used.len(),
+        out.defs.cell.len(),
+        "one used flag per definition"
+    );
     out
 }
 

@@ -13,7 +13,7 @@ const RES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\npar
 fn row(e: &Elab, d: u32, name: &str) -> usize {
     e.insts_of(d)
         .find(|&r| e.names.get(e.insts.name[r]) == name)
-        .unwrap()
+        .expect("the definition has an instance of that name")
 }
 
 fn conn_names(e: &Elab, r: usize) -> Vec<String> {

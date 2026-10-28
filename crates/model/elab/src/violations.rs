@@ -87,6 +87,7 @@ pub struct Violations {
 
 impl Code {
     /// Returns the code as written in reports (`"E005"`).
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         const S: [&str; 26] = [
             "E001", "E002", "E003", "W004", "E005", "E006", "W007", "E008", "E009", "W010", "E011",
@@ -97,6 +98,7 @@ impl Code {
     }
 
     /// Returns the severity, from the code's letter.
+    #[must_use]
     pub fn severity(self) -> Severity {
         match self.as_str().as_bytes()[0] {
             b'E' => Severity::Error,
@@ -106,6 +108,7 @@ impl Code {
     }
 
     /// Returns whether a `waive` record can downgrade it to `I005` (D13).
+    #[must_use]
     pub fn waivable(self) -> bool {
         matches!(
             self,
@@ -114,6 +117,7 @@ impl Code {
     }
 
     /// Returns the spec meaning.
+    #[must_use]
     pub fn meaning(self) -> &'static str {
         match self {
             Code::E001 => "missing lib/cell, or bench instantiated",
@@ -167,6 +171,7 @@ impl Violation {
 
     /// The order [`Violations::rows`] are sorted in (unique per table): code text, cell,
     /// object, path, param (texts through `names`, the arena both rows' names are from).
+    #[must_use]
     pub fn key_cmp(&self, other: &Violation, names: &Names) -> Ordering {
         cmp_key(self, other, names)
     }
@@ -195,6 +200,11 @@ impl Violations {
     ///
     /// Cost: one merge pass, O(rows) row compares; key comparisons (string compares through
     /// `names`) only where the two lists differ.
+    ///
+    /// # Panics
+    ///
+    /// Panics only on a broken internal invariant: a side listing more rows than it has.
+    #[must_use]
     pub fn diff<'a>(
         &'a self,
         old: &'a Violations,
@@ -226,11 +236,13 @@ impl Violations {
         }
         gone.extend(&a[i..]);
         new.extend(&b[j..]);
-        assert!(gone.len() <= a.len() && new.len() <= b.len());
+        assert!(gone.len() <= a.len(), "gone rows come from old");
+        assert!(new.len() <= b.len(), "new rows come from self");
         (gone, new)
     }
 
     /// Returns whether any row blocks (severity `Error`).
+    #[must_use]
     pub fn blocking(&self) -> bool {
         self.rows
             .iter()

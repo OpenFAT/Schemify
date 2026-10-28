@@ -85,6 +85,11 @@ impl Annotations {
     /// source has; a missing one is ignored). Marks past [`ANNOTATIONS_MAX`] are dropped.
     ///
     /// Cost: O(changes · log rows); the other rows are not touched.
+    ///
+    /// # Panics
+    ///
+    /// Panics only on a broken internal invariant: a row whose source has no count, or a
+    /// mark count outside `before - gone ..= before + new`.
     pub fn patch(&mut self, source: &str, gone: Vec<Mark>, new: Vec<Mark>) {
         let before = self.len;
         let (g, n) = (gone.len(), new.len());
@@ -113,7 +118,11 @@ impl Annotations {
         for m in new {
             self.add(source, m);
         }
-        assert!(self.len + g >= before && self.len <= before + n);
+        assert!(
+            self.len + g >= before,
+            "removed more marks than `gone` lists"
+        );
+        assert!(self.len <= before + n, "added more marks than `new` lists");
         assert!(self.len <= ANNOTATIONS_MAX);
     }
 
@@ -139,21 +148,25 @@ impl Annotations {
     }
 
     /// Whether `source` has a mark.
+    #[must_use]
     pub fn has_source(&self, source: &str) -> bool {
         self.sources.contains_key(source)
     }
 
     /// How many marks `source` has.
+    #[must_use]
     pub fn count_of(&self, source: &str) -> usize {
         self.sources.get(source).copied().unwrap_or(0)
     }
 
     /// Number of marks.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Whether there is no mark.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }

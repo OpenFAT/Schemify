@@ -49,9 +49,11 @@ pub fn c(milli: i64) -> String {
 
 /// A project with every file indexed in the project library and opened.
 pub fn project(files: &[(&str, &str)]) -> (Project, Vec<DocHandle>) {
-    let mut p = Project::new(None, None, 11).unwrap();
+    let mut p = Project::new(None, None, 11).expect("an in-memory project opens");
     let listing: Vec<(&str, &[u8])> = files.iter().map(|(n, t)| (*n, t.as_bytes())).collect();
-    let (_, diags) = p.index_library("", "", &listing).unwrap();
+    let (_, diags) = p
+        .index_library("", "", &listing)
+        .expect("indexing the in-memory library succeeds");
     assert!(diags.is_empty(), "index diags: {diags:?}");
     let handles = files
         .iter()

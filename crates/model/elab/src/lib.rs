@@ -19,7 +19,7 @@
 //! sorts and a union-find, what elaboration and every rebuild run) and the editor's
 //! per-net patch inside [`CellState::recompute`] (ordered sets over the touched nodes).
 //! They are not one spine because the patch's ordered sets cost several times the sorts
-//! on a whole cell; the incremental-equals-full oracle (`tests/incremental.rs`) holds
+//! on a whole cell; the incremental-equals-full oracle (`tests/incremental/`) holds
 //! them equal.
 //!
 //! # What the netlister reads

@@ -13,21 +13,21 @@ use schemify_elab::{CellState, Code, NO_NET, no_funcs};
 const PINS: [(i64, i64); 3] = [(0, 0), (20_000, 0), (0, 30_000)];
 
 fn state(p: &Project, h: DocHandle) -> CellState {
-    CellState::build(p, h, &mut no_funcs).unwrap()
+    CellState::build(p, h, &mut no_funcs).expect("a live handle builds")
 }
 
 fn bench_state(bench: &str, cells: &[(&str, &str)]) -> (Project, DocHandle, CellState) {
     let mut files: Vec<(&str, &str)> = cells.to_vec();
     files.push(("tb.shbench", bench));
     let (p, hs) = project(&files);
-    let h = *hs.last().unwrap();
+    let h = *hs.last().expect("the file list ends with the bench");
     let st = state(&p, h);
     (p, h, st)
 }
 
 fn check_against_oracle(bench: &str) {
     let (p, h, st) = bench_state(bench, &[("dev.shprim", DEV)]);
-    let doc = p.doc(h).unwrap();
+    let doc = p.doc(h).expect("a live handle has a document");
     let want = canon(&naive_partition(doc, &PINS));
     let got = canon(&real_partition(doc, &st.nets));
     assert_eq!(got, want, "bench:\n{bench}");
@@ -48,7 +48,7 @@ proptest! {
 /// record order; `reid` maps every id through `id(n + 7_777)`.
 fn transform(bench: &str, orient: &str, shift: (i64, i64), reverse: bool, reid: bool) -> String {
     let (p, hs) = project(&[("dev.shprim", DEV), ("tb.shbench", bench)]);
-    let doc = p.doc(hs[1]).unwrap();
+    let doc = p.doc(hs[1]).expect("a live handle has a document");
     let s = doc.strings();
     let pt = |x: i32, y: i32| place_ref(x as i64, y as i64, orient, shift);
     let new_id = |old: String| -> String {
@@ -132,14 +132,16 @@ fn turns(orient: &str) -> i64 {
 fn partition_by_id_order(bench: &str, reid: bool) -> std::collections::BTreeMap<String, String> {
     let (p, hs) = project(&[("dev.shprim", DEV), ("tb.shbench", bench)]);
     let st = state(&p, hs[1]);
-    let doc = p.doc(hs[1]).unwrap();
+    let doc = p.doc(hs[1]).expect("a live handle has a document");
     let part = real_partition(doc, &st.nets);
     let back = |key: &str| -> String {
         if !reid {
             return key.to_owned();
         }
         let mut parts: Vec<String> = key.split(':').map(str::to_owned).collect();
-        let n = (0..1_000_000u64).find(|&n| id(n) == parts[1]).unwrap();
+        let n = (0..1_000_000u64)
+            .find(|&n| id(n) == parts[1])
+            .expect("ids come from id()");
         parts[1] = id(n - 7_777);
         parts.join(":")
     };
@@ -200,7 +202,10 @@ fn assert_groups(body: &str, same: &[&[&str]], apart: &[(&str, &str)]) {
     check_against_oracle(&bench);
     let (p, hs) = project(&[("dev.shprim", DEV), ("tb.shbench", &bench)]);
     let st = state(&p, hs[1]);
-    let part = real_partition(p.doc(hs[1]).unwrap(), &st.nets);
+    let part = real_partition(
+        p.doc(hs[1]).expect("a live handle has a document"),
+        &st.nets,
+    );
     for group in same {
         let nets: Vec<usize> = group.iter().map(|k| part[*k]).collect();
         assert!(
@@ -254,11 +259,11 @@ fn junction_rules() {
 }
 
 fn inst_row(p: &Project, h: DocHandle, name: &str) -> usize {
-    let doc = p.doc(h).unwrap();
+    let doc = p.doc(h).expect("a live handle has a document");
     let s = doc.strings();
     (0..doc.instances().id.len())
         .find(|&i| s.get(doc.instances().name[i]) == name)
-        .unwrap()
+        .expect("the bench has an instance of that name")
 }
 
 /// Net names of every connection of instance `name`, element by element.

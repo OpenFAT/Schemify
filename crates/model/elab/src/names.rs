@@ -69,11 +69,13 @@ impl Default for Name {
 
 impl Names {
     /// Returns the number of interned names.
+    #[must_use]
     pub fn len(&self) -> u32 {
         self.ends.len() as u32
     }
 
     /// Returns whether nothing is interned.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ends.is_empty()
     }
@@ -83,6 +85,7 @@ impl Names {
     /// # Panics
     ///
     /// Panics on [`Name::NONE`] or a name from another arena that is out of range.
+    #[must_use]
     pub fn get(&self, n: Name) -> &str {
         let i = n.0 as usize;
         assert!(i < self.ends.len(), "name from another arena or NONE");
@@ -91,6 +94,7 @@ impl Names {
     }
 
     /// Returns the name of `text` without interning it.
+    #[must_use]
     pub fn find(&self, text: &str) -> Option<Name> {
         if self.table.is_empty() {
             return None;
@@ -100,6 +104,7 @@ impl Names {
 
     /// Compares two names bytewise by text (the order every sorted output uses).
     /// [`Name::NONE`] sorts first.
+    #[must_use]
     pub fn cmp(&self, a: Name, b: Name) -> Ordering {
         if a == b {
             return Ordering::Equal; // one arena: equal handles are equal text
@@ -135,7 +140,7 @@ impl Names {
         for (d, r) in v.iter_mut().zip(&rows) {
             *d = r.0;
         }
-        assert_eq!(rows.len(), v.len());
+        debug_assert!(v.windows(2).all(|w| self.cmp(w[0], w[1]).is_le()));
     }
 
     /// Makes room for `additional` more names without growing the table on the way (a

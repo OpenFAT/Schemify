@@ -65,8 +65,8 @@ fn load(root: &Path) -> (Project, Vec<(String, DocHandle)>) {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path: PathBuf = entry.unwrap().path();
+        for entry in std::fs::read_dir(&dir).expect("the fixture directory is readable") {
+            let path: PathBuf = entry.expect("a directory entry reads").path();
             if path.is_dir() {
                 stack.push(path);
             } else if matches!(
@@ -75,20 +75,21 @@ fn load(root: &Path) -> (Project, Vec<(String, DocHandle)>) {
             ) {
                 let rel = path
                     .strip_prefix(root)
-                    .unwrap()
+                    .expect("the walk stays under the root")
                     .to_string_lossy()
                     .replace('\\', "/");
-                files.push((rel, std::fs::read(&path).unwrap()));
+                files.push((rel, std::fs::read(&path).expect("a fixture file reads")));
             }
         }
     }
     files.sort();
-    let mut p = Project::new(None, None, 5).unwrap();
+    let mut p = Project::new(None, None, 5).expect("an in-memory project opens");
     let listing: Vec<(&str, &[u8])> = files
         .iter()
         .map(|(n, b)| (n.as_str(), b.as_slice()))
         .collect();
-    p.index_library("", "", &listing).unwrap();
+    p.index_library("", "", &listing)
+        .expect("indexing the in-memory library succeeds");
     let mut handles = Vec::new();
     for (rel, bytes) in &files {
         if let Ok(o) = p.open("", rel, bytes, None) {
@@ -103,13 +104,16 @@ fn fixtures() -> (Project, Vec<(String, DocHandle)>) {
 }
 
 fn top(hs: &[(String, DocHandle)], name: &str) -> DocHandle {
-    hs.iter().find(|(n, _)| n == name).unwrap().1
+    hs.iter()
+        .find(|(n, _)| n == name)
+        .expect("the fixture set has that top")
+        .1
 }
 
 fn row(e: &Elab, d: u32, name: &str) -> usize {
     e.insts_of(d)
         .find(|&r| e.names.get(e.insts.name[r]) == name)
-        .unwrap()
+        .expect("the definition has an instance of that name")
 }
 
 #[test]

@@ -39,7 +39,11 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
         body: DefRows,
         is_top: bool,
     ) -> u32 {
-        assert_eq!(tuple.names.len(), tuple.texts.len(), "tuple columns in step");
+        assert_eq!(
+            tuple.names.len(),
+            tuple.texts.len(),
+            "tuple columns in step"
+        );
         let ParamTuple {
             key,
             names: tuple_names,
@@ -319,7 +323,11 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
 /// string escapes so the text is unambiguous. Also returns the param names and value
 /// texts in that order.
 pub(super) fn tuple(f: &Iface, vals: &[Val], arena: &mut Names) -> ParamTuple {
-    assert_eq!(f.param_computed.len(), f.param_name.len(), "param columns in step");
+    assert_eq!(
+        f.param_computed.len(),
+        f.param_name.len(),
+        "param columns in step"
+    );
     let mut pairs: Vec<(Name, String, String)> = Vec::new();
     for k in 0..f.param_name.len().min(vals.len()) {
         if f.param_computed[k] {
@@ -374,7 +382,10 @@ fn short_nets(
     globals: &[Name],
     arena: &Names,
 ) {
-    assert!(rows.iter().any(|r| r.ignore == Ignore::Short), "called for a shorted row");
+    assert!(
+        rows.iter().any(|r| r.ignore == Ignore::Short),
+        "called for a shorted row"
+    );
     let range = |r: &RowTmp| r.conn.start as usize..r.conn.end as usize;
     let mut ids: Vec<Name> = rows
         .iter()
@@ -428,5 +439,9 @@ fn short_nets(
     for n in ports.iter_mut() {
         rename(n);
     }
-    debug_assert!(ports.iter().all(|n| *n == Name::NONE || ids.binary_search(n).is_ok()));
+    debug_assert!(
+        ports
+            .iter()
+            .all(|n| *n == Name::NONE || ids.binary_search(n).is_ok())
+    );
 }

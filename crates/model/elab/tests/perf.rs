@@ -372,7 +372,7 @@ fn edit_costs(objects: u64) -> (f64, f64, f64) {
     let (mut p, hs) = project(&[("dev.shprim", DEV), ("big.shcomp", &tiles(n))]);
     let h = hs[1];
     let t0 = Instant::now();
-    let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    let mut st = CellState::build(&p, h, &mut no_funcs).expect("a live handle builds");
     let build = t0.elapsed();
     let mut rng = Mix(7);
     let mut samples = Vec::new();
@@ -420,7 +420,7 @@ fn edit_costs(objects: u64) -> (f64, f64, f64) {
     );
     if objects <= 10_000 {
         // The patched rows equal a fresh build's (names compared as text: two arenas).
-        let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+        let fresh = CellState::build(&p, h, &mut no_funcs).expect("a live handle builds");
         let text = |st: &CellState| -> Vec<String> {
             let n = |x: schemify_elab::Name| {
                 (x != schemify_elab::Name::NONE).then(|| st.names.get(x).to_owned())

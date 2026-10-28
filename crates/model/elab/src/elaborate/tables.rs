@@ -222,6 +222,7 @@ pub struct Elab {
 
 impl Dialect {
     /// Returns the dialect word (`ngspice`, …).
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         [
             "ngspice", "xyce", "cdl", "spectre", "verilog", "espice", "hspice", "ltspice",
@@ -231,6 +232,7 @@ impl Dialect {
     /// `format <dialect>` words an impl may use for this dialect, most specific first
     /// (format spec §4: `spice` serves every SPICE dialect; netlist spec §7.2a:
     /// `format espice` overrides it where ESPice needs another line, e.g. `mfactor=`).
+    #[must_use]
     pub fn format_words(self) -> &'static [&'static str] {
         match self {
             Dialect::Ngspice => &["spice"],
@@ -246,6 +248,7 @@ impl Dialect {
 
     /// Returns whether a bench `code` block of `lang` is emitted (spec §7: `spice` for
     /// the SPICE simulators, else the dialect's own word; CDL takes none).
+    #[must_use]
     pub fn takes_code(self, lang: &str) -> bool {
         match self {
             Dialect::Cdl => false,
@@ -265,19 +268,30 @@ impl Elab {
     ///
     /// # Panics
     ///
-    /// Panics if `d` is not a definition row (as do the accessors below for theirs).
+    /// Panics if `d` is not a definition row.
+    #[must_use]
     pub fn insts_of(&self, d: u32) -> std::ops::Range<usize> {
         assert!((d as usize) < self.defs.cell.len(), "a definition row");
         self.defs.inst_start[d as usize] as usize..self.defs.inst_start[d as usize + 1] as usize
     }
 
     /// Returns the connection names of instance row `r`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `r` is not an instance row.
+    #[must_use]
     pub fn conns(&self, r: usize) -> &[Name] {
         assert!(r < self.insts.name.len(), "an instance row");
         &self.insts.conn[self.insts.conn_start[r] as usize..self.insts.conn_start[r + 1] as usize]
     }
 
     /// Returns the port nets of definition `d`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `d` is not a definition row.
+    #[must_use]
     pub fn ports(&self, d: u32) -> &[Name] {
         let d = d as usize;
         assert!(d < self.defs.cell.len(), "a definition row");
@@ -285,6 +299,11 @@ impl Elab {
     }
 
     /// Returns the param entries of instance row `r` as a range into the param columns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `r` is not an instance row.
+    #[must_use]
     pub fn params_of(&self, r: usize) -> std::ops::Range<usize> {
         assert!(r < self.insts.name.len(), "an instance row");
         self.insts.param_start[r] as usize..self.insts.param_start[r + 1] as usize
@@ -292,6 +311,7 @@ impl Elab {
 
     /// Counts leaf instances of the flattened hierarchy under definition `d` (ignored
     /// instances excluded). Cost: O(definitions + rows) with memoization.
+    #[must_use]
     pub fn flat_leaves(&self, d: u32) -> u64 {
         let mut memo = vec![u64::MAX; self.defs.cell.len()];
         self.leaves(d, &mut memo)

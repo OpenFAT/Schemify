@@ -79,13 +79,19 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
                 "the cell has no selectable impl".to_owned(),
             ));
         }
-        assert!(chosen.is_none_or(|k| k < f_impls), "the chosen impl is the cell's");
+        assert!(
+            chosen.is_none_or(|k| k < f_impls),
+            "the chosen impl is the cell's"
+        );
         chosen.map(|k| k as u32)
     }
 
     /// The leaf impl row for (cell `c`, impl `k`), checking dialect support (`E013`).
     pub(super) fn leaf_impl(&mut self, c: u32, k: u32) -> Option<u32> {
-        assert!((k as usize) < self.ifaces[c as usize].impl_name.len(), "impl {k} of cell {c}");
+        assert!(
+            (k as usize) < self.ifaces[c as usize].impl_name.len(),
+            "impl {k} of cell {c}"
+        );
         if let Some(&id) = self.impl_ids.get(&(c, k)) {
             return (id != NONE).then_some(id);
         }
@@ -138,7 +144,11 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
         self.impls.template.push(template.unwrap_or(Name::NONE));
         self.push_body(c, k);
         self.impl_ids.insert((c, k), id);
-        assert_eq!(self.impls.template.len(), self.impls.cell.len(), "impl columns in step");
+        assert_eq!(
+            self.impls.template.len(),
+            self.impls.cell.len(),
+            "impl columns in step"
+        );
         Some(id)
     }
 
@@ -165,7 +175,11 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
         self.impls.template.push(Name::NONE);
         self.push_body(c, k);
         self.impl_ids.insert((c, k), id);
-        assert_eq!(self.impls.index.len(), self.impls.cell.len(), "impl columns in step");
+        assert_eq!(
+            self.impls.index.len(),
+            self.impls.cell.len(),
+            "impl columns in step"
+        );
         id
     }
 
@@ -197,7 +211,10 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// the first identifier that no builtin, pin or param provides, resolved as the
     /// netlister resolves them (spec §7.6.6). `None` when every row can render.
     fn template_error(&self, c: u32, k: u32, src: &str) -> Option<String> {
-        assert!((k as usize) < self.ifaces[c as usize].impl_name.len(), "impl {k} of cell {c}");
+        assert!(
+            (k as usize) < self.ifaces[c as usize].impl_name.len(),
+            "impl {k} of cell {c}"
+        );
         let tmpl = match schemify_expr::Template::parse(src) {
             Err(err) => return Some(err.to_string()),
             Ok(t) => t,

@@ -256,7 +256,10 @@ impl Iface {
     /// The value of bound `w` of param `k` when it reads nothing (the usual `min 0.15`:
     /// evaluated once when compiled, `Progs::konst`); `None` when absent or not constant.
     pub(crate) fn bound_konst(&self, k: usize, w: usize) -> Option<&Val> {
-        assert!(w < BOUNDS, "bound {w} is not one of min max step grid valid");
+        assert!(
+            w < BOUNDS,
+            "bound {w} is not one of min max step grid valid"
+        );
         assert!(k < self.param_bound.len(), "param {k} out of range");
         let b = self.param_bound[k][w];
         (b != NONE).then(|| self.progs.konst[b as usize].as_ref())?
@@ -275,7 +278,10 @@ impl Iface {
 
 /// Resolves `name` in a cell's own scope: params first, then vars (expr spec §4).
 pub(crate) fn own_ref(names: &Names, params: &[Name], vars: &[Name], name: &str) -> Option<Ref> {
-    assert!((params.len() as Ref) < VAR, "param indices stay below the var flag");
+    assert!(
+        (params.len() as Ref) < VAR,
+        "param indices stay below the var flag"
+    );
     let n = names.find(name)?;
     if let Some(k) = params.iter().position(|p| *p == n) {
         return Some(k as Ref);
@@ -428,7 +434,11 @@ impl Iface {
         }
         assert_eq!(k, f.choices.len());
         assert_eq!(f.var_prog.len(), f.var_name.len());
-        assert_eq!(f.param_bound.len(), f.param_name.len(), "param columns in step");
+        assert_eq!(
+            f.param_bound.len(),
+            f.param_name.len(),
+            "param columns in step"
+        );
         assert_eq!(f.choice_start.len(), f.param_name.len() + 1);
     }
 
@@ -457,7 +467,11 @@ impl Iface {
             f.fmt_start.push(f.fmt_dialect.len() as u32);
         }
         assert_eq!(f.impl_ignore.len(), f.impl_name.len());
-        assert_eq!(f.fmt_template.len(), f.fmt_dialect.len(), "format columns in step");
+        assert_eq!(
+            f.fmt_template.len(),
+            f.fmt_dialect.len(),
+            "format columns in step"
+        );
     }
 }
 

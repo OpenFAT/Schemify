@@ -99,6 +99,7 @@ pub(crate) struct Progs {
 
 impl Val {
     /// Returns the value as an expression input; `None` for the two error states.
+    #[must_use]
     pub fn value(&self) -> Option<Value<'_>> {
         Some(match self {
             Val::Int(i) => Value::Int(*i),
@@ -111,6 +112,7 @@ impl Val {
     }
 
     /// Copies an evaluation result out of the scratch it borrows.
+    #[must_use]
     pub fn from_value(v: Value<'_>) -> Val {
         match v {
             Value::Int(i) => Val::Int(i),
@@ -122,11 +124,13 @@ impl Val {
     }
 
     /// Returns whether this is one of the two error states.
+    #[must_use]
     pub fn is_err(&self) -> bool {
         matches!(self, Val::Err(_) | Val::Upstream)
     }
 
     /// Returns the value as `f64` for gating (`int` promotes); `None` otherwise.
+    #[must_use]
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Val::Int(i) => Some(*i as f64),
@@ -339,6 +343,7 @@ pub fn cached_text(v: &Val, out: &mut String) {
 
 /// A registry with no plugin functions loaded: every `ns.f(...)` falls back to its
 /// record's `cached` value (unverified) or fails with `X006`.
+#[must_use]
 pub fn no_funcs(_name: &str, _args: &[Value<'_>]) -> Option<Result<Value<'static>, XError>> {
     None
 }

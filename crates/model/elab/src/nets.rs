@@ -192,6 +192,10 @@ impl Ignore {
 
 impl CellNets {
     /// Returns the bit net named `name`, if any net carries it. O(log names).
+    ///
+    /// # Panics
+    ///
+    /// Panics only on a broken internal invariant: a name index row past the bit table.
     #[must_use]
     pub fn bit(&self, name: Name) -> Option<u32> {
         let i = self.by_name.binary_search_by_key(&name, |p| p.0).ok()?;
