@@ -15,6 +15,7 @@ use crate::strings::Sym;
 impl Router<'_> {
     /// A key chord: the focused field, an open popup, Escape on a dialog, the keymap, F10.
     pub(super) fn key(&mut self, chord: Chord) {
+        debug_assert!(self.state.open.len() <= UiState::MAX_OPEN);
         let modal = self.modal();
         if self.state.editor.is_some() {
             let lines = self.focused_lines();
@@ -61,6 +62,10 @@ impl Router<'_> {
         let Some(ed) = self.state.editor.as_mut() else {
             return;
         };
+        debug_assert!(
+            !self.state.focus.is_none(),
+            "an editor belongs to a focused field"
+        );
         let mut d = ed.driver(&mut self.text.font_cx, &mut self.text.layout_cx);
         d.clear_compose();
         d.insert_or_replace_selection(s);
@@ -83,6 +88,10 @@ impl Router<'_> {
         let Some(ed) = self.state.editor.as_mut() else {
             return;
         };
+        debug_assert!(
+            !self.state.focus.is_none(),
+            "an editor belongs to a focused field"
+        );
         let mut d = ed.driver(&mut self.text.font_cx, &mut self.text.layout_cx);
         if s.is_empty() {
             d.clear_compose();
@@ -99,6 +108,7 @@ impl Router<'_> {
 
     /// Assistive-technology click: opens a menu or dropdown, else runs the node's command.
     pub(super) fn activate(&mut self, node: Sym) {
+        debug_assert!(self.state.open.len() <= UiState::MAX_OPEN);
         let tables = self.tables;
         let (nodes, state) = (&tables.nodes, &mut *self.state);
         let Some(n) = nodes.find(node) else { return };

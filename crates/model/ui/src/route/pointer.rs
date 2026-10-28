@@ -163,6 +163,7 @@ impl Router<'_> {
     /// The wheel: the canvas, a text area taller than its box, or the scroll pane under it.
     pub(super) fn wheel(&mut self, ev: InputEvent, x: f32, y: f32, dy: f32) {
         debug_assert!(matches!(ev, InputEvent::Wheel { .. }));
+        debug_assert!(dy.is_finite(), "a wheel step is finite");
         let tables = self.tables;
         let nodes = &tables.nodes;
         let h = self.hit(x, y);
@@ -283,6 +284,13 @@ impl Router<'_> {
 
 /// True when a row shown as `shown` of `kind` reacts to the pointer (and so hovers).
 fn interactive(kind: Kind, shown: Shown) -> bool {
+    // A title, cascade row or popup is always a menu or a dropdown.
+    if shown != Shown::Normal {
+        debug_assert!(
+            matches!(kind, Kind::Menu | Kind::Dropdown),
+            "only menus and dropdowns show other than as themselves"
+        );
+    }
     shown != Shown::Normal
         || matches!(
             kind,
@@ -354,4 +362,10 @@ fn toggle_popup(tables: &UiTables, state: &mut UiState, n: NodeIx) {
         state.open.push(id);
     }
     debug_assert!(state.open.len() <= UiState::MAX_OPEN);
+    if !reopen {
+        debug_assert!(
+            state.open.last() != Some(&id),
+            "a second toggle closes the popup"
+        );
+    }
 }

@@ -136,8 +136,15 @@ pub(crate) fn has_popup(tables: &UiTables, node: NodeIx) -> bool {
         (node as usize) < tables.nodes.len(),
         "node index out of range"
     );
-    tables.nodes.kind[node as usize] == Kind::Dropdown
-        && tables.nodes.children(node).next().is_some()
+    let popup = tables.nodes.kind[node as usize] == Kind::Dropdown
+        && tables.nodes.children(node).next().is_some();
+    if popup {
+        debug_assert!(
+            tables.nodes.end[node as usize] > node + 1,
+            "a popup has rows"
+        );
+    }
+    popup
 }
 
 // ---- private ----
@@ -145,7 +152,12 @@ pub(crate) fn has_popup(tables: &UiTables, node: NodeIx) -> bool {
 impl Router<'_> {
     /// True while a dialog is open: only its rows can be hit.
     fn modal(&self) -> bool {
-        self.tables.nodes.find(self.state.dialog).is_some()
+        let modal = self.tables.nodes.find(self.state.dialog).is_some();
+        if modal {
+            debug_assert!(!self.state.dialog.is_none(), "a found dialog has an id");
+            debug_assert!(self.state.open.len() <= UiState::MAX_OPEN);
+        }
+        modal
     }
 
     /// The topmost row under `(x, y)`.
@@ -162,18 +174,27 @@ impl Router<'_> {
 
     /// True when a hit is the canvas shown as itself.
     fn on_canvas(&self, h: Option<Hit>) -> bool {
-        h.is_some_and(|h| {
-            h.shown == Shown::Normal && self.tables.nodes.kind[h.node as usize] == Kind::Canvas
-        })
+        let Some(h) = h else { return false };
+        debug_assert!(h.row < self.layout.len(), "a hit is a laid-out row");
+        debug_assert_eq!(
+            self.layout.node[h.row], h.node,
+            "a hit names its row's node"
+        );
+        h.shown == Shown::Normal && self.tables.nodes.kind[h.node as usize] == Kind::Canvas
     }
 
     /// How the focused node edits: as a text area, or as a single-line field (also when
     /// nothing is focused).
     fn focused_lines(&self) -> Lines {
         let nodes = &self.tables.nodes;
-        let area = nodes
-            .find(self.state.focus)
-            .is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
+        let focused = nodes.find(self.state.focus);
+        if let Some(n) = focused {
+            debug_assert!(
+                matches!(nodes.kind[n as usize], Kind::TextInput | Kind::TextArea),
+                "only text fields take focus"
+            );
+        }
+        let area = focused.is_some_and(|n| nodes.kind[n as usize] == Kind::TextArea);
         if area { Lines::Multi } else { Lines::Single }
     }
 
