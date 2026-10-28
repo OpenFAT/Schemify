@@ -1,4 +1,17 @@
 //! The canvas tables: symbols, scene, selection marks, overlay, the scene as shown, the palette.
+//!
+//! Contents:
+//! - `pub(super) type ShownKey`
+//! - `pub(super) const USER_LAYERS`
+//! - `pub(super) const LAYER_NAMES`
+//! - `Editor::load_symbols`
+//! - `Editor::refresh_symbols_of`
+//! - `Editor::build_scene`
+//! - `Editor::build_overlay`
+//! - `Editor::refresh_palette`
+//! - `Editor::build_shown`
+//! - `Editor::parity_overlay`
+//! - `Editor::view_palette`
 
 use schemify_canvas::{CanvasPrims, Palette};
 use schemify_doc::{DocHandle, TableId};

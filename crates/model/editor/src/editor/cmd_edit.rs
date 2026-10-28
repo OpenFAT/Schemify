@@ -1,4 +1,7 @@
 //! Edit and Tools commands: undo, the clipboard, transforms, drawing tools, wire tools.
+//!
+//! Contents:
+//! - `Editor::run_edit`
 
 use schemify_doc::{Edit, EditRequest, Op, TableId};
 use schemify_format::RecordKind;

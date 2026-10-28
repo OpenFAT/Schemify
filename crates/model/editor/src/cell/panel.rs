@@ -1,5 +1,20 @@
 //! The panel as UI records: header, pins, params, impls (with bodies), the pending port
 //! sync's diff, and the bench sections, each field a node whose id names its target.
+//!
+//! Contents:
+//! - `pub fn contribute`
+//! - `pub(super) fn sync_rows`
+//! - `pub(super) fn section`
+//! - `pub(super) fn note`
+//! - `pub(super) fn block`
+//! - `pub(super) fn input`
+//! - `pub(super) fn dropdown`
+//! - `pub(super) fn button`
+
+use schemify_doc::{Document, Loc, PinDir, TableId};
+use schemify_format::FileKind;
+
+use crate::docs::{attr, node};
 
 use super::bench_panel::bench_sections;
 use super::ops::{add_impl_ops, sync_ops};
@@ -7,9 +22,6 @@ use super::{
     ADD_LANGS, DIALECTS, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, PortSync, SyncPlan,
     attr_of, body_row, body_text, names,
 };
-use crate::docs::{attr, node};
-use schemify_doc::{Document, Loc, PinDir, TableId};
-use schemify_format::FileKind;
 
 /// Projects `doc` into the panel: rows under the plugin-declared `cell.page` node. A file
 /// kind without an interface (a `.shbench`) shows only its header. `sync`, a pending

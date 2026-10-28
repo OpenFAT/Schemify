@@ -13,21 +13,36 @@
 //! the default (a manifest or package `fuel` override) runs its events on a worker thread
 //! (`Plugins::set_worker`), so a long import never freezes the editor; its outputs land in a
 //! later frame. `eval` requests are answered within the delivery by [`eval_in`].
+//!
+//! Contents:
+//! - `pub const HASH_HEX`
+//! - `pub const DEFAULT_UI_WASM`
+//! - `pub const WAITING_MAX`
+//! - `pub type ResultRows`
+//! - `pub struct Host`, `Host::push`, `Host::has_work`, `Host::poll`, `Host::wake_ms`,
+//!   `Host::run_done`, `Host::ui_sets`
+//! - `pub const NOTES_MAX`
+//! - `pub struct Note`, `Note::values`
+//! - `pub struct Delivered`
+//! - `pub fn doc_id`
+//! - `pub fn handle_of`
 
+mod deliver;
+mod load;
+mod patch;
+mod snapshot;
+mod user;
+
+use schemify_cli::pack::Installed;
+use schemify_config::Config;
 use schemify_doc::{DocHandle, Project};
 use schemify_plugin::abi::{Event, Kind};
 use schemify_plugin::{PluginEvents, PluginId, Plugins, RequestQueues, RunRequest, Snapshots};
 
 use crate::platform::Spawned;
-use schemify_cli::pack::Installed;
-use schemify_config::Config;
-mod load;
-mod snapshot;
-mod user;
-use snapshot::Filled;
-mod deliver;
-mod patch;
+
 pub use deliver::{eval_in, fn_result};
+use snapshot::Filled;
 
 /// Hex digits of a plugin content hash in a D20 `cached <value> <hash>` attribute: the
 /// first 8 bytes of the module's sha256 (change detection, not authentication).
@@ -39,14 +54,9 @@ pub const DEFAULT_UI_WASM: &[u8] = include_bytes!(concat!(
     "/assets/default_ui.wasm"
 ));
 
-/// Delivery rounds per frame: a plugin's I/O completion is answered in the same frame, up to
-/// this many request → completion hops.
-const ROUNDS_MAX: u32 = 4;
 /// Child processes and timers waiting at once (the plugin crate's per-frame queue
 /// capacities, plugin-abi §10); a request past it completes at once with `E_SPACE`.
 pub const WAITING_MAX: usize = 256;
-/// Tick period while a child process runs (its completion is polled, not signalled).
-const IO_POLL_MS: u32 = 20;
 
 /// Results rows a run exposes to plugins (the `Results` snapshot): `(job, output, value
 /// text, pass)`; `pass` is 1 pass, 2 fail, 0 unknown or no spec.
@@ -109,21 +119,6 @@ pub struct Note {
     len: u8,
 }
 
-impl Note {
-    /// The event's numbers (document handles, epochs, job ids), at most two.
-    pub fn values(&self) -> &[u32] {
-        &self.values[..usize::from(self.len)]
-    }
-}
-
-impl std::fmt::Debug for Host {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Host")
-            .field("plugins", &self.plugins.ids().len())
-            .finish()
-    }
-}
-
 /// What a delivery produced for the rest of the spine.
 #[derive(Debug, Default)]
 pub struct Delivered {
@@ -141,6 +136,28 @@ pub struct Delivered {
     /// A plugin logged at `error` level or a call aborted (out of fuel, a trap, a
     /// quarantine): what `schemify cmd` turns into exit status 1.
     pub failed: bool,
+}
+
+/// Delivery rounds per frame: a plugin's I/O completion is answered in the same frame, up to
+/// this many request → completion hops.
+const ROUNDS_MAX: u32 = 4;
+
+/// Tick period while a child process runs (its completion is polled, not signalled).
+const IO_POLL_MS: u32 = 20;
+
+impl Note {
+    /// The event's numbers (document handles, epochs, job ids), at most two.
+    pub fn values(&self) -> &[u32] {
+        &self.values[..usize::from(self.len)]
+    }
+}
+
+impl std::fmt::Debug for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Host")
+            .field("plugins", &self.plugins.ids().len())
+            .finish()
+    }
 }
 
 impl Host {

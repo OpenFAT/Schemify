@@ -1,4 +1,15 @@
 //! Image exports: SVG, PDF and EPS written here, PNG asked of `schemify-app` as a `Raster`.
+//!
+//! Contents:
+//! - `pub(super) const PNG_MAX_PX`
+//! - `Editor::export_look`
+//! - `Editor::export_path`
+//! - `Editor::export`
+//! - `Editor::view_world_rect`
+//! - `Editor::export_png`
+//! - `Editor::export_png_full`
+//! - `Editor::ask_raster`
+//! - `Editor::export_hierarchy`
 
 use std::path::{Path, PathBuf};
 

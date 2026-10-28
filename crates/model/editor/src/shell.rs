@@ -12,6 +12,13 @@
 //!
 //! Also derives the canvas [`Palette`] from the `canvas.<theme>.<layer>` style selectors, so
 //! a plugin themes the schematic the same way it themes widgets.
+//!
+//! Contents:
+//! - `pub const CORE_UI`
+//! - `pub struct Shell`, `Shell::strings`, `Shell::tables`, `Shell::ui`, `Shell::layout`,
+//!   `Shell::text`, `Shell::rejects`, `Shell::new`, `Shell::set_plugins`, `Shell::set_state`,
+//!   `Shell::refresh`, `Shell::invalidate`, `Shell::sym`, `Shell::canvas_rect`,
+//!   `Shell::palette`
 
 use schemify_canvas::{LAYERS, Palette};
 use schemify_ui::{

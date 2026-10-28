@@ -1,4 +1,15 @@
 //! The chooser dialog: cells or waveform files filtered as typed, picked by row.
+//!
+//! Contents:
+//! - `pub(super) const CHOOSER_ROWS`
+//! - `pub(super) enum Pick`
+//! - `pub(super) enum ChooseFor`
+//! - `pub(super) struct Chooser`
+//! - `Editor::open_chooser`
+//! - `Editor::refill_chooser`
+//! - `Editor::choose_filter`
+//! - `Editor::choose_pick`
+//! - `Editor::cellref_for`
 
 use std::path::{Path, PathBuf};
 

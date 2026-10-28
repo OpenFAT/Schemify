@@ -1,15 +1,34 @@
 //! Loading the plugin set: the bundled default UI (D6), user packages (D35) and the
 //! project's local plugins in configured order (D8), each with its content hash and fuel.
+//!
+//! Contents:
+//! - `Host::new`
+//! - `pub(super) fn load_installed`
+//! - `pub(super) fn content_hash`
+//! - `pub(super) const FUEL_MIN`
+//! - `pub(super) const FUEL_MAX`
+//! - `pub(super) fn manifest_fuel`
 
-use super::snapshot::Filled;
-use super::{DEFAULT_UI_WASM, HASH_HEX, Host};
-use crate::platform::{self};
+use std::path::Path;
+
 use schemify_cli::pack::{self, Installed};
 use schemify_config::{Config, Request, Startup};
 use schemify_doc::Project;
 use schemify_plugin::abi::FUEL_DEFAULT;
 use schemify_plugin::{PluginEvents, PluginId, Plugins, RequestQueues, Snapshots};
-use std::path::Path;
+
+use crate::platform::{self};
+
+use super::snapshot::Filled;
+use super::{DEFAULT_UI_WASM, HASH_HEX, Host};
+
+/// Bounds on a manifest `fuel` override (plugin ABI §2). A plugin above the default runs its
+/// events on a worker thread; the ceiling still bounds how long one event may run there.
+// ponytail: on the web (no threads) such events still run on the frame thread and block it;
+// slice them with wasmi's resumable calls (`call_resumable`, out-of-fuel) if the web needs it.
+pub(super) const FUEL_MIN: u64 = 1_000_000;
+
+pub(super) const FUEL_MAX: u64 = 100_000_000_000;
 
 impl Host {
     /// Runs the user config `startup` names, then loads, in composition order (config spec
@@ -166,14 +185,6 @@ pub(super) fn content_hash(bytes: &[u8]) -> String {
     debug_assert_eq!(h.len(), HASH_HEX);
     h
 }
-
-/// Bounds on a manifest `fuel` override (plugin ABI §2). A plugin above the default runs its
-/// events on a worker thread; the ceiling still bounds how long one event may run there.
-// ponytail: on the web (no threads) such events still run on the frame thread and block it;
-// slice them with wasmi's resumable calls (`call_resumable`, out-of-fuel) if the web needs it.
-pub(super) const FUEL_MIN: u64 = 1_000_000;
-
-pub(super) const FUEL_MAX: u64 = 100_000_000_000;
 
 /// The per-plugin fuel budget from a manifest `fuel <n>` attribute, or the default when
 /// absent.

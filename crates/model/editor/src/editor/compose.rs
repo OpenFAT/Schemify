@@ -1,4 +1,10 @@
 //! The UI step: plugin sets and images in, `ui::compose` + layout as a projection of the tables.
+//!
+//! Contents:
+//! - `Editor::ui_step`
+//! - `Editor::ui_inputs`
+//! - `Editor::compose_ui`
+//! - `Editor::state_contribution`
 
 use schemify_doc::Document;
 

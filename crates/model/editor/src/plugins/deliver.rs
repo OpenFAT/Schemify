@@ -1,15 +1,24 @@
 //! One delivery: events to plugins, then their request queues drained to their owners (edits,
 //! runs, I/O, evals, logs). File I/O completes within the delivery ([`run_io`]); `eval`
 //! requests are answered by [`eval_in`].
+//!
+//! Contents:
+//! - `Host::deliver`
+//! - `pub fn eval_in`
+//! - `pub(super) fn run_io`
+//! - `pub fn fn_result`
 
-use super::{Delivered, Host, ROUNDS_MAX, WAITING_MAX, handle_of};
-use crate::platform::{self};
+use std::path::{Path, PathBuf};
+
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::{CellState, Funcs, Val};
 use schemify_expr::{Code as XCode, Error as XError, Mode, Program, Scratch, Span, Value};
 use schemify_plugin::abi::{Code, Event, Level};
 use schemify_plugin::{IoOp, deliver};
-use std::path::{Path, PathBuf};
+
+use crate::platform::{self};
+
+use super::{Delivered, Host, ROUNDS_MAX, WAITING_MAX, handle_of};
 
 impl Host {
     /// The spine's `plugin::deliver` plus queue draining, at most `ROUNDS_MAX` (4) rounds:
@@ -306,41 +315,7 @@ pub fn fn_result(t: &str) -> Option<Val> {
     }
 }
 
-#[cfg(test)]
-mod eval_tests {
-    use super::*;
-    use schemify_elab::no_funcs;
-
-    /// Oracle: a plugin's `eval` of cell names gives the values elab computed for them
-    /// (`b = a + p = 4`), combined by the expression; names without a value and missing
-    /// plugin functions are declared errors, never a panic.
-    #[test]
-    fn eval_reads_the_cell_scope() {
-        let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam p 3\n\nimpl sch schematic\n\nport 0p0001 0 0 R0 P\n\nvar a 1\nvar b a+p\nvar bad 1/0\n";
-        let mut project = Project::new(None, None, 1).unwrap();
-        project
-            .index_library("", "", &[("c.shcomp", cell.as_bytes())])
-            .unwrap();
-        let h = project
-            .open("", "c.shcomp", cell.as_bytes(), None)
-            .unwrap()
-            .handle;
-        let st = CellState::build(&project, h, &mut no_funcs).unwrap();
-        let ev = |e: &str| eval_in(&st, e, &mut no_funcs);
-        assert_eq!(ev("b"), Ok("4".to_owned()));
-        assert_eq!(ev("b*2 + p"), Ok("11".to_owned()));
-        assert_eq!(ev("b > a"), Ok("true".to_owned()));
-        assert_eq!(ev("str(b) + \"V\""), Ok("\"4V\"".to_owned()));
-        assert_eq!(ev("nope + 1").unwrap_err().code, XCode::X004);
-        assert_eq!(
-            ev("bad").unwrap_err().code,
-            XCode::X004,
-            "its error is the cell's"
-        );
-        assert_eq!(ev("gmid.width(1, 2, 3)").unwrap_err().code, XCode::X006);
-        assert!(ev("1 +").is_err());
-    }
-}
+// ---- private ----
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod io_tests {
@@ -409,5 +384,41 @@ mod io_tests {
         }
         let (status, _) = run_io(crate_dir, IoOp::FsRead, &["Cargo.toml".to_owned()], &[]);
         assert_eq!(status, 0, "project-relative reads are unchanged");
+    }
+}
+
+#[cfg(test)]
+mod eval_tests {
+    use super::*;
+    use schemify_elab::no_funcs;
+
+    /// Oracle: a plugin's `eval` of cell names gives the values elab computed for them
+    /// (`b = a + p = 4`), combined by the expression; names without a value and missing
+    /// plugin functions are declared errors, never a panic.
+    #[test]
+    fn eval_reads_the_cell_scope() {
+        let cell = "schemify 1 shcomp\n\npin P inout 0 0\n\nparam p 3\n\nimpl sch schematic\n\nport 0p0001 0 0 R0 P\n\nvar a 1\nvar b a+p\nvar bad 1/0\n";
+        let mut project = Project::new(None, None, 1).unwrap();
+        project
+            .index_library("", "", &[("c.shcomp", cell.as_bytes())])
+            .unwrap();
+        let h = project
+            .open("", "c.shcomp", cell.as_bytes(), None)
+            .unwrap()
+            .handle;
+        let st = CellState::build(&project, h, &mut no_funcs).unwrap();
+        let ev = |e: &str| eval_in(&st, e, &mut no_funcs);
+        assert_eq!(ev("b"), Ok("4".to_owned()));
+        assert_eq!(ev("b*2 + p"), Ok("11".to_owned()));
+        assert_eq!(ev("b > a"), Ok("true".to_owned()));
+        assert_eq!(ev("str(b) + \"V\""), Ok("\"4V\"".to_owned()));
+        assert_eq!(ev("nope + 1").unwrap_err().code, XCode::X004);
+        assert_eq!(
+            ev("bad").unwrap_err().code,
+            XCode::X004,
+            "its error is the cell's"
+        );
+        assert_eq!(ev("gmid.width(1, 2, 3)").unwrap_err().code, XCode::X006);
+        assert!(ev("1 +").is_err());
     }
 }

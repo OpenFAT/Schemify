@@ -1,19 +1,36 @@
 //! Drawing one document row as primitives: instances (with their symbol and texts), wires,
 //! shapes, texts, symbol pins and graphics. In: a row of the document. Out: rows appended to
 //! the scene's tables through `Build`.
+//!
+//! Contents:
+//! - `pub(super) struct Stamp`
+//! - `pub(super) fn instance`
+//! - `pub(super) fn inst_text`
+//! - `pub(super) fn revalue_texts`
+//! - `pub(super) fn wire`
+//! - `pub(super) fn other_objects`
+//! - `pub(super) fn one_other`
+//! - `pub(super) fn shape`
+//! - `pub(super) fn bind_ident`
+//! - `pub(super) fn param_value`
+//! - `pub(super) fn arc_placed`
+//! - `pub(super) fn placed`
+
+use std::collections::HashMap;
+
+use schemify_canvas::LineStyle;
+use schemify_doc::{DocHandle, Document, Project, Sym, TableId};
+use schemify_elab::CellState;
+use schemify_expr::{Scratch, Value};
+use schemify_format::{Orient, RecordKind};
+
+use crate::geometry::{Pt, place};
 
 use super::refresh::{Build, stamped};
 use super::symbols::{
     SymText, Symbols, attr, layer_attr, size_of, style_attr, sym_text_at, text_size, text_start,
 };
 use super::{LAYER_BUS, LAYER_MISSING, ObjKey, PIN_HALF, Scene, UNIT};
-use crate::geometry::{Pt, place};
-use schemify_canvas::LineStyle;
-use schemify_doc::{DocHandle, Document, Project, Sym, TableId};
-use schemify_elab::CellState;
-use schemify_expr::{Scratch, Value};
-use schemify_format::{Orient, RecordKind};
-use std::collections::HashMap;
 
 /// Reusable buffers of instance stamping (resolved cells, template inputs, text).
 #[derive(Default)]

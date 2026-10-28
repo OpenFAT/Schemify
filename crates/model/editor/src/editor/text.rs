@@ -1,4 +1,18 @@
 //! Read-only text tabs: netlists, find, changelog, packages, processes, job logs, help.
+//!
+//! Contents:
+//! - `pub(super) const TEXT_TAB_LINES`
+//! - `pub(super) const TEXT_TAB_BYTES`
+//! - `pub(super) const CHANGELOG_ROWS`
+//! - `Editor::find_in_text`
+//! - `Editor::netlist`
+//! - `Editor::text_tab`
+//! - `Editor::changelog`
+//! - `Editor::package_status`
+//! - `Editor::list_processes`
+//! - `Editor::job_log`
+//! - `pub(super) fn expand_bus`
+//! - `pub(super) fn help_text`
 
 use schemify_doc::DocHandle;
 use schemify_elab::{Request, Severity};

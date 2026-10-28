@@ -4,6 +4,24 @@
 //!
 //! New objects get ids drawn here (the request may supply them, edits spec §1) so the
 //! editor can select what it just created.
+//!
+//! Contents:
+//! - `pub fn loc_of`
+//! - `pub fn selected_records`
+//! - `pub fn schematic_keys`
+//! - `pub fn delete`
+//! - `pub fn transform`
+//! - `pub fn transform_each`
+//! - `pub struct Ids`, `Ids::new`, `Ids::draw`
+//! - `pub fn unique_name`
+//! - `pub fn duplicate`
+//! - `pub fn insert_copies`
+//! - `pub fn wires`
+//! - `pub fn instance`
+//! - `pub fn placed`
+//! - `pub fn pin`
+//! - `pub fn shape`
+//! - `pub const AUTO_ID`
 
 use std::collections::HashSet;
 
@@ -12,6 +30,16 @@ use schemify_format::{IdRng, KeyRule, Orient, RecordKind, fresh_id};
 
 use crate::geometry::{Pt, Xform, anchor, coord, transform_record};
 use crate::scene::ObjKey;
+
+/// Draws fresh ids that are free in `doc` and not yet used by this transaction.
+pub struct Ids<'a> {
+    rng: &'a mut IdRng,
+    used: HashSet<String>,
+}
+
+/// The id field placeholder doc replaces on insert (used for records whose id the editor
+/// does not need to know).
+pub const AUTO_ID: &str = NEW_ID;
 
 /// Where a selected object lives in the document, if it still exists.
 pub fn loc_of(doc: &Document, key: ObjKey) -> Option<Loc> {
@@ -24,15 +52,6 @@ pub fn loc_of(doc: &Document, key: ObjKey) -> Option<Loc> {
         }
         t => doc.find_id(ObjId(key.key)).filter(|l| l.table == t),
     }
-}
-
-/// The edit target addressing `rec` at `loc` (id, name, or graphic row).
-fn target(rec: &RecordBuf, loc: Loc) -> Target {
-    let key = match rec.kind.key() {
-        KeyRule::Position => loc.row.to_string(),
-        _ => rec.fields.first().cloned().unwrap_or_default(),
-    };
-    Target::new(rec.kind, &key)
 }
 
 /// Records of the selection that still exist, with their targets, in selection order.
@@ -101,12 +120,6 @@ pub fn transform_each(doc: &Document, sel: &[ObjKey], about: fn(Pt) -> Xform) ->
         .collect()
 }
 
-/// Draws fresh ids that are free in `doc` and not yet used by this transaction.
-pub struct Ids<'a> {
-    rng: &'a mut IdRng,
-    used: HashSet<String>,
-}
-
 impl<'a> Ids<'a> {
     /// A drawer over `rng`.
     pub fn new(rng: &'a mut IdRng) -> Ids<'a> {
@@ -144,14 +157,6 @@ pub fn unique_name(doc: &Document, prefix: &str, taken: &mut HashSet<String>) ->
         }
     }
     unreachable!("pigeonhole: one of the candidates is free")
-}
-
-/// Leading letters of an instance name (`M12` → `M`), the prefix copies are renumbered with.
-fn name_prefix(name: &str) -> &str {
-    let end = name
-        .find(|c: char| !c.is_ascii_alphabetic())
-        .unwrap_or(name.len());
-    if end == 0 { "X" } else { &name[..end] }
 }
 
 /// Copies the selection through `x`: inserts with fresh ids (returned as selection keys),
@@ -305,9 +310,24 @@ pub fn shape(rect: bool, a: Pt, b: Pt) -> RecordBuf {
     r
 }
 
-/// The id field placeholder doc replaces on insert (used for records whose id the editor
-/// does not need to know).
-pub const AUTO_ID: &str = NEW_ID;
+// ---- private ----
+
+/// The edit target addressing `rec` at `loc` (id, name, or graphic row).
+fn target(rec: &RecordBuf, loc: Loc) -> Target {
+    let key = match rec.kind.key() {
+        KeyRule::Position => loc.row.to_string(),
+        _ => rec.fields.first().cloned().unwrap_or_default(),
+    };
+    Target::new(rec.kind, &key)
+}
+
+/// Leading letters of an instance name (`M12` → `M`), the prefix copies are renumbered with.
+fn name_prefix(name: &str) -> &str {
+    let end = name
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(name.len());
+    if end == 0 { "X" } else { &name[..end] }
+}
 
 #[cfg(test)]
 mod tests {

@@ -27,6 +27,50 @@
 //! `tool_state` ([`Tool`]), `edit options` ([`EditOpts`]), the dialog state, the clipboard,
 //! the scene and its overlay/marks. Design data is only ever changed through
 //! `doc::apply_edits`.
+//!
+//! Contents:
+//! - `pub enum Panel`
+//! - `pub struct Options`
+//! - `pub struct Editor`, `Editor::wake_ms`, `Editor::update`
+//! - `pub(crate) fn has_view`
+
+mod apply;
+mod camera;
+mod canvas;
+mod cells;
+mod chooser;
+mod cmd_dialog;
+mod cmd_edit;
+mod cmd_file;
+mod cmd_net;
+mod cmd_panel;
+mod cmd_view;
+mod compare;
+mod compose;
+mod contribute;
+mod decor;
+mod dialog;
+mod dispatch;
+mod files;
+mod finish;
+mod gestures;
+mod highlight;
+mod image;
+mod open;
+mod opts;
+mod picture;
+mod probe;
+mod props;
+mod queue;
+mod results;
+mod run;
+mod select;
+mod subckt;
+mod symbol;
+mod tables;
+mod text;
+mod tool;
+mod values;
 
 use std::path::PathBuf;
 
@@ -49,60 +93,17 @@ use crate::shell::Shell;
 use crate::sim::Sim;
 use crate::waves::WavesView;
 
-mod apply;
-mod camera;
-mod canvas;
-mod chooser;
-mod cmd_dialog;
-mod cmd_edit;
-mod cmd_file;
-mod cmd_net;
-mod cmd_panel;
-mod cmd_view;
-mod compare;
-mod compose;
-mod contribute;
-mod decor;
-mod dialog;
-mod dispatch;
-mod files;
-mod finish;
-mod gestures;
-mod highlight;
-mod image;
-mod opts;
-mod picture;
-mod probe;
-mod queue;
-mod run;
-mod select;
-mod subckt;
-mod symbol;
-mod tables;
-mod text;
-mod tool;
-mod values;
-
 use canvas::ShownKey;
 use compare::Compare;
 use decor::DecorKey;
 use dialog::Dialog;
 use files::{default_view, project_root};
-use queue::Said;
-use values::{Parked, row_of_doc};
-
 pub use opts::EditOpts;
 pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
 pub use queue::QUEUED_MAX;
+use queue::Said;
 pub use tool::{Form, Placement, Tool};
-mod cells;
-mod open;
-mod props;
-mod results;
-
-/// Bytes an idle tick hashes or encodes for the documents' journals (`Project::idle_step`):
-/// ~1 ms of sha256, so the 6 MB of a 100k-object cell take a few dozen ticks after it opens.
-const IDLE_STEP_BYTES: usize = 128 << 10;
+use values::{Parked, row_of_doc};
 
 /// Which panel the `bottom` container shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,6 +340,10 @@ pub struct Editor {
     /// starts that project's session with them (`files::switch_project`).
     startup: Options,
 }
+
+/// Bytes an idle tick hashes or encodes for the documents' journals (`Project::idle_step`):
+/// ~1 ms of sha256, so the 6 MB of a 100k-object cell take a few dozen ticks after it opens.
+const IDLE_STEP_BYTES: usize = 128 << 10;
 
 impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

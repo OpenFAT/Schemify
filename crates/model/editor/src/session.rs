@@ -11,6 +11,22 @@
 //! 3. Widths: doc handles are `doc::DocHandle`; per-document edit epochs `u32` (wrapping).
 //! 4. Access: per frame the active level only; per edit one row of `docs`.
 //! 5. Lifetime: session. 6. Parallel: no (one writer, I/O bound).
+//!
+//! Contents:
+//! - `pub fn find_cell`
+//! - `pub const TABS_MAX`
+//! - `pub const DEPTH_MAX`
+//! - `pub enum View`
+//! - `pub struct Level`
+//! - `pub struct Tab`
+//! - `pub struct TextView`
+//! - `pub const TEXT_WINDOW`
+//! - `pub struct Session`, `Session::load`, `Session::reload`, `Session::lib_dir`,
+//!   `Session::lib_dirs`, `Session::handle_of`, `Session::path`, `Session::name`,
+//!   `Session::epoch`, `Session::bump`
+
+mod files;
+mod tabs;
 
 use std::path::{Path, PathBuf};
 
@@ -19,30 +35,14 @@ use schemify_doc::{DocHandle, Project};
 
 use crate::geometry::Pt;
 pub use crate::libs::cell_relpath;
-
-/// The indexed cell row `name` names: `lib:cell` or, for the project library, `cell`, where
-/// `cell` is the cell's path in its library with or without its extension (`inv`,
-/// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
-/// cell index.
-pub fn find_cell(p: &Project, name: &str) -> Option<usize> {
-    let (lib, rest) = name.split_once(':').unwrap_or(("", name));
-    let cells = p.cells();
-    let row = (0..cells.lib.len()).find(|&r| {
-        let rel = cell_relpath(p, r);
-        let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
-        p.libs().name[usize::from(cells.lib[r])] == lib && (stem == rest || rel == rest)
-    });
-    debug_assert!(row.is_none_or(|r| r < cells.lib.len()));
-    row
-}
 use crate::libs::{self, absolute};
 use crate::scene::ObjKey;
-mod files;
-mod tabs;
+
 pub use tabs::{STATUS_MAX, TabView};
 
 /// Open tabs at once.
 pub const TABS_MAX: usize = 64;
+
 /// Hierarchy depth per tab (xschem `CADMAXHIER`).
 pub const DEPTH_MAX: usize = 40;
 
@@ -115,15 +115,6 @@ pub struct TextView {
 /// stand in for the rest.
 pub const TEXT_WINDOW: u32 = 256;
 
-/// Open documents and where they live on disk (SoA, one row per open document).
-#[derive(Clone, Debug, Default)]
-struct Docs {
-    handle: Vec<DocHandle>,
-    path: Vec<PathBuf>,
-    journal: Vec<PathBuf>,
-    epoch: Vec<u32>,
-}
-
 /// The project, its open documents and tabs.
 #[derive(Debug)]
 pub struct Session {
@@ -147,6 +138,31 @@ pub struct Session {
     /// The file to open first as the load's index read it (`libs::Loaded::kept`), until
     /// [`Session::open_file`] takes it or an index makes it stale.
     kept: Option<(PathBuf, Vec<u8>)>,
+}
+
+/// Open documents and where they live on disk (SoA, one row per open document).
+#[derive(Clone, Debug, Default)]
+struct Docs {
+    handle: Vec<DocHandle>,
+    path: Vec<PathBuf>,
+    journal: Vec<PathBuf>,
+    epoch: Vec<u32>,
+}
+
+/// The indexed cell row `name` names: `lib:cell` or, for the project library, `cell`, where
+/// `cell` is the cell's path in its library with or without its extension (`inv`,
+/// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
+/// cell index.
+pub fn find_cell(p: &Project, name: &str) -> Option<usize> {
+    let (lib, rest) = name.split_once(':').unwrap_or(("", name));
+    let cells = p.cells();
+    let row = (0..cells.lib.len()).find(|&r| {
+        let rel = cell_relpath(p, r);
+        let stem = rel.rsplit_once('.').map_or(rel.as_str(), |(s, _)| s);
+        p.libs().name[usize::from(cells.lib[r])] == lib && (stem == rest || rel == rest)
+    });
+    debug_assert!(row.is_none_or(|r| r < cells.lib.len()));
+    row
 }
 
 impl Session {

@@ -1,4 +1,11 @@
 //! The decor step: the `checks` overlay source, violation markers and the decor primitives.
+//!
+//! Contents:
+//! - `Editor::post_checks`
+//! - `Editor::build_markers`
+//! - `Editor::build_decor`
+//! - `pub(super) fn ids_of`
+//! - `pub(super) struct DecorKey`
 
 use schemify_doc::{DocHandle, ObjId};
 use schemify_elab::AnnotationRequest;
@@ -7,6 +14,20 @@ use crate::checks;
 use crate::checks::{SOURCE_CHECKS, SOURCE_OP};
 
 use super::Editor;
+
+/// Everything the decor draws besides the scene, as it was last built from: the decor is
+/// rebuilt when any of it differs, or when the scene changed while the decor draws on it.
+#[derive(Debug)]
+pub(super) struct DecorKey {
+    highlight: Vec<String>,
+    insts: bool,
+    incr: bool,
+    compare: Option<(usize, bool)>,
+    hier: Option<(DocHandle, u32)>,
+    op: u32,
+    /// The staged edit under review (`track_stage`'s key: the diff is a function of it).
+    diff: Option<(DocHandle, u32)>,
+}
 
 impl Editor {
     /// The `checks` source of the annotation overlay from the active level's violations: when
@@ -195,18 +216,4 @@ pub(super) fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u3
     ids.dedup();
     assert!(ids.len() <= targets.len());
     ids
-}
-
-/// Everything the decor draws besides the scene, as it was last built from: the decor is
-/// rebuilt when any of it differs, or when the scene changed while the decor draws on it.
-#[derive(Debug)]
-pub(super) struct DecorKey {
-    highlight: Vec<String>,
-    insts: bool,
-    incr: bool,
-    compare: Option<(usize, bool)>,
-    hier: Option<(DocHandle, u32)>,
-    op: u32,
-    /// The staged edit under review (`track_stage`'s key: the diff is a function of it).
-    diff: Option<(DocHandle, u32)>,
 }

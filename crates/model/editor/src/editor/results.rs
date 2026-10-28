@@ -1,11 +1,19 @@
 //! The results side of a run in the editor: a checks-panel pick, the results table's
 //! commands (sort, filter, row pick, history), and the selected job's waves.
+//!
+//! Contents:
+//! - `Editor::checks_pick`
+//! - `Editor::results_cmd`
+//! - `Editor::open_job_waves`
+//! - `Editor::refresh_job_waves`
 
-use super::Editor;
+use schemify_doc::{DocHandle, ObjId};
+
 use crate::commands::Cmd;
 use crate::scene::{ObjKey, UNIT};
 use crate::{checks, platform};
-use schemify_doc::{DocHandle, ObjId};
+
+use super::Editor;
 
 impl Editor {
     /// A click on a checks-panel row: select its object and zoom to it.

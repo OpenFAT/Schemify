@@ -20,17 +20,27 @@
 //! Determinism (AGENTS rule 4): no hash maps, fixed decimal formatting; arc end and control
 //! points are rounded to milli-units before printing, so platform `sin`/`cos` last-bit
 //! differences do not reach the bytes; font tables are written from ordered maps.
+//!
+//! Contents:
+//! - `pub struct Look`
+//! - `pub fn subset`
+//! - `pub fn bounds`
+//! - `pub fn padded`
+//! - `pub const PAPER`
+//! - `pub struct Page`, `Page::parse`, `Page::points`, `Page::name`
+
+mod eps;
+mod ops;
+mod pdf;
+mod svg;
 
 use schemify_canvas::{CanvasPrims, LAYER_DEAD, LAYERS, Palette};
 
 use crate::scene::Scene;
-mod svg;
-pub use svg::{svg, svg_counts};
-mod ops;
-mod pdf;
-pub use pdf::pdf;
-mod eps;
+
 pub use eps::eps;
+pub use pdf::pdf;
+pub use svg::{svg, svg_counts};
 
 /// How a drawing is colored: the canvas palette (layer colors, widths, fills) or black on
 /// white, with or without a background rectangle.
@@ -44,32 +54,30 @@ pub struct Look {
     pub transparent: bool,
 }
 
-impl Look {
-    /// `0xRRGGBB` of layer `l` as exported, or `None` when the layer is hidden (alpha 0) or
-    /// the row dead (`LAYER_DEAD`, a scene's removed row).
-    fn rgb(&self, l: u8) -> Option<u32> {
-        if l == LAYER_DEAD {
-            return None;
-        }
-        let c = self.palette.color[usize::from(l) % LAYERS];
-        if c & 0xff == 0 {
-            return None;
-        }
-        Some(if self.color { c >> 8 } else { 0 })
-    }
+/// Paper sizes a vector export fits its drawing to: `(name, width, height)` in points
+/// (1/72 in), portrait.
+pub const PAPER: [(&str, f64, f64); 6] = [
+    ("a4", 595.0, 842.0),
+    ("a3", 842.0, 1191.0),
+    ("a5", 420.0, 595.0),
+    ("letter", 612.0, 792.0),
+    ("legal", 612.0, 1008.0),
+    ("tabloid", 792.0, 1224.0),
+];
 
-    fn background(&self) -> u32 {
-        if self.color {
-            self.palette.background >> 8
-        } else {
-            0x00ff_ffff
-        }
-    }
-
-    fn filled(&self, l: u8) -> bool {
-        self.palette.fill & (1 << (u32::from(l) % 32)) != 0
-    }
+/// The page a PDF or EPS export is fitted to: a [`PAPER`] row and its orientation. The
+/// default is A4 landscape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Page {
+    /// Row of [`PAPER`].
+    pub paper: u8,
+    /// Portrait (else landscape).
+    pub portrait: bool,
 }
+
+/// PostScript names of the embedded UI faces (Type 42 resources, PDF `BaseFont`s), indexed
+/// like [`schemify_ui::ui_fonts`]; a PDF page names face `f` `/F<f + 1>`.
+const FONT_NAMES: [&str; 2] = ["SchemifyUI-NotoSans", "SchemifyUI-KaTeXMain"];
 
 /// The primitives of `sc` owned by objects with `keep[object]` set (the selection export).
 ///
@@ -194,37 +202,6 @@ pub fn padded(b: [i32; 4], pad: i32) -> [i32; 4] {
     ]
 }
 
-/// Arc end point at `deg_milli` (clockwise on screen, y down), rounded to milli-units.
-fn arc_point(cx: i32, cy: i32, r: i32, deg_milli: i64) -> (i64, i64) {
-    let t = (deg_milli as f64 / 1000.0).to_radians();
-    let r = f64::from(r);
-    (
-        i64::from(cx) + (r * t.cos()).round() as i64,
-        i64::from(cy) + (r * t.sin()).round() as i64,
-    )
-}
-
-/// Paper sizes a vector export fits its drawing to: `(name, width, height)` in points
-/// (1/72 in), portrait.
-pub const PAPER: [(&str, f64, f64); 6] = [
-    ("a4", 595.0, 842.0),
-    ("a3", 842.0, 1191.0),
-    ("a5", 420.0, 595.0),
-    ("letter", 612.0, 792.0),
-    ("legal", 612.0, 1008.0),
-    ("tabloid", 792.0, 1224.0),
-];
-
-/// The page a PDF or EPS export is fitted to: a [`PAPER`] row and its orientation. The
-/// default is A4 landscape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct Page {
-    /// Row of [`PAPER`].
-    pub paper: u8,
-    /// Portrait (else landscape).
-    pub portrait: bool,
-}
-
 impl Page {
     /// Parses `<paper> [portrait|landscape]` (`a3`, `letter portrait`, `A4-portrait`;
     /// case-insensitive, landscape by default). `None` for an unknown paper or word.
@@ -258,9 +235,44 @@ impl Page {
     }
 }
 
-/// PostScript names of the embedded UI faces (Type 42 resources, PDF `BaseFont`s), indexed
-/// like [`schemify_ui::ui_fonts`]; a PDF page names face `f` `/F<f + 1>`.
-const FONT_NAMES: [&str; 2] = ["SchemifyUI-NotoSans", "SchemifyUI-KaTeXMain"];
+// ---- private ----
+
+impl Look {
+    /// `0xRRGGBB` of layer `l` as exported, or `None` when the layer is hidden (alpha 0) or
+    /// the row dead (`LAYER_DEAD`, a scene's removed row).
+    fn rgb(&self, l: u8) -> Option<u32> {
+        if l == LAYER_DEAD {
+            return None;
+        }
+        let c = self.palette.color[usize::from(l) % LAYERS];
+        if c & 0xff == 0 {
+            return None;
+        }
+        Some(if self.color { c >> 8 } else { 0 })
+    }
+
+    fn background(&self) -> u32 {
+        if self.color {
+            self.palette.background >> 8
+        } else {
+            0x00ff_ffff
+        }
+    }
+
+    fn filled(&self, l: u8) -> bool {
+        self.palette.fill & (1 << (u32::from(l) % 32)) != 0
+    }
+}
+
+/// Arc end point at `deg_milli` (clockwise on screen, y down), rounded to milli-units.
+fn arc_point(cx: i32, cy: i32, r: i32, deg_milli: i64) -> (i64, i64) {
+    let t = (deg_milli as f64 / 1000.0).to_radians();
+    let r = f64::from(r);
+    (
+        i64::from(cx) + (r * t.cos()).round() as i64,
+        i64::from(cy) + (r * t.sin()).round() as i64,
+    )
+}
 
 #[cfg(test)]
 mod tests {

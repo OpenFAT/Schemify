@@ -1,8 +1,19 @@
 //! The page's `doc` edits: a var's expression, a prose block's text, added, moved and
 //! deleted blocks. One transaction per edit.
+//!
+//! Contents:
+//! - `pub(super) fn target`
+//! - `pub fn var_ops`
+//! - `pub fn prose_ops`
+//! - `pub fn insert_row`
+//! - `pub fn add_prose`
+//! - `pub fn add_var`
+//! - `pub fn move_block`
+//! - `pub fn delete_block`
+
+use schemify_doc::{Document, Loc, NEW_ID, Op, RecordBuf, RecordKind, TableId, Target};
 
 use super::{kind_of, prose_text};
-use schemify_doc::{Document, Loc, NEW_ID, Op, RecordBuf, RecordKind, TableId, Target};
 
 pub(super) fn target(doc: &Document, row: u32) -> Option<Target> {
     let b = doc.doc_blocks();

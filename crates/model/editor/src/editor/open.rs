@@ -1,14 +1,17 @@
 //! Starting a session ([`Editor::new`](super::Editor::new)): the project found from the
 //! path given, its plugins loaded (D6, D8) with their notes on the status line, and the file
 //! given or a new empty schematic opened.
+//!
+//! Contents:
+//! - `Editor::new`
+//! - `pub(super) fn push_note`
 
-use super::dialog::Dialog;
-use super::files::{default_view, project_root};
-use super::opts::EditOpts;
-use super::opts::user_layer_colors;
-use super::probe::DOCK_SPLIT;
-use super::tool::Tool;
-use super::{Editor, Options, Panel};
+use schemify_canvas::{CanvasPrims, Marks, Palette};
+use schemify_elab::Annotations;
+use schemify_format::{FileKind, IdRng};
+use schemify_plugin::abi::Event;
+use schemify_ui::Routed;
+
 use crate::checks::Members;
 use crate::commands::Commands;
 use crate::docs::Page;
@@ -20,11 +23,14 @@ use crate::shell::Shell;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sim::Sim;
 use crate::spines;
-use schemify_canvas::{CanvasPrims, Marks, Palette};
-use schemify_elab::Annotations;
-use schemify_format::{FileKind, IdRng};
-use schemify_plugin::abi::Event;
-use schemify_ui::Routed;
+
+use super::dialog::Dialog;
+use super::files::{default_view, project_root};
+use super::opts::EditOpts;
+use super::opts::user_layer_colors;
+use super::probe::DOCK_SPLIT;
+use super::tool::Tool;
+use super::{Editor, Options, Panel};
 
 impl Editor {
     /// Starts a session: loads the project (the directory given, the directory holding the

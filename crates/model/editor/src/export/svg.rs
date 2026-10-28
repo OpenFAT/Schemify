@@ -1,9 +1,16 @@
 //! SVG: one `<g>` per layer in canvas draw order, coordinates as exact milli-unit decimals,
 //! arcs as `A` commands, texts escaped. Also [`svg_counts`], the element census tests read.
+//!
+//! Contents:
+//! - `pub(super) fn units`
+//! - `pub(super) fn xml_escape`
+//! - `pub fn svg`
+//! - `pub fn svg_counts`
 
-use super::{Look, arc_point};
 use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
 use schemify_format::format_coord;
+
+use super::{Look, arc_point};
 
 pub(super) fn units(m: i64) -> String {
     let mut s = String::new();

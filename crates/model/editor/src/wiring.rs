@@ -15,6 +15,17 @@
 //!
 //! Connectivity follows elab (netlist spec §3): objects connect where a connection point
 //! (instance pin, wire end, label/port/noconn anchor) equals another or lies on a wire.
+//!
+//! Contents:
+//! - `pub fn inst_pins`
+//! - `pub fn on_interior`
+//! - `pub fn route`
+//! - `pub fn connected`
+//! - `pub fn align`
+
+mod cut;
+mod join;
+mod stretch;
 
 use std::collections::HashSet;
 
@@ -24,13 +35,11 @@ use schemify_format::{RecordKind, parse_coord};
 use crate::edit::{self};
 use crate::geometry::{Pt, coord, place, snap};
 use crate::scene::ObjKey;
-mod stretch;
-pub use stretch::{Moved, Stretched, stretch};
-mod join;
-pub use join::join_trim;
-mod cut;
+
 use cut::rec_pt;
 pub use cut::{break_at, remove_through};
+pub use join::join_trim;
+pub use stretch::{Moved, Stretched, stretch};
 
 /// World positions of the interface pins of instance row `i` (empty when its cell does not
 /// resolve), in pin order.
@@ -68,37 +77,6 @@ pub fn on_interior(p: Pt, a: Pt, b: Pt) -> bool {
     );
     let cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
     cross == 0 && px >= ax.min(bx) && px <= ax.max(bx) && py >= ay.min(by) && py <= ay.max(by)
-}
-
-fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[schemify_doc::Attr]) -> RecordBuf {
-    let mut r = RecordBuf::new(RecordKind::Wire)
-        .field(id)
-        .field(&coord(a.0))
-        .field(&coord(a.1))
-        .field(&coord(b.0))
-        .field(&coord(b.1));
-    r.attrs = attrs.to_vec();
-    r
-}
-
-/// The connection points of object `key`: an instance's pins, a wire's ends, a label's,
-/// port's or noconn's anchor; nothing for texts and shapes.
-fn points_of(project: &Project, h: DocHandle, doc: &Document, key: ObjKey) -> Vec<Pt> {
-    let Some(loc) = edit::loc_of(doc, key) else {
-        return Vec::new();
-    };
-    let r = loc.row as usize;
-    match key.table {
-        TableId::Instances => inst_pins(project, h, doc, r),
-        TableId::Wires => {
-            let w = doc.wires();
-            vec![(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])]
-        }
-        TableId::Labels => vec![(doc.labels().x[r], doc.labels().y[r])],
-        TableId::Ports => vec![(doc.ports().x[r], doc.ports().y[r])],
-        TableId::Noconns => vec![(doc.noconns().x[r], doc.noconns().y[r])],
-        _ => Vec::new(),
-    }
 }
 
 /// Points of a wire from `a` to `b` routed by Manhattan `mode` (0 straight, 1 horizontal
@@ -272,6 +250,39 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
         }
     }
     ops
+}
+
+// ---- private ----
+
+fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[schemify_doc::Attr]) -> RecordBuf {
+    let mut r = RecordBuf::new(RecordKind::Wire)
+        .field(id)
+        .field(&coord(a.0))
+        .field(&coord(a.1))
+        .field(&coord(b.0))
+        .field(&coord(b.1));
+    r.attrs = attrs.to_vec();
+    r
+}
+
+/// The connection points of object `key`: an instance's pins, a wire's ends, a label's,
+/// port's or noconn's anchor; nothing for texts and shapes.
+fn points_of(project: &Project, h: DocHandle, doc: &Document, key: ObjKey) -> Vec<Pt> {
+    let Some(loc) = edit::loc_of(doc, key) else {
+        return Vec::new();
+    };
+    let r = loc.row as usize;
+    match key.table {
+        TableId::Instances => inst_pins(project, h, doc, r),
+        TableId::Wires => {
+            let w = doc.wires();
+            vec![(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])]
+        }
+        TableId::Labels => vec![(doc.labels().x[r], doc.labels().y[r])],
+        TableId::Ports => vec![(doc.ports().x[r], doc.ports().y[r])],
+        TableId::Noconns => vec![(doc.noconns().x[r], doc.noconns().y[r])],
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

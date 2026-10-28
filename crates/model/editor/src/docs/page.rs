@@ -1,11 +1,23 @@
 //! The page as UI records: each block a preview or its source (prose with plots and math,
 //! vars with their values and bound status).
+//!
+//! Contents:
+//! - `pub struct Extras`
+//! - `pub fn contribute`
+//! - `pub(super) fn var_expr`
+//! - `pub(super) fn preview`
+//! - `pub(super) fn source`
+//! - `pub(super) fn prose`
+//! - `pub(super) fn var_row`
+//! - `pub(super) fn bound_status`
+//! - `pub(super) fn eval_in_cell`
 
-use super::{Page, attr, editor_id, node, prose_text, value_text, var_value};
 use schemify_doc::{Document, RecordKind};
 use schemify_elab::{CellState, Val};
 use schemify_expr::{Mode, Program, Scratch, Value};
 use schemify_ui::prose::{Segment, split_plots};
+
+use super::{Page, attr, editor_id, node, prose_text, value_text, var_value};
 
 /// What the page shows besides its document.
 #[derive(Clone, Copy, Debug, Default)]

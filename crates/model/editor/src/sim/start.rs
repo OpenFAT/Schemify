@@ -1,19 +1,35 @@
 //! Starting runs: the gate and design hash of a Simulate or Optimize, room among the
 //! [`RUNS_MAX`](super::RUNS_MAX) runs, the request queue served a bench at a time, and the
 //! probe lines a run adds before each netlist's `.end`.
+//!
+//! Contents:
+//! - `pub(super) const MOS_SAVES`
+//! - `Sim::start`
+//! - `Sim::make_room`
+//! - `Sim::install`
+//! - `Sim::show`
+//! - `Sim::reset_view`
+//! - `Sim::config`
+//! - `Sim::cancel`
+//! - `Sim::enqueue`
+//! - `Sim::serve_queue`
+//! - `pub fn probe_lines`
 
-use super::{
-    BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim, session_name,
-};
-use crate::session::Session;
-use crate::spines::{self};
-use crate::waves::spice_device;
+use std::fmt::Write as _;
+
 use schemify_doc::DocHandle;
 use schemify_elab::Funcs;
 use schemify_netlist::NameMap;
 use schemify_plugin::RunRequest;
 use schemify_run::{NO_SAMPLE, OptRun, Plan, RunnerConfig, Select};
-use std::fmt::Write as _;
+
+use crate::session::Session;
+use crate::spines::{self};
+use crate::waves::spice_device;
+
+use super::{
+    BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim, session_name,
+};
 
 /// The quantities saved for each MOSFET (every ngspice MOS model has them).
 pub(super) const MOS_SAVES: [&str; 6] = ["id", "gm", "gds", "vgs", "vds", "vdsat"];

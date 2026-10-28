@@ -1,16 +1,18 @@
 //! The run in the editor: start, poll, results, plots, OP annotation, staged edits.
+//!
+//! Contents:
+//! - `pub(super) const BENCH_NAMES_MAX`
+//! - `Editor::simulate`
+//! - `Editor::new_bench`
+//! - `Editor::step_sim`
+//! - `Editor::related_to_bench`
+//! - `Editor::stage_best`
+//! - `Editor::track_stage`
 
 use std::path::PathBuf;
 
 use schemify_doc::{DocHandle, ObjId, Op, TableId};
 use schemify_format::FileKind;
-
-use crate::scene::ObjKey;
-use crate::session::View;
-use crate::{checks, docs, platform};
-
-use super::Editor;
-
 #[cfg(not(target_arch = "wasm32"))]
 use {
     super::Panel,
@@ -23,6 +25,12 @@ use {
     schemify_expr::Value,
     schemify_format::RecordKind,
 };
+
+use crate::scene::ObjKey;
+use crate::session::View;
+use crate::{checks, docs, platform};
+
+use super::Editor;
 
 /// Benches "New bench from this component" tries before giving up on a free file name.
 pub(super) const BENCH_NAMES_MAX: u32 = 100;

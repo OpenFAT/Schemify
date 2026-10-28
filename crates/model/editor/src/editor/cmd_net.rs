@@ -1,4 +1,7 @@
 //! Highlight, netlist, simulation, symbol and Help commands.
+//!
+//! Contents:
+//! - `Editor::run_net`
 
 use schemify_doc::{Edit, EditRequest, RecordBuf};
 use schemify_format::{Orient, RecordKind};

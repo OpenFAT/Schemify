@@ -1,4 +1,13 @@
 //! The waves dock: its input split, opening files, and cross-probing into it (D23).
+//!
+//! Contents:
+//! - `pub(super) const DOCK_SPLIT`
+//! - `pub(super) const DOCK_SPLIT_RANGE`
+//! - `pub(super) const DOCK_GRAB_PX`
+//! - `Editor::split_input`
+//! - `Editor::open_waves`
+//! - `Editor::send_to_viewer`
+//! - `Editor::cross_probe`
 
 use std::path::PathBuf;
 

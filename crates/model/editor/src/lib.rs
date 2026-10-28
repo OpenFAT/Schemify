@@ -40,8 +40,6 @@
 
 #![forbid(unsafe_code)]
 
-pub use schemify_cli::{libs, platform, spines};
-
 pub mod cell;
 pub mod checks;
 pub mod clip;
@@ -63,3 +61,5 @@ pub mod shell;
 pub mod sim;
 pub mod waves;
 pub mod wiring;
+
+pub use schemify_cli::{libs, platform, spines};

@@ -1,4 +1,12 @@
 //! The selection: set, hit-tested, boxed out, its bounds and pivot.
+//!
+//! Contents:
+//! - `Editor::set_selection`
+//! - `Editor::unselected`
+//! - `Editor::hit_at`
+//! - `Editor::selection_bbox`
+//! - `Editor::selection_pivot`
+//! - `Editor::one_instance`
 
 use schemify_doc::TableId;
 

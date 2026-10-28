@@ -1,18 +1,30 @@
 //! The per-frame poll of every run (jobs prepared, runners polled, optimizers stepped),
 //! progress and staleness, and loading a run's results back from disk.
+//!
+//! Contents:
+//! - `Sim::poll`
+//! - `Sim::progress`
+//! - `Sim::check_stale`
+//! - `Sim::load_latest`
+//! - `Sim::load_dir`
+//! - `Sim::job_raw`
+//! - `pub(super) fn history`
 
-use super::{
-    BenchRun, Best, HISTORY_MAX, Kind, Polled, RUNS_MAX, SUBMIT_PER_FRAME, Sim, session_name,
-};
-use crate::platform;
-use crate::session::Session;
-use crate::spines::{BENCH, Run};
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::Funcs;
 use schemify_run::{Plan, RunnerConfig, State, read_results};
 use schemify_wave::format_si;
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+
+use crate::platform;
+use crate::session::Session;
+use crate::spines::{BENCH, Run};
+
+use super::{
+    BenchRun, Best, HISTORY_MAX, Kind, Polled, RUNS_MAX, SUBMIT_PER_FRAME, Sim, session_name,
+};
 
 impl Sim {
     /// One frame of every run: prepares and submits up to [`SUBMIT_PER_FRAME`] jobs in all,

@@ -1,16 +1,51 @@
 //! Stretch moves: a moved selection drags the wire ends attached to it, and "kissing" pins
 //! (an instance pin touching another without a wire) get new wires, routed by mode.
+//!
+//! Contents:
+//! - `pub(super) const ADDED_PER_OBJECT`
+//! - `pub(super) fn fixed_points`
+//! - `pub struct Stretched`
+//! - `pub struct Moved`
+//! - `pub fn stretch`
 
-use super::{inst_pins, on_interior, points_of, route, wire_rec};
+use std::collections::HashSet;
+
+use schemify_doc::{DocHandle, Document, Op, Project, TableId, Target};
+use schemify_format::RecordKind;
+
 use crate::edit::{self, Ids};
 use crate::geometry::{Pt, Xform};
 use crate::scene::ObjKey;
-use schemify_doc::{DocHandle, Document, Op, Project, TableId, Target};
-use schemify_format::RecordKind;
-use std::collections::HashSet;
+
+use super::{inst_pins, on_interior, points_of, route, wire_rec};
 
 /// Wires one stretch may add (kissing wires and L corners) per selected object.
 pub(super) const ADDED_PER_OBJECT: usize = 64;
+
+/// The result of a stretch or kissing move.
+#[derive(Debug, Default)]
+pub struct Stretched {
+    /// The transaction's ops: the moved selection, then the stretched and added wires.
+    pub ops: Vec<Op>,
+    /// Wires that were stretched (kept, one end moved) or added.
+    pub wires: Vec<ObjKey>,
+}
+
+/// What a move carries: objects moved whole and the moving ends of partially selected wires.
+#[derive(Clone, Copy, Debug)]
+pub struct Moved<'a> {
+    /// Objects moved whole.
+    pub sel: &'a [ObjKey],
+    /// Selected ends of partially selected wires (xschem's Ctrl+drag box): (wire, end
+    /// position). A row whose position is not an end of its wire is ignored.
+    pub ends: &'a [(ObjKey, Pt)],
+    /// Unselected wires with an end on a moved connection point follow it (xschem
+    /// "stretch"); without it only the partial ends move.
+    pub follow: bool,
+    /// Also adds a wire wherever a moved point touched an unselected pin, anchor or wire
+    /// ("kissing"); needs `follow`.
+    pub kiss: bool,
+}
 
 /// Every connection point of objects not in `sel` that a wire does not carry: instance
 /// pins and label/port/noconn anchors (sorted, distinct).
@@ -47,31 +82,6 @@ pub(super) fn fixed_points(
     out.sort_unstable();
     out.dedup();
     out
-}
-
-/// The result of a stretch or kissing move.
-#[derive(Debug, Default)]
-pub struct Stretched {
-    /// The transaction's ops: the moved selection, then the stretched and added wires.
-    pub ops: Vec<Op>,
-    /// Wires that were stretched (kept, one end moved) or added.
-    pub wires: Vec<ObjKey>,
-}
-
-/// What a move carries: objects moved whole and the moving ends of partially selected wires.
-#[derive(Clone, Copy, Debug)]
-pub struct Moved<'a> {
-    /// Objects moved whole.
-    pub sel: &'a [ObjKey],
-    /// Selected ends of partially selected wires (xschem's Ctrl+drag box): (wire, end
-    /// position). A row whose position is not an end of its wire is ignored.
-    pub ends: &'a [(ObjKey, Pt)],
-    /// Unselected wires with an end on a moved connection point follow it (xschem
-    /// "stretch"); without it only the partial ends move.
-    pub follow: bool,
-    /// Also adds a wire wherever a moved point touched an unselected pin, anchor or wire
-    /// ("kissing"); needs `follow`.
-    pub kiss: bool,
 }
 
 /// Moves `m.sel` through `x` (one `put` per record, as `edit::transform`) and keeps it

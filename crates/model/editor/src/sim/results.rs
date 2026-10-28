@@ -1,19 +1,38 @@
 //! What the shown run's selected job derives: raw datasets, the run log, docs-page plots, OP
 //! back-annotation marks, the plugin `Results` rows, and the results table's sorted, filtered
 //! rows.
+//!
+//! Contents:
+//! - `pub(super) fn tail`
+//! - `Sim::datasets`
+//! - `Sim::select`
+//! - `Sim::refresh_log`
+//! - `Sim::refresh_plots`
+//! - `Sim::op_marks`
+//! - `Sim::result_rows`
+//! - `Sim::sort_by`
+//! - `Sim::set_filter`
+//! - `Sim::refresh_table`
+//! - `pub(super) fn row_text`
+//! - `pub(super) fn plot`
+//! - `pub(super) fn op_mark`
+//! - `pub(super) fn inst_path`
 
-use super::{
-    Col, JobLog, Kind, LOG_LINES, LOG_TAIL_BYTES, OP_PARAMS, OVERLAY_JOBS, PLOTS_MAX, Plot, Sim,
-};
-use crate::checks::SOURCE_OP;
-use crate::platform;
+use std::fmt::Write as _;
+use std::path::Path;
+
 use schemify_elab::{AnnotationRequest, Mark, Severity};
 use schemify_netlist::NameMap;
 use schemify_run::{Jobs, Pass, Results, State};
 use schemify_wave::calc::op_dataset;
 use schemify_wave::{RawPlot, Request as WaveRequest, Waves, format_si, group_datasets, parse_raw};
-use std::fmt::Write as _;
-use std::path::Path;
+
+use crate::checks::SOURCE_OP;
+use crate::platform;
+
+use super::{
+    Col, JobLog, Kind, LOG_LINES, LOG_TAIL_BYTES, OP_PARAMS, OVERLAY_JOBS, PLOTS_MAX, Plot, Sim,
+};
 
 /// The last [`LOG_LINES`] lines of `path` (at most [`LOG_TAIL_BYTES`] read); empty when
 /// the file is missing.

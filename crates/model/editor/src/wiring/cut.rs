@@ -1,12 +1,20 @@
 //! Cutting wires: at given points ([`break_at`]), and through a box ([`remove_through`]).
+//!
+//! Contents:
+//! - `pub fn break_at`
+//! - `pub fn remove_through`
+//! - `pub(super) fn rec_pt`
 
-use super::{on_interior, points_of, wire_rec};
+use std::collections::HashSet;
+
+use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId, Target};
+use schemify_format::{RecordKind, parse_coord};
+
 use crate::edit::Ids;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
-use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId, Target};
-use schemify_format::{RecordKind, parse_coord};
-use std::collections::HashSet;
+
+use super::{on_interior, points_of, wire_rec};
 
 /// Cuts every wire that has one of `points` strictly inside it into pieces ending there.
 /// Returns the ops and, per cut wire, the new pieces' end points.

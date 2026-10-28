@@ -1,11 +1,21 @@
 //! Docs-page images (`![](x.png)` in prose): each path resolved under the project root,
 //! read, size-checked and decoded once into the UI's image table.
+//!
+//! Contents:
+//! - `pub fn load_images`
+//! - `pub fn image_path`
+//! - `pub fn load_image`
+//! - `pub(super) fn decode_png`
+//! - `pub(super) fn png_size`
 
-use super::{IMAGE_BYTES_MAX, IMAGE_SIDE_MAX, IMAGES_FAILED_MAX};
-use crate::platform;
+use std::path::{Path, PathBuf};
+
 use schemify_doc::{Document, Loc, RecordKind, TableId};
 use schemify_ui::{Image, TextSystem};
-use std::path::{Path, PathBuf};
+
+use crate::platform;
+
+use super::{IMAGE_BYTES_MAX, IMAGE_SIDE_MAX, IMAGES_FAILED_MAX};
 
 /// Registers in `text` every image the prose blocks of `doc` show (`![alt](path)` alone on a
 /// line, [`schemify_ui::prose::image_line`]) that is not registered yet and not in `failed`:

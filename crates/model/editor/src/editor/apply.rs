@@ -1,4 +1,14 @@
 //! Edit requests: commit helpers, plugin delivery, `doc::apply_edits` and its bookkeeping.
+//!
+//! Contents:
+//! - `pub(super) const REQUESTS_MAX`
+//! - `Editor::with_doc`
+//! - `Editor::commit`
+//! - `Editor::commit_docs`
+//! - `Editor::deliver`
+//! - `Editor::snapshot_now`
+//! - `Editor::apply`
+//! - `pub(super) fn push_req`
 
 use schemify_doc::{
     DocHandle, Document, Edit, EditRequest, Mode, Op, Outcome, TableId, Transaction, apply_edits,

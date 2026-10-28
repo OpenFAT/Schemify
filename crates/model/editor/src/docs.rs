@@ -14,6 +14,27 @@
 //!    compared and reparsed only when it changed (`Shell::set_state`).
 //! 5. Lifetime: [`Page`] lives with the editor and resets when the active document changes.
 //! 6. Parallel: no (one writer, a few hundred rows).
+//!
+//! Contents:
+//! - `pub struct Page`, `Page::follow`
+//! - `pub const IMAGES_FAILED_MAX`
+//! - `pub const IMAGE_BYTES_MAX`
+//! - `pub const IMAGE_SIDE_MAX`
+//! - `pub fn row_of`
+//! - `pub fn editor_id`
+//! - `pub fn prose_text`
+//! - `pub fn kind_of`
+//! - `pub fn plot_exprs`
+//! - `pub fn var_value`
+//! - `pub fn value_text`
+//! - `pub(crate) fn node`
+//! - `pub(crate) fn attr`
+//! - `pub fn quote`
+
+mod cache;
+mod edits;
+mod images;
+mod page;
 
 use std::fmt::Write as _;
 
@@ -21,14 +42,10 @@ use schemify_doc::{DocHandle, Document, Loc, RecordKind, TableId};
 use schemify_elab::{CellState, Val};
 use schemify_ui::prose::{Segment, split_plots};
 
-mod images;
-pub use images::{image_path, load_image, load_images};
-mod page;
-pub use page::{Extras, contribute};
-mod edits;
-pub use edits::{add_prose, add_var, delete_block, insert_row, move_block, prose_ops, var_ops};
-mod cache;
 pub use cache::{cache_ops, drop_stale_caches, param_value};
+pub use edits::{add_prose, add_var, delete_block, insert_row, move_block, prose_ops, var_ops};
+pub use images::{image_path, load_image, load_images};
+pub use page::{Extras, contribute};
 
 /// The page's interaction state (owner: the editor).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -48,8 +65,10 @@ pub struct Page {
 
 /// Failed image paths a page remembers; past it, the oldest is retried.
 pub const IMAGES_FAILED_MAX: usize = 64;
+
 /// Largest image file read for the docs page.
 pub const IMAGE_BYTES_MAX: usize = 16 << 20;
+
 /// Longest image side, in pixels.
 pub const IMAGE_SIDE_MAX: u32 = 4096;
 

@@ -1,20 +1,18 @@
 //! The page content both PostScript dialects share: the drawing fitted to the page, then
 //! every primitive kind as path operators (PDF or PostScript spelling), texts in the
 //! embedded faces with the glyphs each used.
+//!
+//! Contents:
+//! - `pub(super) fn fit`
+//! - `pub(super) enum Lang`
+//! - `pub(super) type Glyphs`
+//! - `pub(super) type Used`
+//! - `pub(super) fn arc_beziers`
+//! - `pub(super) fn page_ops`
 
-use super::{FONT_NAMES, Look, arc_point};
 use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
 
-/// Page coordinates of world bounds `b` fitted (aspect kept) into a `page` of points with a
-/// `margin`: `(scale points per milli-unit, x offset, y top)`. PDF and PostScript have y up.
-pub(super) fn fit(b: [i32; 4], page: (f64, f64), margin: f64) -> (f64, f64, f64) {
-    let w = (f64::from(b[2]) - f64::from(b[0])).max(1.0);
-    let h = (f64::from(b[3]) - f64::from(b[1])).max(1.0);
-    let s = ((page.0 - 2.0 * margin) / w).min((page.1 - 2.0 * margin) / h);
-    let ox = margin + ((page.0 - 2.0 * margin) - w * s) / 2.0;
-    let top = page.1 - margin - ((page.1 - 2.0 * margin) - h * s) / 2.0;
-    (s, ox, top)
-}
+use super::{FONT_NAMES, Look, arc_point};
 
 /// Which page-description language a vector page is written in: PDF content-stream
 /// operators or PostScript. Same geometry, two spellings.
@@ -31,6 +29,17 @@ pub(super) type Glyphs = std::collections::BTreeMap<u16, (u16, char)>;
 /// Glyphs the texts of a document print, per [`schemify_ui::ui_fonts`] face; a face with
 /// none is not embedded.
 pub(super) type Used = [Glyphs; 2];
+
+/// Page coordinates of world bounds `b` fitted (aspect kept) into a `page` of points with a
+/// `margin`: `(scale points per milli-unit, x offset, y top)`. PDF and PostScript have y up.
+pub(super) fn fit(b: [i32; 4], page: (f64, f64), margin: f64) -> (f64, f64, f64) {
+    let w = (f64::from(b[2]) - f64::from(b[0])).max(1.0);
+    let h = (f64::from(b[3]) - f64::from(b[1])).max(1.0);
+    let s = ((page.0 - 2.0 * margin) / w).min((page.1 - 2.0 * margin) / h);
+    let ox = margin + ((page.0 - 2.0 * margin) - w * s) / 2.0;
+    let top = page.1 - margin - ((page.1 - 2.0 * margin) - h * s) / 2.0;
+    (s, ox, top)
+}
 
 /// Cubic Bézier approximation of an arc (world milli-units, angles in milli-degrees
 /// clockwise on screen, as [`arc_point`]): the start point, then three points per segment of

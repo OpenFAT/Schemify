@@ -1,12 +1,29 @@
 //! Symbols as instances stamp them: one cell's primitives in symbol-local coordinates, and the
 //! per-cell cache the scene reads. In: a symbol document. Out: [`SymPrims`].
+//!
+//! Contents:
+//! - `pub struct SymPrims`
+//! - `pub(super) struct SymText`
+//! - `pub struct Symbols`, `Symbols::clear`, `Symbols::refresh`, `Symbols::get`
+//! - `pub(super) fn attr`
+//! - `pub(super) fn layer_attr`
+//! - `pub(super) fn style_attr`
+//! - `pub(super) fn size_of`
+//! - `pub(super) fn degrees_milli`
+//! - `pub(super) fn sym_prims`
+//! - `pub(super) fn rotated_extent`
+//! - `pub(super) fn sym_text_at`
+//! - `pub(super) fn text_size`
+//! - `pub(super) fn text_start`
 
-use super::{PIN_HALF, TEXT_PER_SIZE, UNIT};
-use crate::geometry::Pt;
 use schemify_canvas::LineStyle;
 use schemify_doc::{DocHandle, Document, Strings as DocStrings, Sym};
 use schemify_expr::Template;
 use schemify_format::{Orient, RecordKind};
+
+use crate::geometry::Pt;
+
+use super::{PIN_HALF, TEXT_PER_SIZE, UNIT};
 
 /// One cell's symbol in symbol-local coordinates: what every instance of it stamps.
 #[derive(Clone, Debug, Default)]

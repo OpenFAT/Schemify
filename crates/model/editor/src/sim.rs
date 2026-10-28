@@ -30,6 +30,33 @@
 //!    an eighth bench needs room (its results stay on disk).
 //! 6. Parallel: simulators run as child processes (`workers` per run); the editor side is
 //!    serial.
+//!
+//! Contents:
+//! - `pub const POLL_MS`
+//! - `pub const SUBMIT_PER_FRAME`
+//! - `pub const TABLE_WINDOW`
+//! - `pub const ROW_PX`
+//! - `pub const PLOTS_MAX`
+//! - `pub const OVERLAY_JOBS`
+//! - `pub const QUEUE_MAX`
+//! - `pub const HISTORY_MAX`
+//! - `pub const RUNS_MAX`
+//! - `pub const PROBE_DEVICES_MAX`
+//! - `pub const OP_PARAMS`
+//! - `pub struct Plot`
+//! - `pub struct Best`
+//! - `pub struct Polled`
+//! - `pub enum Col`
+//! - `pub struct TableView`
+//! - `pub const LOG_LINES`
+//! - `pub struct JobLog`
+//! - `pub struct Sim`, `Sim::new`, `Sim::busy`, `Sim::running`, `Sim::queued`, `Sim::wake_ms`,
+//!   `Sim::bench`, `Sim::stale`, `Sim::tables`, `Sim::tables_of`, `Sim::dir`
+
+mod poll;
+mod results;
+mod start;
+mod table;
 
 use std::path::{Path, PathBuf};
 
@@ -41,46 +68,42 @@ use schemify_wave::{RawPlot, Waves};
 
 use crate::session::Session;
 use crate::spines::{self, Run};
-mod start;
+
 pub use start::probe_lines;
-mod poll;
-mod results;
-mod table;
 
 /// Tick period while a run is in flight.
 pub const POLL_MS: u32 = 25;
+
 /// Jobs prepared (elaborated + netlisted) per frame over all runs: bounds the frame cost.
 pub const SUBMIT_PER_FRAME: u32 = 8;
+
 /// Job rows the results table lays out at once, around its scroll position; the rows above
 /// and below are one spacer each, so a run of any size scrolls.
 pub const TABLE_WINDOW: u32 = 64;
+
 /// Height of one results row in px: style `results-row` (18) plus the list's gap (1).
 pub const ROW_PX: f32 = 19.0;
+
 /// Plot slots with data at once.
 pub const PLOTS_MAX: usize = 64;
+
 /// Jobs one plot slot overlays (sweep points, corners, samples: one trace each).
 pub const OVERLAY_JOBS: usize = 16;
+
 /// Run requests waiting for their bench.
 pub const QUEUE_MAX: usize = 256;
+
 /// Earlier runs of a bench listed in the results panel.
 pub const HISTORY_MAX: usize = 8;
+
 /// Benches with a run in memory at once.
 pub const RUNS_MAX: usize = 8;
+
 /// MOSFETs whose OP quantities an editor run saves (`.save @m…[gm]`); beyond, none.
 pub const PROBE_DEVICES_MAX: usize = 4096;
+
 /// Device OP quantities back-annotated on instances (ngspice `@dev[param]` vectors).
 pub const OP_PARAMS: [&str; 9] = ["id", "gm", "gds", "vds", "vgs", "vth", "vdsat", "i", "ic"];
-
-/// What a run does.
-#[derive(Debug)]
-enum Kind {
-    /// Simulate the bench's plan.
-    Simulate,
-    /// Run an `optimize` record (D18): one candidate's jobs at a time.
-    Optimize(Box<OptRun>, String),
-    /// Results loaded from disk (no children).
-    Loaded,
-}
 
 /// A docs-page plot slot's data: the expression and its traces, one per job overlaid.
 #[derive(Debug)]
@@ -146,46 +169,8 @@ pub struct TableView {
     dirty: bool,
 }
 
-/// One bench's run.
-struct BenchRun {
-    bench: DocHandle,
-    name: String,
-    run: Run,
-    kind: Kind,
-    plugin_jobs: Vec<(u32, PluginId)>,
-    /// The job list the run was gated and hashed with (its stale check rehashes it).
-    base: Jobs,
-    saved: bool,
-}
-
-impl BenchRun {
-    fn idle(&self) -> bool {
-        let opt_done = match &self.kind {
-            Kind::Optimize(o, _) => o.done(),
-            _ => true,
-        };
-        self.run.idle() && opt_done
-    }
-}
-
-/// A run request waiting for its bench (run spec §7a).
-#[derive(Debug)]
-enum Request {
-    /// Simulate (`optimize` `None`) or optimize (`Some`, empty: the first record) `bench`
-    /// once its run in flight is idle, adding `probe` before each netlist's `.end`.
-    User {
-        bench: DocHandle,
-        optimize: Option<String>,
-        probe: String,
-    },
-    /// A plugin's `run` request.
-    Plugin(RunRequest),
-}
-
 /// Lines of each output stream the run log keeps (the tail).
 pub const LOG_LINES: usize = 12;
-/// Bytes read from the end of a log file to find its tail.
-const LOG_TAIL_BYTES: u64 = 8 << 10;
 
 /// The run log of one job: what ran and the tail of what it printed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -228,6 +213,46 @@ pub struct Sim {
     /// The results table's sort, filter and rows.
     pub table: TableView,
 }
+
+/// What a run does.
+#[derive(Debug)]
+enum Kind {
+    /// Simulate the bench's plan.
+    Simulate,
+    /// Run an `optimize` record (D18): one candidate's jobs at a time.
+    Optimize(Box<OptRun>, String),
+    /// Results loaded from disk (no children).
+    Loaded,
+}
+
+/// One bench's run.
+struct BenchRun {
+    bench: DocHandle,
+    name: String,
+    run: Run,
+    kind: Kind,
+    plugin_jobs: Vec<(u32, PluginId)>,
+    /// The job list the run was gated and hashed with (its stale check rehashes it).
+    base: Jobs,
+    saved: bool,
+}
+
+/// A run request waiting for its bench (run spec §7a).
+#[derive(Debug)]
+enum Request {
+    /// Simulate (`optimize` `None`) or optimize (`Some`, empty: the first record) `bench`
+    /// once its run in flight is idle, adding `probe` before each netlist's `.end`.
+    User {
+        bench: DocHandle,
+        optimize: Option<String>,
+        probe: String,
+    },
+    /// A plugin's `run` request.
+    Plugin(RunRequest),
+}
+
+/// Bytes read from the end of a log file to find its tail.
+const LOG_TAIL_BYTES: u64 = 8 << 10;
 
 impl std::fmt::Debug for Sim {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -324,6 +349,18 @@ impl Sim {
     pub fn dir(&self) -> Option<&Path> {
         self.shown_run()
             .map(|r| r.run.runner.config().dir.as_path())
+    }
+}
+
+// ---- private ----
+
+impl BenchRun {
+    fn idle(&self) -> bool {
+        let opt_done = match &self.kind {
+            Kind::Optimize(o, _) => o.done(),
+            _ => true,
+        };
+        self.run.idle() && opt_done
     }
 }
 

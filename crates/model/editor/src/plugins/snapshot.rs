@@ -1,17 +1,47 @@
 //! Snapshot tables for plugins (plugin-abi §4): the documents, nets, cell values and
 //! violations, filled in groups and patched per row when only a few rows changed.
+//!
+//! Contents:
+//! - `pub(super) const GROUPS`
+//! - `pub(super) fn fill_groups`
+//! - `pub(super) struct Filled`
+//! - `pub(super) fn fill_nets`
+//! - `pub(super) fn fill_violations`
+//! - `pub(super) fn without_epochs`
+//! - `pub(super) fn hash_of`
+//! - `Host::snapshot`
 
-use super::patch::{patch_doc_groups, sync_cell_groups};
-use super::{Host, ResultRows, doc_id};
 use schemify_doc::{Cursor, DocHandle, Project};
 use schemify_elab::{CellState, Name};
 use schemify_plugin::Snapshots;
 use schemify_plugin::abi::{Table, col};
 
+use super::patch::{patch_doc_groups, sync_cell_groups};
+use super::{Host, ResultRows, doc_id};
+
 /// Snapshot groups [`Host::snapshot`] refills independently: Instances; Wires and Labels
 /// without their net column; Nets with Violations; Results; the Wires and the Labels net
 /// columns (a check pass renumbers nets without moving a wire).
 pub(super) const GROUPS: usize = 7;
+
+/// What the snapshot's document and cell groups were filled from (see [`Host::snapshot`]), so
+/// the next fill writes only what changed: the document groups follow the document's change
+/// log, the cell groups are compared with what they hold.
+#[derive(Debug, Default)]
+pub(super) struct Filled {
+    /// The document (snapshot id) and the change-log position its groups reflect.
+    pub(super) doc: Option<(u32, Cursor)>,
+    /// The document and check pass the Nets and Violations tables reflect (pass 0: no cell
+    /// state); `None` before the first fill.
+    pub(super) pass: Option<(u32, u64)>,
+    /// What the Wires and Labels net columns hold (`None`: unknown, refill them).
+    pub(super) wire_net: Option<Vec<u32>>,
+    pub(super) label_net: Option<Vec<u32>>,
+    /// The Nets columns as filled: name, width, global, pin count.
+    pub(super) nets: (Vec<Name>, Vec<u16>, Vec<bool>, Vec<u32>),
+    /// What the Results table was filled from.
+    pub(super) results: Option<u64>,
+}
 
 /// Fills the snapshot groups flagged `stale` ([`GROUPS`]) from document `doc` (snapshot id
 /// `id`), its state `cell` and the run's `results`; see [`Host::snapshot`].
@@ -123,25 +153,6 @@ pub(super) fn fill_groups(
     // The caller completes the tables (a document group refilled without its net column
     // waits for `sync_cell_groups`) and checks them.
     debug_assert!(stale.iter().any(|&g| g));
-}
-
-/// What the snapshot's document and cell groups were filled from (see [`Host::snapshot`]), so
-/// the next fill writes only what changed: the document groups follow the document's change
-/// log, the cell groups are compared with what they hold.
-#[derive(Debug, Default)]
-pub(super) struct Filled {
-    /// The document (snapshot id) and the change-log position its groups reflect.
-    pub(super) doc: Option<(u32, Cursor)>,
-    /// The document and check pass the Nets and Violations tables reflect (pass 0: no cell
-    /// state); `None` before the first fill.
-    pub(super) pass: Option<(u32, u64)>,
-    /// What the Wires and Labels net columns hold (`None`: unknown, refill them).
-    pub(super) wire_net: Option<Vec<u32>>,
-    pub(super) label_net: Option<Vec<u32>>,
-    /// The Nets columns as filled: name, width, global, pin count.
-    pub(super) nets: (Vec<Name>, Vec<u16>, Vec<bool>, Vec<u32>),
-    /// What the Results table was filled from.
-    pub(super) results: Option<u64>,
 }
 
 /// Writes nets `rows` of `c` over Nets rows `at`.

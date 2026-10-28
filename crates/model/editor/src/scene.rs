@@ -17,6 +17,26 @@
 //!
 //! Layers follow xschem (0 background, 1 wire, 2 grid/selection, 3 text, 4 symbol, 5 pin);
 //! the app adds [`LAYER_JUNCTION`], [`LAYER_BUS`], [`LAYER_MISSING`], [`LAYER_SEL`].
+//!
+//! Contents:
+//! - `pub const LAYER_JUNCTION`
+//! - `pub const LAYER_BUS`
+//! - `pub const LAYER_MISSING`
+//! - `pub const LAYER_SEL`
+//! - `pub const UNIT`
+//! - `pub struct ObjKey`
+//! - `pub struct Objects`, `Objects::len`, `Objects::is_empty`, `Objects::bbox`
+//! - `pub struct Owners`
+//! - `pub struct Scene`, `Scene::find`, `Scene::edits`, `Scene::clear_edits`, `Scene::touched`,
+//!   `Scene::conn_points`
+
+mod dots;
+mod draw;
+mod preview;
+mod refresh;
+mod select;
+mod symbols;
+mod symview;
 
 use std::collections::HashMap;
 
@@ -25,36 +45,27 @@ use schemify_doc::{Cursor, DocHandle, TableId};
 
 use crate::geometry::Pt;
 use crate::session::View;
-mod dots;
+
 use dots::Wiring;
-mod symbols;
-pub use symbols::{SymPrims, Symbols};
-mod refresh;
-pub use refresh::{build, update};
-mod draw;
-mod select;
-pub use select::{Selected, box_select, hit, marks, selected_prims};
-mod preview;
-mod symview;
 pub use preview::{preview_records, preview_records_on, push_moved, stamp};
+pub use refresh::{build, update};
+pub use select::{Selected, box_select, hit, marks, selected_prims};
+pub use symbols::{SymPrims, Symbols};
 
 /// Junction dots (filled, wire color).
 pub const LAYER_JUNCTION: u8 = 22;
+
 /// Bus wires (wire color, thick).
 pub const LAYER_BUS: u8 = 23;
+
 /// Placeholder of an instance whose cell does not resolve.
 pub const LAYER_MISSING: u8 = 24;
+
 /// Overlay outlines in the selection color (box select, move preview, text selection).
 pub const LAYER_SEL: u8 = 25;
 
 /// One xschem unit in milli-units.
 pub const UNIT: i32 = 1000;
-/// Canvas text height per unit of a `size` attribute (xschem's size 0.4 ≈ 20 units).
-const TEXT_PER_SIZE: f64 = 50_000.0;
-/// Half side of a pin square (xschem pin boxes are 5 units wide).
-const PIN_HALF: i32 = 2_500;
-/// Junction dot radius (xschem `cadhalfdotsize` at snap 10).
-const DOT_R: i32 = 3_700;
 
 /// Identifies a selectable object across edits: the table plus the object id for rank-3
 /// kinds, or the row for symbol pins and graphics (rows shift only when a pin or graphic
@@ -83,6 +94,83 @@ pub struct Objects {
     /// The next stamp to give.
     next_stamp: u32,
 }
+
+/// Object index of every primitive, parallel to the `CanvasPrims` tables (`u32::MAX`: a
+/// junction dot, which belongs to no object, or a dead row).
+#[derive(Clone, Debug, Default)]
+pub struct Owners {
+    /// Per line.
+    pub lines: Vec<u32>,
+    /// Per rect.
+    pub rects: Vec<u32>,
+    /// Per arc.
+    pub arcs: Vec<u32>,
+    /// Per open polyline.
+    pub polylines: Vec<u32>,
+    /// Per closed polygon.
+    pub polygons: Vec<u32>,
+    /// Per text.
+    pub texts: Vec<u32>,
+}
+
+/// The drawn document and its derived lookup tables.
+///
+/// An update ([`update`]) edits the tables in place: a removed object's primitive rows stay
+/// as dead rows ([`schemify_canvas::LAYER_DEAD`], owner `u32::MAX`) so every other row
+/// keeps its index, its connection points stay with owner `u32::MAX`, and new rows append;
+/// readers skip both. A [`build`] compacts.
+#[derive(Clone, Debug, Default)]
+pub struct Scene {
+    /// Primitives for `render::canvas` (dead rows included, see above).
+    pub prims: CanvasPrims,
+    /// Owner object of each primitive.
+    pub owner: Owners,
+    /// Selectable objects.
+    pub objs: Objects,
+    /// Connection points (instance pins, wire ends) and their owner object (`u32::MAX`: a
+    /// removed object's, to skip).
+    pub conn: Vec<(Pt, u32)>,
+    /// World bounds of everything drawn (`[0; 4]` when empty). [`update`] only grows it: after
+    /// deletions it may cover more than is drawn until the next [`build`].
+    pub extent: [i32; 4],
+    /// What was built: (document, view, document epoch, symbol cache epoch).
+    pub built: Option<(DocHandle, View, u32, u32)>,
+    /// Changes of every [`build`] and [`update`] since the counter was read.
+    pub generation: u64,
+    /// `(key, object index)`, for selection lookups. Never iterated.
+    index: KeyMap,
+    /// The stamp of each primitive row (non-decreasing per kind), parallel to `owner`.
+    stamps: Owners,
+    /// The stamp of each connection point, parallel to `conn`.
+    conn_stamp: Vec<u32>,
+    /// Where the document's change log stood when the scene was last brought up to date.
+    cursor: Option<Cursor>,
+    /// Rows killed since [`Scene::clear_edits`] (per kind), or `None` after a build.
+    killed: Option<[Vec<u32>; 6]>,
+    /// The objects the last [`update`] removed or stamped; `None` after a build.
+    touched: Option<Vec<ObjKey>>,
+    /// Dead primitive rows (for compaction).
+    dead: usize,
+    /// Wire ends and runs, for junction dots.
+    wiring: Wiring,
+}
+
+/// Canvas text height per unit of a `size` attribute (xschem's size 0.4 ≈ 20 units).
+const TEXT_PER_SIZE: f64 = 50_000.0;
+
+/// Half side of a pin square (xschem pin boxes are 5 units wide).
+const PIN_HALF: i32 = 2_500;
+
+/// Junction dot radius (xschem `cadhalfdotsize` at snap 10).
+const DOT_R: i32 = 3_700;
+
+/// Object key → object index ([`Scene::find`]); keys packed into a `u64`, hashed with one
+/// multiply (never iterated, so the order is never seen).
+type KeyMap = HashMap<u64, u32, std::hash::BuildHasherDefault<KeyHasher>>;
+
+/// One multiply per key: object ids are random 30-bit values, so their bits spread already.
+#[derive(Default)]
+struct KeyHasher(u64);
 
 impl Objects {
     fn push(&mut self, key: ObjKey, geom: [i32; 4], seg: bool) -> u32 {
@@ -138,103 +226,6 @@ impl Objects {
     }
 }
 
-/// Object index of every primitive, parallel to the `CanvasPrims` tables (`u32::MAX`: a
-/// junction dot, which belongs to no object, or a dead row).
-#[derive(Clone, Debug, Default)]
-pub struct Owners {
-    /// Per line.
-    pub lines: Vec<u32>,
-    /// Per rect.
-    pub rects: Vec<u32>,
-    /// Per arc.
-    pub arcs: Vec<u32>,
-    /// Per open polyline.
-    pub polylines: Vec<u32>,
-    /// Per closed polygon.
-    pub polygons: Vec<u32>,
-    /// Per text.
-    pub texts: Vec<u32>,
-}
-
-impl Owners {
-    /// The six columns in [`CanvasPrims::kill`]'s kind order.
-    fn cols(&self) -> [&Vec<u32>; 6] {
-        [
-            &self.lines,
-            &self.rects,
-            &self.arcs,
-            &self.polylines,
-            &self.polygons,
-            &self.texts,
-        ]
-    }
-
-    fn cols_mut(&mut self) -> [&mut Vec<u32>; 6] {
-        [
-            &mut self.lines,
-            &mut self.rects,
-            &mut self.arcs,
-            &mut self.polylines,
-            &mut self.polygons,
-            &mut self.texts,
-        ]
-    }
-}
-
-/// The drawn document and its derived lookup tables.
-///
-/// An update ([`update`]) edits the tables in place: a removed object's primitive rows stay
-/// as dead rows ([`schemify_canvas::LAYER_DEAD`], owner `u32::MAX`) so every other row
-/// keeps its index, its connection points stay with owner `u32::MAX`, and new rows append;
-/// readers skip both. A [`build`] compacts.
-#[derive(Clone, Debug, Default)]
-pub struct Scene {
-    /// Primitives for `render::canvas` (dead rows included, see above).
-    pub prims: CanvasPrims,
-    /// Owner object of each primitive.
-    pub owner: Owners,
-    /// Selectable objects.
-    pub objs: Objects,
-    /// Connection points (instance pins, wire ends) and their owner object (`u32::MAX`: a
-    /// removed object's, to skip).
-    pub conn: Vec<(Pt, u32)>,
-    /// World bounds of everything drawn (`[0; 4]` when empty). [`update`] only grows it: after
-    /// deletions it may cover more than is drawn until the next [`build`].
-    pub extent: [i32; 4],
-    /// What was built: (document, view, document epoch, symbol cache epoch).
-    pub built: Option<(DocHandle, View, u32, u32)>,
-    /// Changes of every [`build`] and [`update`] since the counter was read.
-    pub generation: u64,
-    /// `(key, object index)`, for selection lookups. Never iterated.
-    index: KeyMap,
-    /// The stamp of each primitive row (non-decreasing per kind), parallel to `owner`.
-    stamps: Owners,
-    /// The stamp of each connection point, parallel to `conn`.
-    conn_stamp: Vec<u32>,
-    /// Where the document's change log stood when the scene was last brought up to date.
-    cursor: Option<Cursor>,
-    /// Rows killed since [`Scene::clear_edits`] (per kind), or `None` after a build.
-    killed: Option<[Vec<u32>; 6]>,
-    /// The objects the last [`update`] removed or stamped; `None` after a build.
-    touched: Option<Vec<ObjKey>>,
-    /// Dead primitive rows (for compaction).
-    dead: usize,
-    /// Wire ends and runs, for junction dots.
-    wiring: Wiring,
-}
-
-/// Object key → object index ([`Scene::find`]); keys packed into a `u64`, hashed with one
-/// multiply (never iterated, so the order is never seen).
-type KeyMap = HashMap<u64, u32, std::hash::BuildHasherDefault<KeyHasher>>;
-
-fn pack(k: ObjKey) -> u64 {
-    (k.table as u64) << 32 | u64::from(k.key)
-}
-
-/// One multiply per key: object ids are random 30-bit values, so their bits spread already.
-#[derive(Default)]
-struct KeyHasher(u64);
-
 impl std::hash::Hasher for KeyHasher {
     fn finish(&self) -> u64 {
         self.0
@@ -284,6 +275,37 @@ impl Scene {
     pub fn conn_points(&self) -> impl Iterator<Item = (Pt, u32)> + '_ {
         self.conn.iter().copied().filter(|c| c.1 != u32::MAX)
     }
+}
+
+// ---- private ----
+
+impl Owners {
+    /// The six columns in [`CanvasPrims::kill`]'s kind order.
+    fn cols(&self) -> [&Vec<u32>; 6] {
+        [
+            &self.lines,
+            &self.rects,
+            &self.arcs,
+            &self.polylines,
+            &self.polygons,
+            &self.texts,
+        ]
+    }
+
+    fn cols_mut(&mut self) -> [&mut Vec<u32>; 6] {
+        [
+            &mut self.lines,
+            &mut self.rects,
+            &mut self.arcs,
+            &mut self.polylines,
+            &mut self.polygons,
+            &mut self.texts,
+        ]
+    }
+}
+
+fn pack(k: ObjKey) -> u64 {
+    (k.table as u64) << 32 | u64::from(k.key)
 }
 
 #[cfg(test)]

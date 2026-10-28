@@ -1,11 +1,17 @@
 //! The results table as UI records: header buttons, the windowed job rows and their cells.
+//!
+//! Contents:
+//! - `Sim::contribute`
 
-use super::{Col, HISTORY_MAX, Kind, ROW_PX, Sim, TABLE_WINDOW};
-use crate::docs::quote as q;
+use std::fmt::Write as _;
+
 use schemify_run::{JOB_LEVEL, Jobs, NO_SAMPLE, Pass, Results, State, yield_summary};
 use schemify_ui::records::{spacer, window};
 use schemify_wave::format_si;
-use std::fmt::Write as _;
+
+use crate::docs::quote as q;
+
+use super::{Col, HISTORY_MAX, Kind, ROW_PX, Sim, TABLE_WINDOW};
 
 impl Sim {
     /// Appends the results panel to the state contribution `t` (nodes under `bottom`): a bar

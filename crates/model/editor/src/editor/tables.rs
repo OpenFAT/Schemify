@@ -1,4 +1,37 @@
 //! Read-only views of the editor's tables for paint, the app and tests.
+//!
+//! Contents:
+//! - `Editor::session`
+//! - `Editor::shell`
+//! - `Editor::tool`
+//! - `Editor::opts`
+//! - `Editor::active`
+//! - `Editor::scene`
+//! - `Editor::selection`
+//! - `Editor::waves_open`
+//! - `Editor::cell`
+//! - `Editor::page`
+//! - `Editor::docs_shown`
+//! - `Editor::docs_source`
+//! - `Editor::host`
+//! - `Editor::commands`
+//! - `Editor::open_text_tab`
+//! - `Editor::set_scroll`
+//! - `Editor::shown`
+//! - `Editor::parity_decor`
+//! - `Editor::overlay`
+//! - `Editor::recent`
+//! - `Editor::wants_quit`
+//! - `Editor::settle`
+//! - `Editor::annotations`
+//! - `Editor::highlighted`
+//! - `Editor::highlight_keys`
+//! - `Editor::decor`
+//! - `Editor::markers`
+//! - `Editor::panel`
+//! - `Editor::sim`
+//! - `Editor::waves_traces`
+//! - `Editor::dialect`
 
 use std::path::PathBuf;
 

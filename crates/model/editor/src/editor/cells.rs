@@ -1,15 +1,24 @@
 //! Cell file operations: Save As (as a schematic or a symbol), merging a cell into the open
 //! one, deleting a cell, and applying the Edit-file dialog's text to a document.
+//!
+//! Contents:
+//! - `Editor::save_as`
+//! - `Editor::merge_cell`
+//! - `Editor::delete_cell`
+//! - `Editor::apply_file_text`
+
+use std::path::PathBuf;
+
+use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, Target as DocTarget};
+use schemify_format::RecordKind;
+
+use crate::geometry::{Pt, Xform, snap};
+use crate::session::View;
+use crate::{edit, platform};
 
 use super::Editor;
 use super::chooser::ChooseFor;
 use super::tool::{Placement, Tool};
-use crate::geometry::{Pt, Xform, snap};
-use crate::session::View;
-use crate::{edit, platform};
-use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, Target as DocTarget};
-use schemify_format::RecordKind;
-use std::path::PathBuf;
 
 impl Editor {
     /// File → Save As: writes the active document's canonical text to `rel` (project-relative

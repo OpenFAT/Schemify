@@ -1,4 +1,12 @@
 //! Highlight → compare schematics, and the parity decor (`extra`) it is drawn into.
+//!
+//! Contents:
+//! - `pub(super) const HILITE_LAYERS`
+//! - `pub(crate) struct Compare`
+//! - `Editor::compare_with`
+//! - `Editor::compare_swap`
+//! - `Editor::build_extra`
+//! - `Editor::draw_compare`
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, RecordBuf, TableId};

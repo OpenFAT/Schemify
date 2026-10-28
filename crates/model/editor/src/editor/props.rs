@@ -1,12 +1,20 @@
 //! The properties dialog of one object: its fields from the record (editable or not), each
 //! typed or picked value, and OK as one transaction of the changed attributes.
+//!
+//! Contents:
+//! - `Editor::open_props`
+//! - `Editor::props_field`
+//! - `Editor::props_ok`
+//! - `Editor::field_typed`
+
+use schemify_doc::{DocHandle, EditRequest, Op};
+use schemify_format::RecordKind;
+
+use crate::edit;
 
 use super::Editor;
 use super::dialog::{Dialog, Field, Props, PropsFor};
 use super::tool::Tool;
-use crate::edit;
-use schemify_doc::{DocHandle, EditRequest, Op};
-use schemify_format::RecordKind;
 
 impl Editor {
     pub(super) fn open_props(&mut self, h: DocHandle) {

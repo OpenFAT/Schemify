@@ -1,12 +1,52 @@
 //! Tabs and the hierarchy: opening and switching tabs, the status line, each level's
 //! camera, selection and wire ends, descending into an instance and back.
+//!
+//! Contents:
+//! - `Session::open_tab`
+//! - `Session::open_text_tab`
+//! - `Session::status`
+//! - `Session::say`
+//! - `Session::take_status`
+//! - `Session::text_view`
+//! - `Session::tabs`
+//! - `Session::active`
+//! - `Session::switch_tab`
+//! - `Session::close_active_tab`
+//! - `Session::tab_view_mut`
+//! - `Session::text_view_mut`
+//! - `Session::set_camera`
+//! - `Session::select`
+//! - `Session::set_ends`
+//! - `Session::show`
+//! - `Session::level`
+//! - `Session::hier_path`
+//! - `Session::push_level`
+//! - `Session::pop_level`
+//! - `pub const STATUS_MAX`
+//! - `pub(super) fn cut`
+//! - `pub struct TabView`
 
-use super::{DEPTH_MAX, Level, Session, TABS_MAX, Tab, TextView, View};
-use crate::geometry::Pt;
-use crate::scene::ObjKey;
 use schemify_canvas::Camera;
 use schemify_doc::{DocHandle, TableId};
 use schemify_format::FileKind;
+
+use crate::geometry::Pt;
+use crate::scene::ObjKey;
+
+use super::{DEPTH_MAX, Level, Session, TABS_MAX, Tab, TextView, View};
+
+/// The longest status line in bytes; longer messages are cut.
+pub const STATUS_MAX: usize = 1 << 14;
+
+/// The active tab's view toggles, lent by [`Session::tab_view_mut`].
+pub struct TabView<'a> {
+    /// The docs page is shown beside (or instead of) the canvas.
+    pub docs: &'a mut bool,
+    /// The docs page shows its source text.
+    pub docs_source: &'a mut bool,
+    /// The cell settings panel is shown.
+    pub cell: &'a mut bool,
+}
 
 impl Session {
     /// Opens a new tab showing `doc` (or switches to the tab already showing it at top).
@@ -261,9 +301,6 @@ impl Session {
     }
 }
 
-/// The longest status line in bytes; longer messages are cut.
-pub const STATUS_MAX: usize = 1 << 14;
-
 /// Cuts `s` to at most [`STATUS_MAX`] bytes at a character boundary.
 pub(super) fn cut(s: &mut String) {
     if s.len() > STATUS_MAX {
@@ -273,14 +310,4 @@ pub(super) fn cut(s: &mut String) {
         }
         s.truncate(at);
     }
-}
-
-/// The active tab's view toggles, lent by [`Session::tab_view_mut`].
-pub struct TabView<'a> {
-    /// The docs page is shown beside (or instead of) the canvas.
-    pub docs: &'a mut bool,
-    /// The docs page shows its source text.
-    pub docs_source: &'a mut bool,
-    /// The cell settings panel is shown.
-    pub cell: &'a mut bool,
 }

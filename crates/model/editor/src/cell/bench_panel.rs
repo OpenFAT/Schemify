@@ -1,10 +1,15 @@
 //! The bench sections of the cell panel: analyses, sweeps, corners and optimize records as
 //! UI records, each field a node whose id names its target.
+//!
+//! Contents:
+//! - `pub(super) fn bench_sections`
+
+use schemify_doc::{Document, Loc, TableId};
+
+use crate::docs::{attr, node};
 
 use super::panel::{block, button, dropdown, input, note, section};
 use super::{ALGOS, Bench, attr_of, joined, record_count};
-use crate::docs::{attr, node};
-use schemify_doc::{Document, Loc, TableId};
 
 /// The Outputs, Specs and Optimizers sections of a `.shbench`.
 pub(super) fn bench_sections(t: &mut String, doc: &Document) {

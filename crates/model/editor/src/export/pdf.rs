@@ -1,9 +1,16 @@
 //! PDF: one page per drawing, the embedded faces as CID fonts with their `ToUnicode` maps,
 //! streams ASCII85-encoded.
+//!
+//! Contents:
+//! - `pub(super) fn ascii85`
+//! - `pub(super) fn to_unicode`
+//! - `pub(super) fn font_objects`
+//! - `pub fn pdf`
+
+use schemify_canvas::CanvasPrims;
 
 use super::ops::{Glyphs, Lang, Used, page_ops};
 use super::{FONT_NAMES, Look, Page};
-use schemify_canvas::CanvasPrims;
 
 /// ASCII85 (PDF `/ASCII85Decode`) of `bytes` with its `~>` end marker and a line break
 /// every 80 characters, so a PDF carrying a font stays 7-bit text.

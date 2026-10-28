@@ -1,12 +1,20 @@
 //! Previews drawn over the scene: a selection moved by a transform, a symbol stamped at the
 //! cursor, records being placed. In: the scene or the symbol cache. Out: overlay primitives.
+//!
+//! Contents:
+//! - `pub fn push_moved`
+//! - `pub fn stamp`
+//! - `pub fn preview_records`
+//! - `pub fn preview_records_on`
+
+use schemify_canvas::CanvasPrims;
+use schemify_format::{Orient, RecordKind};
+
+use crate::geometry::{Pt, Xform, place};
 
 use super::draw::arc_placed;
 use super::symbols::Symbols;
 use super::{LAYER_SEL, PIN_HALF, Scene, UNIT};
-use crate::geometry::{Pt, Xform, place};
-use schemify_canvas::CanvasPrims;
-use schemify_format::{Orient, RecordKind};
 
 /// Copies the primitives of selected objects through `x` into `out` on [`LAYER_SEL`]
 /// (move and copy previews; texts included, so a moving label shows its name), in table then

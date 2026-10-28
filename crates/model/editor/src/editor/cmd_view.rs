@@ -1,4 +1,7 @@
 //! View, Options and Layers commands: camera, toggles, settings, panels.
+//!
+//! Contents:
+//! - `Editor::run_view`
 
 use schemify_doc::{Document, EditRequest};
 

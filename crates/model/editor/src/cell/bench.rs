@@ -1,10 +1,18 @@
 //! Bench records' ops: their fields (goals and line lists included), added and deleted
 //! analysis, sweep, corner and optimize records.
+//!
+//! Contents:
+//! - `pub(super) fn lines_ops`
+//! - `pub(super) fn parse_goals`
+//! - `pub(super) fn bench_ops`
+//! - `pub fn add_bench_ops`
+//! - `pub fn delete_bench_ops`
+
+use schemify_doc::{Document, Op, RecordBuf, RecordKind, TableId, Target};
+use schemify_format::FileKind;
 
 use super::ops::{attr_ops, one_of, set_field, word};
 use super::{ALGOS, Bench, attr_of, names, record, record_count};
-use schemify_doc::{Document, Op, RecordBuf, RecordKind, TableId, Target};
-use schemify_format::FileKind;
 
 /// Ops replacing every `key` line of `target` by one line per item of `items`.
 pub(super) fn lines_ops(

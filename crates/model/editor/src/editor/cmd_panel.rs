@@ -1,4 +1,7 @@
 //! Cell panel and docs page commands (one undo each).
+//!
+//! Contents:
+//! - `Editor::run_panel`
 
 use schemify_doc::{EditRequest, Op, RecordBuf};
 use schemify_format::RecordKind;

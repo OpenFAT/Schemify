@@ -1,10 +1,21 @@
 //! The D20 cache write-back: plugin-computed param and var values copied into `cached`
 //! attributes, and the rule that drops a cache whose expression changed.
+//!
+//! Contents:
+//! - `pub fn cache_ops`
+//! - `pub(super) fn cache_op`
+//! - `pub(super) fn plugin_fns`
+//! - `pub fn param_value`
+//! - `pub fn drop_stale_caches`
+//! - `pub(super) fn cacheable`
+//! - `pub(super) fn named`
+//! - `pub(super) fn first_attr`
 
-use super::var_value;
 use schemify_doc::{Document, Op, RecordKind, Records, Strings, Sym, Target};
 use schemify_elab::{CellState, Val};
 use schemify_expr::{Mode, Program, Template};
+
+use super::var_value;
 
 /// Ops writing `cached <value> <hash>` on every own param (its default, or its `computed`
 /// expression) and own var whose expression calls plugin functions and whose current value a

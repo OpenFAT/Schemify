@@ -1,14 +1,31 @@
 //! The `doc` ops each submitted field or button makes: header, pin, param and impl fields,
 //! bodies, port sync, added, deleted and moved rows. One transaction per field.
+//!
+//! Contents:
+//! - `pub(super) fn attr_ops`
+//! - `pub(super) fn one_of`
+//! - `pub(super) fn word`
+//! - `pub fn set_ops`
+//! - `pub(super) fn set_field`
+//! - `pub(super) fn body_ops`
+//! - `pub fn impl_ports`
+//! - `pub fn sync_ops`
+//! - `pub fn add_param_ops`
+//! - `pub fn add_impl_ops`
+//! - `pub fn delete_param_ops`
+//! - `pub fn delete_impl_ops`
+//! - `pub fn move_pin_ops`
+
+use schemify_doc::{Document, Loc, Op, PinDir, RecordBuf, RecordKind, TableId, Target};
+use schemify_format::FileKind;
+
+use crate::scene::UNIT;
 
 use super::bench::bench_ops;
 use super::{
     ADD_LANGS, DIALECTS, Field, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, SyncPlan, attr_of,
     body_row, body_text, names, record,
 };
-use crate::scene::UNIT;
-use schemify_doc::{Document, Loc, Op, PinDir, RecordBuf, RecordKind, TableId, Target};
-use schemify_format::FileKind;
 
 /// Set `key` to `value` on `target` (`values` split for multi-value attributes); an empty
 /// value removes the line when present. No op when nothing changes.

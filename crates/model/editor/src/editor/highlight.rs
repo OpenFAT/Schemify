@@ -1,4 +1,20 @@
 //! Net highlight: hierarchy-wide net keys, highlight commands, mismatches, plotted nets.
+//!
+//! Contents:
+//! - `pub(super) const PIN_PX`
+//! - `pub(super) fn env_refs`
+//! - `pub(super) fn spice_case`
+//! - `Editor::level_prefix`
+//! - `Editor::hier_map`
+//! - `Editor::net_key`
+//! - `Editor::highlight_cmd`
+//! - `Editor::highlighted_local_names`
+//! - `Editor::pin_mismatch`
+//! - `Editor::highlight_plotted`
+//! - `Editor::auto_highlight`
+//! - `Editor::colored_highlight`
+//! - `pub(super) fn duplicate_names`
+//! - `pub(super) fn overlapped`
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, Op, TableId, Target as DocTarget};

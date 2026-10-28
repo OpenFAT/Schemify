@@ -1,4 +1,17 @@
 //! The command stream between frames: queued commands and edits, their answers, the kept plugin log.
+//!
+//! Contents:
+//! - `pub const QUEUED_MAX`
+//! - `pub(super) struct Said`
+//! - `pub(super) const KEPT_LOG_MAX`
+//! - `Editor::command`
+//! - `Editor::request_edits`
+//! - `Editor::command_answered`
+//! - `Editor::keep_plugin_log`
+//! - `Editor::take_plugin_log`
+//! - `Editor::take_said`
+//! - `Editor::dispatch_queued`
+//! - `Editor::resolve_said`
 
 use schemify_doc::EditRequest;
 

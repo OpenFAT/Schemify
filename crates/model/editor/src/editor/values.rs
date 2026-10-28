@@ -1,4 +1,16 @@
 //! Values of the shown documents: the active `CellState`, parked states, the D20 write-back.
+//!
+//! Contents:
+//! - `pub(super) const PARKED_MAX`
+//! - `pub(super) struct Parked`
+//! - `Editor::track_elab`
+//! - `Editor::recompute_elab`
+//! - `Editor::park`
+//! - `Editor::reload_project`
+//! - `Editor::invalidate_cells`
+//! - `Editor::sync_cache`
+//! - `Editor::sync_page`
+//! - `pub(super) fn row_of_doc`
 
 use schemify_doc::{DocHandle, Edit, EditRequest, Op, Outcome, TableId};
 use schemify_elab::CellState;

@@ -1,4 +1,10 @@
 //! More of the state contribution: menus and dialogs of the parity commands, panels, text tabs.
+//!
+//! Contents:
+//! - `Editor::contribute_parity`
+//! - `Editor::contribute_text_body`
+//! - `Editor::contribute_integration`
+//! - `pub(super) fn q_multiline`
 
 use schemify_ui::{Kind, StyleProp, records};
 

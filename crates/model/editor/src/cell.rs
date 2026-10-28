@@ -22,19 +22,35 @@
 //!    [`RecordBuf`] copies (cold path: the contribution is reparsed only when it changed).
 //! 4. Lifetime: nothing persists here; whether the panel is shown is `Tab::cell`, and a
 //!    pending sync is the editor's ([`PortSync`], passed in).
+//!
+//! Contents:
+//! - `pub struct PortSync`
+//! - `pub struct SyncPlan`, `SyncPlan::is_empty`
+//! - `pub const PIN_DIRS`
+//! - `pub const PIN_DOMAINS`
+//! - `pub const PARAM_KINDS`
+//! - `pub const PARAM_ATTRS`
+//! - `pub const DIALECTS`
+//! - `pub const ADD_LANGS`
+//! - `pub enum Field`
+//! - `pub enum Bench`, `Bench::word`, `Bench::ALL`
+//! - `pub const ALGOS`
+//! - `pub fn parse_field`
+//! - `pub fn button_row`
+
+mod bench;
+mod bench_panel;
+mod ops;
+mod panel;
 
 use schemify_doc::{Document, Loc, PinDir, RecordBuf, RecordKind, TableId};
 
-mod panel;
-pub use panel::contribute;
-mod ops;
+pub use bench::{add_bench_ops, delete_bench_ops};
 pub use ops::{
     add_impl_ops, add_param_ops, delete_impl_ops, delete_param_ops, impl_ports, move_pin_ops,
     set_ops, sync_ops,
 };
-mod bench;
-mod bench_panel;
-pub use bench::{add_bench_ops, delete_bench_ops};
+pub use panel::contribute;
 
 /// A "Sync pins from ports" waiting for Apply or Cancel: the ports parsed from impl
 /// `impl_row`'s body when the user asked. Editor state (it never reaches the document);
@@ -60,25 +76,23 @@ pub struct SyncPlan {
     pub reorder: bool,
 }
 
-impl SyncPlan {
-    /// Whether the pins already match the ports.
-    pub fn is_empty(&self) -> bool {
-        self.add.is_empty() && self.remove.is_empty() && self.redir.is_empty() && !self.reorder
-    }
-}
-
 /// Pin directions (format rank 1).
 pub const PIN_DIRS: [&str; 3] = ["in", "out", "inout"];
+
 /// Pin signal domains; `analog` is the default and is written as no attribute.
 pub const PIN_DOMAINS: [&str; 3] = ["analog", "digital", "real"];
+
 /// Param kinds; `number` is the default and is written as no attribute.
 pub const PARAM_KINDS: [&str; 5] = ["number", "int", "bool", "string", "choice"];
+
 /// Param attributes the panel edits, in display order (`name` and `default` are fields).
 pub const PARAM_ATTRS: [&str; 8] = [
     "unit", "min", "max", "step", "grid", "choices", "computed", "doc",
 ];
+
 /// Netlist dialects an impl can carry a `format` template for.
 pub const DIALECTS: [&str; 5] = ["spice", "xyce", "cdl", "spectre", "verilog"];
+
 /// Impl languages the panel can add, with the default impl name of each.
 pub const ADD_LANGS: [(&str, &str); 4] = [
     ("schematic", "sch"),
@@ -117,6 +131,16 @@ pub enum Bench {
     Optimize,
 }
 
+/// Optimizer algorithms (format rank 6).
+pub const ALGOS: [&str; 2] = ["nelder-mead", "random"];
+
+impl SyncPlan {
+    /// Whether the pins already match the ports.
+    pub fn is_empty(&self) -> bool {
+        self.add.is_empty() && self.remove.is_empty() && self.redir.is_empty() && !self.reorder
+    }
+}
+
 impl Bench {
     /// The node id word of the table.
     pub fn word(self) -> &'static str {
@@ -146,9 +170,6 @@ impl Bench {
     /// Every bench table, in panel order.
     pub const ALL: [Bench; 3] = [Bench::Output, Bench::Spec, Bench::Optimize];
 }
-
-/// Optimizer algorithms (format rank 6).
-pub const ALGOS: [&str; 2] = ["nelder-mead", "random"];
 
 /// Decodes a field node id; a dropdown choice id (`<field>=<value>`) also returns the value.
 /// `None` for an id that is not a panel field.
@@ -191,6 +212,8 @@ pub fn button_row(node: &str, section: &str, action: &str) -> Option<u32> {
     let (row, act) = rest.split_once('.')?;
     (act == action).then(|| row.parse().ok()).flatten()
 }
+
+// ---- private ----
 
 // ------------------------------------------------------------------- projection
 

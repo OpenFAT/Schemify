@@ -1,4 +1,12 @@
 //! Command dispatch: a command name → a core command's arm (`run`, `run_cmd`) or a plugin event.
+//!
+//! Contents:
+//! - `pub(super) fn kind_refusal`
+//! - `pub(super) fn text_tab_cmd`
+//! - `Editor::dispatch_all`
+//! - `Editor::dispatch`
+//! - `Editor::run`
+//! - `Editor::run_cmd`
 
 use schemify_doc::{Document, EditRequest};
 use schemify_format::FileKind;

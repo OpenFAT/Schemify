@@ -1,4 +1,7 @@
 //! File, hierarchy and tab commands: open, save, export, descend, close, quit.
+//!
+//! Contents:
+//! - `Editor::run_file`
 
 use schemify_doc::EditRequest;
 use schemify_format::FileKind;

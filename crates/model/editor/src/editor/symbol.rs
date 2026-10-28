@@ -1,4 +1,14 @@
 //! Symbol generation: make symbol / schematic, labels and pins from ports.
+//!
+//! Contents:
+//! - `pub(super) const PITCH`
+//! - `Editor::make_symbol_ops`
+//! - `Editor::make_schematic_ops`
+//! - `Editor::attach_labels_ops`
+//! - `pub(super) fn symbol_records`
+//! - `pub(super) fn replace_symbol_ops`
+//! - `pub(super) fn symbol_from_ports_ops`
+//! - `pub(super) fn pins_from_ports`
 
 use schemify_doc::{DocHandle, Op, RecordBuf, TableId, Target as DocTarget};
 use schemify_format::{FileKind, Orient, RecordKind};

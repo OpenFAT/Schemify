@@ -1,15 +1,28 @@
 //! The user config's side of the host: its table, keymap and hook requests, user commands,
 //! lazy packages woken by their command or event, and plugin functions called from
 //! expressions.
+//!
+//! Contents:
+//! - `Host::user`
+//! - `Host::config`
+//! - `Host::user_command`
+//! - `Host::absorb`
+//! - `Host::notes_since`
+//! - `Host::notes_seq`
+//! - `Host::user_event`
+//! - `Host::is_lazy`
+//! - `Host::call_fn`
+//! - `Host::fn_hash`
 
-use super::deliver::fn_result;
-use super::load::{content_hash, load_installed};
-use super::{Host, NOTES_MAX, Note};
 use schemify_config::{Config, Request};
 use schemify_elab::Val;
 use schemify_expr::{Code as XCode, Error as XError, Span, Value};
 use schemify_plugin::PluginId;
 use schemify_plugin::abi::Event;
+
+use super::deliver::fn_result;
+use super::load::{content_hash, load_installed};
+use super::{Host, NOTES_MAX, Note};
 
 impl Host {
     /// The user-config table (options, keymaps, sims, packages, hooks).

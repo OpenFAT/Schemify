@@ -1,4 +1,15 @@
 //! The `tool_state` table and the canvas gesture state machine over it.
+//!
+//! Contents:
+//! - `pub(super) const DRAG_PX`
+//! - `pub(super) const HIT_PX`
+//! - `pub(super) const DOUBLE_CLICK_MS`
+//! - `pub(super) const ZOOM_STEP`
+//! - `pub enum Placement`
+//! - `pub enum Tool`
+//! - `pub enum Form`, `Form::points`
+//! - `pub(super) fn constrain`
+//! - `Editor::gesture`
 
 use schemify_doc::{EditRequest, RecordBuf};
 use schemify_ui::{Button, InputEvent, Mods};

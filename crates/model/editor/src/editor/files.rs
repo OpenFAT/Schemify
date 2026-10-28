@@ -1,4 +1,18 @@
 //! Files, tabs and hierarchy: open, save as, reload, recent files, project switch, merge, delete.
+//!
+//! Contents:
+//! - `Editor::open_named`
+//! - `Editor::show_opened`
+//! - `Editor::switch_tab`
+//! - `Editor::descend`
+//! - `Editor::close_tab`
+//! - `Editor::reload`
+//! - `Editor::remember`
+//! - `Editor::open_recent`
+//! - `Editor::switch_project`
+//! - `Editor::hierarchy_docs`
+//! - `pub(super) fn default_view`
+//! - `pub(super) fn project_root`
 
 use std::path::{Path, PathBuf};
 

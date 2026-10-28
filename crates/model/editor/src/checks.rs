@@ -18,6 +18,32 @@
 //!    change, or the scene does while it draws something; the markers follow every scene
 //!    change (never per pan/zoom frame).
 //! 6. Parallel: no; the rebuild is one pass and runs only after edits.
+//!
+//! Contents:
+//! - `pub const LAYER_HILITE`
+//! - `pub const LAYER_ERROR`
+//! - `pub const LAYER_WARN`
+//! - `pub const LAYER_INFO`
+//! - `pub const LAYER_ANNOT`
+//! - `pub const LAYER_DIFF`
+//! - `pub const PANEL_ROWS`
+//! - `pub const HIGHLIGHT_MAX`
+//! - `pub const SOURCE_CHECKS`
+//! - `pub const SOURCE_OP`
+//! - `pub struct Members`
+//! - `pub struct Diff`
+//! - `pub fn bit_names`
+//! - `pub fn net_name`
+//! - `pub fn pins_of`
+//! - `pub fn component_of`
+//! - `pub fn members`
+//! - `pub fn violation_request`
+//! - `pub fn violation_marks_of`
+//! - `pub fn line`
+//! - `pub fn decor`
+//! - `pub struct Markers`, `Markers::edits`, `Markers::clear_edits`, `Markers::generation`
+//! - `pub fn place_markers`
+//! - `pub fn contribute`
 
 use std::collections::HashMap;
 
@@ -33,28 +59,31 @@ use crate::scene::{ObjKey, Scene, UNIT};
 
 /// Highlighted nets (thick, xschem's highlight colour).
 pub const LAYER_HILITE: u8 = 26;
+
 /// Error markers (`E…`).
 pub const LAYER_ERROR: u8 = 27;
+
 /// Warning markers (`W…`).
 pub const LAYER_WARN: u8 = 28;
+
 /// Informational markers (`I005` waived).
 pub const LAYER_INFO: u8 = 29;
+
 /// Annotation texts (OP back-annotation, plugin marks).
 pub const LAYER_ANNOT: u8 = 30;
+
 /// Objects a staged edit changes (the visual diff).
 pub const LAYER_DIFF: u8 = 31;
 
-/// Text height of an annotation (an OP voltage, a device's `gm`) in milli-units: a little
-/// smaller than a net label (16 units), so the value reads as belonging to it.
-const ANNOT_SIZE: i32 = 11 * UNIT;
-
 /// Violation rows the checks panel shows (the rest is counted).
 pub const PANEL_ROWS: usize = 200;
+
 /// Highlighted net keys at once.
 pub const HIGHLIGHT_MAX: usize = 1 << 16;
 
 /// The annotation source of the live checks.
 pub const SOURCE_CHECKS: &str = "checks";
+
 /// The annotation source of OP back-annotation.
 pub const SOURCE_OP: &str = "op";
 
@@ -80,6 +109,37 @@ pub struct Diff {
     /// Records the stage inserts.
     pub inserted: Vec<schemify_doc::RecordBuf>,
 }
+
+/// The violation markers of the `checks` source on the canvas (D13): per marked object a box
+/// around it and its code, per mark, on the severity's layer. Kept per object, so an edit
+/// redraws only the objects whose marks or geometry changed ([`place_markers`]); a removed
+/// object's rows die in place (`LAYER_DEAD`) like the scene's, and new rows append.
+///
+/// Data design: 1. in: the overlay's `checks` marks and the scene's object boxes; out: rect
+/// and text rows; 2. ≤ 2^20 marks (tens of thousands on a large cell with floating pins);
+/// 3. object ids `u32`, stamps `u32`; 4. a full placement walks the marks once, an update
+/// only the marks of the objects it is given; 5. lives with the active level, rebuilt when
+/// it changes; 6. not parallel.
+#[derive(Clone, Debug, Default)]
+pub struct Markers {
+    /// The rows (rects and texts; dead rows after an update).
+    pub prims: CanvasPrims,
+    /// Stamp of each rect row and each text row (non-decreasing).
+    stamps: [Vec<u32>; 2],
+    /// Object id → the stamp its rows carry.
+    by_id: HashMap<u32, u32>,
+    next: u32,
+    /// Rows killed since [`Markers::clear_edits`] (in `CanvasPrims::kill` kind order), or
+    /// `None` after a full placement.
+    killed: Option<[Vec<u32>; 6]>,
+    dead: usize,
+    /// The scene generation the markers were placed against.
+    generation: Option<u64>,
+}
+
+/// Text height of an annotation (an OP voltage, a device's `gm`) in milli-units: a little
+/// smaller than a net label (16 units), so the value reads as belonging to it.
+const ANNOT_SIZE: i32 = 11 * UNIT;
 
 /// Every bit name of component `c`, in bit order: a bus component carries several, and each
 /// keys it across the hierarchy (highlight).
@@ -244,45 +304,9 @@ pub fn violation_marks_of(
     Some(req.marks)
 }
 
-/// The marks on `target`, every source's (a range of the ordered overlay).
-fn marks_on<'a>(ann: &'a Annotations, target: &str) -> Vec<&'a Mark> {
-    ann.on(target).collect()
-}
-
-/// How many marks the `checks` source has (O(log sources)).
-fn marks_of_checks(ann: &Annotations) -> usize {
-    ann.count_of(SOURCE_CHECKS)
-}
-
 /// One violation as a panel line (`spines::violation_line` over a cell state's names).
 pub fn line(names: &Names, v: &Violation) -> String {
     crate::spines::violation_line(names, v)
-}
-
-/// The world anchor of each component: its first label, else its first wire's midpoint,
-/// else its first port (where an OP voltage is written).
-fn anchors(doc: &Document, cell: &CellState) -> Vec<Option<Pt>> {
-    let n = &cell.nets;
-    let mut at: Vec<Option<Pt>> = vec![None; n.net_name.len()];
-    let l = doc.labels();
-    for (i, &c) in n.label_net.iter().enumerate() {
-        if let Some(slot) = at.get_mut(c as usize).filter(|s| s.is_none()) {
-            *slot = Some((l.x[i], l.y[i]));
-        }
-    }
-    let w = doc.wires();
-    for (i, &c) in n.wire_net.iter().enumerate() {
-        if let Some(slot) = at.get_mut(c as usize).filter(|s| s.is_none()) {
-            *slot = Some(((w.x1[i] + w.x2[i]) / 2, (w.y1[i] + w.y2[i]) / 2));
-        }
-    }
-    let p = doc.ports();
-    for (i, &c) in n.port_net.iter().enumerate() {
-        if let Some(slot) = at.get_mut(c as usize).filter(|s| s.is_none()) {
-            *slot = Some((p.x[i], p.y[i]));
-        }
-    }
-    at
 }
 
 /// Builds the decor primitives of the active level into `out` (cleared first):
@@ -378,33 +402,6 @@ pub fn decor(
     let identity = crate::geometry::Xform::translate(0, 0);
     crate::scene::preview_records_on(&diff.inserted, identity, LAYER_DIFF, out);
     assert_eq!(out.texts.x.len(), out.texts.end.len());
-}
-
-/// The violation markers of the `checks` source on the canvas (D13): per marked object a box
-/// around it and its code, per mark, on the severity's layer. Kept per object, so an edit
-/// redraws only the objects whose marks or geometry changed ([`place_markers`]); a removed
-/// object's rows die in place (`LAYER_DEAD`) like the scene's, and new rows append.
-///
-/// Data design: 1. in: the overlay's `checks` marks and the scene's object boxes; out: rect
-/// and text rows; 2. ≤ 2^20 marks (tens of thousands on a large cell with floating pins);
-/// 3. object ids `u32`, stamps `u32`; 4. a full placement walks the marks once, an update
-/// only the marks of the objects it is given; 5. lives with the active level, rebuilt when
-/// it changes; 6. not parallel.
-#[derive(Clone, Debug, Default)]
-pub struct Markers {
-    /// The rows (rects and texts; dead rows after an update).
-    pub prims: CanvasPrims,
-    /// Stamp of each rect row and each text row (non-decreasing).
-    stamps: [Vec<u32>; 2],
-    /// Object id → the stamp its rows carry.
-    by_id: HashMap<u32, u32>,
-    next: u32,
-    /// Rows killed since [`Markers::clear_edits`] (in `CanvasPrims::kill` kind order), or
-    /// `None` after a full placement.
-    killed: Option<[Vec<u32>; 6]>,
-    dead: usize,
-    /// The scene generation the markers were placed against.
-    generation: Option<u64>,
 }
 
 impl Markers {
@@ -599,6 +596,44 @@ pub fn contribute(t: &mut String, cell: Option<&CellState>, blocked: &[String]) 
             q(&more)
         );
     }
+}
+
+// ---- private ----
+
+/// The marks on `target`, every source's (a range of the ordered overlay).
+fn marks_on<'a>(ann: &'a Annotations, target: &str) -> Vec<&'a Mark> {
+    ann.on(target).collect()
+}
+
+/// How many marks the `checks` source has (O(log sources)).
+fn marks_of_checks(ann: &Annotations) -> usize {
+    ann.count_of(SOURCE_CHECKS)
+}
+
+/// The world anchor of each component: its first label, else its first wire's midpoint,
+/// else its first port (where an OP voltage is written).
+fn anchors(doc: &Document, cell: &CellState) -> Vec<Option<Pt>> {
+    let n = &cell.nets;
+    let mut at: Vec<Option<Pt>> = vec![None; n.net_name.len()];
+    let l = doc.labels();
+    for (i, &c) in n.label_net.iter().enumerate() {
+        if let Some(slot) = at.get_mut(c as usize).filter(|s| s.is_none()) {
+            *slot = Some((l.x[i], l.y[i]));
+        }
+    }
+    let w = doc.wires();
+    for (i, &c) in n.wire_net.iter().enumerate() {
+        if let Some(slot) = at.get_mut(c as usize).filter(|s| s.is_none()) {
+            *slot = Some(((w.x1[i] + w.x2[i]) / 2, (w.y1[i] + w.y2[i]) / 2));
+        }
+    }
+    let p = doc.ports();
+    for (i, &c) in n.port_net.iter().enumerate() {
+        if let Some(slot) = at.get_mut(c as usize).filter(|s| s.is_none()) {
+            *slot = Some((p.x[i], p.y[i]));
+        }
+    }
+    at
 }
 
 #[cfg(test)]

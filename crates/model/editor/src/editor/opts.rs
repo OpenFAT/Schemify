@@ -1,4 +1,10 @@
 //! Interaction options (`EditOpts`): defaults, the user config's, one-number settings.
+//!
+//! Contents:
+//! - `pub struct EditOpts`
+//! - `Editor::setting`
+//! - `pub(super) fn user_layer_colors`
+//! - `pub(super) fn number`
 
 use crate::commands::Cmd;
 use crate::export;

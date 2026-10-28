@@ -1,4 +1,23 @@
 //! Dialog state (`Dialog`) and the fields dialogs: properties, header, search, enter text.
+//!
+//! Contents:
+//! - `pub(super) enum TextFor`
+//! - `pub(super) struct Field`
+//! - `pub(super) enum PropsFor`
+//! - `pub(super) struct Props`
+//! - `pub(super) enum Dialog`
+//! - `Editor::show_dialog`
+//! - `Editor::close_dialog`
+//! - `Editor::open_text`
+//! - `Editor::enter_text_ok`
+//! - `Editor::text_ok`
+//! - `Editor::open_search`
+//! - `Editor::search_ok`
+//! - `Editor::open_header`
+//! - `Editor::header_ok`
+//! - `Editor::context_menu`
+//! - `Editor::right_click`
+//! - `Editor::prompt_recovery`
 
 use schemify_doc::{DocHandle, EditRequest, Op, Target as DocTarget};
 

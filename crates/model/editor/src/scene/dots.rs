@@ -1,8 +1,13 @@
 //! Junction dots: wire ends and runs (xschem's connection cues), kept up to date per changed
 //! wire. In: wire segments. Out: where a dot belongs.
+//!
+//! Contents:
+//! - `pub(super) struct Wiring`, `Wiring::of`, `Wiring::ends`, `Wiring::runs`, `Wiring::add`,
+//!   `Wiring::remove`, `Wiring::dot_at`, `Wiring::touched`
+
+use std::collections::{BTreeMap, HashMap};
 
 use crate::geometry::Pt;
-use std::collections::{BTreeMap, HashMap};
 
 /// Wire ends and runs (xschem's connection cues): what decides where junction dots go, kept
 /// up to date per changed wire.

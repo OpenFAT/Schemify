@@ -1,9 +1,15 @@
 //! EPS: one drawing, the embedded faces as Type 42 fonts (`sfnts` strings of at most
 //! `SFNTS_MAX` bytes).
+//!
+//! Contents:
+//! - `pub(super) const SFNTS_MAX`
+//! - `pub(super) fn type42`
+//! - `pub fn eps`
+
+use schemify_canvas::CanvasPrims;
 
 use super::ops::{Glyphs, Lang, Used, page_ops};
 use super::{FONT_NAMES, Look, Page};
-use schemify_canvas::CanvasPrims;
 
 /// Longest `sfnts` string of a Type 42 font: PostScript strings hold at most 65535 bytes,
 /// and each must have an even length.

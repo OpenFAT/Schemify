@@ -1,4 +1,7 @@
 //! Commands of the open dialog: properties, chooser, enter text, edit file, recovery.
+//!
+//! Contents:
+//! - `Editor::run_dialog`
 
 use schemify_doc::EditRequest;
 

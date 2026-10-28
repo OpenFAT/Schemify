@@ -1,13 +1,29 @@
 //! The session's files: opening by library path, cell row or file path, recovery from a
 //! journal, creating, reindexing, journaling and saving.
+//!
+//! Contents:
+//! - `Session::open_file`
+//! - `Session::open_cell`
+//! - `Session::open_path`
+//! - `Session::pending_recovery`
+//! - `Session::decide_recovery`
+//! - `Session::close_discarding`
+//! - `Session::drop_journal`
+//! - `Session::reindex`
+//! - `Session::create`
+//! - `Session::flush_journal`
+//! - `Session::save`
 
-use super::Session;
+use std::path::{Path, PathBuf};
+
+use schemify_doc::{DocHandle, OpenError, Recovery};
+use schemify_format::FileKind;
+
 use crate::libs::cell_relpath;
 use crate::libs::{self, BUILTIN_DIR, absolute, rel_path};
 use crate::platform;
-use schemify_doc::{DocHandle, OpenError, Recovery};
-use schemify_format::FileKind;
-use std::path::{Path, PathBuf};
+
+use super::Session;
 
 impl Session {
     /// Opens (or returns the already open) cell file `relpath` of library row `lib`, with its

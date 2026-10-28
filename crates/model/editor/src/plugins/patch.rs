@@ -1,10 +1,19 @@
 //! Patching snapshot groups in place: a document table refilled only on the rows that
 //! differ when few do ([`PATCH_SHARE`]), the net columns and the per-cell groups synced.
+//!
+//! Contents:
+//! - `pub(super) const PATCH_SHARE`
+//! - `pub(super) fn differing`
+//! - `pub(super) fn patch_doc_groups`
+//! - `pub(super) fn fill_doc_table`
+//! - `pub(super) fn sync_net_column`
+//! - `pub(super) fn sync_cell_groups`
 
-use super::snapshot::{Filled, fill_nets, fill_violations};
 use schemify_elab::CellState;
 use schemify_plugin::Snapshots;
 use schemify_plugin::abi::{Table, col};
+
+use super::snapshot::{Filled, fill_nets, fill_violations};
 
 /// Rows of a table changed by more than this share are refilled instead of patched.
 pub(super) const PATCH_SHARE: usize = 8;

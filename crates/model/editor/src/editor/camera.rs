@@ -1,4 +1,17 @@
 //! Screen ↔ world: the active level's camera, pointer positions, fits.
+//!
+//! Contents:
+//! - `Editor::canvas_rect`
+//! - `Editor::camera`
+//! - `Editor::set_camera`
+//! - `Editor::to_screen`
+//! - `Editor::pointer_world`
+//! - `Editor::pointer_world_snapped`
+//! - `Editor::world_at`
+//! - `Editor::snapped_at`
+//! - `Editor::nearest_conn`
+//! - `Editor::fit`
+//! - `Editor::fit_world`
 
 use schemify_canvas::Camera;
 use schemify_canvas::kurbo::Rect as KRect;

@@ -1,14 +1,20 @@
 //! A symbol document drawn as its own view (rank 1–2): pins with their names and
 //! directions, graphics, texts, each its own object; plus the junction dots of a schematic
 //! view ([`redot`]) after its wires changed.
+//!
+//! Contents:
+//! - `pub(super) fn redot`
+//! - `pub(super) fn symbol`
+
+use schemify_canvas::LineStyle;
+use schemify_doc::{Document, TableId};
+use schemify_format::RecordKind;
+
+use crate::geometry::Pt;
 
 use super::refresh::Build;
 use super::symbols::{sym_prims, sym_text_at};
 use super::{DOT_R, LAYER_JUNCTION, ObjKey, PIN_HALF, UNIT};
-use crate::geometry::Pt;
-use schemify_canvas::LineStyle;
-use schemify_doc::{Document, TableId};
-use schemify_format::RecordKind;
 
 /// Makes the junction dots at `points` (sorted, unique) match xschem's rule for the current
 /// wiring ([`Wiring::dot_at`]): adds missing dots, kills stale ones. Dots belong to no

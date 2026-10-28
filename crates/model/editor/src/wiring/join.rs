@@ -1,13 +1,26 @@
 //! Join and trim: collinear overlapping wires with the same attributes merge into one, and
 //! wires cut where a connection point lies on them (interval cover per line).
+//!
+//! Contents:
+//! - `pub(super) type Line`
+//! - `pub(super) type AttrKey`
+//! - `pub(super) fn gcd`
+//! - `pub(super) fn line_of`
+//! - `pub(super) fn offset`
+//! - `pub(super) fn along`
+//! - `pub(super) fn covered`
+//! - `pub fn join_trim`
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use schemify_doc::{DocHandle, Op, Project, TableId, Target};
+use schemify_format::RecordKind;
+
+use crate::edit::Ids;
+use crate::geometry::Pt;
 
 use super::stretch::fixed_points;
 use super::wire_rec;
-use crate::edit::Ids;
-use crate::geometry::Pt;
-use schemify_doc::{DocHandle, Op, Project, TableId, Target};
-use schemify_format::RecordKind;
-use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A wire's line: its reduced direction `(dx, dy)` (coprime, `dx > 0`, or `dx == 0` and
 /// `dy > 0`) and the offset `dx·y − dy·x`, which is the same for every point of the line.

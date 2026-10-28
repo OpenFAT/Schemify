@@ -1,4 +1,18 @@
 //! Gesture ends as edit requests: wires, moves, stretches, placements, shapes, cuts.
+//!
+//! Contents:
+//! - `pub(super) fn shape_record`
+//! - `pub(super) fn dist`
+//! - `pub(super) fn arc_3`
+//! - `Editor::manhattan_points`
+//! - `Editor::finish_wire`
+//! - `Editor::finish_move`
+//! - `Editor::finish_place`
+//! - `Editor::shape_click`
+//! - `Editor::finish_shape`
+//! - `Editor::finish_stretch`
+//! - `Editor::auto_trim`
+//! - `Editor::cut_wire`
 
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
 use schemify_format::{FileKind, Orient, RecordKind};

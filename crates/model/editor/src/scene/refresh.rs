@@ -1,16 +1,30 @@
 //! Building and updating the scene: [`build`] draws a document anew, [`update`] follows its
 //! change log in place (dead rows kept, new rows appended).
+//!
+//! Contents:
+//! - `pub(super) struct Build`, `Build::owned`, `Build::conn_at`, `Build::line`, `Build::rect`,
+//!   `Build::arc`, `Build::poly`, `Build::text`, `Build::text_rot`
+//! - `pub fn build`
+//! - `pub(super) fn drawn`
+//! - `pub fn update`
+//! - `pub(super) fn check_tables`
+//! - `pub(super) fn counts`
+//! - `pub(super) fn stamped`
+//! - `pub(super) fn remove_object`
+//! - `pub(super) fn fit_boxes`
+
+use schemify_canvas::{CanvasPrims, LineStyle};
+use schemify_doc::{DocHandle, ObjId, Project, TableId, Write};
+use schemify_elab::CellState;
+
+use crate::geometry::Pt;
+use crate::session::View;
 
 use super::dots::Wiring;
 use super::draw::{Stamp, instance, one_other, other_objects, revalue_texts, wire};
 use super::symbols::{Symbols, rotated_extent, text_size, text_start};
 use super::symview::{redot, symbol};
 use super::{ObjKey, Objects, Owners, Scene, pack};
-use crate::geometry::Pt;
-use crate::session::View;
-use schemify_canvas::{CanvasPrims, LineStyle};
-use schemify_doc::{DocHandle, ObjId, Project, TableId, Write};
-use schemify_elab::CellState;
 
 /// Scene builder state: the scene being filled plus the extent accumulator.
 pub(super) struct Build<'a> {

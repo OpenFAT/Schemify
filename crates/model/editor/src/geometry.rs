@@ -4,12 +4,33 @@
 //! for every record kind, so a new kind is one match arm here.
 //!
 //! Coordinates are `i32` milli-units, y down (D33, format spec §3).
+//!
+//! Contents:
+//! - `pub type Pt`
+//! - `pub fn place`
+//! - `pub fn compose`
+//! - `pub struct Xform`, `Xform::IDENTITY`, `Xform::translate`, `Xform::rotate`,
+//!   `Xform::flip_x`, `Xform::flip_y`, `Xform::then`, `Xform::is_translation`, `Xform::point`,
+//!   `Xform::orient`, `Xform::arc`
+//! - `pub(crate) fn coord`
+//! - `pub fn transform_record`
+//! - `pub fn anchor`
+//! - `pub fn snap`
 
 use schemify_doc::RecordBuf;
 use schemify_format::{Orient, RecordKind, format_coord, parse_coord};
 
 /// A point in milli-units.
 pub type Pt = (i32, i32);
+
+/// `p' = A·p + t` with `A` one of the eight grid symmetries: what a move, rotate, flip or
+/// paste does to every coordinate it touches. Composition stays in the group, so a gesture
+/// that rotates while moving is still one `Xform` and one transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Xform {
+    m: [i8; 4],
+    t: (i64, i64),
+}
 
 /// The 8 signed permutation matrices `[a, b, c, d]` (`x' = a·x + b·y`, `y' = c·x + d·y`) of
 /// `Orient` in discriminant order: `R^k · M^m` with `M: (x, y) → (−x, y)` applied first and
@@ -36,30 +57,6 @@ const ORIENTS: [Orient; 8] = [
     Orient::MR270,
 ];
 
-fn mat_mul(a: [i8; 4], b: [i8; 4]) -> [i8; 4] {
-    [
-        a[0] * b[0] + a[1] * b[2],
-        a[0] * b[1] + a[1] * b[3],
-        a[2] * b[0] + a[3] * b[2],
-        a[2] * b[1] + a[3] * b[3],
-    ]
-}
-
-/// Returns the orientation whose matrix is `m`.
-///
-/// # Panics
-///
-/// Panics if `m` is not one of the eight grid symmetries (a caller bug: products of grid
-/// symmetries always are).
-fn orient_of(m: [i8; 4]) -> Orient {
-    let i = ORIENT_MATRIX
-        .iter()
-        .position(|&x| x == m)
-        .expect("grid symmetries are closed under products");
-    assert_eq!(ORIENTS[i] as usize, i);
-    ORIENTS[i]
-}
-
 /// Maps a symbol-local point through an instance placement (format spec §3).
 pub fn place(o: Orient, at: Pt, p: Pt) -> Pt {
     let m = ORIENT_MATRIX[o as usize];
@@ -79,19 +76,6 @@ pub fn compose(outer: Orient, inner: Orient) -> Orient {
         ORIENT_MATRIX[outer as usize],
         ORIENT_MATRIX[inner as usize],
     ))
-}
-
-fn sat(v: i64) -> i32 {
-    v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
-}
-
-/// `p' = A·p + t` with `A` one of the eight grid symmetries: what a move, rotate, flip or
-/// paste does to every coordinate it touches. Composition stays in the group, so a gesture
-/// that rotates while moving is still one `Xform` and one transaction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Xform {
-    m: [i8; 4],
-    t: (i64, i64),
 }
 
 impl Xform {
@@ -182,41 +166,11 @@ impl Xform {
     }
 }
 
-fn read_coord(s: &str) -> Option<i32> {
-    parse_coord(s).ok()
-}
-
-fn set_coord(slot: &mut String, v: i32) {
-    slot.clear();
-    format_coord(v, slot);
-}
-
-/// Maps the coordinate pair at fields `i, i + 1`.
-fn map_pair(fields: &mut [String], i: usize, x: Xform) -> Option<()> {
-    let p = (read_coord(&fields[i])?, read_coord(&fields[i + 1])?);
-    let q = x.point(p);
-    set_coord(&mut fields[i], q.0);
-    set_coord(&mut fields[i + 1], q.1);
-    Some(())
-}
-
-fn map_orient(slot: &mut String, x: Xform) -> Option<()> {
-    let o = Orient::parse(slot)?;
-    *slot = x.orient(o).as_str().to_owned();
-    Some(())
-}
-
 /// The shortest decimal text of coordinate `v` (milli-units), as the format writes it.
 pub(crate) fn coord(v: i32) -> String {
     let mut s = String::new();
     format_coord(v, &mut s);
     s
-}
-
-/// Shortest decimal text of an angle in `[0, 360)` with at most 3 fractional digits.
-fn degrees(v: f64) -> String {
-    let milli = ((v * 1000.0).round() as i64).rem_euclid(360_000);
-    coord(milli as i32)
 }
 
 /// Applies `x` to every coordinate, orientation and arc angle of `rec` (any record kind;
@@ -321,6 +275,66 @@ pub fn snap(v: f64, snap: i32) -> i32 {
     let s = f64::from(snap);
     let r = (v / s).round() * s;
     r.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+// ---- private ----
+
+fn mat_mul(a: [i8; 4], b: [i8; 4]) -> [i8; 4] {
+    [
+        a[0] * b[0] + a[1] * b[2],
+        a[0] * b[1] + a[1] * b[3],
+        a[2] * b[0] + a[3] * b[2],
+        a[2] * b[1] + a[3] * b[3],
+    ]
+}
+
+/// Returns the orientation whose matrix is `m`.
+///
+/// # Panics
+///
+/// Panics if `m` is not one of the eight grid symmetries (a caller bug: products of grid
+/// symmetries always are).
+fn orient_of(m: [i8; 4]) -> Orient {
+    let i = ORIENT_MATRIX
+        .iter()
+        .position(|&x| x == m)
+        .expect("grid symmetries are closed under products");
+    assert_eq!(ORIENTS[i] as usize, i);
+    ORIENTS[i]
+}
+
+fn sat(v: i64) -> i32 {
+    v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn read_coord(s: &str) -> Option<i32> {
+    parse_coord(s).ok()
+}
+
+fn set_coord(slot: &mut String, v: i32) {
+    slot.clear();
+    format_coord(v, slot);
+}
+
+/// Maps the coordinate pair at fields `i, i + 1`.
+fn map_pair(fields: &mut [String], i: usize, x: Xform) -> Option<()> {
+    let p = (read_coord(&fields[i])?, read_coord(&fields[i + 1])?);
+    let q = x.point(p);
+    set_coord(&mut fields[i], q.0);
+    set_coord(&mut fields[i + 1], q.1);
+    Some(())
+}
+
+fn map_orient(slot: &mut String, x: Xform) -> Option<()> {
+    let o = Orient::parse(slot)?;
+    *slot = x.orient(o).as_str().to_owned();
+    Some(())
+}
+
+/// Shortest decimal text of an angle in `[0, 360)` with at most 3 fractional digits.
+fn degrees(v: f64) -> String {
+    let milli = ((v * 1000.0).round() as i64).rem_euclid(360_000);
+    coord(milli as i32)
 }
 
 #[cfg(test)]

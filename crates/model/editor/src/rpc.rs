@@ -2,6 +2,11 @@
 //! request becomes a queued [`Editor::command`] (the same command table menus, keys and
 //! plugins name) or an immediate answer. The socket server that feeds it from clients is
 //! `schemify-app`'s (`serve`); the headless `cmd` runner uses it too.
+//!
+//! Contents:
+//! - `pub enum Dispatched`
+//! - `pub fn dispatch`
+//! - `pub fn methods`
 
 use schemify_cli::rpc::{INVALID_PARAMS, Json, METHOD_NOT_FOUND};
 use schemify_plugin::abi::text;

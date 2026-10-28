@@ -1,9 +1,36 @@
 //! Selection over the scene's object table: point hits, box selection, the selected set and
 //! its marks. In: the objects, a point or a box. Out: object indices, marks.
+//!
+//! Contents:
+//! - `pub fn hit`
+//! - `pub(super) fn hit_one`
+//! - `pub fn selected_prims`
+//! - `pub(super) fn seg_dist`
+//! - `pub fn box_select`
+//! - `pub struct Selected`, `Selected::set`, `Selected::contains`, `Selected::universe`,
+//!   `Selected::len`, `Selected::is_empty`
+//! - `pub fn marks`
+
+use schemify_canvas::{CanvasPrims, Marks, PrimKind};
 
 use super::refresh::stamped;
 use super::{Objects, Scene};
-use schemify_canvas::{CanvasPrims, Marks, PrimKind};
+
+/// The selected objects of a scene: a bitset over object indices beside the sorted list of
+/// the set ones.
+///
+/// Why a bitset: every reader asks about one object per primitive or connection point (the
+/// marks, the move preview on every frame of a drag, the export subset, the wire-start hit),
+/// so a lookup must be O(1); a sorted index list alone would make those O(log selection)
+/// each. Why the list: a change clears only the bits set before, so it costs O(old + new
+/// selection) plus the growth of the bitset, not O(objects) as a `vec![false; objects]` did.
+/// Capacity: [`CanvasPrims::CAPACITY`] objects, so `objects / 64` words.
+#[derive(Clone, Debug, Default)]
+pub struct Selected {
+    words: Vec<u64>,
+    pub(super) objs: Vec<u32>,
+    pub(super) universe: u32,
+}
 
 /// Returns the object under world point `p` within `tol` milli-units: the nearest segment
 /// object within `tol`, else the smallest box containing `p` (inflated by `tol`), so wires
@@ -141,22 +168,6 @@ pub fn box_select(objs: &Objects, r: [f64; 4], touch: bool) -> Vec<u32> {
     out.truncate(n);
     assert!(out.windows(2).all(|w| w[0] < w[1]));
     out
-}
-
-/// The selected objects of a scene: a bitset over object indices beside the sorted list of
-/// the set ones.
-///
-/// Why a bitset: every reader asks about one object per primitive or connection point (the
-/// marks, the move preview on every frame of a drag, the export subset, the wire-start hit),
-/// so a lookup must be O(1); a sorted index list alone would make those O(log selection)
-/// each. Why the list: a change clears only the bits set before, so it costs O(old + new
-/// selection) plus the growth of the bitset, not O(objects) as a `vec![false; objects]` did.
-/// Capacity: [`CanvasPrims::CAPACITY`] objects, so `objects / 64` words.
-#[derive(Clone, Debug, Default)]
-pub struct Selected {
-    words: Vec<u64>,
-    pub(super) objs: Vec<u32>,
-    pub(super) universe: u32,
 }
 
 impl Selected {
