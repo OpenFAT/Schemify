@@ -21,6 +21,8 @@ use crate::tables::UiTables;
 
 /// AccessKit node id of public node id `id`; a menu's popup gets a distinct id (high bit set).
 pub(crate) fn access_id(id: Sym, shown: Shown) -> NodeId {
+    debug_assert!(!id.is_none(), "a laid-out node has an id");
+    debug_assert!(!id.is_live(), "node ids are permanent strings");
     let popup = if shown == Shown::Popup { 1u64 << 32 } else { 0 };
     let access = NodeId(u64::from(id.raw()) | popup);
     debug_assert_eq!(sym_of(access), id, "the public id round-trips");
@@ -215,6 +217,12 @@ pub fn dump(update: &TreeUpdate) -> String {
 
 /// The AccessKit role of a row: a menu shows as an item or a popup, the rest by kind.
 fn role(kind: Kind, shown: Shown) -> Role {
+    if shown != Shown::Normal {
+        debug_assert!(
+            matches!(kind, Kind::Menu | Kind::Dropdown),
+            "only menus and dropdowns show other than as themselves"
+        );
+    }
     match (kind, shown) {
         (_, Shown::Title | Shown::Cascade) => Role::MenuItem,
         (_, Shown::Popup) => Role::Menu,

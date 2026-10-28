@@ -94,6 +94,7 @@ const TOKENS_SEEN: usize = 5;
 pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
     let live_before = strings.live_len();
     let out = parse_into(text, strings, TextRegion::Permanent);
+    debug_assert!(out.0.edits.len() <= Contribution::CAPACITY);
     debug_assert_eq!(
         strings.live_len(),
         live_before,
@@ -117,6 +118,7 @@ pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
 pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>) {
     strings.begin_live();
     let out = parse_into(text, strings, TextRegion::Live);
+    debug_assert!(out.0.edits.len() <= Contribution::CAPACITY);
     strings.end_live();
     debug_assert!(strings.live_len() <= Strings::LIVE_CAPACITY);
     out
@@ -305,7 +307,8 @@ fn attr(
     if t.len() != 2 {
         return Err(RejectReason::Arity);
     }
-    match *context {
+    let before = out.edits.len();
+    let applied = match *context {
         Context::None => Err(RejectReason::OrphanAttr),
         Context::Node(id) => node_attr(id, t[0], t[1], strings, region, out),
         Context::Style(selector) => {
@@ -318,7 +321,10 @@ fn attr(
             });
             Ok(())
         }
-    }
+    };
+    // An accepted attribute is one edit; a rejected one adds none.
+    debug_assert_eq!(out.edits.len(), before + usize::from(applied.is_ok()));
+    applied
 }
 
 /// A node prop (or `parent`/`order`) as an edit; free text goes live in a live parse.

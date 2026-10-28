@@ -194,6 +194,7 @@ fn activate(
         out.commands.push(cmd, n.id[i], "");
         state.open.clear();
         state.hover = Sym::NONE;
+        debug_assert!(!out.commands.is_empty(), "the item's command is queued");
     }
 }
 
