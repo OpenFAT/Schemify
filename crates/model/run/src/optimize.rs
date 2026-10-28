@@ -12,18 +12,21 @@
 //! `|value − target|` (target); lower is better. A failed evaluation scores `f64::MAX`.
 //! History is SoA: `params_flat` (evals × params), `objectives_flat` (evals ×
 //! objectives), `scores`; at most the budget (≤ `BUDGET_MAX`) rows.
-
-mod nelder_mead;
+//!
+//! Contents:
+//! - `pub struct Param`, `pub struct Objective`, `pub enum Algorithm` (`from_name`),
+//!   `pub struct Evaluation<'a>`, `pub enum OptError`
+//! - `pub struct Optimizer`: `new`, `params`, `objectives`, `ask`, `tell`, `tell_failed`,
+//!   `n_evals`, `eval`, `best`
+//! - `pub struct OptRun`: `new`, `jobs_per_candidate`, `step`, `done`, `eval_job`,
+//!   `best_job`
 
 use crate::jobs::{Jobs, NO_SAMPLE, State};
+use crate::nelder_mead::{NelderMead, UNEVALUATED};
 use crate::plan::{Goal, Plan, PlanError, plan_err, var_bounds};
 use crate::results::Results;
-use nelder_mead::{NelderMead, UNEVALUATED};
 use std::fmt;
 use std::ops::Range;
-
-/// Seed used for 0, which xorshift cannot leave (the golden-ratio constant).
-const DEFAULT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// One bounded search parameter. `init` is clamped into `[min, max]` at use.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,17 +62,6 @@ pub enum Algorithm {
     NelderMead,
 }
 
-impl Algorithm {
-    /// Parses the `algo` word (`random`, `nelder-mead`).
-    pub fn from_name(s: &str) -> Option<Algorithm> {
-        match s {
-            "random" => Some(Algorithm::Random),
-            "nelder-mead" => Some(Algorithm::NelderMead),
-            _ => None,
-        }
-    }
-}
-
 /// One history row, borrowed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Evaluation<'a> {
@@ -101,6 +93,59 @@ pub enum OptError {
     BudgetSpent,
 }
 
+/// Ask-tell optimizer over bounded params and weighted objectives.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Optimizer {
+    rng_state: u64,
+    budget: u32,
+    params: Vec<Param>,
+    objectives: Vec<Objective>,
+    params_flat: Vec<f64>,
+    objectives_flat: Vec<f64>,
+    scores: Vec<f64>,
+    search: Search,
+}
+
+/// An optimizer bound to a bench `optimize` record and a run's tables (run spec §6):
+/// params are the `vary` vars with their bounds, objectives the `goal` outputs with their
+/// weights; each candidate is one job per (config, corner) of the record (config outer,
+/// corner inner; the bench defaults when it names none), scored on its worst job per goal.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptRun {
+    /// The optimizer.
+    pub opt: Optimizer,
+    goal_outputs: Vec<u16>,
+    /// `(config, corner)` of each job of a candidate; `None` is the bench default.
+    points: Vec<(Option<String>, Option<String>)>,
+    /// The jobs of the candidate in flight.
+    pending: Option<Range<u32>>,
+    /// First job of each evaluation's candidate.
+    eval_job: Vec<u32>,
+}
+
+/// Algorithm-internal state: existence by variant, not by `Option` fields.
+#[derive(Clone, Debug, PartialEq)]
+enum Search {
+    /// The precomputed next candidate.
+    Random(Vec<f64>),
+    /// The simplex owns its candidate.
+    NelderMead(NelderMead),
+}
+
+/// Seed used for 0, which xorshift cannot leave (the golden-ratio constant).
+const DEFAULT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+
+impl Algorithm {
+    /// Parses the `algo` word (`random`, `nelder-mead`).
+    pub fn from_name(s: &str) -> Option<Algorithm> {
+        match s {
+            "random" => Some(Algorithm::Random),
+            "nelder-mead" => Some(Algorithm::NelderMead),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for OptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -115,28 +160,6 @@ impl fmt::Display for OptError {
 }
 
 impl std::error::Error for OptError {}
-
-/// Algorithm-internal state: existence by variant, not by `Option` fields.
-#[derive(Clone, Debug, PartialEq)]
-enum Search {
-    /// The precomputed next candidate.
-    Random(Vec<f64>),
-    /// The simplex owns its candidate.
-    NelderMead(NelderMead),
-}
-
-/// Ask-tell optimizer over bounded params and weighted objectives.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Optimizer {
-    rng_state: u64,
-    budget: u32,
-    params: Vec<Param>,
-    objectives: Vec<Objective>,
-    params_flat: Vec<f64>,
-    objectives_flat: Vec<f64>,
-    scores: Vec<f64>,
-    search: Search,
-}
 
 impl Optimizer {
     /// Creates an optimizer that will ask at most `budget` candidates. The first
@@ -176,7 +199,8 @@ impl Optimizer {
             scores: Vec::new(),
             search,
         };
-        assert!(o.rng_state != 0 && o.ask().is_none_or(|x| x.len() == o.params.len()));
+        assert_ne!(o.rng_state, 0, "xorshift cannot leave 0");
+        assert!(o.ask().is_none_or(|x| x.len() == o.params.len()));
         Ok(o)
     }
 
@@ -232,32 +256,6 @@ impl Optimizer {
         Ok(UNEVALUATED)
     }
 
-    fn advance(&mut self, measured: &[f64], score: f64) -> Result<(), OptError> {
-        if self.ask().is_none() {
-            return Err(OptError::BudgetSpent);
-        }
-        assert!(!score.is_nan(), "scores are comparable");
-        let n = self.scores.len();
-        match &mut self.search {
-            Search::Random(pending) => {
-                self.params_flat.extend_from_slice(pending);
-                let mut state = self.rng_state;
-                for (x, p) in pending.iter_mut().zip(&self.params) {
-                    *x = p.min + next_unit(&mut state) * (p.max - p.min);
-                }
-                self.rng_state = state;
-            }
-            Search::NelderMead(nm) => {
-                self.params_flat.extend_from_slice(nm.candidate());
-                nm.tell(score);
-            }
-        }
-        self.objectives_flat.extend_from_slice(measured);
-        self.scores.push(score);
-        assert_eq!(self.params_flat.len(), (n + 1) * self.params.len());
-        Ok(())
-    }
-
     /// Returns the number of evaluations told.
     pub fn n_evals(&self) -> u32 {
         self.scores.len() as u32
@@ -287,42 +285,6 @@ impl Optimizer {
             .min_by(|(_, a), (_, b)| a.total_cmp(b))?;
         self.eval(i as u32)
     }
-}
-
-/// Weighted-sum score; lower is better.
-fn score_of(objectives: &[Objective], measured: &[f64]) -> f64 {
-    objectives
-        .iter()
-        .zip(measured)
-        .map(|(o, &v)| o.weight * o.goal.err(v))
-        .sum()
-}
-
-/// xorshift64*: tiny and deterministic. State must be nonzero.
-fn next_unit(state: &mut u64) -> f64 {
-    let mut x = *state;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    *state = x;
-    (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
-}
-
-/// An optimizer bound to a bench `optimize` record and a run's tables (run spec §6):
-/// params are the `vary` vars with their bounds, objectives the `goal` outputs with their
-/// weights; each candidate is one job per (config, corner) of the record (config outer,
-/// corner inner; the bench defaults when it names none), scored on its worst job per goal.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OptRun {
-    /// The optimizer.
-    pub opt: Optimizer,
-    goal_outputs: Vec<u16>,
-    /// `(config, corner)` of each job of a candidate; `None` is the bench default.
-    points: Vec<(Option<String>, Option<String>)>,
-    /// The jobs of the candidate in flight.
-    pending: Option<Range<u32>>,
-    /// First job of each evaluation's candidate.
-    eval_job: Vec<u32>,
 }
 
 impl OptRun {
@@ -461,6 +423,73 @@ impl OptRun {
         Ok(Some(r))
     }
 
+    /// Returns whether the budget is spent and nothing is pending.
+    pub fn done(&self) -> bool {
+        self.pending.is_none() && self.opt.ask().is_none()
+    }
+
+    /// Returns the first job of evaluation `i`'s candidate (its jobs are the next
+    /// [`OptRun::jobs_per_candidate`]).
+    pub fn eval_job(&self, i: u32) -> u32 {
+        self.eval_job[i as usize]
+    }
+
+    /// Returns the first job of the best evaluation so far.
+    pub fn best_job(&self) -> Option<u32> {
+        self.opt.best().map(|e| self.eval_job[e.index as usize])
+    }
+}
+
+// ---- private ----
+
+/// Weighted-sum score; lower is better.
+fn score_of(objectives: &[Objective], measured: &[f64]) -> f64 {
+    objectives
+        .iter()
+        .zip(measured)
+        .map(|(o, &v)| o.weight * o.goal.err(v))
+        .sum()
+}
+
+/// xorshift64*: tiny and deterministic. State must be nonzero.
+fn next_unit(state: &mut u64) -> f64 {
+    let mut x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+}
+
+impl Optimizer {
+    fn advance(&mut self, measured: &[f64], score: f64) -> Result<(), OptError> {
+        if self.ask().is_none() {
+            return Err(OptError::BudgetSpent);
+        }
+        assert!(!score.is_nan(), "scores are comparable");
+        let n = self.scores.len();
+        match &mut self.search {
+            Search::Random(pending) => {
+                self.params_flat.extend_from_slice(pending);
+                let mut state = self.rng_state;
+                for (x, p) in pending.iter_mut().zip(&self.params) {
+                    *x = p.min + next_unit(&mut state) * (p.max - p.min);
+                }
+                self.rng_state = state;
+            }
+            Search::NelderMead(nm) => {
+                self.params_flat.extend_from_slice(nm.candidate());
+                nm.tell(score);
+            }
+        }
+        self.objectives_flat.extend_from_slice(measured);
+        self.scores.push(score);
+        assert_eq!(self.params_flat.len(), (n + 1) * self.params.len());
+        Ok(())
+    }
+}
+
+impl OptRun {
     /// Per goal, the value of the job in `r` that is worst for it (largest error), or
     /// `None` when a job failed or lacks a goal output.
     fn worst(&self, jobs: &Jobs, results: &Results, r: Range<u32>) -> Option<Vec<f64>> {
@@ -482,22 +511,6 @@ impl OptRun {
         }
         assert_eq!(out.len(), self.goal_outputs.len());
         Some(out)
-    }
-
-    /// Returns whether the budget is spent and nothing is pending.
-    pub fn done(&self) -> bool {
-        self.pending.is_none() && self.opt.ask().is_none()
-    }
-
-    /// Returns the first job of evaluation `i`'s candidate (its jobs are the next
-    /// [`OptRun::jobs_per_candidate`]).
-    pub fn eval_job(&self, i: u32) -> u32 {
-        self.eval_job[i as usize]
-    }
-
-    /// Returns the first job of the best evaluation so far.
-    pub fn best_job(&self) -> Option<u32> {
-        self.opt.best().map(|e| self.eval_job[e.index as usize])
     }
 }
 

@@ -1,7 +1,16 @@
 //! The spine's design steps (run spec §4, §5): the gate and design hash of a run, and
 //! per job `elaborate(overrides) → netlist::emit`, plus the sources the simulator needs
 //! compiled (Verilog-A → OSDI, Verilog → VVP) or copied (Verilog-A for ESPice's `.hdl`)
-//! first, and the relative corner paths the runner makes absolute.
+//! first, and the relative corner paths the runner makes absolute. In: the project, the
+//! bench handle and the `jobs` table; out: the design [`Digest`] or [`Blocked`], and one
+//! [`Prepared`] netlist per job (var values and `op(…)` vectors recorded in `results`).
+//!
+//! Contents:
+//! - `pub enum Blocked`, `pub struct Source`, `pub enum Origin`, `pub enum Tool`,
+//!   `pub struct Prepared` (`Prepared::resolved`)
+//! - `pub fn design<F: Funcs>(project, top, jobs, env, dialect, funcs) -> Result<Digest, Blocked>`
+//! - `pub fn prepare<F: Funcs>(project, top, jobs, j, env, dialect, funcs, results) -> Option<Prepared>`
+//! - `pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source>`
 
 use crate::jobs::Jobs;
 use crate::results::Results;
@@ -88,7 +97,9 @@ impl Prepared {
         let mut at = 0;
         for (r, &from_project) in self.relative.iter().zip(&self.project) {
             let (start, end) = (r.start as usize, r.end as usize);
-            assert!(at <= start && start < end && end <= self.netlist.len());
+            assert!(at <= start, "ranges are sorted and disjoint");
+            assert!(start < end);
+            assert!(end <= self.netlist.len());
             out.push_str(&self.netlist[at..start]);
             let dir = if from_project { project_dir } else { base_dir };
             let abs = dir.join(&self.netlist[start..end]);
@@ -200,35 +211,6 @@ pub fn design<F: Funcs>(
     Ok(digest)
 }
 
-fn gate(e: &Elab) -> Result<(), Blocked> {
-    if !e.needs_open.is_empty() {
-        return Err(Blocked::NeedsOpen(e.needs_open.clone()));
-    }
-    let blocking: Vec<String> = e
-        .violations
-        .rows
-        .iter()
-        .filter(|v| v.code.severity() == Severity::Error)
-        .map(|v| {
-            let n = |x: Name| if x == Name::NONE { "-" } else { e.names.get(x) };
-            format!(
-                "{} {} {} {}: {}",
-                v.code.as_str(),
-                n(v.cell),
-                n(v.path),
-                n(v.param),
-                v.detail
-            )
-        })
-        .collect();
-    assert_eq!(blocking.is_empty(), !e.violations.blocking());
-    if blocking.is_empty() {
-        Ok(())
-    } else {
-        Err(Blocked::Violations(blocking))
-    }
-}
-
 /// Elaborates job `j` with its config, corner and assignments, gates it, emits its
 /// netlist for `dialect` and records its bench var values in `results`. A job that
 /// cannot be netlisted is marked failed (message in `results`) and `None` returned.
@@ -271,31 +253,24 @@ pub fn prepare<F: Funcs>(
     results.set_vars(j, &e);
     let emitted = netlist::emit(&e, dialect);
     let mut text = emitted.text;
-    // `op(…)` outputs (run spec §4): the device vectors they read, saved before `.end`.
-    let saves = results.set_ops(j, &emitted.name_map, dialect);
-    if !saves.is_empty() {
+    // Lines before `.end`: the device vectors `op(…)` outputs read (run spec §4), then a
+    // Monte Carlo sample's simulator seed (§3; ngspice reads `.option seed` before it
+    // evaluates `.param`, wherever the line stands).
+    // ponytail: the seed for ngspice and espice only; Xyce takes it on the command line
+    // (`-randseed`).
+    let mut tail = results.set_ops(j, &emitted.name_map, dialect);
+    if let (Some(seed), Dialect::Ngspice | Dialect::Espice) = (jobs.seed(j), dialect) {
+        tail.push_str(&format!(".option seed={seed}\n"));
+    }
+    if !tail.is_empty() {
         assert!(
             text.ends_with(".end\n"),
             "an ngspice netlist ends with .end"
         );
-        text.insert_str(text.len() - ".end\n".len(), &saves);
+        text.insert_str(text.len() - ".end\n".len(), &tail);
     }
     let (relative, from_project): (Vec<_>, Vec<_>) =
         relative_paths(&e, dialect, &text).into_iter().unzip();
-    // A Monte Carlo sample fixes the simulator's random seed (run spec §3). ngspice reads
-    // `.option seed` before it evaluates `.param` wherever the line stands: before `.end`.
-    // ponytail: ngspice and espice only; Xyce takes its seed on the command line
-    // (`-randseed`).
-    if let (Some(seed), Dialect::Ngspice | Dialect::Espice) = (jobs.seed(j), dialect) {
-        assert!(
-            text.ends_with(".end\n"),
-            "an ngspice netlist ends with .end"
-        );
-        text.insert_str(
-            text.len() - ".end\n".len(),
-            &format!(".option seed={seed}\n"),
-        );
-    }
     let top = &e.cells[0];
     let base = if top.row == u32::MAX {
         (0, String::new())
@@ -313,65 +288,6 @@ pub fn prepare<F: Funcs>(
     };
     assert!(!p.netlist.is_empty());
     Some(p)
-}
-
-/// Byte ranges of the relative corner `lib`/`include` paths in `text`, the netlist `e`
-/// emitted for `dialect` (the simulators: SPICE `.lib <path> <section>`, `.include
-/// <path>`; Spectre `include "<path>" section=<section>`, `include "<path>"`). Corner lines follow the header, globals and `.param` lines in file order, so
-/// each one's first match after the previous one is the line itself.
-fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bool)> {
-    let mut out = Vec::new();
-    let b = &e.bench;
-    if !crate::SIMULATORS.contains(&dialect) || b.corner_kind.is_empty() {
-        return out;
-    }
-    let spectre = dialect == Dialect::Spectre;
-    let (lib, include, section) = if spectre {
-        ("\ninclude \"", "\ninclude \"", "\" section=")
-    } else {
-        ("\n.lib ", "\n.include ", " ")
-    };
-    let mut from = 0;
-    let mut line = String::new();
-    for k in 0..b.corner_kind.len() {
-        let args = &b.corner_args[b.corner_start[k] as usize..b.corner_start[k + 1] as usize];
-        let arg = |i: usize| args.get(i).map_or("", |n| e.names.get(*n));
-        let path = arg(0);
-        line.clear();
-        match b.corner_kind[k] {
-            CornerLine::Lib => line.push_str(lib),
-            CornerLine::Include => line.push_str(include),
-            CornerLine::Temp => continue,
-        }
-        let prefix = line.len();
-        line.push_str(path);
-        if b.corner_kind[k] == CornerLine::Lib {
-            line.push_str(section);
-            line.push_str(arg(1));
-        } else if spectre {
-            line.push('"');
-        }
-        line.push('\n');
-        let Some(at) = text[from..].find(line.as_str()).map(|i| from + i) else {
-            continue;
-        };
-        from = at + line.len() - 1;
-        if relative(path) {
-            let start = (at + prefix) as u32;
-            let from_project = b.corner_project.get(k).copied().unwrap_or(false);
-            out.push((start..start + path.len() as u32, from_project));
-        }
-    }
-    assert!(out.windows(2).all(|w| w[0].0.end <= w[1].0.start));
-    out
-}
-
-/// Whether a corner path is relative to the bench: not `/…`, `\…`, `~…`, `C:…`, quoted,
-/// or a `${NAME}` left unexpanded.
-fn relative(path: &str) -> bool {
-    let b = path.as_bytes();
-    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
-    !path.is_empty() && !drive && !path.starts_with(['/', '\\', '~', '$', '"'])
 }
 
 /// Returns the Verilog-A and Verilog sources of the leaf impls `e` uses (a `file`, or a
@@ -434,4 +350,95 @@ pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source> {
     assert!(out.windows(2).all(|w| w[0].out < w[1].out));
     assert!(dialect == Dialect::Espice || out.iter().all(|s| s.tool != Tool::Copy));
     out
+}
+
+// ---- private ----
+
+/// Turns `e`'s elaboration-needs-open rows and blocking (`E`) violations into [`Blocked`].
+fn gate(e: &Elab) -> Result<(), Blocked> {
+    if !e.needs_open.is_empty() {
+        return Err(Blocked::NeedsOpen(e.needs_open.clone()));
+    }
+    let blocking: Vec<String> = e
+        .violations
+        .rows
+        .iter()
+        .filter(|v| v.code.severity() == Severity::Error)
+        .map(|v| {
+            let n = |x: Name| if x == Name::NONE { "-" } else { e.names.get(x) };
+            format!(
+                "{} {} {} {}: {}",
+                v.code.as_str(),
+                n(v.cell),
+                n(v.path),
+                n(v.param),
+                v.detail
+            )
+        })
+        .collect();
+    assert_eq!(blocking.is_empty(), !e.violations.blocking());
+    if blocking.is_empty() {
+        Ok(())
+    } else {
+        Err(Blocked::Violations(blocking))
+    }
+}
+
+/// Byte ranges of the relative corner `lib`/`include` paths in `text`, the netlist `e`
+/// emitted for `dialect` (the simulators: SPICE `.lib <path> <section>`, `.include
+/// <path>`; Spectre `include "<path>" section=<section>`, `include "<path>"`). Corner lines follow the header, globals and `.param` lines in file order, so
+/// each one's first match after the previous one is the line itself.
+fn relative_paths(e: &Elab, dialect: Dialect, text: &str) -> Vec<(Range<u32>, bool)> {
+    let mut out = Vec::new();
+    let b = &e.bench;
+    if !crate::SIMULATORS.contains(&dialect) || b.corner_kind.is_empty() {
+        return out;
+    }
+    let spectre = dialect == Dialect::Spectre;
+    let (lib, include, section) = if spectre {
+        ("\ninclude \"", "\ninclude \"", "\" section=")
+    } else {
+        ("\n.lib ", "\n.include ", " ")
+    };
+    let mut from = 0;
+    let mut line = String::new();
+    for k in 0..b.corner_kind.len() {
+        let args = &b.corner_args[b.corner_start[k] as usize..b.corner_start[k + 1] as usize];
+        let arg = |i: usize| args.get(i).map_or("", |n| e.names.get(*n));
+        let path = arg(0);
+        line.clear();
+        match b.corner_kind[k] {
+            CornerLine::Lib => line.push_str(lib),
+            CornerLine::Include => line.push_str(include),
+            CornerLine::Temp => continue,
+        }
+        let prefix = line.len();
+        line.push_str(path);
+        if b.corner_kind[k] == CornerLine::Lib {
+            line.push_str(section);
+            line.push_str(arg(1));
+        } else if spectre {
+            line.push('"');
+        }
+        line.push('\n');
+        let Some(at) = text[from..].find(line.as_str()).map(|i| from + i) else {
+            continue;
+        };
+        from = at + line.len() - 1;
+        if relative(path) {
+            let start = (at + prefix) as u32;
+            let from_project = b.corner_project.get(k).copied().unwrap_or(false);
+            out.push((start..start + path.len() as u32, from_project));
+        }
+    }
+    assert!(out.windows(2).all(|w| w[0].0.end <= w[1].0.start));
+    out
+}
+
+/// Whether a corner path is relative to the bench: not `/…`, `\…`, `~…`, `C:…`, quoted,
+/// or a `${NAME}` left unexpanded.
+fn relative(path: &str) -> bool {
+    let b = path.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    !path.is_empty() && !drive && !path.starts_with(['/', '\\', '~', '$', '"'])
 }

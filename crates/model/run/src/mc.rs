@@ -5,13 +5,35 @@
 //! sample `k` of var `R` is the same whatever other vars, corners or sweeps the run has:
 //! corners see common random numbers. Normal draws use Box–Muller evaluated by the
 //! expression language, whose transcendentals are `libm` (bit-identical on every
-//! target, D32).
+//! target, D32). In: a [`Plan`]'s `dist` rows and a Monte Carlo record; out: per-sample
+//! assignments and simulator seeds, and per-spec [`Yield`] rows over finished jobs.
+//!
+//! Contents:
+//! - `pub struct Yield`
+//! - crate-only `fn sample(plan, corner, m, s, assigns)`
+//! - `pub fn sim_seed(seed: u64, sample: u32) -> u32`
+//! - `pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield>`
 
 use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::plan::{DistKind, MonteCarlo, Plan};
 use crate::results::{Pass, Results};
 use schemify_expr::{Mode, Program, Scratch, Value, write_num};
 use std::sync::OnceLock;
+
+/// Pass rate of one spec over a run's finished Monte Carlo samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Yield {
+    /// Spec index (into [`Plan::specs`]).
+    pub spec: u16,
+    /// Samples that passed.
+    pub pass: u32,
+    /// Finished samples (a failed simulation or a missing output counts as a failure).
+    pub total: u32,
+    /// Lower end of the 95% Wilson interval of the pass rate.
+    pub lo: f64,
+    /// Upper end.
+    pub hi: f64,
+}
 
 /// Appends sample `s` of `m`: one assignment per var with a `dist` (plan order, sorted by
 /// var), each varying its base (run spec §3) by a fresh draw.
@@ -32,6 +54,57 @@ pub(crate) fn sample<'p>(
     }
     assert_eq!(assigns.len(), before + plan.dists.len());
 }
+
+/// The simulator's random seed for sample `sample` of a Monte Carlo record seeded `seed`
+/// (run spec §3): in `1..=2^30`, pure in `(seed, sample)`. The netlist sets it, so the
+/// simulator's own random functions (PDK `agauss` in `.param` and model cards) draw the
+/// same values for the same sample in every run, corner and sweep point.
+pub fn sim_seed(seed: u64, sample: u32) -> u32 {
+    // The stream of the empty name: no var is named "" (format names are nonempty).
+    let mut st = stream(seed, sample, "");
+    let s = (splitmix64(&mut st) >> 34) as u32 + 1;
+    assert!((1..=1 << 30).contains(&s));
+    s
+}
+
+/// Yield per spec over the finished jobs that are Monte Carlo samples (run spec §3).
+/// A failed job or a missing value counts as a failure; cancelled jobs are left out.
+///
+/// Cost: O(jobs × specs).
+///
+/// # Panics
+///
+/// Panics if `results` has another spec count than `plan` (results of another plan).
+pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> {
+    assert_eq!(results.specs(), plan.specs.len());
+    let mut out: Vec<Yield> = (0..plan.specs.len())
+        .map(|k| Yield {
+            spec: k as u16,
+            pass: 0,
+            total: 0,
+            lo: 0.0,
+            hi: 1.0,
+        })
+        .collect();
+    for j in 0..jobs.len() {
+        let st = jobs.state(j);
+        if jobs.sample(j) == NO_SAMPLE || !st.finished() || st == State::Cancelled {
+            continue;
+        }
+        for y in &mut out {
+            y.total += 1;
+            y.pass += u32::from(st == State::Done && results.pass(j, y.spec) == Pass::Pass);
+        }
+    }
+    for y in &mut out {
+        (y.lo, y.hi) = wilson(y.pass, y.total);
+        assert!(y.pass <= y.total);
+        assert!(y.lo <= y.hi);
+    }
+    out
+}
+
+// ---- private ----
 
 /// The expression a variation applies to: the latest assignment of `var` in this job,
 /// else the corner's last `set` of it, else the var's own expression.
@@ -72,7 +145,9 @@ fn draw(kind: DistKind, seed: u64, sample: u32, var: &str) -> f64 {
     // u1 in (0, 1] (ln is finite), u2 in [0, 1).
     let u1 = ((splitmix64(&mut st) >> 11) + 1) as f64 / (1u64 << 53) as f64;
     let u2 = (splitmix64(&mut st) >> 11) as f64 / (1u64 << 53) as f64;
-    assert!(u1 > 0.0 && u1 <= 1.0 && (0.0..1.0).contains(&u2));
+    assert!(u1 > 0.0);
+    assert!(u1 <= 1.0);
+    assert!((0.0..1.0).contains(&u2));
     match kind {
         DistKind::Uniform => 2.0 * u2 - 1.0,
         DistKind::Gauss => {
@@ -87,18 +162,6 @@ fn draw(kind: DistKind, seed: u64, sample: u32, var: &str) -> f64 {
             }
         }
     }
-}
-
-/// The simulator's random seed for sample `sample` of a Monte Carlo record seeded `seed`
-/// (run spec §3): in `1..=2^30`, pure in `(seed, sample)`. The netlist sets it, so the
-/// simulator's own random functions (PDK `agauss` in `.param` and model cards) draw the
-/// same values for the same sample in every run, corner and sweep point.
-pub fn sim_seed(seed: u64, sample: u32) -> u32 {
-    // The stream of the empty name: no var is named "" (format names are nonempty).
-    let mut st = stream(seed, sample, "");
-    let s = (splitmix64(&mut st) >> 34) as u32 + 1;
-    assert!((1..=1 << 30).contains(&s));
-    s
 }
 
 fn stream(seed: u64, sample: u32, var: &str) -> u64 {
@@ -119,51 +182,6 @@ fn splitmix64(x: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Pass rate of one spec over a run's finished Monte Carlo samples.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Yield {
-    /// Spec index (into [`Plan::specs`]).
-    pub spec: u16,
-    /// Samples that passed.
-    pub pass: u32,
-    /// Finished samples (a failed simulation or a missing output counts as a failure).
-    pub total: u32,
-    /// Lower end of the 95% Wilson interval of the pass rate.
-    pub lo: f64,
-    /// Upper end.
-    pub hi: f64,
-}
-
-/// Yield per spec over the finished jobs that are Monte Carlo samples (run spec §3).
-/// Cost: O(jobs × specs).
-pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> {
-    assert_eq!(results.specs(), plan.specs.len());
-    let mut out: Vec<Yield> = (0..plan.specs.len())
-        .map(|k| Yield {
-            spec: k as u16,
-            pass: 0,
-            total: 0,
-            lo: 0.0,
-            hi: 1.0,
-        })
-        .collect();
-    for j in 0..jobs.len() {
-        let st = jobs.state(j);
-        if jobs.sample(j) == NO_SAMPLE || !st.finished() || st == State::Cancelled {
-            continue;
-        }
-        for y in &mut out {
-            y.total += 1;
-            y.pass += u32::from(st == State::Done && results.pass(j, y.spec) == Pass::Pass);
-        }
-    }
-    for y in &mut out {
-        (y.lo, y.hi) = wilson(y.pass, y.total);
-        assert!(y.pass <= y.total && y.lo <= y.hi);
-    }
-    out
-}
-
 /// 95% Wilson score interval of `pass / total` (`[0, 1]` when `total` is 0).
 fn wilson(pass: u32, total: u32) -> (f64, f64) {
     assert!(pass <= total);
@@ -176,7 +194,8 @@ fn wilson(pass: u32, total: u32) -> (f64, f64) {
     let center = (p + Z * Z / (2.0 * n)) / denom;
     let half = Z * (p * (1.0 - p) / n + Z * Z / (4.0 * n * n)).sqrt() / denom;
     let (lo, hi) = ((center - half).max(0.0), (center + half).min(1.0));
-    assert!(lo <= p + 1e-12 && p <= hi + 1e-12);
+    assert!(lo <= p + 1e-12);
+    assert!(p <= hi + 1e-12);
     (lo, hi)
 }
 

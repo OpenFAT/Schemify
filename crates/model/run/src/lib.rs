@@ -30,6 +30,14 @@
 //! request (plugin ABI §7: `run <bench> <config> <corner>` + `vary` lines) is one
 //! [`Jobs::push`] followed by the same per-job lines.
 //!
+//! Contents (every `pub` item is re-exported here from its module):
+//! - `pub const SIMULATORS: [Dialect; 5]`
+//! - `jobs`: `Jobs`, `State`, `Select`, `expand`; `results`: `Results`, `Pass`;
+//!   `results_file`: `write_results`, `read_results`; `plan`: `Plan` and its rows;
+//!   `prepare`: `design`, `prepare`, `sources`, `Prepared`; `mc`: `Yield`, `sim_seed`,
+//!   `yield_summary`; `optimize`: `Optimizer`, `OptRun`; `runner`: `Runner`,
+//!   `RunnerConfig`, `Tools`, `SimCommand`
+//!
 //! # Example
 //!
 //! ```
@@ -53,20 +61,43 @@
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(not(target_arch = "wasm32"))]
+mod cache;
 mod jobs;
 #[cfg(feature = "mc")]
 mod mc;
 #[cfg(feature = "optimize")]
+mod nelder_mead;
+#[cfg(feature = "optimize")]
 mod optimize;
 mod plan;
 mod prepare;
+#[cfg(not(target_arch = "wasm32"))]
+mod proc;
 mod results;
+mod results_file;
 #[cfg(not(target_arch = "wasm32"))]
 mod runner;
 #[cfg(feature = "sweep")]
 mod sweep;
 
 pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
+#[cfg(feature = "mc")]
+pub use mc::{Yield, sim_seed, yield_summary};
+#[cfg(feature = "optimize")]
+pub use optimize::{Algorithm, Evaluation, Objective, OptError, OptRun, Optimizer, Param};
+pub use plan::{
+    BUDGET_MAX, Corner, Dist, DistKind, Goal, MonteCarlo, Optimize, Output, Plan, PlanError,
+    SAMPLES_MAX, SWEEP_POINTS_MAX, Spec, Sweep, TABLE_MAX, Var,
+};
+pub use prepare::{Blocked, Origin, Prepared, Source, Tool, design, prepare, sources};
+pub use results::{JOB_LEVEL, Pass, Results};
+pub use results_file::{read_results, write_results};
+#[cfg(not(target_arch = "wasm32"))]
+pub use runner::{
+    COMMAND, NETLIST, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, SimCommand, Tools,
+    WORKERS_MAX,
+};
 
 /// The simulators a native run starts (run spec §5), in detection order: ESPice first (user
 /// decision 2026-10-25: the default simulator, installed separately); the other dialects
@@ -78,18 +109,3 @@ pub const SIMULATORS: [schemify_elab::Dialect; 5] = [
     schemify_elab::Dialect::Ltspice,
     schemify_elab::Dialect::Spectre,
 ];
-#[cfg(feature = "mc")]
-pub use mc::{Yield, sim_seed, yield_summary};
-#[cfg(feature = "optimize")]
-pub use optimize::{Algorithm, Evaluation, Objective, OptError, OptRun, Optimizer, Param};
-pub use plan::{
-    BUDGET_MAX, Corner, Dist, DistKind, Goal, MonteCarlo, Optimize, Output, Plan, PlanError,
-    SAMPLES_MAX, SWEEP_POINTS_MAX, Spec, Sweep, TABLE_MAX, Var,
-};
-pub use prepare::{Blocked, Origin, Prepared, Source, Tool, design, prepare, sources};
-pub use results::{JOB_LEVEL, Pass, Results, read_results, write_results};
-#[cfg(not(target_arch = "wasm32"))]
-pub use runner::{
-    COMMAND, NETLIST, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, SimCommand, Tools,
-    WORKERS_MAX,
-};

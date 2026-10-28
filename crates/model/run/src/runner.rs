@@ -1,20 +1,27 @@
-//! The native subprocess runner (D15, run spec §5): one directory per job under the
-//! run directory, the simulator spawned from the user config's command line (D7: never
-//! from a document), at most `workers` at a time, polled by the frame spine.
+//! The native subprocess runner (D15, run spec §5): [`Prepared`] jobs in, one directory
+//! per job under the run directory, simulators spawned from the user config's command
+//! line (D7: never from a document), at most `workers` at a time, raw files out into
+//! [`Results::record`].
 //!
 //! No threads and no callbacks: children write `stdout.log`/`stderr.log` in their job
-//! directory; [`Runner::poll`] reaps exited children, kills those past the timeout,
-//! tails stdout for progress and starts queued jobs. Sources (OpenVAF, Icarus) compile
-//! as child processes too, polled the same way: a job holds its worker slot while its
-//! sources compile, one compiler per stale output serves every job that needs it, and
-//! the outputs are cached by mtime in a shared build directory and copied into each job
-//! directory. ESPice's Verilog-A sources ([`Tool::Copy`]) skip the compiler: the source
-//! itself is cached and copied, with the files it `` `include``s copied beside it.
+//! directory; [`Runner::poll`] reaps exited children, kills those past the timeout, tails
+//! stdout for progress and starts queued jobs. A job holds its worker slot while its
+//! sources compile (the build cache, `cache.rs`).
+//!
+//! Contents:
+//! - `pub const NETLIST`, `RAW`, `STDOUT`, `STDERR`, `COMMAND`, `RESULTS: &str`,
+//!   `pub const WORKERS_MAX: u16`
+//! - `pub struct SimCommand` (`default_for`), `pub struct Tools` (`set_sims`, `sim`),
+//!   `pub struct RunnerConfig` (`new`)
+//! - `pub struct Runner`: `new`, `config`, `job_dir`, `submit`, `busy`, `progress`,
+//!   `poll`, `wait`, `cancel`, `cancel_all`, `save`
 
 use crate::SIMULATORS;
+use crate::cache::Cache;
 use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
-use crate::prepare::{Origin, Prepared, Source, Tool};
+use crate::prepare::{Prepared, Source};
+use crate::proc::{Proc, last_line, spawn_error};
 use crate::results::Results;
 use schemify_doc::Digest;
 use schemify_elab::Dialect;
@@ -22,8 +29,8 @@ use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, ExitStatus};
+use std::time::Duration;
 
 /// Netlist file name inside a job directory.
 pub const NETLIST: &str = "netlist.cir";
@@ -39,18 +46,6 @@ pub const COMMAND: &str = "command.log";
 pub const RESULTS: &str = "results";
 /// Most workers one runner starts at once.
 pub const WORKERS_MAX: u16 = 1024;
-/// Most files one copied Verilog-A source may `` `include`` (transitively).
-pub const INCLUDES_MAX: usize = 256;
-/// Deepest `` `include`` nesting of a copied Verilog-A source.
-pub const INCLUDE_DEPTH_MAX: u32 = 16;
-/// Headers VerA (ESPice's Verilog-A compiler) supplies itself, so a source may include them
-/// without a copy beside it.
-const STANDARD_HEADERS: [&str; 4] = [
-    "disciplines.vams",
-    "constants.vams",
-    "discipline.h",
-    "constants.h",
-];
 
 /// A simulator command line from the user config (`sim <name>` with `path`, `args`,
 /// `env`; config spec §3). `{netlist}` and `{raw}` in `args` become the job's file names;
@@ -66,9 +61,69 @@ pub struct SimCommand {
     pub env: Vec<(String, String)>,
 }
 
+/// External programs a runner may start, all from the user config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tools {
+    /// Each simulator's command line, in [`SIMULATORS`] order; a runner starts the one
+    /// of its [`RunnerConfig::dialect`].
+    pub sims: [SimCommand; SIMULATORS.len()],
+    /// OpenVAF (`<src> -o <out>`).
+    pub openvaf: String,
+    /// Icarus Verilog (`-o <out> <src>`).
+    pub iverilog: String,
+}
+
+/// Where and how a runner works.
+#[derive(Clone, Debug)]
+pub struct RunnerConfig {
+    /// Programs.
+    pub tools: Tools,
+    /// The simulator every job runs in (one of [`SIMULATORS`]; its netlists are in this
+    /// dialect).
+    pub dialect: Dialect,
+    /// Run directory: job `j` runs in `<dir>/<j>`.
+    pub dir: PathBuf,
+    /// Compiled-source cache shared by runs.
+    pub cache: PathBuf,
+    /// On-disk directory of each library row (the `lib` of `Origin::File` and
+    /// [`Prepared::base`]); row 0 is the project directory.
+    pub lib_dirs: Vec<PathBuf>,
+    /// Simulators running at once, `1..=WORKERS_MAX`.
+    pub workers: u16,
+    /// Wall-clock limit per job and per compile; the child is killed after it.
+    pub timeout: Duration,
+}
+
+/// Jobs waiting for and holding worker slots, and the compilers they wait on. Dropping a
+/// runner kills its children.
+pub struct Runner {
+    cfg: RunnerConfig,
+    queue: VecDeque<Queued>,
+    /// Jobs holding a worker slot while their sources compile.
+    waiting: Vec<Queued>,
+    running: Vec<Running>,
+    cache: Cache,
+}
+
+/// A job with its netlist written: queued for a worker slot, then holding one while its
+/// sources compile.
+struct Queued {
+    job: u32,
+    sources: Vec<Source>,
+}
+
+struct Running {
+    job: u32,
+    proc: Proc,
+    /// Bytes of stdout already scanned.
+    log_pos: u64,
+    /// Last non-empty stdout line.
+    last: String,
+}
+
 impl SimCommand {
-    /// The default command line of simulator `d` (run spec §5): batch mode, the job's
-    /// netlist in, a raw file out the reader loads.
+    /// Returns the default command line of simulator `d` (run spec §5): batch mode, the
+    /// job's netlist in, a raw file out the reader loads.
     ///
     /// - ngspice `ngspice -b -r {raw} {netlist}` (D15);
     /// - ESPice `espice -b --tokenizer=ngspice -r {raw} {netlist}` (the ngspice deck
@@ -96,24 +151,13 @@ impl SimCommand {
             _ => panic!("{} is not a simulator", d.as_str()),
         };
         assert!(SIMULATORS.contains(&d));
+        let args = args.iter().map(|a| (*a).to_owned()).collect();
         SimCommand {
             path: path.into(),
-            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            args,
             env: Vec::new(),
         }
     }
-}
-
-/// External programs a runner may start, all from the user config.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Tools {
-    /// Each simulator's command line, in [`SIMULATORS`] order; a runner starts the one
-    /// of its [`RunnerConfig::dialect`].
-    pub sims: [SimCommand; SIMULATORS.len()],
-    /// OpenVAF (`<src> -o <out>`).
-    pub openvaf: String,
-    /// Icarus Verilog (`-o <out> <src>`).
-    pub iverilog: String,
 }
 
 impl Tools {
@@ -123,7 +167,7 @@ impl Tools {
         self.sims.iter_mut().for_each(|s| s.clone_from(cmd));
     }
 
-    /// The command line of simulator `d`.
+    /// Returns the command line of simulator `d`.
     ///
     /// # Panics
     ///
@@ -144,41 +188,21 @@ impl Default for Tools {
     }
 }
 
-/// Where and how a runner works.
-#[derive(Clone, Debug)]
-pub struct RunnerConfig {
-    /// Programs.
-    pub tools: Tools,
-    /// The simulator every job runs in (one of [`SIMULATORS`]; its netlists are in this
-    /// dialect).
-    pub dialect: Dialect,
-    /// Run directory: job `j` runs in `<dir>/<j>`.
-    pub dir: PathBuf,
-    /// Compiled-source cache shared by runs.
-    pub cache: PathBuf,
-    /// On-disk directory of each library row (the `lib` of [`Origin::File`] and [`Prepared::base`]).
-    pub lib_dirs: Vec<PathBuf>,
-    /// Simulators running at once, `1..=WORKERS_MAX`.
-    pub workers: u16,
-    /// Wall-clock limit per job; the child is killed after it.
-    pub timeout: Duration,
-}
-
 impl RunnerConfig {
-    /// Defaults for a project at `root`: run directory
+    /// Returns the defaults for a project at `root`: run directory
     /// `.schemify/runs/<first 16 hex digits of design>`, cache `.schemify/build`, the
-    /// project directory as library row 0, one worker per available core, one hour per
-    /// job.
+    /// project directory as library row 0, ngspice, one worker per available core, one
+    /// hour per job.
     pub fn new(root: &Path, design: &Digest) -> RunnerConfig {
         let hex = schemify_doc::hex(design);
-        let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
         let c = RunnerConfig {
             tools: Tools::default(),
             dialect: Dialect::Ngspice,
             dir: root.join(".schemify/runs").join(&hex[..16]),
             cache: root.join(".schemify/build"),
             lib_dirs: vec![root.to_path_buf()],
-            workers: workers.clamp(1, usize::from(WORKERS_MAX)) as u16,
+            workers: cores.clamp(1, usize::from(WORKERS_MAX)) as u16,
             timeout: Duration::from_secs(3600),
         };
         assert!(c.workers >= 1);
@@ -186,54 +210,12 @@ impl RunnerConfig {
     }
 }
 
-/// A job with its netlist written: queued for a worker slot, then holding one while its
-/// sources compile.
-struct Queued {
-    job: u32,
-    sources: Vec<Source>,
-}
-
-/// One compiler child writing `out` into the build cache.
-struct Compiling {
-    out: String,
-    proc: Proc,
-    /// `` `openvaf` on <src> ``, for messages.
-    what: String,
-}
-
-struct Running {
-    job: u32,
-    proc: Proc,
-    /// Bytes of stdout already scanned.
-    log_pos: u64,
-    /// Last non-empty stdout line.
-    last: String,
-}
-
-/// Jobs waiting for and holding worker slots, and the compilers they wait on. Dropping a
-/// runner kills its children.
-pub struct Runner {
-    cfg: RunnerConfig,
-    queue: VecDeque<Queued>,
-    /// Jobs holding a worker slot while their sources compile.
-    waiting: Vec<Queued>,
-    /// Compiler children, at most one per cache output.
-    compiling: Vec<Compiling>,
-    /// Cache outputs whose compile failed this run, with the message every job needing
-    /// one fails with.
-    failed: Vec<(String, String)>,
-    /// Per copied source ([`Tool::Copy`] of a `file`) found this run: its output name, its
-    /// directory, and the files it includes relative to that directory.
-    includes: Vec<(String, PathBuf, Vec<String>)>,
-    running: Vec<Running>,
-}
-
 impl Runner {
     /// Creates an idle runner.
     ///
     /// # Panics
     ///
-    /// Panics if `cfg.workers` is outside `1..=WORKERS_MAX`.
+    /// Panics if `cfg.workers` is outside `1..=WORKERS_MAX` or `cfg.dir` is empty.
     pub fn new(cfg: RunnerConfig) -> Runner {
         assert!(
             (1..=WORKERS_MAX).contains(&cfg.workers),
@@ -245,10 +227,8 @@ impl Runner {
             cfg,
             queue: VecDeque::new(),
             waiting: Vec::new(),
-            compiling: Vec::new(),
-            failed: Vec::new(),
-            includes: Vec::new(),
             running: Vec::new(),
+            cache: Cache::default(),
         }
     }
 
@@ -257,22 +237,24 @@ impl Runner {
         &self.cfg
     }
 
-    /// Returns job `j`'s directory.
+    /// Returns job `j`'s directory, `<dir>/<j>`.
     pub fn job_dir(&self, j: u32) -> PathBuf {
         self.cfg.dir.join(j.to_string())
     }
 
     /// Writes job `j`'s netlist into its directory (removing an old raw file; relative
-    /// corner paths made absolute against the bench's directory, or the project root for a
-    /// path from a project variable, [`Prepared::resolved`])
-    /// and queues it. A write failure fails the job.
+    /// corner paths made absolute against the bench's directory, or the project root for
+    /// a path from a project variable, [`Prepared::resolved`]) and queues it. A write
+    /// failure fails the job.
+    ///
+    /// # Panics
+    ///
+    /// Panics if job `j` is not pending (submitted once).
     pub fn submit(&mut self, jobs: &mut Jobs, results: &mut Results, j: u32, p: &Prepared) {
         assert_eq!(jobs.state(j), State::Pending, "submit job {j} once");
         assert!(self.queue.len() < crate::JOBS_MAX as usize);
         let dir = self.job_dir(j);
-        let base = self.cfg.lib_dirs.get(usize::from(p.base.0));
-        let text = match base {
-            // Library row 0 is the project directory (RunnerConfig::new).
+        let text = match self.cfg.lib_dirs.get(usize::from(p.base.0)) {
             Some(lib) if !p.relative.is_empty() => {
                 p.resolved(&lib.join(&p.base.1), &self.cfg.lib_dirs[0])
             }
@@ -300,7 +282,7 @@ impl Runner {
         !self.queue.is_empty()
             || !self.waiting.is_empty()
             || !self.running.is_empty()
-            || !self.compiling.is_empty()
+            || self.cache.busy()
     }
 
     /// Iterates `(job, progress)` of the jobs holding a worker slot: the last stdout line
@@ -327,7 +309,7 @@ impl Runner {
         finished: &mut Vec<u32>,
     ) {
         let before = finished.len();
-        self.reap_compiles();
+        self.cache.reap(&self.cfg);
         let mut i = 0;
         while i < self.running.len() {
             let dir = self.job_dir(self.running[i].job);
@@ -350,7 +332,7 @@ impl Runner {
                     break;
                 };
                 for s in &q.sources {
-                    self.ensure_compiled(s);
+                    self.cache.ensure(&self.cfg, s);
                 }
                 self.waiting.push(q);
             }
@@ -381,45 +363,46 @@ impl Runner {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(self.queue.is_empty() && self.running.is_empty() && self.waiting.is_empty());
+        assert!(self.queue.is_empty());
+        assert!(self.running.is_empty());
+        assert!(self.waiting.is_empty());
     }
 
     /// Cancels job `j` if it is queued, compiling or running (a running simulator is
-    /// killed; a compiler other jobs may share keeps running).
+    /// killed; a compiler other jobs may share keeps running); any other job is left as
+    /// it is.
     pub fn cancel(&mut self, jobs: &mut Jobs, j: u32) {
-        if let Some(i) = self.queue.iter().position(|q| q.job == j) {
-            self.queue.remove(i);
-            jobs.set_state(j, State::Cancelled);
+        let found = if let Some(i) = self.queue.iter().position(|q| q.job == j) {
+            self.queue.remove(i).is_some()
         } else if let Some(i) = self.waiting.iter().position(|w| w.job == j) {
             self.waiting.remove(i);
-            jobs.set_state(j, State::Cancelled);
+            true
         } else if let Some(i) = self.running.iter().position(|r| r.job == j) {
-            self.running.remove(i).proc.kill();
+            self.running.remove(i); // dropping the Proc kills the simulator
+            true
+        } else {
+            false
+        };
+        if found {
             jobs.set_state(j, State::Cancelled);
         }
-        assert!(!self.queue.iter().any(|q| q.job == j) && !self.running.iter().any(|r| r.job == j));
-        assert!(!self.waiting.iter().any(|w| w.job == j));
+        assert!(!self.queue.iter().chain(&self.waiting).any(|q| q.job == j));
+        assert!(!self.running.iter().any(|r| r.job == j));
     }
 
     /// Cancels every queued, compiling and running job and kills every compiler.
     pub fn cancel_all(&mut self, jobs: &mut Jobs) {
-        let all: Vec<u32> = self
-            .queue
-            .iter()
-            .chain(&self.waiting)
-            .map(|q| q.job)
-            .chain(self.running.iter().map(|r| r.job))
-            .collect();
+        let queued = self.queue.iter().chain(&self.waiting).map(|q| q.job);
+        let all: Vec<u32> = queued.chain(self.running.iter().map(|r| r.job)).collect();
         for j in all {
             self.cancel(jobs, j);
         }
-        for mut c in self.compiling.drain(..) {
-            c.proc.kill();
-        }
+        self.cache.kill_all();
         assert!(!self.busy());
     }
 
-    /// Writes the results file (`<dir>/results`, [`crate::write_results`]) atomically.
+    /// Writes the results file (`<dir>/results`, [`crate::write_results`]) atomically
+    /// (a temporary file renamed over it) and returns its path.
     ///
     /// # Errors
     ///
@@ -432,82 +415,19 @@ impl Runner {
         fs::rename(&tmp, &path)?;
         Ok(path)
     }
+}
 
-    /// Starts the compiler of `s` unless its output is fresh, already compiling, or
-    /// failed this run; a compiler that cannot start fails the output. A copied `file`
-    /// first has its includes found (once per run); a missing one fails the output.
-    fn ensure_compiled(&mut self, s: &Source) {
-        if self.failed.iter().any(|(o, _)| *o == s.out)
-            || self.compiling.iter().any(|c| c.out == s.out)
-        {
-            return;
-        }
-        if let (Tool::Copy, Origin::File { lib, path }) = (s.tool, &s.origin)
-            && !self.includes.iter().any(|i| i.0 == s.out)
-        {
-            let found = source_file(&self.cfg, *lib, path).and_then(|src| {
-                let dir = src.parent().map_or_else(PathBuf::new, Path::to_path_buf);
-                va_includes(&src).map(|inc| (dir, inc))
-            });
-            match found {
-                Ok((dir, inc)) => self.includes.push((s.out.clone(), dir, inc)),
-                Err(msg) => return self.failed.push((s.out.clone(), msg)),
-            }
-        }
-        match spawn_compile(&self.cfg, s) {
-            Ok(None) => {}
-            Ok(Some(c)) => self.compiling.push(c),
-            Err(msg) => self.failed.push((s.out.clone(), msg)),
-        }
-        assert!(self.compiling.len() <= crate::JOBS_MAX as usize);
-    }
+// ---- private ----
 
-    /// Reaps exited compilers; one that failed, wrote nothing or ran past the timeout
-    /// fails its output.
-    fn reap_compiles(&mut self) {
-        let mut i = 0;
-        while i < self.compiling.len() {
-            let Some(outcome) = self.compiling[i].proc.reap(self.cfg.timeout, "compiler") else {
-                i += 1;
-                continue;
-            };
-            let c = self.compiling.remove(i);
-            let wrote = self.cfg.cache.join(&c.out).exists();
-            let why = match outcome {
-                Ok(status) if status.success() && wrote => continue,
-                Ok(status) => {
-                    let log = self.cfg.cache.join(format!("{}.log", c.out));
-                    let last = last_line(&log).unwrap_or_else(|| "no output".into());
-                    format!("{status}: {last}")
-                }
-                Err(msg) => msg,
-            };
-            self.failed
-                .push((c.out, format!("{} failed ({why})", c.what)));
-        }
-        assert!(
-            self.compiling
-                .iter()
-                .all(|c| !self.failed.iter().any(|f| f.0 == c.out))
-        );
-    }
-
+impl Runner {
     /// Starts the simulator of every waiting job whose sources are compiled; fails those
     /// with a failed source.
     fn start_ready(&mut self, jobs: &mut Jobs, results: &mut Results, finished: &mut Vec<u32>) {
         let mut i = 0;
         while i < self.waiting.len() {
             let w = &self.waiting[i];
-            let failed = w
-                .sources
-                .iter()
-                .find_map(|s| self.failed.iter().find(|f| f.0 == s.out))
-                .map(|f| f.1.clone());
-            let compiling = w
-                .sources
-                .iter()
-                .any(|s| self.compiling.iter().any(|c| c.out == s.out));
-            if failed.is_none() && compiling {
+            let failed = self.cache.failure(&w.sources).map(str::to_owned);
+            if failed.is_none() && self.cache.compiling(&w.sources) {
                 i += 1;
                 continue;
             }
@@ -531,42 +451,11 @@ impl Runner {
         );
     }
 
-    /// Copies the compiled sources (and a copied source's includes, at their paths
-    /// relative to it) into the job directory and spawns the simulator.
+    /// Copies the compiled sources into the job directory, writes `command.log` and spawns
+    /// the simulator.
     fn start(&mut self, q: &Queued) -> Result<(), String> {
         let dir = self.job_dir(q.job);
-        // Include paths placed so far, with the file each came from: two sources that
-        // include one relative path from different files cannot share the job directory.
-        let mut placed: Vec<(&str, PathBuf)> = Vec::new();
-        for s in &q.sources {
-            fs::copy(self.cfg.cache.join(&s.out), dir.join(&s.out))
-                .map_err(|e| format!("copy {}: {e}", s.out))?;
-            let Some((_, src_dir, rels)) = self.includes.iter().find(|i| i.0 == s.out) else {
-                continue;
-            };
-            for rel in rels {
-                let from = src_dir.join(rel);
-                match placed.iter().find(|p| p.0 == rel) {
-                    Some((_, other)) if *other == from => continue,
-                    Some((_, other)) => {
-                        return Err(format!(
-                            "`include \"{rel}\" names two files: {} and {}",
-                            other.display(),
-                            from.display()
-                        ));
-                    }
-                    None => {}
-                }
-                let to = dir.join(rel);
-                if let Some(parent) = to.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|e| format!("create {}: {e}", parent.display()))?;
-                }
-                fs::copy(&from, &to).map_err(|e| format!("copy {}: {e}", from.display()))?;
-                placed.push((rel, from));
-            }
-        }
-        assert!(placed.len() <= INCLUDES_MAX * q.sources.len());
+        self.cache.place(&self.cfg, &q.sources, &dir)?;
         let log = |name: &str| {
             File::create(dir.join(name)).map_err(|e| format!("cannot create {name}: {e}"))
         };
@@ -583,24 +472,24 @@ impl Runner {
             .join(" ");
         fs::write(dir.join(COMMAND), line + "\n")
             .map_err(|e| format!("cannot create {COMMAND}: {e}"))?;
-        let proc = Proc::spawn(
-            Command::new(&sim.path)
-                .args(args)
-                .envs(sim.env.iter().map(|(k, v)| (k, v)))
-                .current_dir(&dir),
-            out,
-            err,
-        )
-        .map_err(|e| spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e))?;
+        let mut cmd = Command::new(&sim.path);
+        cmd.args(args)
+            .envs(sim.env.iter().map(|(k, v)| (k, v)))
+            .current_dir(&dir);
+        let proc = Proc::spawn(&mut cmd, out, err)
+            .map_err(|e| spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e))?;
+        let before = self.running.len();
         self.running.push(Running {
             job: q.job,
             proc,
             log_pos: 0,
             last: String::new(),
         });
+        assert_eq!(self.running.len(), before + 1);
         Ok(())
     }
 
+    /// Records the outcome of job `j`'s simulator: its raw file's results, or the failure.
     fn finish(
         &self,
         plan: &Plan,
@@ -614,285 +503,47 @@ impl Runner {
             Ok(s) => s,
             Err(msg) => return results.fail(jobs, j, msg),
         };
+        let why = || last_line(&dir.join(STDERR)).unwrap_or_default();
         if !status.success() {
-            let why = last_line(&dir.join(STDERR)).unwrap_or_default();
             let sim = &self.cfg.tools.sim(self.cfg.dialect).path;
-            return results.fail(
-                jobs,
-                j,
-                format!(
-                    "`{sim}` exited with {status}: {why} (see {})",
-                    dir.display()
-                ),
+            let msg = format!(
+                "`{sim}` exited with {status}: {} (see {})",
+                why(),
+                dir.display()
             );
+            return results.fail(jobs, j, msg);
         }
-        // Without the `{raw}` file (a bench whose `.control` block `write`s its own, as
-        // xschem's do; LTspice's `netlist.raw`; VACASK's one file per analysis) the job's
-        // raw data is every `.raw` file it wrote, by name, one after the other: the reader
-        // takes a file of several plots.
-        let raw = fs::read(dir.join(RAW)).or_else(|e| {
-            let mut own: Vec<_> = fs::read_dir(&dir)
-                .map(|d| d.flatten().map(|f| f.path()).collect())
-                .unwrap_or_default();
-            own.retain(|p: &PathBuf| p.extension().is_some_and(|x| x == "raw"));
-            own.sort();
-            if own.is_empty() {
-                return Err(e);
-            }
-            let mut all = Vec::new();
-            for p in &own {
-                all.extend(fs::read(p)?);
-            }
-            Ok(all)
-        });
-        match raw {
+        match read_raw(&dir) {
             Ok(raw) => results.record(plan, jobs, j, &raw),
             Err(e) => {
-                let why = last_line(&dir.join(STDERR)).unwrap_or_default();
-                results.fail(
-                    jobs,
-                    j,
-                    format!("no raw file ({e}): {why} (see {})", dir.display()),
-                );
+                let msg = format!("no raw file ({e}): {} (see {})", why(), dir.display());
+                results.fail(jobs, j, msg);
             }
         }
         assert!(jobs.state(j).finished());
     }
 }
 
-impl Drop for Runner {
-    fn drop(&mut self) {
-        for r in &mut self.running {
-            r.proc.kill();
+/// A job's raw data: `{raw}`, or without it (a bench whose `.control` block `write`s its
+/// own, as xschem's do; LTspice's `netlist.raw`; VACASK's one file per analysis) every
+/// `.raw` file the job wrote, by name, one after the other: the reader takes a file of
+/// several plots. The error is `{raw}`'s when there is none.
+fn read_raw(dir: &Path) -> io::Result<Vec<u8>> {
+    fs::read(dir.join(RAW)).or_else(|e| {
+        let mut own: Vec<PathBuf> = fs::read_dir(dir)
+            .map(|d| d.flatten().map(|f| f.path()).collect())
+            .unwrap_or_default();
+        own.retain(|p| p.extension().is_some_and(|x| x == "raw"));
+        own.sort();
+        if own.is_empty() {
+            return Err(e);
         }
-        for c in &mut self.compiling {
-            c.proc.kill();
+        let mut all = Vec::new();
+        for p in &own {
+            all.extend(fs::read(p)?);
         }
-    }
-}
-
-/// Starts compiling `s` into the build cache, or returns `None` when the cached output is
-/// at least as new as the source. A `body` source is first written to the cache as
-/// `<stem>.va|.v` (only when its text changed, so the mtime check holds across runs).
-/// The compiler's output goes to `<cache>/<out>.log`. A [`Tool::Copy`] source never
-/// starts a process: a `body` is its own output, a `file` is copied over a stale one.
-fn spawn_compile(cfg: &RunnerConfig, s: &Source) -> Result<Option<Compiling>, String> {
-    let cache = |e: io::Error| format!("cache {}: {e}", cfg.cache.display());
-    let src = match &s.origin {
-        Origin::File { lib, path } => source_file(cfg, *lib, path)?,
-        Origin::Body(text) => {
-            fs::create_dir_all(&cfg.cache).map_err(cache)?;
-            let stem = s.out.rsplit_once('.').map_or(s.out.as_str(), |(st, _)| st);
-            let ext = match s.tool {
-                Tool::Openvaf | Tool::Copy => "va",
-                Tool::Iverilog => "v",
-            };
-            let p = cfg.cache.join(format!("{stem}.{ext}"));
-            if fs::read(&p).ok().as_deref() != Some(text.as_bytes()) {
-                fs::write(&p, text).map_err(cache)?;
-            }
-            p
-        }
-    };
-    let cached = cfg.cache.join(&s.out);
-    let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified());
-    let src_time = mtime(&src).map_err(|e| format!("source {}: {e}", src.display()))?;
-    if mtime(&cached).is_ok_and(|t| t >= src_time) {
-        return Ok(None);
-    }
-    fs::create_dir_all(&cfg.cache).map_err(cache)?;
-    // A stale output must not pass for this compile's result if the compiler writes none.
-    match fs::remove_file(&cached) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(cache(e)),
-        _ => {}
-    }
-    let (prog, what) = match s.tool {
-        Tool::Openvaf => (&cfg.tools.openvaf, "Verilog-A → OSDI"),
-        Tool::Iverilog => (&cfg.tools.iverilog, "Verilog → VVP"),
-        Tool::Copy => {
-            // A body was written as the output itself, which is never stale (above).
-            assert_ne!(src, cached, "a copied body is its own output");
-            fs::copy(&src, &cached)
-                .map_err(|e| format!("copy {} to {}: {e}", src.display(), cached.display()))?;
-            return Ok(None);
-        }
-    };
-    let mut cmd = Command::new(prog);
-    match s.tool {
-        Tool::Openvaf => cmd.arg(&src).arg("-o").arg(&cached),
-        Tool::Iverilog => cmd.arg("-o").arg(&cached).arg(&src),
-        Tool::Copy => unreachable!("returned above"),
-    };
-    let log = File::create(cfg.cache.join(format!("{}.log", s.out))).map_err(cache)?;
-    let log2 = log.try_clone().map_err(cache)?;
-    let proc = Proc::spawn(&mut cmd, log, log2).map_err(|e| {
-        let need = format!("needed to compile {} ({what})", src.display());
-        format!(
-            "{}; {need}",
-            spawn_error(prog, "compiler", "the user config", &e)
-        )
-    })?;
-    let c = Compiling {
-        out: s.out.clone(),
-        proc,
-        what: format!("`{prog}` on {}", src.display()),
-    };
-    assert!(!c.out.is_empty());
-    Ok(Some(c))
-}
-
-/// The on-disk path of a `file` source: `path` under library row `lib`'s directory.
-fn source_file(cfg: &RunnerConfig, lib: u8, path: &str) -> Result<PathBuf, String> {
-    let dir = cfg
-        .lib_dirs
-        .get(usize::from(lib))
-        .ok_or_else(|| format!("no directory for library row {lib}"))?;
-    Ok(dir.join(path))
-}
-
-/// Returns the files the Verilog-A source `src` includes, transitively, as paths relative
-/// to its directory, sorted: each `` `include "<name>"`` resolves against the directory of
-/// the file that names it (as ESPice's compiler does), so the copies keep their layout
-/// beside the copied source (run spec §5). An absolute name is left to resolve by itself;
-/// a missing [`STANDARD_HEADERS`] name is the compiler's own. Each file is read once, so
-/// include cycles end.
-///
-/// # Errors
-///
-/// A file that cannot be read, a missing include (naming it and the file that includes
-/// it), a name that leaves the source's directory (`..` above it), more than
-/// [`INCLUDES_MAX`] files, or nesting deeper than [`INCLUDE_DEPTH_MAX`].
-fn va_includes(src: &Path) -> Result<Vec<String>, String> {
-    let dir = src.parent().unwrap_or(Path::new(""));
-    let mut out: Vec<String> = Vec::new();
-    // (including file relative to `dir`, `None` for `src` itself; its depth)
-    let mut stack: Vec<(Option<String>, u32)> = vec![(None, 0)];
-    while let Some((file, depth)) = stack.pop() {
-        assert!(depth <= INCLUDE_DEPTH_MAX);
-        let path = file
-            .as_ref()
-            .map_or_else(|| src.to_path_buf(), |f| dir.join(f));
-        let text =
-            fs::read_to_string(&path).map_err(|e| format!("source {}: {e}", path.display()))?;
-        let base = file
-            .as_deref()
-            .and_then(|f| f.rsplit_once('/'))
-            .map(|p| p.0);
-        for name in include_names(&text) {
-            if Path::new(name).is_absolute() {
-                continue;
-            }
-            let joined = base.map_or_else(|| name.to_owned(), |b| format!("{b}/{name}"));
-            let rel = normalize(&joined).ok_or_else(|| {
-                format!(
-                    "{} includes \"{name}\", outside the source's directory (unsupported: \
-                     the copy beside the job's netlist cannot reach it)",
-                    path.display()
-                )
-            })?;
-            if out.contains(&rel) {
-                continue;
-            }
-            if !dir.join(&rel).is_file() {
-                if STANDARD_HEADERS.contains(&name) {
-                    continue;
-                }
-                return Err(format!(
-                    "{} includes \"{name}\": no file {}",
-                    path.display(),
-                    dir.join(&rel).display()
-                ));
-            }
-            if depth + 1 > INCLUDE_DEPTH_MAX || out.len() >= INCLUDES_MAX {
-                return Err(format!(
-                    "{}: includes nest deeper than {INCLUDE_DEPTH_MAX} or name more than \
-                     {INCLUDES_MAX} files",
-                    src.display()
-                ));
-            }
-            out.push(rel.clone());
-            stack.push((Some(rel), depth + 1));
-        }
-    }
-    out.sort_unstable();
-    assert!(out.len() <= INCLUDES_MAX && out.windows(2).all(|w| w[0] < w[1]));
-    Ok(out)
-}
-
-/// The quoted names of a Verilog-A text's `` `include`` directives, outside `//` comments.
-// ponytail: `/* */` comments and `ifdef`-disabled branches are not skipped, so an include
-// there must exist too; handle them when a model needs it.
-fn include_names(text: &str) -> impl Iterator<Item = &str> {
-    text.lines().filter_map(|line| {
-        let code = line.split("//").next().unwrap_or("");
-        let after = &code[code.find("`include")? + "`include".len()..];
-        let name = &after[after.find('"')? + 1..];
-        Some(&name[..name.find('"')?])
+        Ok(all)
     })
-}
-
-/// `p` with `.` segments dropped and `..` applied, `/`-separated; `None` when it climbs
-/// above its start or names nothing.
-fn normalize(p: &str) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in p.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                parts.pop()?;
-            }
-            s => parts.push(s),
-        }
-    }
-    (!parts.is_empty()).then(|| parts.join("/"))
-}
-
-/// A child process and its start time: the crate's one subprocess boundary. Simulators and
-/// compilers are spawned, reaped and killed only through it.
-struct Proc {
-    child: Child,
-    started: Instant,
-}
-
-impl Proc {
-    /// Spawns `cmd` with stdin closed and stdout/stderr into `out`/`err`.
-    fn spawn(cmd: &mut Command, out: File, err: File) -> io::Result<Proc> {
-        let child = cmd.stdin(Stdio::null()).stdout(out).stderr(err).spawn()?;
-        Ok(Proc {
-            child,
-            started: Instant::now(),
-        })
-    }
-
-    /// Returns `None` while the child runs within `timeout`, else its outcome: the exit
-    /// status, or why it was killed (timeout, or `try_wait` failed). Never blocks on a
-    /// live child.
-    fn reap(&mut self, timeout: Duration, what: &str) -> Option<Result<ExitStatus, String>> {
-        let outcome = match self.child.try_wait() {
-            Ok(Some(status)) => Ok(status),
-            Ok(None) if self.started.elapsed() <= timeout => return None,
-            Ok(None) => Err(format!("timed out after {timeout:?}")),
-            Err(e) => Err(format!("cannot wait for the {what}: {e}")),
-        };
-        if outcome.is_err() {
-            self.kill();
-        }
-        Some(outcome)
-    }
-
-    /// Kills the child and reaps it (no zombie); errors mean it already exited.
-    fn kill(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn spawn_error(prog: &str, what: &str, config: &str, e: &io::Error) -> String {
-    if e.kind() == io::ErrorKind::NotFound {
-        format!("{what} `{prog}` not found on PATH (install it or set its path in {config})")
-    } else {
-        format!("cannot start {what} `{prog}`: {e}")
-    }
 }
 
 /// Scans new complete stdout lines (at most 64 KiB per call) and keeps the last one.
@@ -912,20 +563,8 @@ fn tail(dir: &Path, r: &mut Running) {
         return;
     };
     r.log_pos += end as u64 + 1;
-    if let Some(line) = buf[..end]
-        .split(|&b| b == b'\n')
-        .rev()
-        .find(|l| !l.trim_ascii().is_empty())
-    {
+    let lines = buf[..end].split(|&b| b == b'\n').rev();
+    if let Some(line) = lines.into_iter().find(|l| !l.trim_ascii().is_empty()) {
         r.last = String::from_utf8_lossy(line.trim_ascii()).into_owned();
     }
-}
-
-fn last_line(path: &Path) -> Option<String> {
-    let text = fs::read(path).ok()?;
-    let text = String::from_utf8_lossy(&text);
-    text.lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(|l| l.trim().to_owned())
 }
