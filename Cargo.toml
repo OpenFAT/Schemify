@@ -16,6 +16,16 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
+# Google Rust style guide (docs/dev/contributing.md § Google Rust style guide): the rules a
+# lint can check. clippy.toml exempts tests from unwrap_used.
+unwrap_used = "warn"
+wildcard_imports = "warn"
+needless_for_each = "warn"
+string_add = "warn"
+ref_option = "warn"
+missing_panics_doc = "warn"
+missing_errors_doc = "warn"
+must_use_candidate = "warn"
 
 [workspace.dependencies]
 schemify-format = { path = "crates/protocol/format" }

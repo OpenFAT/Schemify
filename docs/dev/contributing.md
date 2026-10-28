@@ -93,6 +93,18 @@ UI and visual work has its own guides under [skills/](skills/), read as document
 8. **Inert design files** (D7): nothing in a `.sh*` file can run a command.
 9. **Exhaustive boundary matches**: a `match` over an enum that crosses a crate boundary lists every variant, so a new variant is a compiler-listed set of sites.
 10. **Marked simplifications**: `// ponytail: <ceiling and upgrade path>`.
+11. **Google Rust style** (below).
+
+## Google Rust style guide
+
+Rust code also follows the [Google Rust style guide](https://google.github.io/styleguide/rustguide.html) (2026-10-28 amendment in [decisions.md](decisions.md)). The rules a lint can check are workspace lints in the root `Cargo.toml` (`unwrap_used`, `wildcard_imports`, `needless_for_each`, `string_add`, `ref_option`, `missing_panics_doc`, `missing_errors_doc`, `must_use_candidate`); `clippy.toml` lets tests unwrap. The rest is checked in review. Where the guide and this file disagree, this file wins:
+
+- **No `#[non_exhaustive]` on workspace types.** Hard rule 9 wants every crate-boundary `match` to list every variant, so a new variant is a compiler-listed set of sites; the guide exempts types whose owner fixes every breakage itself, which a workspace does.
+- **Asserts stay dense** (hard rule 5). The guide's context strings go on asserts whose reason is not obvious from the condition, never one that restates it.
+- **`[chrome]` and `[Fuchsia]` rules do not apply**: small one-file crates, a flat source layout, `chromium::import!`, no async, no std threads, `fuchsia_sync`.
+- **Nightly-only rustfmt options are skipped** (the toolchain is stable): `imports_granularity = Module`, `hex_literal_case`, `format_macro_matchers` are followed by hand. Write one module per `use` and lowercase hex.
+- **`Rc`/`Arc` only where a thread or a library API needs shared ownership** (the server's sessions, wgpu's window handle); each use says why.
+- **Domain abbreviations stay** (`net`, `inst`, `pin`, `elab`, SPICE names): they are the spec's words. Everything else is spelled out.
 
 ## Tests
 
