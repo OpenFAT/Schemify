@@ -10,10 +10,11 @@
 //! - `pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, Vec<Override>)`
 
 use std::collections::BTreeMap;
+use std::mem;
 
 use schemify_abi::Kind;
 
-use crate::contributions::{function_row, lex, set_records};
+use crate::contributions::{self, FunctionRow};
 use crate::{Contributions, PluginId};
 
 /// One record that survived composition.
@@ -50,6 +51,8 @@ pub struct Override {
 /// Expression-function registry (D20) for `expr`: one row per composed `function` record,
 /// sorted by name (unique). Resolve `ns.f(args)` by binary search, then call
 /// [`crate::Plugins::call`]`(plugin[i], fn_id[i], …)`.
+///
+/// The columns are public for reading; a caller that pushes to them keeps them in step.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Functions {
     /// Namespaced name (`gmid.width`).
@@ -89,6 +92,7 @@ pub struct Composed {
 /// O(kinds × scopes × |order| × rows) lookups plus O(records · log records) keying.
 // ponytail: linear row scans per (kind, scope, plugin); index rows by plugin if a profile
 // shows recomposition on the frame path.
+#[must_use]
 pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, Vec<Override>) {
     debug_assert!(
         order
@@ -102,8 +106,8 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
     for &kind in Kind::ALL {
         let mut scopes: Vec<&str> = contributions
             .rows()
-            .filter(|r| r.1 == kind)
-            .map(|r| r.2)
+            .filter(|row| row.kind == kind)
+            .map(|row| row.scope)
             .collect();
         scopes.sort_unstable();
         scopes.dedup();
@@ -117,7 +121,8 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
                 let Some(body) = contributions.get(plugin, kind, scope) else {
                     continue;
                 };
-                for rec in set_records(kind, body).expect("validated at intake") {
+                let records = contributions::set_records(kind, body).expect("validated at intake");
+                for record in records {
                     let replaced = |key: String, loser| Override {
                         kind,
                         scope: scope.into(),
@@ -125,7 +130,7 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
                         loser,
                         winner: plugin,
                     };
-                    if let Some(node) = rec.key.strip_prefix("node ") {
+                    if let Some(node) = record.key.strip_prefix("node ") {
                         let prefix = format!("set {node} ");
                         let stale: Vec<String> = index
                             .range(prefix.clone()..)
@@ -138,22 +143,22 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
                             overrides.push(replaced(key, composed.records[i].owner));
                         }
                     }
-                    match index.get(&rec.key) {
+                    match index.get(&record.key) {
                         Some(&i) => {
                             let won = &mut composed.records[i];
-                            overrides.push(replaced(rec.key, won.owner));
+                            overrides.push(replaced(record.key, won.owner));
                             won.owner = plugin;
-                            won.text = rec.text.into();
+                            won.text = record.text.into();
                         }
                         None => {
-                            index.insert(rec.key.clone(), composed.records.len());
+                            index.insert(record.key.clone(), composed.records.len());
                             dropped.push(false);
                             composed.records.push(ComposedRecord {
                                 kind,
                                 scope: scope.into(),
-                                key: rec.key.into(),
+                                key: record.key.into(),
                                 owner: plugin,
-                                text: rec.text.into(),
+                                text: record.text.into(),
                             });
                         }
                     }
@@ -162,7 +167,7 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
             assert_eq!(composed.records.len() - first, dropped.len());
             let group = composed.records.split_off(first);
             let kept = group.into_iter().zip(dropped).filter(|(_, gone)| !gone);
-            composed.records.extend(kept.map(|(r, _)| r));
+            composed.records.extend(kept.map(|(record, _)| record));
             debug_assert_eq!(composed.records.len() - first, index.len());
         }
     }
@@ -173,23 +178,35 @@ pub fn compose(contributions: &Contributions, order: &[PluginId]) -> (Composed, 
 
 impl Functions {
     /// Returns the row of `name`, if registered. O(log rows).
+    ///
+    /// # Panics
+    ///
+    /// Panics (debug builds) if the columns are not in step.
+    #[must_use]
     pub fn find(&self, name: &str) -> Option<usize> {
-        self.name.binary_search_by(|n| (**n).cmp(name)).ok()
+        debug_assert_eq!(self.name.len(), self.plugin.len());
+        debug_assert_eq!(self.name.len(), self.fn_id.len());
+        debug_assert_eq!(self.name.len(), self.arity.len());
+        self.name.binary_search_by(|row| (**row).cmp(name)).ok()
     }
 }
 
 impl Composed {
     /// Returns the records of `kind` (all scopes). O(log records).
+    #[must_use]
     pub fn of(&self, kind: Kind) -> &[ComposedRecord] {
-        let start = self.records.partition_point(|r| r.kind < kind);
-        let end = self.records.partition_point(|r| r.kind <= kind);
+        let start = self.records.partition_point(|record| record.kind < kind);
+        let end = self.records.partition_point(|record| record.kind <= kind);
+        // A `start` past `end` means `records` is not grouped by kind.
+        debug_assert!(start <= end, "records are grouped by kind");
         &self.records[start..end]
     }
 
     /// Returns the surviving record of (`kind`, `key`) in any scope, e.g. the owner of a
     /// command for routing `Event::Command`. O(records of `kind`).
+    #[must_use]
     pub fn find(&self, kind: Kind, key: &str) -> Option<&ComposedRecord> {
-        self.of(kind).iter().find(|r| &*r.key == key)
+        self.of(kind).iter().find(|record| &*record.key == key)
     }
 }
 
@@ -197,27 +214,32 @@ impl Composed {
 
 /// The registry of the composed `function` records, sorted by name.
 fn functions(records: &[ComposedRecord]) -> Functions {
-    debug_assert!(records.iter().all(|r| r.kind == Kind::Functions));
-    let mut rows: Vec<(Box<str>, PluginId, u32, u8)> = records
-        .iter()
-        .map(|r| {
-            let Ok(Ok((name, fn_id, arity))) = lex(&r.text, |d| function_row(d, 1)) else {
-                panic!("validated at intake: {}", r.text)
-            };
-            (name, r.owner, fn_id, arity)
-        })
-        .collect();
-    rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    let mut f = Functions::default();
-    for (name, plugin, fn_id, arity) in rows {
-        f.name.push(name);
-        f.plugin.push(plugin);
-        f.fn_id.push(fn_id);
-        f.arity.push(arity);
+    debug_assert!(records.iter().all(|record| record.kind == Kind::Functions));
+    let mut rows: Vec<FunctionRow> = Vec::with_capacity(records.len());
+    for record in records {
+        let lexed = contributions::lex(&record.text, |document| {
+            contributions::function_row(document, 1)
+        });
+        let Ok(Ok(row)) = lexed else {
+            panic!("validated at intake: {}", record.text)
+        };
+        rows.push(row);
     }
+    // Sort record indices by name, so each row keeps its record's owner.
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_unstable_by(|&a, &b| rows[a].name.cmp(&rows[b].name));
+    let mut registry = Functions::default();
+    for i in order {
+        let row = &mut rows[i];
+        registry.name.push(mem::take(&mut row.name));
+        registry.plugin.push(records[i].owner);
+        registry.fn_id.push(row.fn_id);
+        registry.arity.push(row.arity);
+    }
+    debug_assert_eq!(registry.name.len(), records.len());
     debug_assert!(
-        f.name.windows(2).all(|w| w[0] < w[1]),
+        registry.name.windows(2).all(|pair| pair[0] < pair[1]),
         "keys are unique per name"
     );
-    f
+    registry
 }

@@ -101,18 +101,19 @@ fn plugin_table_is_bounded() {
     let wasm = module(&format!(
         r#"{MINIMAL} (func (export "schemify_abi") (result i32) i32.const 1)"#
     ));
-    let mut w = World::new();
+    let mut world = World::new();
     for _ in 0..PLUGINS_MAX {
-        w.plugins.load("tiny", &wasm, &[], 1_000).unwrap();
+        world.plugins.load("tiny", &wasm, &[], 1_000).unwrap();
     }
     assert_eq!(
-        w.plugins.load("one-too-many", &wasm, &[], 1_000),
+        world.plugins.load("one-too-many", &wasm, &[], 1_000),
         Err(Code::Space)
     );
-    w.frame();
-    assert_eq!(w.plugins.ids().len(), PLUGINS_MAX);
+    world.frame();
+    assert_eq!(world.plugins.ids().len(), PLUGINS_MAX);
     assert!(
-        w.plugins
+        world
+            .plugins
             .health()
             .faults()
             .iter()
@@ -137,12 +138,12 @@ fn host_work_is_charged_as_fuel() {
             (call $nop)
             (i64.or (i64.shl (i64.const 2048) (i64.const 32)) (i64.const 14)))"#;
     for (fuel, codes, logs) in [(20_000, vec![Code::Fuel], 0), (1_000_000, vec![], 1)] {
-        let mut w = World::new();
-        w.snap = snapshots(&vec![1; 100_000]);
-        w.load("reader", &module(wat), &[], fuel);
-        let faults: Vec<Fault> = w.plugins.health().faults().iter().cloned().collect();
+        let mut world = World::new();
+        world.snapshots = snapshots(&vec![1; 100_000]);
+        world.load("reader", &module(wat), &[], fuel);
+        let faults: Vec<Fault> = world.plugins.health().faults().iter().cloned().collect();
         assert_eq!(World::codes(&faults), codes, "fuel {fuel}");
-        assert_eq!(w.queues.logs.len(), logs, "fuel {fuel}");
+        assert_eq!(world.queues.logs.len(), logs, "fuel {fuel}");
     }
 }
 
@@ -155,24 +156,24 @@ fn a_plugin_that_keeps_aborting_is_quarantined() {
         (func (export "schemify_abi") (result i32) i32.const 1)
         (func (export "schemify_alloc") (param i32) (result i32) i32.const 8)
         (func (export "schemify_on_event") (param i32 i32) (result i64) unreachable)"#;
-    let mut w = World::new();
-    let bad = w.load("bad", BAD, &[], FUEL_DEFAULT);
-    let trapper = w.load("trap", &module(trap), &[], FUEL_DEFAULT); // `Load` aborts: 1
+    let mut world = World::new();
+    let bad = world.load("bad", BAD, &[], FUEL_DEFAULT);
+    let trapper = world.load("trap", &module(trap), &[], FUEL_DEFAULT); // `Load` aborts: 1
     for _ in 2..QUARANTINE_AFTER {
-        w.send(Some(trapper), Event::Timer { id: 1 });
+        world.send(Some(trapper), Event::Timer { id: 1 });
     }
     assert_eq!(
-        w.plugins.ids(),
+        world.plugins.ids(),
         [bad, trapper],
         "one abort short: still loaded"
     );
-    w.send(Some(trapper), Event::Timer { id: 1 });
-    assert_eq!(w.plugins.ids(), [bad]);
-    let last = w.plugins.health().faults().back().cloned().unwrap();
+    world.send(Some(trapper), Event::Timer { id: 1 });
+    assert_eq!(world.plugins.ids(), [bad]);
+    let last = world.plugins.health().faults().back().cloned().unwrap();
     assert_eq!((last.plugin, last.code), (trapper, Code::Gone));
     assert!(last.detail.contains("quarantined"), "{}", last.detail);
-    w.send(Some(trapper), Event::Timer { id: 1 });
-    let last = w.plugins.health().faults().back().cloned().unwrap();
+    world.send(Some(trapper), Event::Timer { id: 1 });
+    let last = world.plugins.health().faults().back().cloned().unwrap();
     assert_eq!(
         (last.plugin, last.code),
         (trapper, Code::Gone),
@@ -181,14 +182,17 @@ fn a_plugin_that_keeps_aborting_is_quarantined() {
 
     for _ in 0..2 {
         for _ in 1..QUARANTINE_AFTER {
-            assert_eq!(World::codes(&w.command(bad, "bad.recurse")), [Code::Trap]);
+            assert_eq!(
+                World::codes(&world.command(bad, "bad.recurse")),
+                [Code::Trap]
+            );
         }
         assert!(
-            w.command(bad, "bad.grow").is_empty(),
+            world.command(bad, "bad.grow").is_empty(),
             "a good event resets the count"
         );
     }
-    assert_eq!(w.plugins.ids(), [bad]);
+    assert_eq!(world.plugins.ids(), [bad]);
 }
 
 /// A WAT module of `body`; wasmi compiles the text (dev feature `wat`).

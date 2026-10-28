@@ -7,9 +7,11 @@
 //! Contents:
 //! - `pub struct Contributions`: `new`, `len`, `is_empty`, `epoch`, `get`, `rows`,
 //!   `remove_plugin`; `pub(crate) fn set`
-//! - `pub(crate) struct SetRecord`
+//! - `pub struct ContributionRow<'table>`
+//! - `pub(crate) struct SetRecord<'body>`
+//! - `pub(crate) struct FunctionRow`
 //! - `pub(crate) fn set_records(kind: Kind, body: &str) -> Result<Vec<SetRecord<'_>>, Code>`
-//! - `pub(crate) fn function_row(d: &FormatDoc<'_>, r: u32) -> Result<(Box<str>, u32, u8), Code>`
+//! - `pub(crate) fn function_row(document: &FormatDoc<'_>, record: u32) -> Result<FunctionRow, Code>`
 //! - `pub(crate) fn lex<T>(body: &str, read: impl FnOnce(&FormatDoc<'_>) -> T) -> Result<T, Code>`
 //! - `pub(crate) fn line_values(line: &str) -> Result<Vec<String>, Code>`
 //! - `pub(crate) fn truncate(s: &str, max: usize) -> &str`
@@ -30,13 +32,34 @@ pub struct Contributions {
     epoch: u32,
 }
 
+/// One row of [`Contributions`], borrowed from the table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContributionRow<'table> {
+    /// The contributing plugin.
+    pub plugin: PluginId,
+    /// Contribution kind.
+    pub kind: Kind,
+    /// Annotation scope; empty for other kinds.
+    pub scope: &'table str,
+    /// The set's line-record text, never empty.
+    pub body: &'table str,
+}
+
 /// One top-level record of a contribution set: its composition key and its full text.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SetRecord<'a> {
+pub(crate) struct SetRecord<'body> {
     /// Record word and first value (`set` adds the property; `remove X` is `node X`).
     pub key: String,
     /// The record line plus its indented lines.
-    pub text: &'a str,
+    pub text: &'body str,
+}
+
+/// The values of a `function <name: word> <fn_id: u32> <arity: u8>` record (D20).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FunctionRow {
+    pub name: Box<str>,
+    pub fn_id: u32,
+    pub arity: u8,
 }
 
 /// What sets and argv lines are lexed as: a lockfile of a newer format version, whose only
@@ -46,39 +69,50 @@ const LEX_HEADER: &str = "schemify 65535 lock\n";
 
 impl Contributions {
     /// Returns an empty table.
+    #[must_use]
     pub fn new() -> Contributions {
         Contributions::default()
     }
 
     /// Returns the number of non-empty sets.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.plugin.len(), self.kind.len());
+        debug_assert_eq!(self.plugin.len(), self.scope.len());
+        debug_assert_eq!(self.plugin.len(), self.body.len());
         self.plugin.len()
     }
 
     /// Returns whether no plugin contributes anything.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.plugin.is_empty()
+        self.len() == 0
     }
 
     /// Returns a value that changes (wrapping) whenever any set changes.
+    #[must_use]
     pub fn epoch(&self) -> u32 {
         self.epoch
     }
 
     /// Returns the current set of `plugin` for (`kind`, `scope`), or `None` when empty.
+    #[must_use]
     pub fn get(&self, plugin: PluginId, kind: Kind, scope: &str) -> Option<&str> {
-        self.find(plugin, kind, scope).map(|i| &*self.body[i])
+        let body = self.find(plugin, kind, scope).map(|i| &*self.body[i]);
+        debug_assert!(
+            body.is_none_or(|body| !body.is_empty()),
+            "an empty set has no row"
+        );
+        body
     }
 
-    /// Iterates every row as (plugin, kind, scope, body), in insertion order.
-    pub fn rows(&self) -> impl Iterator<Item = (PluginId, Kind, &str, &str)> {
-        (0..self.len()).map(|i| {
-            (
-                self.plugin[i],
-                self.kind[i],
-                &*self.scope[i],
-                &*self.body[i],
-            )
+    /// Iterates every row, in insertion order.
+    pub fn rows(&self) -> impl Iterator<Item = ContributionRow<'_>> {
+        (0..self.len()).map(|i| ContributionRow {
+            plugin: self.plugin[i],
+            kind: self.kind[i],
+            scope: &self.scope[i],
+            body: &self.body[i],
         })
     }
 
@@ -93,7 +127,7 @@ impl Contributions {
         if self.len() != before {
             self.epoch = self.epoch.wrapping_add(1);
         }
-        debug_assert!(self.plugin.iter().all(|&p| p != plugin));
+        debug_assert!(self.plugin.iter().all(|&owner| owner != plugin));
     }
 
     /// Replaces a set (an identical body is no change); an empty `body` removes the row.
@@ -145,14 +179,14 @@ pub(crate) fn set_records(kind: Kind, body: &str) -> Result<Vec<SetRecord<'_>>, 
     let chunks: Vec<&str> = text::chunks(body.as_bytes())
         .map(|c| std::str::from_utf8(c).expect("chunks of a str split at LF stay UTF-8"))
         .collect();
-    let keys = lex(body, |d| -> Result<Vec<String>, Code> {
+    let keys = lex(body, |document| -> Result<Vec<String>, Code> {
         // An indented line before the first record attaches to the header: an orphan.
-        let orphan = !d.attrs(0).is_empty() || d.verbatim(0).next().is_some();
-        if orphan || d.record_count() as usize != chunks.len() + 1 {
+        let orphan = !document.attrs(0).is_empty() || document.verbatim(0).next().is_some();
+        if orphan || document.record_count() as usize != chunks.len() + 1 {
             return Err(Code::Parse);
         }
-        (1..d.record_count())
-            .map(|r| record_key(kind, d, r))
+        (1..document.record_count())
+            .map(|record| record_key(kind, document, record))
             .collect()
     })??;
     debug_assert_eq!(keys.len(), chunks.len());
@@ -165,29 +199,34 @@ pub(crate) fn set_records(kind: Kind, body: &str) -> Result<Vec<SetRecord<'_>>, 
     Ok(out)
 }
 
-/// `(name, fn_id, arity)` of record `r`, a `function <name: word> <fn_id: u32> <arity: u8>`.
+/// The values of `record`, a `function <name: word> <fn_id: u32> <arity: u8>`.
 ///
 /// # Errors
 ///
 /// `E_PARSE` for any other shape.
-pub(crate) fn function_row(d: &FormatDoc<'_>, r: u32) -> Result<(Box<str>, u32, u8), Code> {
-    debug_assert!(r < d.record_count());
-    let name = d
-        .field(r, 0)
-        .filter(|n| text::is_word(n))
+pub(crate) fn function_row(document: &FormatDoc<'_>, record: u32) -> Result<FunctionRow, Code> {
+    debug_assert!(record > 0, "record 0 is the lex header");
+    debug_assert!(record < document.record_count());
+    let name = document
+        .field(record, 0)
+        .filter(|name| text::is_word(name))
         .ok_or(Code::Parse)?;
-    let fn_id = d
-        .field(r, 1)
-        .and_then(|f| f.parse().ok())
+    let fn_id: u32 = document
+        .field(record, 1)
+        .and_then(|field| field.parse().ok())
         .ok_or(Code::Parse)?;
-    let arity = d
-        .field(r, 2)
-        .and_then(|a| a.parse().ok())
+    let arity: u8 = document
+        .field(record, 2)
+        .and_then(|field| field.parse().ok())
         .ok_or(Code::Parse)?;
-    if d.field(r, 3).is_some() {
+    if document.field(record, 3).is_some() {
         return Err(Code::Parse);
     }
-    Ok((name.into(), fn_id, arity))
+    Ok(FunctionRow {
+        name: Box::from(name),
+        fn_id,
+        arity,
+    })
 }
 
 /// Lexes `body` with the format reader and hands the document to `read`; record 0 is the
@@ -197,16 +236,14 @@ pub(crate) fn function_row(d: &FormatDoc<'_>, r: u32) -> Result<(Box<str>, u32, 
 ///
 /// `E_PARSE` when the format reader rejects the text.
 pub(crate) fn lex<T>(body: &str, read: impl FnOnce(&FormatDoc<'_>) -> T) -> Result<T, Code> {
-    let mut src = String::with_capacity(LEX_HEADER.len() + body.len());
-    src.push_str(LEX_HEADER);
-    src.push_str(body);
-    let d = schemify_format::parse(src.as_bytes()).map_err(|_| Code::Parse)?;
+    let source = format!("{LEX_HEADER}{body}");
+    let document = schemify_format::parse(source.as_bytes()).map_err(|_| Code::Parse)?;
     assert!(
-        d.version() > schemify_format::VERSION,
+        document.version() > schemify_format::VERSION,
         "forward-compatible mode"
     );
-    assert!(d.record_count() >= 1, "the header is record 0");
-    Ok(read(&d))
+    assert!(document.record_count() >= 1, "the header is record 0");
+    Ok(read(&document))
 }
 
 /// The values of one line (a `spawn` argv), lexed by the format reader.
@@ -218,11 +255,14 @@ pub(crate) fn line_values(line: &str) -> Result<Vec<String>, Code> {
     if line.contains(['\n', '\r']) {
         return Err(Code::Parse);
     }
-    let src = format!("argv {line}");
-    lex(&src, |d| match d.record_count() {
-        2 => Ok(d.fields(1).map(str::to_owned).collect()),
+    let source = format!("argv {line}");
+    let values = lex(&source, |document| match document.record_count() {
+        2 => Ok(document.fields(1).map(str::to_owned).collect()),
         _ => Err(Code::Parse),
-    })?
+    })?;
+    // Negative space: no text, no values.
+    debug_assert!(!line.is_empty() || values.as_ref().is_ok_and(Vec::is_empty));
+    values
 }
 
 /// Returns the longest prefix of `s` of at most `max` bytes that ends on a char boundary.
@@ -241,32 +281,37 @@ impl Contributions {
     }
 
     fn remove(&mut self, i: usize) {
+        let rows = self.len();
+        assert!(i < rows);
         self.plugin.remove(i);
         self.kind.remove(i);
         self.scope.remove(i);
         self.body.remove(i);
+        debug_assert_eq!(self.len(), rows - 1);
     }
 }
 
 /// The composition key of record `r` of a lexed set, after checking its word against
 /// `kind` and the exact `function` form.
-fn record_key(kind: Kind, d: &FormatDoc<'_>, r: u32) -> Result<String, Code> {
-    let word = d.record_word(r);
+fn record_key(kind: Kind, document: &FormatDoc<'_>, record: u32) -> Result<String, Code> {
+    let word = document.record_word(record);
     if !kind.words().contains(&word) {
         return Err(Code::Parse);
     }
     // `remove X` shares `node X`'s key (D8).
     let base = if word == "remove" { "node" } else { word };
-    let first = d.field(r, 0).ok_or(Code::Parse)?;
-    let mut key = format!("{base} {first}");
-    // `set <node> <prop> <value>` is keyed by two values.
-    if word == "set" {
-        key.push(' ');
-        key.push_str(d.field(r, 1).ok_or(Code::Parse)?);
-    }
+    let first = document.field(record, 0).ok_or(Code::Parse)?;
+    let key = if word == "set" {
+        // `set <node> <prop> <value>` is keyed by two values.
+        let property = document.field(record, 1).ok_or(Code::Parse)?;
+        format!("{base} {first} {property}")
+    } else {
+        format!("{base} {first}")
+    };
     if kind == Kind::Functions {
-        function_row(d, r)?;
+        function_row(document, record)?;
     }
+    debug_assert!(key.starts_with(base));
     debug_assert!(key.len() > base.len());
     Ok(key)
 }

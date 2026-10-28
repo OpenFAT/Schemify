@@ -65,53 +65,65 @@ impl Default for Snapshots {
 
 impl Snapshots {
     /// Returns every table empty, at epoch 0.
+    #[must_use]
     pub fn new() -> Snapshots {
-        let tables = Table::ALL
+        let tables: Vec<TableData> = Table::ALL
             .iter()
-            .map(|t| TableData {
+            .map(|table| TableData {
                 epoch: 0,
-                columns: vec![Column::default(); t.columns().len()],
+                columns: vec![Column::default(); table.columns().len()],
             })
             .collect();
-        Snapshots { tables }
+        let snapshots = Snapshots { tables };
+        debug_assert!(
+            snapshots.is_lent(),
+            "a full table set, never the placeholder"
+        );
+        snapshots
     }
 
     /// Replaces a fixed-width column and advances the table's epoch.
     ///
     /// # Panics
     ///
-    /// Panics if the column is not of type `T` or `values.len() > ROWS_MAX`.
+    /// Panics if `table` has no column `column`, the column is not of type `T`, or
+    /// `values.len() > ROWS_MAX`.
     pub fn fill<T: Scalar>(&mut self, table: Table, column: u32, values: &[T]) {
         assert!(values.len() <= ROWS_MAX as usize);
-        let c = self.column_mut(table, column, T::TY);
-        let w = usize::from(T::TY.width());
-        c.bytes.clear();
+        let target = self.column_mut(table, column, T::TY);
+        debug_assert!(target.ends.is_empty(), "a fixed-width column has no ends");
+        let width = usize::from(T::TY.width());
+        target.bytes.clear();
         // Room for later splices to grow into without reallocating the column.
-        c.bytes.reserve((values.len() + values.len() / 8) * w);
-        for &v in values {
-            v.put_le(&mut c.bytes);
+        target
+            .bytes
+            .reserve((values.len() + values.len() / 8) * width);
+        for &value in values {
+            value.put_le(&mut target.bytes);
         }
-        debug_assert_eq!(c.bytes.len(), values.len() * w);
+        debug_assert_eq!(target.bytes.len(), values.len() * width);
     }
 
     /// Replaces a string column and advances the table's epoch.
     ///
     /// # Panics
     ///
-    /// Panics if the column is not a string column, `values.len() > ROWS_MAX`, or the
-    /// strings total 4 GiB or more.
+    /// Panics if `table` has no column `column`, the column is not a string column,
+    /// `values.len() > ROWS_MAX`, or the strings total 4 GiB or more.
     pub fn fill_strings<S: AsRef<str>>(&mut self, table: Table, column: u32, values: &[S]) {
         assert!(values.len() <= ROWS_MAX as usize);
-        let c = self.column_mut(table, column, ColType::Str);
-        c.bytes.clear();
-        c.ends.clear();
-        c.ends.reserve(values.len() + values.len() / 8);
-        for v in values {
-            c.bytes.extend_from_slice(v.as_ref().as_bytes());
-            c.ends
-                .push(u32::try_from(c.bytes.len()).expect("string column under 4 GiB"));
+        let target = self.column_mut(table, column, ColType::Str);
+        target.bytes.clear();
+        target.ends.clear();
+        target.ends.reserve(values.len() + values.len() / 8);
+        for value in values {
+            target.bytes.extend_from_slice(value.as_ref().as_bytes());
+            let end = u32::try_from(target.bytes.len()).expect("string column under 4 GiB");
+            target.ends.push(end);
         }
-        debug_assert_eq!(c.ends.len(), values.len());
+        debug_assert_eq!(target.ends.len(), values.len());
+        let last = target.ends.last().map_or(0, |&end| end as usize);
+        debug_assert_eq!(last, target.bytes.len(), "the last row ends the column");
     }
 
     /// Replaces rows `at` of a fixed-width column with `values` (the rows after it shift) and
@@ -121,32 +133,33 @@ impl Snapshots {
     ///
     /// # Panics
     ///
-    /// Panics if the column is not of type `T`, `at` is past the column's rows, or the result
-    /// would exceed [`ROWS_MAX`].
+    /// Panics if `table` has no column `column`, the column is not of type `T`, `at` is
+    /// reversed or past the column's rows, or the result would exceed [`ROWS_MAX`].
     pub fn splice<T: Scalar>(&mut self, table: Table, column: u32, at: Range<usize>, values: &[T]) {
-        let c = self.column_mut(table, column, T::TY);
-        let w = usize::from(T::TY.width());
-        let rows = c.bytes.len() / w;
-        assert!(
-            at.start <= at.end && at.end <= rows,
-            "rows {at:?} of {rows}"
-        );
+        let target = self.column_mut(table, column, T::TY);
+        debug_assert!(target.ends.is_empty(), "a fixed-width column has no ends");
+        let width = usize::from(T::TY.width());
+        let rows = target.bytes.len() / width;
+        assert!(at.start <= at.end, "reversed rows {at:?}");
+        assert!(at.end <= rows, "rows {at:?} of {rows}");
         let after = rows - at.len() + values.len();
         assert!(after <= ROWS_MAX as usize);
-        let mut enc = Vec::with_capacity(values.len() * w);
-        for &v in values {
-            v.put_le(&mut enc);
+        let mut encoded = Vec::with_capacity(values.len() * width);
+        for &value in values {
+            value.put_le(&mut encoded);
         }
-        c.bytes.splice(at.start * w..at.end * w, enc);
-        debug_assert_eq!(c.bytes.len(), after * w);
+        target
+            .bytes
+            .splice(at.start * width..at.end * width, encoded);
+        debug_assert_eq!(target.bytes.len(), after * width);
     }
 
     /// [`Snapshots::splice`] for a string column.
     ///
     /// # Panics
     ///
-    /// Panics if the column is not a string column, `at` is past its rows, or the strings
-    /// would total 4 GiB or more.
+    /// Panics if `table` has no column `column`, the column is not a string column, `at` is
+    /// reversed or past its rows, or the strings would total 4 GiB or more.
     pub fn splice_strings<S: AsRef<str>>(
         &mut self,
         table: Table,
@@ -154,38 +167,40 @@ impl Snapshots {
         at: Range<usize>,
         values: &[S],
     ) {
-        let c = self.column_mut(table, column, ColType::Str);
-        let rows = c.ends.len();
-        assert!(
-            at.start <= at.end && at.end <= rows,
-            "rows {at:?} of {rows}"
-        );
-        let (b0, b1) = (row_start(&c.ends, at.start), row_start(&c.ends, at.end));
+        let target = self.column_mut(table, column, ColType::Str);
+        let rows = target.ends.len();
+        assert!(at.start <= at.end, "reversed rows {at:?}");
+        assert!(at.end <= rows, "rows {at:?} of {rows}");
+        let first = row_start(&target.ends, at.start);
+        let last = row_start(&target.ends, at.end);
         let mut bytes = Vec::new();
         let mut lens = Vec::with_capacity(values.len());
-        for v in values {
-            bytes.extend_from_slice(v.as_ref().as_bytes());
+        for value in values {
+            bytes.extend_from_slice(value.as_ref().as_bytes());
             lens.push(bytes.len());
         }
-        let total = c.bytes.len() - (b1 - b0) + bytes.len();
+        let total = target.bytes.len() - (last - first) + bytes.len();
         assert!(u32::try_from(total).is_ok(), "string column under 4 GiB");
-        let grown = bytes.len() as i64 - (b1 - b0) as i64;
-        c.bytes.splice(b0..b1, bytes);
-        c.ends
-            .splice(at.clone(), lens.iter().map(|&l| (b0 + l) as u32));
-        for e in &mut c.ends[at.start + values.len()..] {
-            *e = (i64::from(*e) + grown) as u32;
+        let grown = bytes.len() as i64 - (last - first) as i64;
+        target.bytes.splice(first..last, bytes);
+        let new_ends = lens.iter().map(|&len| (first + len) as u32);
+        target.ends.splice(at.clone(), new_ends);
+        for end in &mut target.ends[at.start + values.len()..] {
+            *end = (i64::from(*end) + grown) as u32;
         }
-        debug_assert!(c.ends.last().is_none_or(|&e| e as usize == total));
-        debug_assert!(c.ends.windows(2).all(|p| p[0] <= p[1]));
+        debug_assert_eq!(target.ends.len(), rows - at.len() + values.len());
+        debug_assert!(target.ends.last().is_none_or(|&end| end as usize == total));
+        debug_assert!(target.ends.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
     /// Returns the row count (that of column 0; [`Snapshots::check`] verifies the rest).
+    #[must_use]
     pub fn rows(&self, table: Table) -> u32 {
         rows_of(table, 0, &self.tables[table as usize].columns[0])
     }
 
     /// Returns the table's epoch; it advances on every `fill*` and `splice*`.
+    #[must_use]
     pub fn epoch(&self, table: Table) -> u32 {
         self.tables[table as usize].epoch
     }
@@ -195,16 +210,20 @@ impl Snapshots {
     /// # Errors
     ///
     /// The first table whose columns disagree.
+    ///
+    /// # Panics
+    ///
+    /// Panics on the crate's internal placeholder, which a caller never holds.
     pub fn check(&self) -> Result<(), Table> {
         assert!(self.is_lent(), "placeholder snapshots");
         for &table in Table::ALL {
             let columns = &self.tables[table as usize].columns;
             let rows = rows_of(table, 0, &columns[0]);
-            if !columns
+            let mut counts = columns
                 .iter()
                 .enumerate()
-                .all(|(i, c)| rows_of(table, i, c) == rows)
-            {
+                .map(|(i, c)| rows_of(table, i, c));
+            if !counts.all(|count| count == rows) {
                 return Err(table);
             }
         }
@@ -223,9 +242,14 @@ impl Snapshots {
 
     /// Returns whether `doc` is a live handle in the `Docs` table. O(docs).
     pub(crate) fn has_doc(&self, doc: u32) -> bool {
+        debug_assert!(self.is_lent(), "placeholder snapshots");
         let docs = &self.tables[Table::Docs as usize];
         let handles = &docs.columns[col::docs::HANDLE as usize];
-        handles.bytes.chunks_exact(4).any(|b| u32::get_le(b) == doc)
+        debug_assert_eq!(handles.bytes.len() % 4, 0, "`Docs.handle` is a u32 column");
+        handles
+            .bytes
+            .chunks_exact(4)
+            .any(|bytes| u32::get_le(bytes) == doc)
     }
 
     /// Resolves a fixed-width column slice in wire form.
@@ -241,12 +265,14 @@ impl Snapshots {
         count: u32,
     ) -> Result<&[u8], Code> {
         let (table, c) = self.column(table, column)?;
-        let w = usize::from(table.columns()[column as usize].ty.width());
-        if w == 0 {
+        let width = usize::from(table.columns()[column as usize].ty.width());
+        if width == 0 {
             return Err(Code::Column);
         }
         let rows = row_range(rows_of(table, column as usize, c), start, count)?;
-        Ok(&c.bytes[rows.start * w..rows.end * w])
+        let bytes = &c.bytes[rows.start * width..rows.end * width];
+        debug_assert_eq!(bytes.len(), count as usize * width);
+        Ok(bytes)
     }
 
     /// Returns the size in bytes of the `read_strings` wire form (`u32 len` + bytes per row).
@@ -286,13 +312,13 @@ impl Snapshots {
             .expect("validated by strings_len");
         let mut at = 0;
         for i in rows {
-            let s = &c.bytes[row_start(&c.ends, i)..c.ends[i] as usize];
-            let len = u32::try_from(s.len()).expect("< 4 GiB");
+            let string = &c.bytes[row_start(&c.ends, i)..c.ends[i] as usize];
+            let len = u32::try_from(string.len()).expect("< 4 GiB");
             dst[at..at + 4].copy_from_slice(&len.to_le_bytes());
-            dst[at + 4..at + 4 + s.len()].copy_from_slice(s);
-            at += 4 + s.len();
+            dst[at + 4..at + 4 + string.len()].copy_from_slice(string);
+            at += 4 + string.len();
         }
-        assert_eq!(at, dst.len());
+        assert_eq!(at, dst.len(), "`dst` is exactly `strings_len` bytes");
     }
 }
 
@@ -318,29 +344,38 @@ impl Snapshots {
             return Err(Code::Column);
         }
         let rows = row_range(rows_of(table, column as usize, c), start, count)?;
+        debug_assert!(
+            rows.end <= c.ends.len(),
+            "a string column's rows are its ends"
+        );
         Ok((rows, c))
     }
 
     /// Column `column` of `table` for writing, after checking it holds `ty`; advances the
     /// table's epoch.
     fn column_mut(&mut self, table: Table, column: u32, ty: ColType) -> &mut Column {
-        let def = table.columns()[column as usize];
-        assert_eq!(
-            def.ty,
-            ty,
-            "{}.{} is {}",
-            table.name(),
-            def.name,
-            def.ty.name()
+        let columns = table.columns();
+        let name = table.name();
+        assert!(
+            (column as usize) < columns.len(),
+            "{name} has no column {column}"
         );
-        let t = &mut self.tables[table as usize];
-        t.epoch = t.epoch.wrapping_add(1);
-        &mut t.columns[column as usize]
+        let definition = columns[column as usize];
+        let (field, expected) = (definition.name, definition.ty.name());
+        assert_eq!(definition.ty, ty, "{name}.{field} is {expected}");
+        let data = &mut self.tables[table as usize];
+        data.epoch = data.epoch.wrapping_add(1);
+        &mut data.columns[column as usize]
     }
 
     /// Column `column` of raw table id `table`, as a guest names it.
     fn column(&self, table: u32, column: u32) -> Result<(Table, &Column), Code> {
         let table = Table::from_raw(table).ok_or(Code::Table)?;
+        debug_assert_eq!(
+            self.tables[table as usize].columns.len(),
+            table.columns().len(),
+            "`new` builds one column per §4 column"
+        );
         let c = self.tables[table as usize]
             .columns
             .get(column as usize)
@@ -351,11 +386,15 @@ impl Snapshots {
 
 /// Row count of column `column` of `table`, from its wire form.
 fn rows_of(table: Table, column: usize, c: &Column) -> u32 {
-    let n = match table.columns()[column].ty.width() {
+    let rows = match table.columns()[column].ty.width() {
         0 => c.ends.len(),
-        w => c.bytes.len() / usize::from(w),
+        width => {
+            let width = usize::from(width);
+            debug_assert_eq!(c.bytes.len() % width, 0, "a column holds whole rows");
+            c.bytes.len() / width
+        }
     };
-    u32::try_from(n).expect("fill caps rows at ROWS_MAX")
+    u32::try_from(rows).expect("fill caps rows at ROWS_MAX")
 }
 
 /// `start..start + count` when it lies within `rows`.
@@ -364,7 +403,9 @@ fn row_range(rows: u32, start: u32, count: u32) -> Result<Range<usize>, Code> {
     if end > rows {
         return Err(Code::Range);
     }
-    Ok(start as usize..end as usize)
+    let range = start as usize..end as usize;
+    debug_assert_eq!(range.len(), count as usize);
+    Ok(range)
 }
 
 #[cfg(test)]

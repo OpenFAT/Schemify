@@ -36,37 +36,51 @@ impl Grants {
     ///
     /// `E_PARSE` for any grant [`Cap::parse_grant`] rejects.
     pub fn parse(grants: &[&str]) -> Result<Grants, Code> {
-        let mut g = Grants::default();
+        let mut parsed = Grants::default();
         for grant in grants {
             let (cap, arg) = Cap::parse_grant(grant).ok_or(Code::Parse)?;
-            g.caps |= 1 << cap as u8;
+            parsed.caps |= 1 << cap as u8;
             let list = match cap {
-                Cap::Spawn => &mut g.spawn,
-                Cap::ReadEnv => &mut g.read_env,
+                Cap::Spawn => &mut parsed.spawn,
+                Cap::ReadEnv => &mut parsed.read_env,
                 Cap::ReadProject | Cap::WriteProject | Cap::Network | Cap::Clipboard => continue,
             };
-            if !list.iter().any(|b| &**b == arg) {
-                list.push(arg.into());
+            if !list.iter().any(|listed| &**listed == arg) {
+                list.push(Box::from(arg));
             }
         }
-        debug_assert_eq!(g.has(Cap::Spawn), !g.spawn.is_empty());
-        debug_assert_eq!(g.has(Cap::ReadEnv), !g.read_env.is_empty());
-        Ok(g)
+        debug_assert_eq!(parsed.has(Cap::Spawn), !parsed.spawn.is_empty());
+        debug_assert_eq!(parsed.has(Cap::ReadEnv), !parsed.read_env.is_empty());
+        debug_assert!(parsed.spawn.len() + parsed.read_env.len() <= grants.len());
+        Ok(parsed)
     }
 
     /// Returns whether `cap` is granted (for `spawn`: for at least one binary).
+    #[must_use]
     pub fn has(&self, cap: Cap) -> bool {
         self.caps & (1 << cap as u8) != 0
     }
 
     /// Returns whether spawning exactly `binary` is granted.
+    #[must_use]
     pub fn may_spawn(&self, binary: &str) -> bool {
-        self.spawn.iter().any(|b| &**b == binary)
+        let granted = self.spawn.iter().any(|listed| &**listed == binary);
+        debug_assert!(
+            !granted || self.has(Cap::Spawn),
+            "a listed binary sets the bit"
+        );
+        granted
     }
 
     /// Returns whether reading under environment variable `name` is granted (`read:<name>`).
+    #[must_use]
     pub fn may_read_env(&self, name: &str) -> bool {
-        self.read_env.iter().any(|v| &**v == name)
+        let granted = self.read_env.iter().any(|listed| &**listed == name);
+        debug_assert!(
+            !granted || self.has(Cap::ReadEnv),
+            "a listed name sets the bit"
+        );
+        granted
     }
 }
 
@@ -102,8 +116,13 @@ pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code>
         IoOp::Fetch => grants.has(Cap::Network) && !args[0].is_empty(),
         IoOp::ClipboardGet | IoOp::ClipboardSet => grants.has(Cap::Clipboard),
     };
-    // A spawn grant implies the capability bit (the `Grants` invariant).
-    debug_assert!(!(op == IoOp::Spawn && allowed) || grants.has(op.cap()));
+    // Positive space: every allow but a `${NAME}` read holds the operation's capability bit;
+    // the spawn bit follows from the `Grants` invariant.
+    if cfg!(debug_assertions) && allowed {
+        let env_read = matches!(op, IoOp::FsRead | IoOp::FsList) && env_path(&args[0]).is_some();
+        debug_assert!(env_read || grants.has(op.cap()));
+        debug_assert!(!env_read || grants.has(Cap::ReadEnv));
+    }
     if allowed { Ok(()) } else { Err(Code::Denied) }
 }
 
@@ -111,17 +130,23 @@ pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code>
 /// variable and the path below its directory (`""` for the directory itself). `None` when
 /// `path` does not start with `${`, names no valid variable ([`Cap::env_name`]) or continues
 /// with anything but a project-relative path.
+#[must_use]
 pub fn env_path(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix("${")?;
     let (name, rest) = rest.split_once('}')?;
     if !Cap::env_name(name) {
         return None;
     }
-    let rel = match rest {
+    let relative = match rest {
         "" => "",
-        r => r.strip_prefix('/').filter(|r| project_relative(r))?,
+        below => below.strip_prefix('/').filter(|r| project_relative(r))?,
     };
-    Some((name, rel))
+    debug_assert!(!name.is_empty());
+    debug_assert!(
+        name.len() + relative.len() + 3 <= path.len(),
+        "`${{`, `}}` and the parts"
+    );
+    Some((name, relative))
 }
 
 // ---- private ----
@@ -143,11 +168,20 @@ fn removable(path: &str) -> bool {
 /// A project-relative path. A segment starting with `${` is refused, so it can never be
 /// mistaken for (or shadow) a `read:<NAME>` path ([`env_path`]).
 fn project_relative(path: &str) -> bool {
-    path.len() <= PATH_BYTES_MAX
+    let relative = path.len() <= PATH_BYTES_MAX
         && !path.contains(['\\', ':', '\0'])
-        && path
-            .split('/')
-            .all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.starts_with("${"))
+        && path.split('/').all(|segment| {
+            !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with("${")
+        });
+    debug_assert!(
+        !relative || !path.is_empty(),
+        "the empty path has one empty segment"
+    );
+    debug_assert!(
+        !relative || !path.starts_with('/'),
+        "an absolute path starts empty"
+    );
+    relative
 }
 
 #[cfg(test)]

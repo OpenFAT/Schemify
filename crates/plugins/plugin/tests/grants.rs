@@ -3,8 +3,9 @@
 //! and refuses every other request with a declared code.
 
 use proptest::prelude::*;
+use schemify_plugin as host;
 use schemify_plugin::abi::Code;
-use schemify_plugin::{Grants, IoOp, authorize};
+use schemify_plugin::{Grants, IoOp};
 
 // ---- private ----
 
@@ -29,8 +30,8 @@ proptest! {
             "\\PC{0,8}",
         ], 0..3),
     ) {
-        let g = Grants::parse(&grants).unwrap();
-        let got = authorize(&g, op, &args);
+        let granted = Grants::parse(&grants).unwrap();
+        let got = host::authorize(&granted, op, &args);
         prop_assert!(matches!(got, Ok(()) | Err(Code::Denied) | Err(Code::Parse)));
         let arity = match op {
             IoOp::FsRead | IoOp::FsList | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => args.len() == 1,
@@ -58,15 +59,15 @@ proptest! {
         let allowed = match op {
             IoOp::FsRead | IoOp::FsList => match env_read(&args[0]) {
                 Some(granted) => granted,
-                None => g.has(op.cap()) && clean(&args[0]) && args[0].len() <= 4096,
+                None => granted.has(op.cap()) && clean(&args[0]) && args[0].len() <= 4096,
             },
-            _ => g.has(op.cap()) && match op {
+            _ => granted.has(op.cap()) && match op {
             IoOp::FsRead | IoOp::FsList => unreachable!(),
             IoOp::FsWrite => clean(&args[0]) && args[0].len() <= 4096,
             IoOp::FsRemove => clean(&args[0]) && args[0].len() <= 4096
                 && args[0].split('/').count() >= 2 && args[0].split('/').next() == Some(".schemify")
                 && !matches!(args[0].rsplit('/').next(), Some("schemify.project" | "schemify.lock")),
-            IoOp::Spawn => grants.iter().any(|gr| gr.strip_prefix("spawn:") == Some(args[0].as_str())),
+            IoOp::Spawn => grants.iter().any(|grant| grant.strip_prefix("spawn:") == Some(args[0].as_str())),
             IoOp::Fetch => !args[0].is_empty(),
             IoOp::ClipboardGet | IoOp::ClipboardSet => true,
         }};

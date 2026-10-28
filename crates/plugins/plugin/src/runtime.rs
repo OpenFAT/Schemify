@@ -5,14 +5,17 @@
 //! Contents:
 //! - `pub(crate) struct Room`, `Room::left(queues: &RequestQueues) -> Room`
 //! - `pub(crate) struct Staged`, `Staged::is_empty(&self) -> bool`
-//! - `pub(crate) struct Ctx`, `Ctx::new(plugin: PluginId, grants: Grants) -> Ctx`
+//! - `pub(crate) struct Failure`
+//! - `pub(crate) struct Context`, `Context::new(plugin: PluginId, grants: Grants) -> Context`
 //! - `pub(crate) struct Exports`
 //! - `pub(crate) fn engine() -> Engine`
-//! - `pub(crate) fn instantiate(engine, linker, wasm, ctx, fuel) -> Result<(Store<Ctx>, Exports), (Code, String)>`
+//! - `pub(crate) fn instantiate(engine, linker, wasm, context, fuel) -> Result<(Store<Context>, Exports), Failure>`
 //! - `pub(crate) fn run_event(store, exports, input, fuel, out) -> Result<(), Code>`
 //! - `pub(crate) fn run_lent(store, exports, input, fuel, snapshots, room, out) -> Result<(), Code>`
 //! - `pub(crate) fn run_call(store, exports, fn_id, args, fuel, out) -> Result<Result<(), Code>, Code>`
 //! - `pub(crate) fn trap(e: &wasmi::Error) -> Code`
+
+use std::fmt::Display;
 
 use schemify_abi::{ABI_VERSION, Code, MEMORY_BYTES_MAX, exports, unpack};
 use wasmi::{
@@ -21,8 +24,8 @@ use wasmi::{
 };
 
 use crate::{
-    EVALS_MAX, EvalRequest, Grants, IO_MAX, IoRequest, LOGS_MAX, LogEntry, OUTPUT_BYTES_MAX,
-    PluginId, RequestQueues, Snapshots,
+    BROADCAST, CALL_ARGS_BYTES_MAX, EVALS_MAX, EVENT_BYTES_MAX, EvalRequest, Grants, IO_MAX,
+    IoRequest, LOGS_MAX, LogEntry, OUTPUT_BYTES_MAX, PluginId, RequestQueues, Snapshots,
 };
 
 /// Remaining queue capacity for the current call; imports refuse with `E_SPACE` at zero,
@@ -43,9 +46,16 @@ pub(crate) struct Staged {
     pub logs: Vec<LogEntry>,
 }
 
+/// A declared guest failure and its human-readable context, on its way to [`crate::Health`].
+#[derive(Debug)]
+pub(crate) struct Failure {
+    pub code: Code,
+    pub detail: String,
+}
+
 /// Per-plugin store data. Invariant: `live` only inside `schemify_on_event`, and then
 /// `snapshots` is the caller's full table set; a placeholder otherwise.
-pub(crate) struct Ctx {
+pub(crate) struct Context {
     limits: StoreLimits,
     pub plugin: PluginId,
     pub grants: Grants,
@@ -58,7 +68,7 @@ pub(crate) struct Ctx {
     pub room: Room,
     pub staged: Staged,
     /// Contract violations seen during the call; reported whatever the call's outcome.
-    pub faults: Vec<(Code, String)>,
+    pub faults: Vec<Failure>,
     /// The next I/O or eval handle; handles are positive `i32`s, unique per plugin.
     pub next_handle: u32,
 }
@@ -88,10 +98,14 @@ impl Staged {
     }
 }
 
-impl Ctx {
+impl Context {
     /// An idle context: no memory, nothing lent, nothing staged; the limiter caps memory at
     /// [`MEMORY_BYTES_MAX`] and the instance count at one.
-    pub(crate) fn new(plugin: PluginId, grants: Grants) -> Ctx {
+    pub(crate) fn new(plugin: PluginId, grants: Grants) -> Context {
+        assert_ne!(
+            plugin.0, BROADCAST,
+            "the broadcast target is never a plugin id"
+        );
         let limits = StoreLimitsBuilder::new()
             .memory_size(MEMORY_BYTES_MAX)
             .memories(1)
@@ -99,7 +113,7 @@ impl Ctx {
             .tables(4)
             .table_elements(1 << 20)
             .build();
-        Ctx {
+        Context {
             limits,
             plugin,
             grants,
@@ -131,25 +145,21 @@ pub(crate) fn engine() -> Engine {
 /// mismatch. Each with its detail text.
 pub(crate) fn instantiate(
     engine: &Engine,
-    linker: &Linker<Ctx>,
+    linker: &Linker<Context>,
     wasm: &[u8],
-    ctx: Ctx,
+    context: Context,
     fuel: u64,
-) -> Result<(Store<Ctx>, Exports), (Code, String)> {
+) -> Result<(Store<Context>, Exports), Failure> {
     assert!(fuel > 0);
-    assert!(!ctx.live && ctx.memory.is_none());
-    let module = Module::new(engine, wasm).map_err(|e| (Code::Module, e.to_string()))?;
-    let mut store = Store::new(engine, ctx);
-    store.limiter(|ctx| &mut ctx.limits);
+    assert!(!context.live);
+    assert!(context.memory.is_none(), "a fresh context has no instance");
+    let module = Module::new(engine, wasm).map_err(|e| failure(Code::Module, e))?;
+    let mut store = Store::new(engine, context);
+    store.limiter(|context| &mut context.limits);
     store.set_fuel(fuel).expect("fuel metering is enabled");
     let instance = linker
         .instantiate_and_start(&mut store, &module)
-        .map_err(|e| {
-            (
-                e.as_trap_code().map_or(Code::Module, trap_code),
-                e.to_string(),
-            )
-        })?;
+        .map_err(|e| failure(e.as_trap_code().map_or(Code::Module, trap_code), e))?;
     let memory = instance
         .get_memory(&store, exports::MEMORY)
         .ok_or_else(|| missing(exports::MEMORY, "absent"))?;
@@ -169,13 +179,19 @@ pub(crate) fn instantiate(
         .transpose()
         .map_err(|e| missing(exports::CALL, e))?;
     store.data_mut().memory = Some(memory);
-    let version = abi
-        .call(&mut store, ())
-        .map_err(|e| (trap(&e), e.to_string()))?;
+    let version = abi.call(&mut store, ()).map_err(|e| failure(trap(&e), e))?;
     if version != ABI_VERSION {
-        return Err((Code::Version, format!("abi {version}, host {ABI_VERSION}")));
+        let detail = format!("abi {version}, host {ABI_VERSION}");
+        return Err(failure(Code::Version, detail));
     }
+    // Every import is denied outside an event, so the start function left nothing behind.
     debug_assert!(!store.data().live);
+    debug_assert!(store.data().staged.is_empty());
+    debug_assert_eq!(
+        store.data().next_handle,
+        1,
+        "no handle is issued outside an event"
+    );
     let exports = Exports {
         alloc,
         on_event,
@@ -195,12 +211,13 @@ pub(crate) fn instantiate(
 ///
 /// Panics unless the store is live with the caller's snapshots lent.
 pub(crate) fn run_event(
-    store: &mut Store<Ctx>,
+    store: &mut Store<Context>,
     exports: &Exports,
     input: &[u8],
     fuel: u64,
     out: &mut Vec<u8>,
 ) -> Result<(), Code> {
+    assert!(fuel > 0);
     assert!(store.data().live);
     assert!(store.data().snapshots.is_lent());
     out.clear();
@@ -210,11 +227,13 @@ pub(crate) fn run_event(
         .on_event
         .call(&mut *store, (ptr, len))
         .map_err(|e| trap(&e))?;
-    match unpack(packed) {
+    let outcome = match unpack(packed) {
         (0, 0) => Ok(()),
         (0, _) => Err(Code::Range),
         (out_ptr, out_len) => read_output(store, out_ptr, out_len, out),
-    }
+    };
+    debug_assert!(out.len() <= OUTPUT_BYTES_MAX);
+    outcome
 }
 
 /// [`run_event`] with the caller's `snapshots` lent to the store for the call (handed back
@@ -224,7 +243,7 @@ pub(crate) fn run_event(
 ///
 /// Panics if the store is live or has staged requests, or `snapshots` is a placeholder.
 pub(crate) fn run_lent(
-    store: &mut Store<Ctx>,
+    store: &mut Store<Context>,
     exports: &Exports,
     input: &[u8],
     fuel: u64,
@@ -232,17 +251,17 @@ pub(crate) fn run_lent(
     room: Room,
     out: &mut Vec<u8>,
 ) -> Result<(), Code> {
-    let ctx = store.data_mut();
-    assert!(!ctx.live);
-    assert!(ctx.staged.is_empty());
+    let context = store.data_mut();
+    assert!(!context.live);
+    assert!(context.staged.is_empty());
     assert!(snapshots.is_lent());
-    std::mem::swap(&mut ctx.snapshots, snapshots);
-    ctx.live = true;
-    ctx.room = room;
+    std::mem::swap(&mut context.snapshots, snapshots);
+    context.live = true;
+    context.room = room;
     let outcome = run_event(store, exports, input, fuel, out);
-    let ctx = store.data_mut();
-    ctx.live = false;
-    std::mem::swap(&mut ctx.snapshots, snapshots);
+    let context = store.data_mut();
+    context.live = false;
+    std::mem::swap(&mut context.snapshots, snapshots);
     debug_assert!(snapshots.is_lent());
     outcome
 }
@@ -255,14 +274,19 @@ pub(crate) fn run_lent(
 ///
 /// Panics if the store is live (an event is running on it).
 pub(crate) fn run_call(
-    store: &mut Store<Ctx>,
+    store: &mut Store<Context>,
     exports: &Exports,
     fn_id: u32,
     args: &[u8],
     fuel: u64,
     out: &mut Vec<u8>,
 ) -> Result<Result<(), Code>, Code> {
+    assert!(fuel > 0);
     assert!(!store.data().live);
+    assert!(
+        args.len() <= CALL_ARGS_BYTES_MAX,
+        "`Plugins::call` refuses longer args"
+    );
     out.clear();
     let Some(call) = exports.call else {
         return Ok(Err(Code::Range));
@@ -272,10 +296,13 @@ pub(crate) fn run_call(
     let packed = call
         .call(&mut *store, (fn_id, ptr, len))
         .map_err(|e| trap(&e))?;
-    match unpack(packed) {
+    let outcome = match unpack(packed) {
         (0, code) => Ok(Err(Code::from_raw(code).unwrap_or(Code::Range))),
         (ptr, len) => read_output(store, ptr, len, out).map(Ok),
-    }
+    };
+    // A pure call stages nothing: `live` stayed false, so every import refused.
+    debug_assert!(store.data().staged.is_empty());
+    outcome
 }
 
 /// The code of a guest failure: `E_FUEL` for fuel exhaustion, `E_TRAP` otherwise.
@@ -286,16 +313,29 @@ pub(crate) fn trap(e: &wasmi::Error) -> Code {
 // ---- private ----
 
 /// The load error for export `name` (absent or mistyped).
-fn missing(name: &str, e: impl std::fmt::Display) -> (Code, String) {
-    (Code::Module, format!("export {name}: {e}"))
+fn missing(name: &str, error: impl Display) -> Failure {
+    failure(Code::Module, format!("export {name}: {error}"))
+}
+
+fn failure(code: Code, detail: impl Display) -> Failure {
+    Failure {
+        code,
+        detail: detail.to_string(),
+    }
 }
 
 /// Copies `input` into a buffer from the guest's `schemify_alloc`; returns its (ptr, len).
+///
+/// # Panics
+///
+/// Panics if the store's memory was not resolved at load.
 fn write_input(
-    store: &mut Store<Ctx>,
+    store: &mut Store<Context>,
     alloc: TypedFunc<u32, u32>,
     input: &[u8],
 ) -> Result<(u32, u32), Code> {
+    // An encoded event, or `call` args, which are shorter.
+    debug_assert!(input.len() <= EVENT_BYTES_MAX);
     let len = u32::try_from(input.len()).map_err(|_| Code::Space)?;
     let ptr = alloc.call(&mut *store, len).map_err(|e| trap(&e))?;
     if ptr == 0 {
@@ -309,7 +349,8 @@ fn write_input(
 }
 
 /// Copies the guest's output buffer into `out`.
-fn read_output(store: &Store<Ctx>, ptr: u32, len: u32, out: &mut Vec<u8>) -> Result<(), Code> {
+fn read_output(store: &Store<Context>, ptr: u32, len: u32, out: &mut Vec<u8>) -> Result<(), Code> {
+    debug_assert_ne!(ptr, 0, "a null output pointer carries a code, never output");
     if len as usize > OUTPUT_BYTES_MAX {
         return Err(Code::Space);
     }

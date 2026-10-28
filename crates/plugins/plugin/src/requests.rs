@@ -139,6 +139,7 @@ pub struct RequestQueues {
 
 impl IoOp {
     /// Returns the capability the operation needs.
+    #[must_use]
     pub const fn cap(self) -> Cap {
         match self {
             IoOp::FsRead | IoOp::FsList => Cap::ReadProject,

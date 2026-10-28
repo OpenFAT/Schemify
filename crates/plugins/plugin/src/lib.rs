@@ -26,9 +26,9 @@
 //!   `QUARANTINE_AFTER`, `DEFERRED_MAX`
 //! - `pub struct PluginId(pub u32)`
 //! - `pub struct PluginEvents`: `new`, `push`, `len`, `is_empty`, `clear`
-//! - re-exports: `Plugins`, `deliver` (host), `RequestQueues` and its rows (requests),
-//!   `Fault`, `Health` (health), `Grants`, `authorize`, `env_path` (grants), `Contributions`
-//!   (contributions), `Rejection`, `intake` (intake), `Composed`, `ComposedRecord`,
+//! - re-exports: `Plugins` (host), `deliver` (deliver), `RequestQueues` and its rows (requests),
+//!   `Fault`, `Health` (health), `Grants`, `authorize`, `env_path` (grants), `Contributions`,
+//!   `ContributionRow` (contributions), `Rejection`, `intake` (intake), `Composed`, `ComposedRecord`,
 //!   `Functions`, `Override`, `compose` (compose), `Snapshots`, `ROWS_MAX` (snapshot),
 //!   `abi` (`schemify_abi`)
 //!
@@ -37,7 +37,8 @@
 //! The app spine, per frame (plugins are loaded once at session start):
 //!
 //! ```no_run
-//! use schemify_plugin::{deliver, Plugins, PluginEvents, RequestQueues, Snapshots};
+//! use schemify_plugin as plugin;
+//! use schemify_plugin::{Plugins, PluginEvents, RequestQueues, Snapshots};
 //! use schemify_plugin::abi::{Event, FUEL_DEFAULT};
 //!
 //! # fn main() -> Result<(), schemify_plugin::abi::Code> {
@@ -49,7 +50,7 @@
 //!
 //! events.push(None, &Event::DocChanged { doc: 1, epoch: 2 })?;
 //! events.push(Some(hello), &Event::Command { name: "count_nets.run", args: "" })?;
-//! deliver(&mut plugins, &events, &mut snapshots, &mut queues);
+//! plugin::deliver(&mut plugins, &events, &mut snapshots, &mut queues);
 //! events.clear();
 //! for edit in queues.edits.drain(..) { /* doc::apply_edits */ }
 //! for io in queues.io.drain(..) { /* app executes; later pushes Event::IoDone to io.plugin */ }
@@ -58,6 +59,7 @@
 
 mod compose;
 mod contributions;
+mod deliver;
 mod grants;
 mod health;
 mod host;
@@ -68,13 +70,16 @@ mod runtime;
 mod snapshot;
 mod worker;
 
+use std::fmt::{self, Display, Formatter};
+
 use schemify_abi::{Code, Event};
 
 pub use compose::{Composed, ComposedRecord, Functions, Override, compose};
-pub use contributions::Contributions;
+pub use contributions::{ContributionRow, Contributions};
+pub use deliver::deliver;
 pub use grants::{Grants, authorize, env_path};
 pub use health::{Fault, Health};
-pub use host::{Plugins, deliver};
+pub use host::Plugins;
 pub use intake::{Rejection, intake};
 pub use requests::{
     EditRequest, EvalRequest, IoOp, IoRequest, LogEntry, RequestQueues, RunRequest, TimerRequest,
@@ -144,14 +149,25 @@ pub struct PluginEvents {
 /// The target column's "every plugin"; never assigned as an id.
 const BROADCAST: u32 = u32::MAX;
 
-impl std::fmt::Display for PluginId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+// Every id a full table assigns stays below `BROADCAST`.
+const _: () = assert!(PLUGINS_MAX < BROADCAST as usize);
+// A guest's buffers are named by `u32` lengths, so no size limit may exceed one.
+const _: () = assert!(OUTPUT_BYTES_MAX <= u32::MAX as usize);
+const _: () = assert!(IO_BYTES_MAX <= u32::MAX as usize);
+const _: () = assert!(CALL_ARGS_BYTES_MAX <= u32::MAX as usize);
+// `Rejected` echoes must fit in a `PENDING_MAX` queue, and quarantine needs one abort.
+const _: () = assert!(PENDING_MAX > 0);
+const _: () = assert!(QUARANTINE_AFTER > 0);
+
+impl Display for PluginId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "plugin#{}", self.0)
     }
 }
 
 impl PluginEvents {
     /// Returns an empty table.
+    #[must_use]
     pub fn new() -> PluginEvents {
         PluginEvents::default()
     }
@@ -183,16 +199,21 @@ impl PluginEvents {
         self.target.push(target.map_or(BROADCAST, |id| id.0));
         self.ends.push(end);
         debug_assert_eq!(self.target.len(), self.ends.len());
+        debug_assert!(self.target.len() <= EVENTS_MAX);
         Ok(())
     }
 
     /// Returns the number of events.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.target.len(), self.ends.len());
         self.target.len()
     }
 
     /// Returns whether there are no events.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.target.len(), self.ends.len());
         self.target.is_empty()
     }
 
@@ -210,9 +231,15 @@ impl PluginEvents {
     /// Event `i`: its target (`None` = broadcast) and its encoded bytes.
     fn get(&self, i: usize) -> (Option<PluginId>, &[u8]) {
         assert!(i < self.target.len());
+        debug_assert_eq!(self.target.len(), self.ends.len());
         let start = snapshot::row_start(&self.ends, i);
         let target = (self.target[i] != BROADCAST).then_some(PluginId(self.target[i]));
-        (target, &self.bytes[start..self.ends[i] as usize])
+        let bytes = &self.bytes[start..self.ends[i] as usize];
+        debug_assert!(
+            !bytes.is_empty(),
+            "every event encodes to at least its record word"
+        );
+        (target, bytes)
     }
 }
 
