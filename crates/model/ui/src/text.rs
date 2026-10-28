@@ -15,6 +15,7 @@
 //!   `push_layout`, `math_uncached`
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use parley::fontique::Blob;
@@ -23,9 +24,12 @@ use parley::{
 };
 
 use crate::fonts::NOTO_SANS;
+use crate::icon;
 use crate::icon::Icon;
+use crate::math;
 use crate::math::{MathFonts, MathList};
-use crate::prose::ProseList;
+use crate::prose;
+use crate::prose::{CodeMetrics, ProseList};
 use crate::strings::{Strings, Sym};
 
 /// Index of a shaped layout in [`TextSystem`]; valid until the next [`TextSystem::begin_frame`]
@@ -72,9 +76,9 @@ pub struct TextSystem {
     icons: Vec<Icon>,
     /// Icon source → id, or `u32::MAX` for data that does not parse (parsed once either way).
     icon_cache: HashMap<Sym, u32>,
-    /// Code-block metrics per prose font in [`crate::prose::CODE_PX`] (measured once, kept
+    /// Code-block metrics per prose font in [`prose::CODE_PX`] (measured once, kept
     /// through evictions).
-    pub(crate) code_metrics: Vec<Option<crate::prose::CodeMetrics>>,
+    pub(crate) code_metrics: Vec<Option<CodeMetrics>>,
     /// Cache drops so far ([`TextSystem::epoch`]).
     epoch: u32,
 }
@@ -104,8 +108,8 @@ impl Default for TextSystem {
     }
 }
 
-impl std::fmt::Debug for TextSystem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for TextSystem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TextSystem")
             .field("layouts", &self.layouts.len())
             .finish()
@@ -140,9 +144,9 @@ impl TextSystem {
                 .to_owned()
         };
         let noto = register(NOTO_SANS);
-        let symbols = register(crate::math::face_bytes("Main-Regular"));
+        let symbols = register(math::face_bytes("Main-Regular"));
         // Monospace for code (prose code spans and blocks): KaTeX's, already embedded for math.
-        let mono = register(crate::math::face_bytes("Typewriter-Regular"));
+        let mono = register(math::face_bytes("Typewriter-Regular"));
         // A CSS family list: every builder parses it (`FontFamily::from(&str)`).
         let family = format!("\"{noto}\", \"{symbols}\"");
         assert!(noto != mono && symbols != mono);
@@ -164,13 +168,13 @@ impl TextSystem {
             code_metrics: Vec::new(),
             epoch: 0,
         };
-        let code: Vec<Option<crate::prose::CodeMetrics>> = crate::prose::CODE_PX
-            .map(|px| crate::prose::measure_code(&mut ts, px))
+        let code: Vec<Option<CodeMetrics>> = prose::CODE_PX
+            .map(|px| prose::measure_code(&mut ts, px))
             .collect();
         // The probe layouts are not cache entries: drop them so ids start at 0 as before.
         ts.layouts.clear();
         ts.code_metrics = code;
-        assert_eq!(ts.code_metrics.len(), crate::prose::CODE_PX.len());
+        assert_eq!(ts.code_metrics.len(), prose::CODE_PX.len());
         ts
     }
 
@@ -251,7 +255,7 @@ impl TextSystem {
 
     /// Lays out math that has no interned source (prose formulas); `None` outside the subset.
     pub(crate) fn math_uncached(&mut self, src: &str, px: f32) -> Option<u32> {
-        let list = crate::math::layout_math(src, px, &self.math_fonts).ok()?;
+        let list = math::layout_math(src, px, &self.math_fonts).ok()?;
         self.maths.push(list);
         Some((self.maths.len() - 1) as u32)
     }
@@ -268,8 +272,7 @@ impl TextSystem {
         if let Some(&id) = self.prose_cache.get(&(src, px, width)) {
             return id;
         }
-        let list =
-            crate::prose::layout_prose(self, strings.get(src), f32::from(px), f32::from(width));
+        let list = prose::layout_prose(self, strings.get(src), f32::from(px), f32::from(width));
         self.proses.push(list);
         let id = (self.proses.len() - 1) as u32;
         self.prose_cache.insert((src, px, width), id);
@@ -334,7 +337,7 @@ impl TextSystem {
         if let Some(&id) = self.math_cache.get(&(src, px)) {
             return Ok(id);
         }
-        let list = crate::math::layout_math(strings.get(src), f32::from(px), &self.math_fonts)?;
+        let list = math::layout_math(strings.get(src), f32::from(px), &self.math_fonts)?;
         let id = self.maths.len() as u32;
         self.maths.push(list);
         self.math_cache.insert((src, px), id);
@@ -353,7 +356,7 @@ impl TextSystem {
         if let Some(&id) = self.icon_cache.get(&src) {
             return (id != u32::MAX).then_some(id);
         }
-        let id = match crate::icon::parse(strings.get(src)) {
+        let id = match icon::parse(strings.get(src)) {
             Some(icon) => {
                 self.icons.push(icon);
                 (self.icons.len() - 1) as u32
@@ -382,6 +385,8 @@ impl TextSystem {
 
 #[cfg(test)]
 mod tests {
+    use parley::PositionedLayoutItem;
+
     use super::*;
     use crate::fonts::NOTO_SANS;
 
@@ -414,11 +419,11 @@ mod tests {
         let mut glyphs = 0;
         for line in layout.lines() {
             for item in line.items() {
-                let parley::PositionedLayoutItem::GlyphRun(run) = item else {
+                let PositionedLayoutItem::GlyphRun(run) = item else {
                     continue;
                 };
                 let font = run.run().font().data.data().as_ptr();
-                let symbols = crate::math::face_bytes("Main-Regular").as_ptr();
+                let symbols = math::face_bytes("Main-Regular").as_ptr();
                 assert!(
                     font == NOTO_SANS.as_ptr() || font == symbols,
                     "a glyph from another font"

@@ -18,6 +18,8 @@
 //! - `pub fn layout(tables, strings, text, state, viewport) -> UiLayout`
 //! - `pub fn area_scroll_max(tables, layout, text, state, r) -> f32`
 
+use std::ops::Range;
+
 use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
 
 use crate::flex::{Builder, Frame, NO_ROW, Placed};
@@ -242,7 +244,7 @@ impl UiLayout {
 
     /// Rows of one paint layer.
     #[must_use]
-    pub fn rows(&self, layer: Layer) -> std::ops::Range<usize> {
+    pub fn rows(&self, layer: Layer) -> Range<usize> {
         match layer {
             Layer::Main => 0..self.overlay_start as usize,
             Layer::Overlay => self.overlay_start as usize..self.len(),
@@ -252,7 +254,7 @@ impl UiLayout {
     /// Rows of the canvas's floats: the start of [`Layer::Overlay`], before the dialog and
     /// popups (empty when the canvas has no children).
     #[must_use]
-    pub fn floats(&self) -> std::ops::Range<usize> {
+    pub fn floats(&self) -> Range<usize> {
         debug_assert!(self.overlay_start <= self.modal_start);
         self.overlay_start as usize..self.modal_start as usize
     }

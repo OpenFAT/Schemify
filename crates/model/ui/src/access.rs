@@ -11,9 +11,7 @@
 //!   -> TreeUpdate`
 //! - `pub fn dump(update: &TreeUpdate) -> String`
 
-use std::fmt::Write as _;
-
-use accesskit::{Action, Node, NodeId, Role, Toggled, TreeInfo, TreeUpdate};
+use accesskit::{Action, HasPopup, Node, NodeId, Role, Toggled, TreeId, TreeInfo, TreeUpdate};
 
 use crate::kinds::{Kind, Prop};
 use crate::layout::{Shown, UiLayout};
@@ -115,14 +113,14 @@ pub fn access_tree(
         }
         match shown {
             Shown::Title | Shown::Cascade => {
-                node.set_has_popup(accesskit::HasPopup::Menu);
+                node.set_has_popup(HasPopup::Menu);
                 node.set_expanded(state.open.contains(&n.id[i]));
                 node.add_action(Action::Click);
             }
             Shown::Normal
                 if n.kind[i] == Kind::Dropdown && n.children(i as u16).next().is_some() =>
             {
-                node.set_has_popup(accesskit::HasPopup::Listbox);
+                node.set_has_popup(HasPopup::Listbox);
                 node.set_expanded(state.open.contains(&n.id[i]));
                 node.add_action(Action::Click);
             }
@@ -155,7 +153,7 @@ pub fn access_tree(
     TreeUpdate {
         nodes: built,
         tree: Some(TreeInfo::new(root)),
-        tree_id: accesskit::TreeId::ROOT,
+        tree_id: TreeId::ROOT,
         focus,
     }
 }
@@ -168,6 +166,8 @@ pub fn access_tree(
 /// Panics if the update's child links form a cycle.
 #[must_use]
 pub fn dump(update: &TreeUpdate) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     let Some(info) = &update.tree else { return out };
     let find = |id: NodeId| update.nodes.iter().find(|(i, _)| *i == id).map(|(_, n)| n);

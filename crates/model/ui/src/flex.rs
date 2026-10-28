@@ -4,7 +4,7 @@
 //!
 //! Contents:
 //! - `pub(crate) const NO_ROW: u32`
-//! - `pub(crate) struct Pending`, `pub(crate) struct ProseCtx`, `pub(crate) struct Placed`
+//! - `pub(crate) struct Pending`, `pub(crate) struct ProseContext`, `pub(crate) struct Placed`
 //! - `pub(crate) struct Frame`: `shift`
 //! - `pub(crate) struct Builder`: `build`, `float`, `place`
 
@@ -26,7 +26,7 @@ pub(crate) const NO_ROW: u32 = u32::MAX;
 
 /// One row while its frame is built; the columns of [`crate::UiLayout`] are read from it.
 pub(crate) struct Pending {
-    pub(crate) tnode: NodeId,
+    pub(crate) taffy_node: NodeId,
     pub(crate) node: NodeIx,
     pub(crate) shown: Shown,
     /// Row of the parent ([`NO_ROW`] for a root).
@@ -62,19 +62,19 @@ pub(crate) struct Placed {
 }
 
 /// The taffy tree of one frame and the rows built into it.
-pub(crate) struct Builder<'a> {
-    pub(crate) tables: &'a UiTables,
-    pub(crate) strings: &'a Strings,
-    pub(crate) text: &'a mut TextSystem,
-    pub(crate) state: &'a UiState,
+pub(crate) struct Builder<'frame> {
+    pub(crate) tables: &'frame UiTables,
+    pub(crate) strings: &'frame Strings,
+    pub(crate) text: &'frame mut TextSystem,
+    pub(crate) state: &'frame UiState,
     pub(crate) title_style: u16,
-    pub(crate) tree: TaffyTree<ProseCtx>,
+    pub(crate) tree: TaffyTree<ProseContext>,
     pub(crate) rows: Vec<Pending>,
 }
 
 /// Measure context of a `prose` leaf: its source and font size.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ProseCtx {
+pub(crate) struct ProseContext {
     src: Sym,
     px: u16,
 }
@@ -124,7 +124,7 @@ impl Builder<'_> {
         let row = self.rows.len() as u32;
         assert!(parent == NO_ROW || parent < row, "a parent row comes first");
         self.rows.push(Pending {
-            tnode: NodeId::from(0u64),
+            taffy_node: NodeId::from(0u64),
             node,
             shown,
             parent,
@@ -171,17 +171,17 @@ impl Builder<'_> {
                         | Kind::Dialog
                         | Kind::Status
                 ));
-        let tnode = if container {
+        let taffy_node = if container {
             self.container(row, &m, style)
         } else {
             self.leaf(row, &m, style)
         };
-        self.rows[row as usize].tnode = tnode;
+        self.rows[row as usize].taffy_node = taffy_node;
         debug_assert!(
             self.rows.len() > row as usize,
             "the row and its subtree are built"
         );
-        tnode
+        taffy_node
     }
 
     /// Builds and places `node` as its own root at its content size, at the origin (the
@@ -216,14 +216,19 @@ impl Builder<'_> {
         assert_eq!(out.rect.len(), start, "rows are placed in order");
         assert!(start < self.rows.len(), "the root's row is built");
         debug_assert_eq!(
-            self.rows[start].tnode, root,
+            self.rows[start].taffy_node, root,
             "the root's row is the first placed"
         );
         debug_assert_eq!(out.scroll_node.len(), out.scroll_max.len());
         self.compute(root, avail);
         // Scroll extents first: a child's position depends on its scroll parent's offset.
         let rel: Vec<taffy::Layout> = (start..self.rows.len())
-            .map(|r| *self.tree.layout(self.rows[r].tnode).expect("laid-out node"))
+            .map(|r| {
+                *self
+                    .tree
+                    .layout(self.rows[r].taffy_node)
+                    .expect("laid-out node")
+            })
             .collect();
         let mut bottom: Vec<(usize, f32)> = Vec::new();
         for r in start..self.rows.len() {
@@ -403,13 +408,13 @@ impl Builder<'_> {
             // Width comes from the parent (stretch); the height is measured at that width.
             style.padding = padding(m.pad, m.pad_y);
             style.min_size.width = LengthPercentageAuto::length(m.min_w);
-            let ctx = ProseCtx {
+            let context = ProseContext {
                 src: self.tables.nodes.prop(Prop::Value)[i],
                 px: font as u16,
             };
             return self
                 .tree
-                .new_leaf_with_context(style, ctx)
+                .new_leaf_with_context(style, context)
                 .expect("taffy accepts a leaf");
         }
         // A text field shows its value in the label slot.
@@ -553,14 +558,14 @@ impl Builder<'_> {
             debug_assert!(w > 0.0, "a definite width is positive");
         }
         let (tree, text, strings) = (&mut self.tree, &mut *self.text, self.strings);
-        tree.compute_layout_with_measure(root, avail, |inputs, _, ctx, style| {
-            let ctx = ctx.copied();
+        tree.compute_layout_with_measure(root, avail, |inputs, _, context, style| {
+            let context = context.copied();
             taffy::compute_leaf_layout(
                 inputs,
                 style,
                 |_, _| 0.0,
                 |known, space| {
-                    let Some(c) = ctx.filter(|c| !c.src.is_none() && c.px > 0) else {
+                    let Some(c) = context.filter(|c| !c.src.is_none() && c.px > 0) else {
                         return Size::ZERO;
                     };
                     let w = known.width.unwrap_or(match space.width {

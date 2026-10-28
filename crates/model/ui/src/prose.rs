@@ -23,9 +23,11 @@
 //! - `pub(crate) fn measure_code(ts, px) -> Option<CodeMetrics>`
 //! - `pub(crate) fn layout_prose(ts, src, px, width) -> ProseList`
 
+use std::ops::RangeInclusive;
+
 use parley::{
     Alignment, AlignmentOptions, FontFamily, FontStyle, FontWeight, InlineBox, InlineBoxKind,
-    Layout, PositionedLayoutItem, StyleProperty, VerticalAlign,
+    Layout, LineHeight, PositionedLayoutItem, StyleProperty, VerticalAlign,
 };
 
 use crate::markdown;
@@ -35,7 +37,7 @@ use crate::text::{TextId, TextSystem};
 pub use crate::markdown::{Segment, image_line, split_plots};
 
 /// Prose fonts (px) whose code metrics [`TextSystem::new`] measures ([`code_metrics`]).
-pub const CODE_PX: std::ops::RangeInclusive<u16> = 8..=32;
+pub const CODE_PX: RangeInclusive<u16> = 8..=32;
 
 /// How a fenced code block lays out at one prose font size, for callers that place its lines
 /// themselves (a windowed text view): a line of `cols` printable ASCII characters (no tab) is
@@ -327,9 +329,9 @@ fn shape_rich(
         let mut b = lcx.ranged_builder(fcx, &inl.text, 1.0, true);
         b.push_default(StyleProperty::FontFamily(FontFamily::from(family.as_str())));
         b.push_default(StyleProperty::FontSize(px));
-        b.push_default(StyleProperty::LineHeight(
-            parley::LineHeight::FontSizeRelative(1.35),
-        ));
+        b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
+            1.35,
+        )));
         if style & BOLD != 0 {
             b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
         }

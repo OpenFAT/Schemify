@@ -12,7 +12,7 @@
 //! Contents:
 //! - `pub(crate) const LINES_MAX`, `pub(crate) const COLUMNS_MAX`
 //! - `pub(crate) const BOLD`, `pub(crate) const ITALIC`, `pub(crate) const CODE`
-//! - `pub(crate) enum Block`, `pub(crate) struct Inline`, `pub enum Segment<'a>`
+//! - `pub(crate) enum Block`, `pub(crate) struct Inline`, `pub enum Segment<'src>`
 //! - `pub(crate) fn blocks(src) -> Vec<Block>`
 //! - `pub fn image_line(t) -> Option<(&str, &str)>`
 //! - `pub(crate) fn inlines(src, notes, math) -> Inline`
@@ -76,11 +76,11 @@ pub(crate) struct Inline {
 
 /// One piece of a prose source after [`split_plots`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Segment<'a> {
+pub enum Segment<'src> {
     /// Markdown for the prose widget.
-    Prose(&'a str),
+    Prose(&'src str),
     /// The calculator expression of a ```` ```plot ```` fence (an embedded graph).
-    Plot(&'a str),
+    Plot(&'src str),
 }
 
 /// A link `[text](target)` in a run of chars: indices of its `]` and its `)`.
@@ -539,7 +539,7 @@ fn restyle(out: &mut Inline, start: &mut u32, from: u8, to: u8) {
     }
 }
 
-fn push_prose<'a>(out: &mut Vec<Segment<'a>>, s: &'a str) {
+fn push_prose<'src>(out: &mut Vec<Segment<'src>>, s: &'src str) {
     if !s.trim().is_empty() {
         out.push(Segment::Prose(s));
     }

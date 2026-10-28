@@ -3,7 +3,7 @@
 //!
 //! Contents:
 //! - `WaveUi::command(waves, geo, name, arg, node, now_ms, out) -> Effect`
-//! - `WaveUi::note(waves, req, res) -> Effect`
+//! - `WaveUi::note(waves, request, result) -> Effect`
 
 use schemify_wave::calc;
 use schemify_wave::{
@@ -315,14 +315,14 @@ impl WaveUi {
     pub fn note(
         &mut self,
         waves: &Waves,
-        req: &Request,
-        res: &Result<Applied, ViewError>,
+        request: &Request,
+        result: &Result<Applied, ViewError>,
     ) -> Effect {
         let mut fx = Effect {
             redraw: true,
             ..Effect::default()
         };
-        match res {
+        match result {
             Err(e) => {
                 self.status = e.to_string();
                 fx.recompose = true;
@@ -339,7 +339,7 @@ impl WaveUi {
             }
             Ok(Applied::Done) => {}
         }
-        match req {
+        match request {
             Request::RemoveTrace { trace } => {
                 self.selected_trace = match self.selected_trace {
                     Some(s) if s == *trace => None,
@@ -357,7 +357,7 @@ impl WaveUi {
         let on = waves.cursors().map(|c| c.is_some());
         fx.recompose |= on != self.cursors_on
             || matches!(
-                req,
+                request,
                 Request::AddTrace { .. }
                     | Request::RemoveTrace { .. }
                     | Request::MoveTrace { .. }

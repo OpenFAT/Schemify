@@ -12,14 +12,16 @@
 //! - `pub(crate) fn face_bytes(name: &str) -> &'static [u8]`
 //! - `pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String>`
 
+use std::fmt;
 use std::sync::Arc;
 
 use parley::FontData;
 use parley::fontique::Blob;
 use ratex_font::FontId;
+use ratex_layout::LayoutOptions;
 use ratex_types::display_item::DisplayItem;
 use ratex_types::path_command::PathCommand;
-use skrifa::MetadataProvider;
+use skrifa::FontRef;
 
 /// The embedded KaTeX faces, indexed by the `u8` face index stored in [`MathList::glyph_face`].
 pub struct MathFonts {
@@ -135,8 +137,8 @@ impl Default for MathFonts {
     }
 }
 
-impl std::fmt::Debug for MathFonts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for MathFonts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MathFonts")
             .field("faces", &self.data.len())
             .finish()
@@ -168,13 +170,13 @@ impl MathFonts {
 ///
 /// Returns RaTeX's parse message for input outside its LaTeX subset.
 pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String> {
+    use skrifa::MetadataProvider;
+
     assert!(px > 0.0 && px.is_finite(), "math size must be positive");
     assert_eq!(fonts.data.len(), FACES.len());
     let ast = ratex_parser::parse(src).map_err(|e| e.to_string())?;
-    let display = ratex_layout::to_display_list(&ratex_layout::layout(
-        &ast,
-        &ratex_layout::LayoutOptions::default(),
-    ));
+    let display =
+        ratex_layout::to_display_list(&ratex_layout::layout(&ast, &LayoutOptions::default()));
     let mut out = MathList {
         width: (display.width * f64::from(px)) as f32,
         height: (display.height * f64::from(px)) as f32,
@@ -184,7 +186,7 @@ pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathL
     let s = f64::from(px);
     let p = |v: f64| (v * s) as f32;
     // Parsed faces cached by index: a formula touches few faces, and parsing one is a table scan.
-    let mut faces: [Option<skrifa::FontRef<'static>>; FACES.len()] = [const { None }; FACES.len()];
+    let mut faces: [Option<FontRef<'static>>; FACES.len()] = [const { None }; FACES.len()];
     for item in &display.items {
         match item {
             DisplayItem::GlyphPath {
@@ -204,7 +206,7 @@ pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathL
                         ratex_font::katex_ttf_glyph_char(id, *char_code)
                     });
                 let face = faces[fi].get_or_insert_with(|| {
-                    skrifa::FontRef::new(FACES[fi].1).expect("embedded KaTeX face parses")
+                    FontRef::new(FACES[fi].1).expect("embedded KaTeX face parses")
                 });
                 let Some(gid) = face.charmap().map(ch) else {
                     out.missing += 1;

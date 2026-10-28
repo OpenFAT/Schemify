@@ -23,6 +23,9 @@
 //! - `pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32)`
 //! - `pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32)`
 
+use std::iter::Peekable;
+use std::str::Chars;
+
 use crate::keys::Chord;
 use crate::kinds::{Kind, Prop, StyleProp};
 use crate::strings::{Strings, Sym};
@@ -60,7 +63,7 @@ pub struct Reject {
 pub const LENGTH_MAX: u32 = 1 << 14;
 
 /// The record whose indented attributes follow.
-enum Ctx {
+enum Context {
     None,
     Node(Sym),
     Style(Sym),
@@ -194,7 +197,7 @@ fn parse_into(
     );
     let mut out = Contribution::default();
     let mut rejects = Vec::new();
-    let mut ctx = Ctx::None;
+    let mut context = Context::None;
     let mut toks: Vec<String> = Vec::with_capacity(8);
     for (n, raw) in text.lines().enumerate() {
         let line = (n + 1) as u32;
@@ -212,16 +215,16 @@ fn parse_into(
             }
             let t = &t[..n.min(TOKENS_SEEN)];
             if indented {
-                attr(t, &ctx, strings, region, &mut out)
+                attr(t, &context, strings, region, &mut out)
             } else {
-                ctx = Ctx::None;
-                record(t, strings, region, &mut out).map(|c| ctx = c)
+                context = Context::None;
+                record(t, strings, region, &mut out).map(|c| context = c)
             }
         });
         if let Err(reason) = result {
             rejects.push(Reject { line, reason });
             if !indented {
-                ctx = Ctx::None;
+                context = Context::None;
             }
         }
         assert!(
@@ -242,7 +245,7 @@ fn record(
     strings: &mut Strings,
     region: TextRegion,
     out: &mut Contribution,
-) -> Result<Ctx, RejectReason> {
+) -> Result<Context, RejectReason> {
     assert!(!t.is_empty(), "the tokenizer rejects an empty line");
     debug_assert!(t.len() <= TOKENS_SEEN);
     let arity = |n: usize| {
@@ -258,24 +261,24 @@ fn record(
             let kind = Kind::parse(t[2]).ok_or(RejectReason::UnknownKind)?;
             let id = strings.intern(t[1]);
             out.edits.push(Edit::Node { id, kind });
-            Ok(Ctx::Node(id))
+            Ok(Context::Node(id))
         }
         "set" => {
             arity(4)?;
             let id = strings.intern(t[1]);
             node_attr(id, t[2], t[3], strings, region, out)?;
-            Ok(Ctx::None)
+            Ok(Context::None)
         }
         "remove" => {
             arity(2)?;
             out.edits.push(Edit::Remove {
                 id: strings.intern(t[1]),
             });
-            Ok(Ctx::None)
+            Ok(Context::None)
         }
         "style" => {
             arity(2)?;
-            Ok(Ctx::Style(strings.intern(t[1])))
+            Ok(Context::Style(strings.intern(t[1])))
         }
         "key" => {
             arity(3)?;
@@ -284,7 +287,7 @@ fn record(
                 chord,
                 command: strings.intern(t[2]),
             });
-            Ok(Ctx::None)
+            Ok(Context::None)
         }
         _ => Err(RejectReason::UnknownRecord),
     }
@@ -293,7 +296,7 @@ fn record(
 /// An indented attribute of the record above.
 fn attr(
     t: &[&str],
-    ctx: &Ctx,
+    context: &Context,
     strings: &mut Strings,
     region: TextRegion,
     out: &mut Contribution,
@@ -302,10 +305,10 @@ fn attr(
     if t.len() != 2 {
         return Err(RejectReason::Arity);
     }
-    match *ctx {
-        Ctx::None => Err(RejectReason::OrphanAttr),
-        Ctx::Node(id) => node_attr(id, t[0], t[1], strings, region, out),
-        Ctx::Style(selector) => {
+    match *context {
+        Context::None => Err(RejectReason::OrphanAttr),
+        Context::Node(id) => node_attr(id, t[0], t[1], strings, region, out),
+        Context::Style(selector) => {
             let prop = StyleProp::parse(t[0]).ok_or(RejectReason::UnknownProp)?;
             let value = prop.parse_value(t[1]).ok_or(RejectReason::BadValue)?;
             out.edits.push(Edit::Style {
@@ -421,9 +424,7 @@ fn tokenize(body: &str, out: &mut Vec<String>) -> Result<usize, RejectReason> {
 }
 
 /// The `{hex}` after a `\u` escape in a quoted value.
-fn unicode_escape(
-    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-) -> Result<char, RejectReason> {
+fn unicode_escape(chars: &mut Peekable<Chars<'_>>) -> Result<char, RejectReason> {
     if chars.next() != Some('{') {
         return Err(RejectReason::Syntax);
     }

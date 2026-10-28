@@ -9,6 +9,10 @@
 //! - `pub fn ui_font_info(face: u8) -> FontInfo`
 //! - `pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>)`
 
+use skrifa::{FontRef, GlyphId};
+
+use crate::math;
+
 /// Noto Sans subset to the UI's scripts and symbols (fonts/README.md has the command).
 pub(crate) static NOTO_SANS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -53,7 +57,7 @@ pub struct FontGlyph {
 /// font that only covers ASCII.
 #[must_use]
 pub fn ui_fonts() -> [&'static [u8]; 2] {
-    [NOTO_SANS, crate::math::face_bytes("Main-Regular")]
+    [NOTO_SANS, math::face_bytes("Main-Regular")]
 }
 
 /// The metrics of face `face` of [`ui_fonts`].
@@ -107,7 +111,7 @@ pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
         });
         let (face, id) = hit.unwrap_or((0, 0));
         let adv = metrics[face]
-            .advance_width(skrifa::GlyphId::new(u32::from(id)))
+            .advance_width(GlyphId::new(u32::from(id)))
             .unwrap_or(0.0);
         out.push(FontGlyph {
             face: face as u8,
@@ -121,9 +125,9 @@ pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
 // ---- private ----
 
 /// Face `face` of [`ui_fonts`], parsed.
-fn ui_face(face: u8) -> skrifa::FontRef<'static> {
+fn ui_face(face: u8) -> FontRef<'static> {
     let bytes = ui_fonts()[usize::from(face)];
-    skrifa::FontRef::new(bytes).expect("an embedded UI face parses")
+    FontRef::new(bytes).expect("an embedded UI face parses")
 }
 
 #[cfg(test)]

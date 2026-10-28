@@ -28,13 +28,13 @@ mod pointer;
 
 /// One [`route_input`] call: its read-only inputs, the state and output it writes, and
 /// whether the focused field's text changed since its last `input` command.
-struct Router<'a> {
-    tables: &'a UiTables,
-    layout: &'a UiLayout,
-    strings: &'a Strings,
-    text: &'a mut TextSystem,
-    state: &'a mut UiState,
-    out: &'a mut Routed,
+struct Router<'frame> {
+    tables: &'frame UiTables,
+    layout: &'frame UiLayout,
+    strings: &'frame Strings,
+    text: &'frame mut TextSystem,
+    state: &'frame mut UiState,
+    out: &'frame mut Routed,
     typed: bool,
 }
 
