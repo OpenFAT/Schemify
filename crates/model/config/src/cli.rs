@@ -53,6 +53,10 @@ impl Startup {
     /// # Errors
     ///
     /// `-u` without a file, or `--clean` and `-u` together or twice.
+    ///
+    /// # Panics
+    ///
+    /// Not for any `args`: the asserts check the index against the flags taken.
     pub fn parse(args: &[String]) -> Result<(Startup, usize), String> {
         let mut start = Startup::User;
         let mut i = 0;
@@ -64,24 +68,30 @@ impl Startup {
                     start = Startup::File(PathBuf::from(file));
                     i += 1;
                 }
-                "--clean" | "-u" => return Err("give --clean or -u once".into()),
+                "--clean" | "-u" => return Err("give --clean or -u once".to_owned()),
                 _ => break,
             }
             i += 1;
         }
         assert!(i <= args.len());
-        // At most two flag forms were taken: `--clean` (1 word) or `-u <file>` (2 words).
-        assert!(i <= 2);
+        // One flag form at most: none, `--clean` (one word) or `-u <file>` (two).
+        let taken = match start {
+            Startup::User => 0,
+            Startup::Clean => 1,
+            Startup::File(_) => 2,
+        };
+        assert_eq!(i, taken);
         Ok((start, i))
     }
 
     /// The flags that reproduce this startup (`schemify edit` forwards them to the editor);
-    /// [`Startup::parse`] of them gives `self` back.
+    /// [`Startup::parse`] of them gives `self` back (for a `File` path that is UTF-8).
+    #[must_use]
     pub fn flags(&self) -> Vec<String> {
         match self {
-            Startup::Clean => vec!["--clean".into()],
+            Startup::Clean => vec!["--clean".to_owned()],
             Startup::User => Vec::new(),
-            Startup::File(p) => vec!["-u".into(), p.display().to_string()],
+            Startup::File(path) => vec!["-u".to_owned(), path.display().to_string()],
         }
     }
 }
@@ -95,6 +105,10 @@ impl Launch {
     ///
     /// A bad global flag: its message, a newline, then [`GUI_USAGE`]. `--rpc` without a
     /// socket, a second `--rpc`, an unknown `-` word or a second path: [`GUI_USAGE`] alone.
+    ///
+    /// # Panics
+    ///
+    /// Not for any `args`: the asserts check this function's own bookkeeping.
     pub fn parse(args: &[String]) -> Result<Launch, String> {
         let (startup, first) = Startup::parse(args).map_err(|e| format!("{e}\n{GUI_USAGE}"))?;
         let mut rest = &args[first..];
@@ -113,13 +127,16 @@ impl Launch {
                     launch.rpc = Some(words.next().ok_or(GUI_USAGE)?.clone());
                 }
                 "--no-default-ui" => launch.no_default_ui = true,
-                a if a.starts_with('-') => return Err(GUI_USAGE.into()),
+                a if a.starts_with('-') => return Err(GUI_USAGE.to_owned()),
                 a if launch.path.is_none() => launch.path = Some(PathBuf::from(a)),
-                _ => return Err(GUI_USAGE.into()),
+                _ => return Err(GUI_USAGE.to_owned()),
             }
         }
-        assert!(words.next().is_none());
-        assert!(first <= args.len());
+        assert!(first <= 2, "`Startup::parse` takes one flag form at most");
+        // Negative space: a `-` word is a flag or the socket, never the path.
+        if let Some(path) = &launch.path {
+            assert!(!path.as_os_str().to_string_lossy().starts_with('-'));
+        }
         Ok(launch)
     }
 }
