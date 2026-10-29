@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "//": "@schemify/sdk is Schemify's crates/protocol/abi/sdk/assemblyscript. npm cannot install a git subdirectory, so in your own repository vendor that directory (or add Schemify as a git submodule pinned to a revision) and point file: at it.",
+  "scripts": { "build": "asc hello.ts --config asconfig.json" },
+  "dependencies": { "@schemify/sdk": "file:../../../crates/protocol/abi/sdk/assemblyscript" },
+  "devDependencies": { "assemblyscript": "0.28.20" }
+}

@@ -1,0 +1,10 @@
+{
+  "options": {
+    "outFile": "conformance.wasm",
+    "optimizeLevel": 3,
+    "shrinkLevel": 1,
+    "runtime": "stub",
+    "use": ["abort="],
+    "noAssert": true
+  }
+}

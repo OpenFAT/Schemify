@@ -1,0 +1,7 @@
+.{
+    .name = .schemify_conformance,
+    .version = "0.0.0",
+    .fingerprint = 0x50f102e34e0cc981,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+}

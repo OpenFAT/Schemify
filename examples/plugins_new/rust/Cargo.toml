@@ -1,0 +1,23 @@
+[package]
+name = "hello"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+# Pin to the Schemify revision you build against (docs/plugins/repository.md).
+schemify-abi = { git = "https://github.com/OmarSiwy/Schemify", rev = "eb3c9df166fcaf0b2e7375e9c3bcfffd6772cd5c", features = ["guest"] }
+
+# Small modules: size over speed, no unwinding (a panic is a trap the host reports).
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
