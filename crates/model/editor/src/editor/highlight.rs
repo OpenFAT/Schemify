@@ -35,19 +35,19 @@ use super::compare::HILITE_LAYERS;
 /// Hit tolerance for a pin under the pointer, in screen pixels.
 pub(super) const PIN_PX: f64 = 8.0;
 
-/// Borrows the session's `${NAME}` environment pairs in the shape elab and run take.
-pub(super) fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
-    let refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    assert_eq!(refs.len(), env.len());
-    refs
-}
-
 /// The duplicate-name check's answer: every holder of a shared name and the renames.
 pub(super) struct Duplicates {
     /// Every instance whose name another instance also holds, sorted.
     pub(super) keys: Vec<ObjKey>,
     /// Renames of all but the first holder of each name.
     pub(super) ops: Vec<Op>,
+}
+
+/// Borrows the session's `${NAME}` environment pairs in the shape elab and run take.
+pub(super) fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
+    let refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert_eq!(refs.len(), env.len());
+    refs
 }
 
 impl Editor {

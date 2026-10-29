@@ -2,7 +2,7 @@
 //! violations, filled in groups and patched per row when only a few rows changed.
 //!
 //! Contents:
-//! - `pub(super) struct Filled`
+//! - `pub(super) struct Filled`, `pub(super) struct NetShadow`
 //! - `pub(super) fn fill_nets`
 //! - `pub(super) fn fill_violations`
 //! - `Host::snapshot`
@@ -142,7 +142,7 @@ impl Host {
     ///
     /// # Panics
     ///
-    /// `h` names a document past `doc::DOCS_MAX` ([`doc_id`]).
+    /// `h` names a document past `doc::DOCS_MAX` ([`doc_id`](super::doc_id)).
     pub fn snapshot(
         &mut self,
         project: &Project,

@@ -183,7 +183,7 @@ impl Host {
     /// record's `cached` value, unverified, until the next recompute).
     ///
     /// Args travel as line-record values (strings quoted, numbers canonical); a number,
-    /// `true`/`false` or a quoted string comes back ([`fn_result`]). Failures map to
+    /// `true`/`false` or a quoted string comes back ([`fn_result`](super::deliver::fn_result)). Failures map to
     /// expression errors: wrong arity `X008`, a complex argument or a result that is none of
     /// those `X003`, a plugin error code `X010`.
     pub fn call_fn(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<Val, XError>> {

@@ -24,12 +24,6 @@ use super::highlight::PIN_PX;
 /// Share of the window height the editor keeps when the waves dock opens.
 pub(super) const DOCK_SPLIT: f32 = 0.6;
 
-/// Range the dock divider can be dragged in, as shares of the window height.
-const DOCK_SPLIT_RANGE: (f32, f32) = (0.15, 0.85);
-
-/// Logical px either side of the dock divider that grab it.
-const DOCK_GRAB_PX: f32 = 4.0;
-
 /// One input batch split between the editor and the waves dock ([`Editor::split_input`]).
 pub(super) struct Split {
     /// The editor's events.
@@ -41,6 +35,12 @@ pub(super) struct Split {
     /// The dock's viewport.
     pub(super) dock_view: (f32, f32),
 }
+
+/// Range the dock divider can be dragged in, as shares of the window height.
+const DOCK_SPLIT_RANGE: (f32, f32) = (0.15, 0.85);
+
+/// Logical px either side of the dock divider that grab it.
+const DOCK_GRAB_PX: f32 = 4.0;
 
 impl Editor {
     /// Splits one input batch between the editor (above the dock) and the waves dock

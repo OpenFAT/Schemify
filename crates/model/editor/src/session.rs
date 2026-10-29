@@ -150,17 +150,6 @@ struct Docs {
     epoch: Vec<u32>,
 }
 
-impl Docs {
-    /// Open documents; the four columns stay in step.
-    fn len(&self) -> usize {
-        let n = self.handle.len();
-        assert_eq!(self.path.len(), n, "document columns in step");
-        assert_eq!(self.journal.len(), n, "document columns in step");
-        assert_eq!(self.epoch.len(), n, "document columns in step");
-        n
-    }
-}
-
 /// The indexed cell row `name` names: `lib:cell` or, for the project library, `cell`, where
 /// `cell` is the cell's path in its library with or without its extension (`inv`,
 /// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
@@ -317,5 +306,18 @@ impl Cells for Session {
 
     fn open_row(&mut self, row: u32) -> Result<(), String> {
         self.open_cell(row as usize).map(|_| ())
+    }
+}
+
+// ---- private ----
+
+impl Docs {
+    /// Open documents; the four columns stay in step.
+    fn len(&self) -> usize {
+        let n = self.handle.len();
+        assert_eq!(self.path.len(), n, "document columns in step");
+        assert_eq!(self.journal.len(), n, "document columns in step");
+        assert_eq!(self.epoch.len(), n, "document columns in step");
+        n
     }
 }
