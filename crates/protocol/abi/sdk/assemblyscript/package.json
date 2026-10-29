@@ -1,0 +1,7 @@
+{
+  "name": "@schemify/sdk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Schemify plugin ABI v1 for AssemblyScript (docs/spec/plugin-abi.md)",
+  "files": ["schemify.ts"]
+}

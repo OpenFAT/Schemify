@@ -1,0 +1,3 @@
+# `cargo build --release` builds the plugin: wasm32, no WASI.
+[build]
+target = "wasm32-unknown-unknown"
