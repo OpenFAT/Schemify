@@ -11,14 +11,14 @@
 //! Contents:
 //! - `pub trait Cells { project, open_row }`
 //! - `pub const DIALECTS: [(&str, Dialect, &str); 8]`
-//! - `pub struct Opened { project, lib_dir, top }`, `pub enum OpenError { Io, Design }`
+//! - `pub struct Opened { project, lib_dir, top, notes }`, `pub enum OpenError { Io, Design }`
 //! - `pub fn elaborate_all<C: Cells, F: Funcs>(&mut C, DocHandle, &Request, &mut F)
 //!   -> Result<Elab, String>`
 //! - `pub fn violation_line(&Names, &Violation) -> String`
 //! - `pub fn dialect_of(&str) -> Option<Dialect>`, `pub fn dialect_word(Dialect) -> &str`
 //! - `pub fn netlist_file(&Path, &str, Dialect) -> PathBuf`
 //! - `pub fn env_pairs() -> Vec<(String, String)>`
-//! - `pub fn open_file(&Path, u64) -> Result<(Opened, Vec<String>), OpenError>`
+//! - `pub fn open_file(&Path, u64) -> Result<Opened, OpenError>`
 //! - `pub fn bench_name(&Project, impl Fn(u8) -> Option<&Path>, &Path) -> Option<String>`
 //! - re-exported from `sim`: `SIMULATORS`, `sim_dialect`, `pin`, `run_dialect`, `tools`
 //! - re-exported from `run` (native): `Run`, `start_run`, `BENCH`
@@ -75,6 +75,8 @@ pub struct Opened {
     pub lib_dir: Vec<Option<PathBuf>>,
     /// The opened file.
     pub top: DocHandle,
+    /// Load notes: unfetched libraries, index findings.
+    pub notes: Vec<String>,
 }
 
 /// Why [`open_file`] failed: the CLI exits 2 on `Io`, 1 on `Design`.
@@ -203,8 +205,7 @@ pub fn env_pairs() -> Vec<(String, String)> {
 }
 
 /// Loads the project around `file` (nearest `schemify.project`) and opens `file` in the
-/// library whose directory holds it (deepest wins). Returns the load notes (unfetched
-/// libraries, index findings) beside the result.
+/// library whose directory holds it (deepest wins), keeping the load notes.
 ///
 /// # Errors
 ///
@@ -213,7 +214,7 @@ pub fn env_pairs() -> Vec<(String, String)> {
 /// # Panics
 ///
 /// Panics if the bundled core library indexes with a diagnostic (a build defect).
-pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenError> {
+pub fn open_file(file: &Path, seed: u64) -> Result<Opened, OpenError> {
     /// The deepest library directory holding the file so far.
     struct Deepest {
         row: usize,
@@ -257,12 +258,12 @@ pub fn open_file(file: &Path, seed: u64) -> Result<(Opened, Vec<String>), OpenEr
         .handle;
     assert!(project.doc(top).is_some());
     assert_eq!(loaded.lib_dir.len(), project.libs().name.len());
-    let opened = Opened {
+    Ok(Opened {
         project,
         lib_dir: loaded.lib_dir,
         top,
-    };
-    Ok((opened, loaded.notes))
+        notes: loaded.notes,
+    })
 }
 
 /// The name a run's `bench` sidecar records for the bench at `path`: `lib:dir/stem` for the

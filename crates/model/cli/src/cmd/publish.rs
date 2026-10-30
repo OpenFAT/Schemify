@@ -158,7 +158,7 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// from the `bench` sidecars (run spec §7a); `None` without one.
 #[cfg(not(target_arch = "wasm32"))]
 fn newest_run_jobs(root: &Path, bench: &Path) -> Option<JobCounts> {
-    let (o, _) = spines::open_file(bench, 0).ok()?;
+    let o = spines::open_file(bench, 0).ok()?;
     let name = spines::bench_name(
         &o.project,
         |lib| o.lib_dir.get(usize::from(lib))?.as_deref(),

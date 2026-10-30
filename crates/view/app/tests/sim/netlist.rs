@@ -134,7 +134,7 @@ fn netlist_command_writes_the_cli_bytes() {
     let bytes = std::fs::read(&file).unwrap_or_else(|e| panic!("{e}: {}", s.status()));
     // The CLI's own load + netlist spine (`schemify netlist top.shcomp`; the binary lives in
     // schemify-cli since the D39 split, so its spine is called directly).
-    let (mut o, _) = schemify_cli::spines::open_file(&s.dir.join("top.shcomp"), 1).unwrap();
+    let mut o = schemify_cli::spines::open_file(&s.dir.join("top.shcomp"), 1).unwrap();
     let env = schemify_cli::spines::env_pairs();
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let req = schemify_elab::Request {

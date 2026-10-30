@@ -219,9 +219,9 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
 /// Opens the project around `file` with `file` open; notes go to stderr as `note: …`.
 fn open_design(file: &str) -> Result<Opened, u8> {
     match spines::open_file(Path::new(file), platform::seed()) {
-        Ok((o, notes)) => {
+        Ok(o) => {
             assert!(o.project.doc(o.top).is_some(), "open_file opens its file");
-            for n in &notes {
+            for n in &o.notes {
                 eprintln!("note: {n}");
             }
             Ok(o)

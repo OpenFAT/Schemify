@@ -213,7 +213,7 @@ fn edit(params: &Json, seed: u64) -> Result<Json, MethodError> {
         ));
     };
     let label = params.get("label").and_then(Json::as_str).unwrap_or("rpc");
-    let (mut o, _notes) = spines::open_file(Path::new(file), seed).map_err(|e| match e {
+    let mut o = spines::open_file(Path::new(file), seed).map_err(|e| match e {
         OpenError::Io(m) => MethodError::new(IO_ERROR, format!("{file}: {m}")),
         OpenError::Design(m) => MethodError::new(DESIGN_ERROR, format!("{file}: {m}")),
     })?;
