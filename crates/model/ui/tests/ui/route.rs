@@ -3,7 +3,9 @@
 //!
 //! Contents: no `pub` items.
 
-use schemify_ui::{Button, Chord, InputEvent, InputEvents, Layer, SPLIT_GAP, SPLIT_MIN};
+use schemify_ui::{
+    Button, Chord, InputEvent, InputEvents, Layer, SPLIT_GAP, SPLIT_MIN, Shown, Sym, UiState,
+};
 
 use crate::{Fixture, VIEW};
 
@@ -266,4 +268,52 @@ fn a_dialog_drags_by_its_surface_and_stays_modal() {
     f.state.set_dialog(f.sym("dialog.enter_text"));
     f.relayout();
     assert_eq!(at(&f), d0);
+}
+
+/// Regression: a press on a cascade row of the deepest open popup pushed a menu past
+/// `UiState::MAX_OPEN` and broke the end-of-route invariant. At every depth a press now opens
+/// exactly what hovering opens: the chain through the row's menu, capped at `MAX_OPEN`.
+#[test]
+fn a_cascade_press_opens_what_hover_opens_up_to_the_cap() {
+    let max = UiState::MAX_OPEN;
+    let mut src = String::new();
+    for k in 0..=max {
+        let parent = k
+            .checked_sub(1)
+            .map_or("menubar".to_owned(), |p| format!("deep.{p}"));
+        src += &format!("node deep.{k} menu\n  parent {parent}\n  label D{k}\n");
+    }
+    src += &format!("node deep.item item\n  parent deep.{max}\n  label X\n  command x.run\n");
+    let mut f = crate::fixture(&[src.as_str()]);
+    let deep: Vec<Sym> = (0..=max).map(|k| f.sym(&format!("deep.{k}"))).collect();
+    for k in 1..=max {
+        // Row `deep.k` is a cascade row of the deepest open popup, `deep.(k-1)`.
+        let want = &deep[..(k + 1).min(max)];
+        for press in [false, true] {
+            f.state.open_menus(&deep[..k]);
+            f.relayout();
+            let row = f
+                .frame
+                .rows(Layer::Overlay)
+                .find(|&r| {
+                    f.frame.shown()[r] == Shown::Cascade
+                        && f.frame.node()[r] == f.node(&format!("deep.{k}"))
+                })
+                .expect("the cascade row is laid out");
+            let rr = f.frame.rect()[row];
+            let (x, y) = (rr.x + rr.w / 2.0, rr.y + rr.h / 2.0);
+            let mut ev = InputEvents::default();
+            if press {
+                ev.push(InputEvent::PointerDown {
+                    x,
+                    y,
+                    button: Button::Left,
+                });
+            } else {
+                ev.push(InputEvent::PointerMove { x, y });
+            }
+            f.route(&ev);
+            assert_eq!(f.state.open(), want, "depth {k}, press {press}");
+        }
+    }
 }
