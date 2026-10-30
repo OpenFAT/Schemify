@@ -1,53 +1,26 @@
-//! `picture`: editor tables → [`Picture`], the borrowed, read-only input of one painted frame
-//! (the humble view's input, gui-architecture step 3), and [`Editor::painted`], the one way
-//! paint reports back. `schemify-app` paints a `Picture`; nothing here draws.
+//! `picture`: the canvas tables → [`CanvasPicture`], the borrowed, read-only input of the
+//! canvas painter (the humble view's input, gui-architecture step 3), the docs page's plots
+//! painted into their slots, and [`Editor::painted`], the one way the painter reports back.
+//! `schemify-app` turns a `CanvasPicture` into GPU rows and labels; nothing here touches a GPU.
 //!
-//! Owner: the editor. Reads the shell's UI tables, the scene, decor, markers, the parity
-//! extra, marks, overlay, the docs page's plot slots and the waves dock; writes nothing. Only
-//! the two text-shaping caches are lent mutably (glyph caches, no model state).
+//! Owner: the editor. Reads the scene, decor, markers, the parity extra, marks, overlay and
+//! the docs page's plot slots; writes nothing.
 //!
 //! Contents:
-//! - `pub struct UiView`
 //! - `pub struct CanvasPicture`
-//! - `pub struct GraphPicture`
-//! - `pub struct DockPicture`
-//! - `pub struct Picture`
 //! - `pub struct Raster`
-//! - `Editor::picture`
+//! - `Editor::canvas_picture`
 //! - `Editor::painted`
 //! - `Editor::take_raster`
 //! - `Editor::rastered`
-//! - `Editor::ime_area`
-//! - `Editor::access_tree`
+//! - crate-only `Editor::paint_graphs`
 
 use std::path::PathBuf;
 
 use schemify_canvas::kurbo::Rect as KRect;
 use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
-use schemify_ui::accesskit::TreeUpdate;
-use schemify_ui::waves::{Geometry, WaveUi};
-use schemify_ui::{Rect, Strings, TextSystem, UiLayout, UiState, UiTables};
-use schemify_wave::Waves;
 
 use super::Editor;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::shell::Shell;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::sim::Plot;
-
-/// One UI's tables as drawn: the editor's window, or the waves dock's.
-pub struct UiView<'frame> {
-    /// `ui_nodes`, `ui_styles`, `keymap`.
-    pub tables: &'frame UiTables,
-    /// This frame's layout of `tables`.
-    pub layout: &'frame UiLayout,
-    /// The strings every table names.
-    pub strings: &'frame Strings,
-    /// Menus, dialog, hover and focus.
-    pub state: &'frame UiState,
-    /// The shaped-text cache `layout` was measured with (paint shapes through it too).
-    pub text: &'frame mut TextSystem,
-}
 
 /// The canvas tables of one frame, in drawing order, with the generations they were
 /// changed at (`gens[k]` advances whenever table `k` changes, so an unchanged generation
@@ -84,42 +57,6 @@ pub struct CanvasPicture<'frame> {
     pub overlay: &'frame CanvasPrims,
 }
 
-/// One filled docs-page plot slot: the pane rectangle, its clip and its traces.
-pub struct GraphPicture<'frame> {
-    /// The `graph` node's laid-out rectangle.
-    pub rect: Rect,
-    /// Its clip (`schemify_ui::NO_CLIP`: none).
-    pub clip: Rect,
-    /// The one-pane viewer holding the traces.
-    pub waves: &'frame Waves,
-}
-
-/// The waves dock, laid out at its own origin and painted `dy` below the editor.
-pub struct DockPicture<'frame> {
-    /// The dock's own UI tables.
-    pub ui: UiView<'frame>,
-    /// Pane rectangles of this frame.
-    pub geo: &'frame Geometry,
-    /// The viewer tables.
-    pub waves: &'frame Waves,
-    /// The viewer's interaction state (drag, active pane, cursors).
-    pub wave_ui: &'frame WaveUi,
-    /// Logical px the dock is painted below the window's top.
-    pub dy: f64,
-}
-
-/// Everything one frame is painted from.
-pub struct Picture<'frame> {
-    /// The window's UI.
-    pub ui: UiView<'frame>,
-    /// The canvas; `None` while a text tab replaces it.
-    pub canvas: Option<CanvasPicture<'frame>>,
-    /// The docs page's filled plot slots.
-    pub graphs: Vec<GraphPicture<'frame>>,
-    /// The waves dock when open.
-    pub dock: Option<DockPicture<'frame>>,
-}
-
 /// A PNG export the editor asked for ([`Editor::take_raster`]): `schemify-app` rasterizes
 /// the canvas tables through `cam` into a `w × h` logical-px image at `scale` device px per
 /// logical px and hands the bytes back ([`Editor::rastered`]).
@@ -138,72 +75,40 @@ pub struct Raster {
 }
 
 impl Editor {
-    /// Borrows the tables of the next painted frame. Call after [`Editor::update`]; the
-    /// borrow ends before the next one. A PNG export ([`Editor::take_raster`]) draws from
-    /// the same picture's canvas.
-    ///
-    /// # Panics
-    ///
-    /// If the grid pitch in the options is not positive or the viewport height is negative.
-    pub fn picture(&mut self) -> Picture<'_> {
-        let text_tab = self.session.text_view().is_some();
-        let (view, cam, palette) = (self.canvas_rect(), self.camera(), self.view_palette());
+    /// Borrows the canvas tables of the frame being painted; `None` while a text tab replaces
+    /// the canvas. The borrow ends before the next [`Editor::update`]. A PNG export
+    /// ([`Editor::take_raster`]) draws from the same tables through its own camera.
+    pub fn canvas_picture(&self) -> Option<CanvasPicture<'_>> {
+        if self.session.text_view().is_some() {
+            return None;
+        }
         let grid = if self.opts.show_grid {
             self.opts.grid
         } else {
             i32::MAX / 4
         };
         assert!(grid > 0, "a positive grid pitch");
-        let dy = f64::from(self.viewport.1);
-        assert!(dy >= 0.0, "a dock below the window's top");
-        #[cfg(not(target_arch = "wasm32"))]
-        let graphs = graph_pictures(&self.shell, &self.sim.plots, &self.graphs);
-        #[cfg(target_arch = "wasm32")]
-        let graphs = Vec::new();
-        let Editor {
-            shell,
-            scene,
-            shown,
-            decor,
-            markers,
-            extra,
-            marks,
-            overlay,
-            waves,
-            canvas_gen,
-            ..
-        } = self;
-        let canvas = (!text_tab).then(|| CanvasPicture {
-            view,
-            cam,
+        let p = CanvasPicture {
+            view: self.canvas_rect(),
+            cam: self.camera(),
             grid,
-            palette,
-            gens: *canvas_gen,
-            scene: &scene.prims,
-            shown: shown.as_ref(),
-            scene_edits: scene.edits(),
-            decor,
-            markers: &markers.prims,
-            markers_edits: markers.edits(),
-            extra,
-            marks,
-            overlay,
-        });
-        Picture {
-            ui: UiView {
-                tables: &shell.tables,
-                layout: &shell.layout,
-                strings: &shell.strings,
-                state: &shell.ui,
-                text: &mut shell.text,
-            },
-            canvas,
-            graphs,
-            dock: waves.as_mut().map(|w| w.picture(dy)),
-        }
+            palette: self.view_palette(),
+            gens: self.canvas_gen,
+            scene: &self.scene.prims,
+            shown: self.shown.as_ref(),
+            scene_edits: self.scene.edits(),
+            decor: &self.decor,
+            markers: &self.markers.prims,
+            markers_edits: self.markers.edits(),
+            extra: &self.extra,
+            marks: &self.marks,
+            overlay: &self.overlay,
+        };
+        debug_assert!(p.cam.scale > 0.0, "a positive camera scale");
+        Some(p)
     }
 
-    /// Takes what the frame painted from [`Editor::picture`] consumed. `took_edits`: the
+    /// Takes what the canvas painter consumed from [`CanvasPicture`]. `took_edits`: the
     /// painter's diff took the scene's and the markers' reported edits, so they are cleared
     /// (a frame that did not diff, a text tab, leaves them for the next). Every painted frame
     /// is complete, so painting never asks [`Editor::wake_ms`] for another.
@@ -234,57 +139,32 @@ impl Editor {
             },
         );
     }
-}
 
-impl Editor {
-    /// Where the input method's candidate window goes (the focused text field), in logical
-    /// px: `(x, y, w, h)`.
-    ///
-    /// # Panics
-    ///
-    /// Never: layout gives every node a non-negative size.
-    pub fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
-        let s = &self.shell;
-        let r = s.ui.ime_area(&s.tables, &s.layout)?;
-        assert!(r.w >= 0.0 && r.h >= 0.0);
-        Some((r.x, r.y, r.w, r.h))
-    }
-
-    /// The accessibility tree of this frame's UI (D6: the UI is data, so is its tree).
-    pub fn access_tree(&self) -> TreeUpdate {
-        let s = &self.shell;
-        schemify_ui::access::access_tree(&s.tables, &s.layout, &s.strings, &s.ui)
-    }
-}
-
-// ---- private ----
-
-/// Each filled plot slot of the docs page (`graph` nodes `graphs` names) with a drawable
-/// rectangle, over the run's plot slots `plots`.
-#[cfg(not(target_arch = "wasm32"))]
-fn graph_pictures<'frame>(
-    s: &Shell,
-    plots: &'frame [Plot],
-    graphs: &[(String, String)],
-) -> Vec<GraphPicture<'frame>> {
-    let mut out = Vec::new();
-    for (id, expr) in graphs {
-        let Some(sym) = s.strings.find(id) else {
-            continue;
-        };
-        let Some(row) = s.tables.nodes.find(sym).and_then(|n| s.layout.row_of(n)) else {
-            continue;
-        };
-        let Some(Ok(waves)) = plots.iter().find(|x| x.expr == *expr).map(|x| &x.waves) else {
-            continue;
-        };
-        let rect = s.layout.rect()[row];
-        if rect.w < 16.0 || rect.h < 16.0 {
-            continue;
+    /// Paints each filled plot slot of the docs page (the `graph` nodes `graphs` names) on its
+    /// layer, clipped to the scroll pane it sits in (nothing else shares the page's layer, so
+    /// the plot goes on top of it rather than into the reserved shape).
+    pub(crate) fn paint_graphs(&self, ctx: &schemify_ui::egui::Context) {
+        use schemify_ui::egui::{Rect, pos2, vec2};
+        #[cfg(not(target_arch = "wasm32"))]
+        for (id, expr) in &self.graphs {
+            let s = &self.shell;
+            let node = s.strings.find(id).and_then(|sym| s.tables.nodes.find(sym));
+            let Some(row) = node.and_then(|n| s.layout.row_of(n)) else {
+                continue;
+            };
+            let plot = self.sim.plots.iter().find(|x| x.expr == *expr).map(|x| &x.waves);
+            let (Some(Ok(waves)), Some(slot)) = (plot, s.layout.slot()[row]) else {
+                continue;
+            };
+            let (rect, clip) = (s.layout.rect()[row], s.layout.clip()[row]);
+            if rect.w < 16.0 || rect.h < 16.0 {
+                continue;
+            }
+            let clip = Rect::from_min_size(pos2(clip.x, clip.y), vec2(clip.w, clip.h));
+            let painter = ctx.layer_painter(slot.layer).with_clip_rect(clip);
+            schemify_ui::waves::paint_pane(&painter, rect, waves, 0, false, schemify_ui::waves::Drag::None);
         }
-        let clip = s.layout.clip()[row];
-        out.push(GraphPicture { rect, clip, waves });
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
     }
-    assert!(out.len() <= graphs.len());
-    out
 }

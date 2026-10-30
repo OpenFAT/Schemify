@@ -14,7 +14,7 @@
 use schemify_doc::{DocHandle, Edit, EditRequest, Op, Outcome, Project, TableId};
 use schemify_elab::CellState;
 use schemify_expr::Value;
-use schemify_ui::{CommandRequests, InputEvent, InputEvents, Key};
+use schemify_ui::CommandRequests;
 
 use crate::commands::Cmd;
 use crate::scene::ObjKey;
@@ -265,7 +265,7 @@ impl Editor {
     /// applies the text. Ctrl+Enter submits through `docs.prose_ok` instead.
     pub(super) fn sync_page(
         &mut self,
-        events: &InputEvents,
+        escape: bool,
         cmds: &CommandRequests,
         reqs: &mut Vec<EditRequest>,
     ) -> bool {
@@ -299,10 +299,6 @@ impl Editor {
         if !self.page.focused || submitted {
             return false;
         }
-        let escape = events
-            .events
-            .iter()
-            .any(|e| matches!(e, InputEvent::Key { chord } if chord.key() == Key::ESCAPE));
         let Some((row, text)) = self.page.editing.take() else {
             return false;
         };

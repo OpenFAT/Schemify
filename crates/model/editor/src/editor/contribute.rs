@@ -237,7 +237,7 @@ impl Editor {
             .max(8);
         let Some(m) = u16::try_from(font)
             .ok()
-            .and_then(|px| schemify_ui::prose::code_metrics(&sh.text, px))
+            .and_then(|px| schemify_ui::prose::code_metrics(&sh.ctx, px))
         else {
             return node(t, shown);
         };

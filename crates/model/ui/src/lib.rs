@@ -65,7 +65,7 @@ pub use tables::{
     Contribution, Edit, Health, HealthKind, Keymap, NO_NODE, NO_STYLE, NodeIx, UiNodes, UiStyles,
     UiTables,
 };
-pub use view::{DISABLED_ALPHA, row_style, show};
+pub use view::{DISABLED_ALPHA, pointer_events, row_style, show};
 
 /// Re-exported so hosts name the same egui types as this crate.
 pub use egui;

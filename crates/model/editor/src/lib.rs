@@ -34,7 +34,7 @@
 //! use schemify_ui::InputEvents;
 //!
 //! let mut ed = Editor::new(Options { path: Some("design/top.shcomp".into()), ..Options::default() })?;
-//! ed.update(&InputEvents::default(), (1280.0, 800.0), 0);
+//! ed.step(&InputEvents::default(), (1280.0, 800.0), 0);
 //! # Ok::<(), String>(())
 //! ```
 

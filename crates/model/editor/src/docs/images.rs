@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use png::{ColorType, Decoder, Transformations};
 use schemify_doc::{Document, Loc, RecordKind, TableId};
-use schemify_ui::{Image, TextSystem};
+use schemify_ui::{Image, UiState};
 
 use crate::platform;
 
@@ -31,7 +31,7 @@ use super::{IMAGE_BYTES_MAX, IMAGE_SIDE_MAX, IMAGES_FAILED_MAX};
 pub fn load_images(
     doc: &Document,
     root: &Path,
-    text: &mut TextSystem,
+    ui: &mut UiState,
     failed: &mut Vec<String>,
 ) -> (bool, Option<String>) {
     assert!(failed.len() <= IMAGES_FAILED_MAX);
@@ -50,17 +50,13 @@ pub fn load_images(
             let Some(path) = schemify_ui::prose::image_line(line.trim()).map(|i| i.path) else {
                 continue;
             };
-            if text.image_id(path).is_some() || failed.iter().any(|f| f == path) {
+            if ui.image(path).is_some() || failed.iter().any(|f| f == path) {
                 continue;
             }
             match load_image(root, path) {
                 Ok(img) => {
-                    let registered = text.set_image(img);
-                    assert_eq!(
-                        registered,
-                        text.image_id(path).is_some(),
-                        "set_image's result"
-                    );
+                    let registered = ui.set_image(path, img);
+                    assert_eq!(registered, ui.image(path).is_some(), "set_image's result");
                     loaded |= registered;
                     if !registered {
                         err = Some(format!("{path}: too many images on the page"));
@@ -68,7 +64,7 @@ pub fn load_images(
                 }
                 Err(e) => err = Some(e),
             }
-            if text.image_id(path).is_none() {
+            if ui.image(path).is_none() {
                 if failed.len() >= IMAGES_FAILED_MAX {
                     failed.remove(0);
                 }
@@ -127,7 +123,7 @@ pub fn load_image(root: &Path, path: &str) -> Result<Image, String> {
         ));
     }
     let rgba = decode_png(&bytes, w, h).map_err(|e| format!("{path}: {e}"))?;
-    Ok(Image::new(path, w, h, rgba))
+    Ok(Image { width: w, height: h, rgba })
 }
 
 /// Width and height from a PNG's signature and IHDR chunk; `None` when it is not one.

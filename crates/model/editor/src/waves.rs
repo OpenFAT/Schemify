@@ -5,24 +5,22 @@
 //!
 //! Opened by the Waves command on a file the user picks, or by the results table on a job's
 //! raw file. Docked rather than full-window so the canvas stays clickable: a click on a net
-//! cross-probes it into the open viewer ([`WavesView::add_trace`]). The dock lays out and
-//! routes input in its own coordinates; the editor shifts pointer events into them and
-//! `schemify-app` paints it below the editor (`Editor::picture` lends its tables).
+//! cross-probes it into the open viewer ([`WavesView::add_trace`]). The dock is a resizable
+//! bottom panel of the window's egui pass: [`WavesView::view`] shows its tables, routes the
+//! pointer over its panes and paints them there.
 //!
 //! Contents:
 //! - `pub struct DockFrame`
-//! - `pub struct WavesView`, `WavesView::open`, `WavesView::update`, `WavesView::reload`,
-//!   `WavesView::add_trace`, `WavesView::traces`, `WavesView::picture`
+//! - `pub struct WavesView`, `WavesView::open`, `WavesView::view`, `WavesView::reload`,
+//!   `WavesView::add_trace`, `WavesView::traces`
 //! - `pub fn spice_device`
 //! - `pub fn current_probe`
 
 use std::fmt;
 
-use crate::editor::{DockPicture, UiView};
-use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveCommand, WaveUi};
+use schemify_ui::waves::{DialogFx, Geometry, PROPS_DIALOG, WAVES_UI, WaveCommand, WaveUi};
 use schemify_ui::{
-    Chord, Contribution, InputEvent, InputEvents, Key, Mods, Routed, Strings, Sym, TextSystem,
-    UiLayout, UiState, UiTables, records,
+    Contribution, InputEvents, Routed, Strings, Sym, UiLayout, UiState, UiTables, egui, records,
 };
 use schemify_wave::{Applied, MAX_DATASETS, RawPlot, Request, Waves};
 
@@ -42,12 +40,11 @@ pub struct WavesView {
     session: Contribution,
     session_name: Sym,
     tables: UiTables,
-    text: TextSystem,
     state: UiState,
     frame: UiLayout,
     geo: Geometry,
+    /// The dock's size at the last rebuild (lists are refitted when it changes).
     viewport: (f32, f32),
-    routed: Routed,
     waves: Waves,
     ui: WaveUi,
     requests: Vec<Request>,
@@ -85,12 +82,10 @@ impl WavesView {
             session: Contribution::default(),
             session_name,
             tables: UiTables::default(),
-            text: TextSystem::new(),
             state: UiState::default(),
             frame: UiLayout::default(),
             geo: Geometry::default(),
             viewport: (0.0, 0.0),
-            routed: Routed::default(),
             waves,
             ui: WaveUi::default(),
             requests: Vec::new(),
@@ -100,117 +95,91 @@ impl WavesView {
 
     /// Recomposes and lays out; lists are measured empty first so their row count follows
     /// the window size (at most three passes, as in the `waves` example).
+    /// Recomposes the window's tables from the viewer tables (the rows that follow them).
     fn rebuild(&mut self) {
-        for _ in 0..3 {
-            self.session = self.ui.contribute(&self.waves, &mut self.strings);
-            self.tables = schemify_ui::compose(
-                &self.strings,
-                &self.base,
-                &[(self.session_name, &self.session)],
-            );
-            self.frame = schemify_ui::layout(
-                &self.tables,
-                &self.strings,
-                &mut self.text,
-                &self.state,
-                self.viewport,
-            );
-            self.geo = Geometry::of(&self.tables, &self.frame, &self.strings);
-            let fit = (
-                WaveUi::rows_fit(self.geo.signals),
-                WaveUi::rows_fit(self.geo.traces),
-            );
-            if !self.ui.set_capacity(fit.0, fit.1) {
-                break;
-            }
-        }
+        self.session = self.ui.contribute(&self.waves, &mut self.strings);
+        self.tables = schemify_ui::compose(
+            &self.strings,
+            &self.base,
+            &[(self.session_name, &self.session)],
+        );
+        debug_assert!(!self.tables.nodes.is_empty(), "the skeleton composes");
     }
 
-    /// One frame of input.
-    ///
-    /// # Panics
-    ///
-    /// If a `viewport` dimension is negative.
-    pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now: u64) -> DockFrame {
-        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
-        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
-        let close_keys = [
-            Chord::new(Mods(Mods::CTRL), Key('w' as u32)),
-            Chord::new(Mods::default(), Key::ESCAPE),
-        ];
-        let idle = self.state.open().is_empty() && self.state.dialog().is_none();
-        let close = events.events.iter().any(|e| {
-            matches!(e, InputEvent::Key { chord } if close_keys.contains(chord)
-                && (idle || *chord == close_keys[0]))
-        });
-        if close {
-            return DockFrame {
-                redraw: true,
-                close: true,
-            };
-        }
-        let mut changed = viewport != self.viewport;
-        let mut recompose = changed;
-        if changed {
-            self.viewport = viewport;
+    /// One pass of the dock in `ui`'s rectangle: its tables shown (taking keys when `keys`,
+    /// the pointer being over it), and on the frame's first pass its commands and the pointer
+    /// over its panes turned into viewer requests and applied; the panes are painted on every
+    /// pass. `Ctrl+W`, or Escape over the dock with nothing open, asks to close it.
+    pub fn view(&mut self, ui: &mut egui::Ui, keys: bool, now: u64) -> DockFrame {
+        let ctx = ui.ctx().clone();
+        let first = ctx.current_pass_index() == 0;
+        let rect = ui.max_rect();
+        let size = (rect.width(), rect.height());
+        assert!(size.0 >= 0.0 && size.1 >= 0.0, "a dock of non-negative size");
+        if self.viewport != size {
+            self.viewport = size;
             self.ui.set_capacity(0, 0);
             self.rebuild();
         }
-        let mut routed = std::mem::take(&mut self.routed);
-        schemify_ui::route_input(
-            &self.tables,
-            &self.frame,
-            &self.strings,
-            &mut self.text,
-            &mut self.state,
-            events,
-            &mut routed,
-        );
+        let idle = self.state.dialog().is_none() && !egui::Popup::is_any_open(&ctx);
+        let (ctrl_w, escape) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::W) && i.modifiers.command,
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if first && (ctrl_w || (keys && escape && idle)) {
+            return DockFrame { redraw: true, close: true };
+        }
+        let mut routed = Routed::default();
+        self.state.set_keys(keys);
+        schemify_ui::show(ui, &self.tables, &self.strings, &mut self.state, &mut self.frame, &mut routed);
+        self.geo = Geometry::of(&self.tables, &self.frame, &self.strings);
+        let mut frame = DockFrame { redraw: false, close: false };
+        if first {
+            frame.redraw = self.route(&ctx, &routed, ui.layer_id(), rect, now);
+        }
+        schemify_ui::waves::paint_window(&ctx.layer_painter(ui.layer_id()), &self.geo, &self.waves, &self.ui);
+        frame
+    }
+
+    /// The frame's dock commands and pane pointer events as viewer requests, applied; the
+    /// lists refitted to their panels. Returns whether anything changed.
+    fn route(&mut self, ctx: &egui::Context, routed: &Routed, layer: egui::LayerId, rect: egui::Rect, now: u64) -> bool {
+        let (mut changed, mut recompose) = (false, false);
         for i in 0..routed.commands.len() {
             let name = self.strings.get(routed.commands.command[i]).to_owned();
             let node = self.strings.get(routed.commands.node[i]).to_owned();
-            let fx = self.ui.command(
-                &self.waves,
-                &self.geo,
-                WaveCommand {
-                    name: &name,
-                    arg: routed.commands.arg(i),
-                    node: &node,
-                    now_ms: now,
-                },
-                &mut self.requests,
-            );
+            let command = WaveCommand { name: &name, arg: routed.commands.arg(i), node: &node, now_ms: now };
+            let fx = self.ui.command(&self.waves, &self.geo, command, &mut self.requests);
             changed |= fx.redraw;
             recompose |= fx.recompose;
             self.show_dialog(fx.dialog);
         }
         // A modal dialog takes the pointer: the panes under it do not pan or zoom.
-        let fx = if self.state.dialog().is_none() {
-            self.ui
-                .route(&self.waves, &self.geo, events, now, &mut self.requests)
-        } else {
-            Effect::default()
-        };
-        changed |= fx.redraw || !self.requests.is_empty();
-        recompose |= fx.recompose;
-        self.show_dialog(fx.dialog);
+        if self.state.dialog().is_none() {
+            let mut events = InputEvents::default();
+            schemify_ui::pointer_events(ctx, rect, layer, "waves", &mut events.events);
+            let fx = self.ui.route(&self.waves, &self.geo, &events, now, &mut self.requests);
+            changed |= fx.redraw;
+            recompose |= fx.recompose;
+            self.show_dialog(fx.dialog);
+        }
+        changed |= !self.requests.is_empty();
         for r in std::mem::take(&mut self.requests) {
             let res = self.waves.apply(&r);
             recompose |= self.ui.note(&self.waves, &r, res.as_ref()).recompose;
         }
-        if (recompose || routed.relayout) && self.viewport.0 > 0.0 {
+        let fit = (WaveUi::rows_fit(self.geo.signals), WaveUi::rows_fit(self.geo.traces));
+        recompose |= self.ui.set_capacity(fit.0, fit.1);
+        if recompose {
             self.rebuild();
+            ctx.request_discard("the waves dock recomposed");
         }
-        changed |= routed.redraw || recompose;
-        self.routed = routed;
         assert!(self.requests.is_empty(), "every request applied this frame");
-        DockFrame {
-            redraw: changed,
-            close: false,
-        }
+        changed || recompose
     }
 
-    /// Shows or closes the graph properties dialog as a `ui::waves` effect asks.
     fn show_dialog(&mut self, fx: DialogFx) {
         match fx {
             DialogFx::Keep => {}
@@ -237,9 +206,7 @@ impl WavesView {
         let dropped = self.waves.reload(datasets(title, bytes)?);
         assert!(self.waves.datasets().len() <= MAX_DATASETS);
         self.title = title.to_owned();
-        if self.viewport.0 > 0.0 {
-            self.rebuild();
-        }
+        self.rebuild();
         Ok(if dropped.is_empty() {
             format!("waves: reloaded {title}")
         } else {
@@ -273,9 +240,7 @@ impl WavesView {
             match &res {
                 Ok(Applied::Trace(_)) => {
                     self.ui.note(&self.waves, &req, res.as_ref());
-                    if self.viewport.0 > 0.0 {
-                        self.rebuild();
-                    }
+                    self.rebuild();
                     return Ok(());
                 }
                 Ok(other) => why = format!("{other:?}"),
@@ -290,25 +255,6 @@ impl WavesView {
         (0..self.waves.trace_count())
             .map(|i| self.waves.src(i))
             .collect()
-    }
-
-    /// The dock's tables as [`crate::editor::Editor::picture`] lends them, painted `dy`
-    /// logical px below the window's top.
-    pub(crate) fn picture(&mut self, dy: f64) -> DockPicture<'_> {
-        assert!(dy >= 0.0, "a dock below the window's top");
-        DockPicture {
-            ui: UiView {
-                tables: &self.tables,
-                layout: &self.frame,
-                strings: &self.strings,
-                state: &self.state,
-                text: &mut self.text,
-            },
-            geo: &self.geo,
-            waves: &self.waves,
-            wave_ui: &self.ui,
-            dy,
-        }
     }
 }
 

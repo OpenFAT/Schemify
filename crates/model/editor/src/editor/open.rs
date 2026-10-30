@@ -9,7 +9,6 @@ use schemify_canvas::{CanvasPrims, Marks, Palette};
 use schemify_elab::{Annotations, Dialect};
 use schemify_format::{FileKind, IdRng};
 use schemify_plugin::abi::Event;
-use schemify_ui::Routed;
 
 use crate::checks::{Diff, Markers, Members};
 use crate::commands::Commands;
@@ -26,7 +25,6 @@ use super::dialog::Dialog;
 use super::files;
 use super::opts;
 use super::opts::EditOpts;
-use super::probe::DOCK_SPLIT;
 use super::tool::Tool;
 use super::{Editor, Options, Panel};
 
@@ -107,7 +105,6 @@ impl Editor {
             dialog: Dialog::None,
             clipboard: Vec::new(),
             rng: IdRng::new(opts.seed ^ 0x5eed),
-            routed: Routed::default(),
             viewport: (0.0, 0.0),
             canvas_gen: [0; 5],
             waves: None,
@@ -158,9 +155,6 @@ impl Editor {
             diff: Diff::default(),
             stage_pick: 0,
             diff_key: None,
-            dock_focus: false,
-            dock_split: DOCK_SPLIT,
-            dock_drag: false,
             staged: None,
             results_for: None,
             recent: opts

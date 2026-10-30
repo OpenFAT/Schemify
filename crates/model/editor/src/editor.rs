@@ -2,7 +2,7 @@
 //! transforms them, one line per transform (docs/dev/architecture.md § Spines, `frame`):
 //!
 //! ```text
-//! ui::route_input(ui_layout, keymap, events)          → command_requests, canvas events
+//! ui::show(ui tables, egui input) in egui's pass       → command_requests, canvas events, ui_layout
 //! app::dispatch(commands, command_requests)            → edit_requests, plugin_events, ui state
 //! app::gesture(tool_state, canvas events)              → edit_requests, selection, tool_state
 //! plugin::deliver(plugins, plugin_events, snapshots)   → request_queues (edits, logs, io)
@@ -13,10 +13,10 @@
 //! elab::Annotations::{replace, patch}(checks, op)      → annotations (per source)
 //! run::poll(jobs) → results; optimizer ask/tell        → results table, plots, staged edit
 //! app::ui_inputs(plugin sets, docs page, images: I/O)  → shell inputs, status
-//! ui::compose(base, plugin sets, state + docs page)    → ui_nodes; ui::layout → ui_layout
+//! ui::compose(base, plugin sets, state + docs page)    → ui_nodes (changed: egui shows them again)
 //! scene::build(doc, symbols)                           → canvas prims, objects (on change)
 //! checks::decor(scene, violations, highlight, annots)  → decor prims (on change)
-//! (schemify-app) paint(Editor::picture)               → pixels; Editor::painted(took_edits)
+//! canvas hook(CanvasPicture) → canvas slot; plots     → egui output; Editor::painted(took_edits)
 //! ```
 //!
 //! Event-driven: `update` runs when the window delivers input, or on a tick the editor asked
@@ -31,7 +31,8 @@
 //! Contents:
 //! - `pub enum Panel`
 //! - `pub struct Options`
-//! - `pub struct Editor`, `Editor::wake_ms`, `Editor::update`
+//! - `pub struct Editor`, `Editor::wake_ms`, `Editor::update`, `Editor::step`
+//! - `pub struct Frame`
 //! - `pub(crate) fn has_view`
 
 mod apply;
@@ -72,7 +73,6 @@ mod text;
 mod tool;
 mod values;
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt;
 use std::path::PathBuf;
@@ -81,7 +81,7 @@ use schemify_canvas::{CanvasPrims, Marks, Palette};
 use schemify_doc::{DocHandle, Document, EditRequest, Op, RecordBuf};
 use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_format::{FileKind, IdRng};
-use schemify_ui::{InputEvent, InputEvents, Routed};
+use schemify_ui::{InputEvents, Mods, Routed, egui};
 
 use crate::checks::{Diff, Markers, Members};
 use crate::commands::{Cmd, Commands};
@@ -101,7 +101,8 @@ use decor::DecorKey;
 use dialog::Dialog;
 
 pub use opts::EditOpts;
-pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
+pub use picture::{CanvasPicture, Raster};
+use probe::DOCK_SPLIT;
 pub use queue::QUEUED_MAX;
 use queue::{Queued, Said};
 use schemify_config::Startup;
@@ -182,7 +183,6 @@ pub struct Editor {
     dialog: Dialog,
     clipboard: Vec<RecordBuf>,
     rng: IdRng,
-    routed: Routed,
     viewport: (f32, f32),
     /// Advance whenever a table the canvas layer draws changes: the scene as shown, decor,
     /// parity decor (`extra`), marks, violation markers.
@@ -297,12 +297,6 @@ pub struct Editor {
     diff_key: Option<(DocHandle, u32)>,
     /// Which of the active document's staged edits is under review (index; clamped).
     stage_pick: usize,
-    /// Keyboard input goes to the waves dock (the pointer is over it).
-    dock_focus: bool,
-    /// Share of the window height above the waves dock (the divider, dragged by the pointer).
-    dock_split: f32,
-    /// The pointer is dragging the dock divider.
-    dock_drag: bool,
     /// The staged edit under review: its label and the document with it applied.
     staged: Option<(String, Document)>,
     /// The bench whose saved results were looked up (once per activation).
@@ -395,67 +389,120 @@ impl Editor {
 
     // ------------------------------------------------------------------ the frame spine
 
-    /// One frame: input in, tables updated. Returns whether the picture changed. `now_ms`
-    /// is a monotonic clock (double-click detection, waves UI, plugin timers). An empty
-    /// `events` is a tick ([`Editor::wake_ms`]): it polls the run and plugin completions.
+    /// One frame: egui's input in, tables updated, the window's egui output out. `now_ms` is a
+    /// monotonic clock (double clicks, waves UI, plugin timers). Input without events is a tick
+    /// ([`Editor::wake_ms`]): it polls the run and plugin completions.
+    ///
+    /// The frame is one egui pass: the view (`ui::show`) routes the input over what is shown,
+    /// the spine runs on its commands and canvas events, and when a table changed egui runs the
+    /// view again (no input) so the output shows the frame's result. `canvas` paints the canvas
+    /// slot in the final pass from the canvas tables: it returns the slot's shape and whether it
+    /// took the scene's reported edits ([`Editor::painted`]). The caller applies the output's
+    /// texture deltas (a headless caller clears them).
     ///
     /// # Panics
     ///
-    /// If a `viewport` dimension is negative.
-    pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
+    /// If the input's screen rectangle has a negative size.
+    pub fn update(
+        &mut self,
+        mut input: egui::RawInput,
+        now_ms: u64,
+        canvas: &mut impl FnMut(&egui::Context, &CanvasPicture<'_>) -> (egui::Shape, bool),
+    ) -> Frame {
+        let viewport = input.screen_rect.map_or((0.0, 0.0), |r| (r.width(), r.height()));
         assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
         assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         self.now = now_ms;
-        // 0. the waves dock: its share of the window and the input over it
+        input.time = Some(now_ms as f64 / 1000.0);
+        let ctx = self.shell.ctx.clone();
         let mut changed = false;
-        let (events, viewport) = match self.waves.is_some() {
-            true => {
-                let probe::Split {
-                    mine,
-                    dock,
-                    view,
-                    dock_view,
-                } = self.split_input(events, viewport);
-                let w = self.waves.as_mut().expect("checked above");
-                let frame = w.update(&dock, dock_view, now_ms);
+        let output = ctx.run_ui(input, |ui| changed |= self.pass(ui, viewport, now_ms, canvas));
+        Frame { output, changed }
+    }
+
+    /// One frame from scripted input with no window (`schemify cmd`, the RPC server's ticks,
+    /// tests): `events` in a `viewport`-sized window, the canvas left unpainted and egui's
+    /// textures dropped. Returns whether a table changed.
+    pub fn step(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
+        let mut f = self.update(events.raw(viewport), now_ms, &mut |_, _| (egui::Shape::Noop, false));
+        f.output.textures_delta.clear(); // no painter holds egui's textures here
+        f.changed
+    }
+
+    /// One egui pass of the frame: the dock and the window's view, the spine on the first pass,
+    /// the slots painted on the pass whose output is kept.
+    fn pass(
+        &mut self,
+        ui: &mut egui::Ui,
+        viewport: (f32, f32),
+        now_ms: u64,
+        canvas: &mut impl FnMut(&egui::Context, &CanvasPicture<'_>) -> (egui::Shape, bool),
+    ) -> bool {
+        let ctx = ui.ctx().clone();
+        let first = ctx.current_pass_index() == 0;
+        let mut changed = false;
+        if first {
+            // UI inputs (plugin sets, docs page, images) → compose when something changed since
+            // the last frame (or the window's size), so input routes over what is shown now.
+            let resized = viewport != self.viewport;
+            self.viewport = viewport;
+            changed |= resized;
+            self.ui_step(false, resized);
+            self.track_input(&ctx);
+        }
+        // 0. the waves dock: a resizable bottom panel; keys go to the side under the pointer
+        let pointer = ctx.pointer_latest_pos();
+        let mut dock = None;
+        if let Some(w) = self.waves.as_mut() {
+            let r = egui::Panel::bottom("schemify.waves")
+                .resizable(true)
+                .default_size(viewport.1 * (1.0 - DOCK_SPLIT))
+                .frame(egui::Frame::NONE)
+                .show_inside(ui, |ui| {
+                    let over = pointer.is_some_and(|p| ui.max_rect().contains(p));
+                    (w.view(ui, over, now_ms), over)
+                });
+            dock = Some(r.inner);
+        }
+        let keys = dock.is_none_or(|(_, over)| !over);
+        // 1. the view: input → command_requests + canvas events
+        let mut routed = Routed::default();
+        let rest = ui.available_rect_before_wrap();
+        let mut top = ui.new_child(egui::UiBuilder::new().max_rect(rest));
+        self.shell.view(&mut top, keys, &mut routed);
+        if first {
+            if let Some((frame, _)) = dock {
                 changed |= frame.redraw;
                 if frame.close {
                     self.waves = None;
                     self.shell.invalidate();
                     changed = true;
                 }
-                (Cow::Owned(mine), view)
             }
-            false => (Cow::Borrowed(events), viewport),
-        };
-        let events: &InputEvents = &events;
+            changed |= self.spine(&ctx, &routed, now_ms);
+            if changed {
+                ctx.request_discard("the frame changed the editor's tables");
+            }
+        }
+        if !ctx.will_discard() {
+            self.paint_graphs(&ctx);
+            self.paint_canvas(&ctx, canvas);
+        }
+        changed
+    }
+
+    /// Steps 2–9 of the frame spine over the view's output. Returns whether a table changed.
+    fn spine(&mut self, ctx: &egui::Context, routed: &Routed, now_ms: u64) -> bool {
+        let mut changed = false;
         let snapshot_due = std::mem::take(&mut self.snapshot_due);
         self.snapshot_fresh = false;
-        let resized = viewport != self.viewport;
-        self.viewport = viewport;
-        // UI inputs (plugin sets, docs page, images) → compose + layout when something changed
-        // since the last frame's step 8 (or the window's size), so input routes over what is
-        // shown now.
-        self.ui_step(false, resized);
-        let mut routed = std::mem::take(&mut self.routed);
-        // 1. input → command_requests + canvas events
-        schemify_ui::route_input(
-            &self.shell.tables,
-            &self.shell.layout,
-            &self.shell.strings,
-            &mut self.shell.text,
-            &mut self.shell.ui,
-            events,
-            &mut routed,
-        );
-        self.track_input(events);
         if self.shell.ui.dialog().is_none() {
             self.dialog = Dialog::None; // Escape closed it inside `ui` (cancel)
         }
-        changed |= resized || routed.redraw || routed.relayout;
         let mut reqs: Vec<EditRequest> = std::mem::take(&mut self.queued_edits);
         self.undid = false;
-        changed |= self.sync_page(events, &routed.commands, &mut reqs);
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        changed |= self.sync_page(escape, &routed.commands, &mut reqs);
         // 2. dispatch → edit_requests, plugin_events, ui state
         changed |= self.dispatch_all(&routed.commands, &mut reqs);
         if platform::clipboard_ready() {
@@ -503,11 +550,11 @@ impl Editor {
         self.track_stage();
         // 8. ui inputs (plugin sets, docs page, prose images: I/O) → ui compose + layout
         //    (a projection) → palette
-        changed |= self.ui_step(routed.relayout, true);
+        changed |= self.ui_step(false, true);
         if let Some(id) = self.focus_next.take() {
             let s = &mut self.shell;
             let sym = s.strings.intern(&id);
-            s.ui.focus_text(&s.tables, &s.layout, &s.strings, &mut s.text, sym);
+            s.ui.focus_text(sym);
         }
         // 9. scene, decor, overlay, marks (auto highlight follows the selection first)
         if self.sel_changed && self.opts.auto_highlight {
@@ -538,9 +585,7 @@ impl Editor {
         // active document's disk hash first, so its first commit hashes nothing; compactions;
         // a first journal's history), so no commit frame does O(document) work.
         let active = self.active().map(|(h, _)| h);
-        if events.events.is_empty()
-            && events.text.is_empty()
-            && self.session.project.idle_pending(active)
+        if ctx.input(|i| i.events.is_empty()) && self.session.project.idle_pending(active)
         {
             if let Some(h) = self.session.project.idle_step(active, IDLE_STEP_BYTES) {
                 self.session.bump(h); // compacted: the scene and the cell rebuild from it
@@ -550,30 +595,54 @@ impl Editor {
                 self.session.flush_journal(h); // a journal sent again once its hash landed
             }
         }
-        self.routed = routed;
         changed
     }
 
-    /// Tracks modifiers and, for keys that use the pointer as first point (xschem infix
-    /// interface), the pointer position before the first key of the batch.
-    fn track_input(&mut self, events: &InputEvents) {
-        for e in &events.events {
-            match *e {
-                InputEvent::Mods { mods } => self.mods = mods.0,
-                InputEvent::PointerMove { x, y } => self.pointer = (x, y),
-                InputEvent::Key { .. } => break,
-                _ => {}
-            }
-        }
-        if let Some(InputEvent::Mods { mods }) = events
-            .events
-            .iter()
-            .rev()
-            .find(|e| matches!(e, InputEvent::Mods { .. }))
-        {
-            self.mods = mods.0;
-        }
+    /// Paints the canvas slot through `canvas` and takes back what it consumed.
+    fn paint_canvas(
+        &mut self,
+        ctx: &egui::Context,
+        canvas: &mut impl FnMut(&egui::Context, &CanvasPicture<'_>) -> (egui::Shape, bool),
+    ) {
+        let Some(slot) = self.shell.canvas_slot() else {
+            return;
+        };
+        let Some(picture) = self.canvas_picture() else {
+            return;
+        };
+        let (shape, took) = canvas(ctx, &picture);
+        ctx.layer_painter(slot.layer).set(slot.shape, shape);
+        self.painted(took);
     }
+
+    /// Tracks modifiers and, for keys that use the pointer as first point (xschem infix
+    /// interface), the pointer position before the first key of the frame.
+    fn track_input(&mut self, ctx: &egui::Context) {
+        ctx.input(|i| {
+            for e in &i.events {
+                match e {
+                    egui::Event::PointerMoved(p) => self.pointer = (p.x, p.y),
+                    egui::Event::Key { .. } | egui::Event::Text(_) => break,
+                    _ => {}
+                }
+            }
+            let m = i.modifiers;
+            self.mods = u8::from(m.ctrl) * Mods::CTRL
+                | u8::from(m.shift) * Mods::SHIFT
+                | u8::from(m.alt) * Mods::ALT
+                | u8::from(m.mac_cmd) * Mods::SUPER;
+        });
+    }
+}
+
+/// What one [`Editor::update`] produced.
+pub struct Frame {
+    /// egui's output: the shapes to paint (canvas and graph slots filled), texture deltas the
+    /// caller must apply or clear, the platform output (cursor, clipboard, IME, accessibility)
+    /// and when egui wants the next frame.
+    pub output: egui::FullOutput,
+    /// Whether any editor table changed (the window repaints regardless; tests read it).
+    pub changed: bool,
 }
 
 /// Whether a cell of `kind` has the `view` side: a `.shcomp` has both, a `.shprim` only a
@@ -633,7 +702,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        ed.update(&InputEvents::default(), (1280.0, 800.0), 1);
+        ed.step(&InputEvents::default(), (1280.0, 800.0), 1);
         let n = ed.scene.objs.len() as u32;
         assert!(n > 20, "{n} objects");
         let mut rng = 0x9e37_79b9_u64;
@@ -655,7 +724,7 @@ mod tests {
                 sel.push(ghost); // not drawn: the fallback path
             }
             ed.set_selection(sel);
-            ed.update(&InputEvents::default(), (1280.0, 800.0), 2 + round);
+            ed.step(&InputEvents::default(), (1280.0, 800.0), 2 + round);
             let hits: Vec<u32> = (0..next(n)).map(|_| next(n)).collect();
             let gone: BTreeSet<ObjKey> = hits
                 .iter()

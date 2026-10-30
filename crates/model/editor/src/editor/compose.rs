@@ -75,7 +75,7 @@ impl Editor {
                 let failed = &mut self.page.images_failed;
                 let err;
                 (loaded, err) =
-                    docs::load_images(doc, &self.session.root, &mut self.shell.text, failed);
+                    docs::load_images(doc, &self.session.root, &mut self.shell.ui, failed);
                 if let Some(e) = err {
                     self.session.say(e);
                 }

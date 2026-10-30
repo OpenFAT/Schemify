@@ -24,7 +24,7 @@ use std::fmt;
 
 use schemify_canvas::{LAYERS, Palette};
 use schemify_ui::{
-    Contribution, Edit, Kind, Rect, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState,
+    Contribution, Edit, Kind, Rect, Routed, Strings, StyleProp, Sym, UiLayout, UiState,
     UiTables, records,
 };
 
@@ -87,10 +87,10 @@ pub struct Shell {
     pub(crate) tables: UiTables,
     /// Menus, dialog, hover and focus (owner: `ui`).
     pub(crate) ui: UiState,
-    /// This frame's layout.
+    /// This frame's layout, as the view recorded it.
     pub(crate) layout: UiLayout,
-    /// Shaped text cache.
-    pub(crate) text: TextSystem,
+    /// The window's egui context (fonts, memory); the view runs in its passes.
+    pub(crate) ctx: schemify_ui::egui::Context,
     /// Lines of plugin contributions the UI parser rejected (shown in the status line).
     pub(crate) rejects: usize,
     composed: bool,
@@ -133,9 +133,9 @@ impl Shell {
         &self.layout
     }
 
-    /// Shaped text cache.
-    pub fn text(&self) -> &TextSystem {
-        &self.text
+    /// The window's egui context: the backend tessellates and paints its output.
+    pub fn ctx(&self) -> &schemify_ui::egui::Context {
+        &self.ctx
     }
 
     /// Lines of plugin contributions the UI parser rejected.
@@ -165,7 +165,7 @@ impl Shell {
             tables: UiTables::default(),
             ui: UiState::default(),
             layout: UiLayout::default(),
-            text: TextSystem::new(),
+            ctx: schemify_ui::context(),
             rejects: 0,
             composed: false,
             laid_out: None,
@@ -267,28 +267,25 @@ impl Shell {
             self.tables = schemify_ui::compose(&self.strings, base, &all);
             self.composed = true;
         }
+        // The view lays out in egui's pass; this only says whether the picture is stale.
         let stale = recompose || relayout || self.laid_out != Some(viewport);
-        if stale && viewport.0 > 0.0 && viewport.1 > 0.0 {
-            self.layout = schemify_ui::layout(
-                &self.tables,
-                &self.strings,
-                &mut self.text,
-                &self.ui,
-                viewport,
-            );
-            self.laid_out = Some(viewport);
-        }
+        self.laid_out = Some(viewport);
         assert!(self.composed);
-        assert!(
-            !stale || viewport.0 == 0.0 || viewport.1 == 0.0 || self.laid_out == Some(viewport),
-            "a stale layout is rebuilt for a visible viewport"
-        );
         stale
     }
 
-    /// Forces a relayout on the next [`Shell::refresh`] (UI state changed: dialog, focus).
+    /// Forces the next [`Shell::refresh`] to report a change (UI state changed: dialog, focus).
     pub fn invalidate(&mut self) {
         self.laid_out = None;
+    }
+
+    /// The window's UI drawn into `ui` (the egui view, `ui::show`); appends the frame's
+    /// commands and canvas events to `out`, and takes keys only when `keys` (the waves dock
+    /// has them while the pointer is over it).
+    pub fn view(&mut self, ui: &mut schemify_ui::egui::Ui, keys: bool, out: &mut Routed) {
+        self.ui.set_keys(keys);
+        schemify_ui::show(ui, &self.tables, &self.strings, &mut self.ui, &mut self.layout, out);
+        debug_assert_eq!(self.layout.len(), self.layout.rect().len());
     }
 
     /// Interns `s` in the UI arena.
@@ -319,6 +316,14 @@ impl Shell {
             });
         assert!(r.w >= 0.0 && r.h >= 0.0, "a canvas of non-negative size");
         r
+    }
+
+    /// The canvas node's paint slot in this frame's layout (`None`: no canvas shown).
+    pub(crate) fn canvas_slot(&self) -> Option<schemify_ui::Slot> {
+        let n = &self.tables.nodes;
+        let canvas = (0..n.len()).find(|&i| n.kind()[i] == Kind::Canvas)?;
+        let row = self.layout.row_of(canvas as u16)?;
+        self.layout.slot()[row]
     }
 
     /// The canvas palette for `light` or dark from the `canvas.<theme>.<n>` / `.grid` /

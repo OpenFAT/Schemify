@@ -6,7 +6,7 @@
 //! Contents:
 //! - `pub struct UiState`: `MAX_SCROLL`, `MAX_SPLIT`, `scroll_of`, `set_scroll`, `split_of`,
 //!   `set_split`, `set_dialog`, `set_dialog_at`, `dialog`, `dialog_at`, `focus`, `focus_text`,
-//!   `set_image`, `image`
+//!   `set_keys`, `set_image`, `image`
 //! - `pub struct Image`
 
 use std::collections::HashMap;
@@ -27,6 +27,8 @@ pub struct UiState {
     pub(crate) edit: Option<(Sym, String)>,
     /// A text field to focus the next time it is shown.
     pub(crate) focus_next: Sym,
+    /// Key chords go elsewhere this frame (another view of the same window has the keyboard).
+    pub(crate) keys_off: bool,
     /// Offset of each scrolled `scroll` node, by node id.
     pub(crate) scroll: Vec<NodeValue>,
     /// Second-pane size of each dragged `split` node, by node id.
@@ -174,6 +176,13 @@ impl UiState {
     pub fn focus_text(&mut self, node: Sym) {
         debug_assert!(!node.is_none(), "a field to focus");
         self.focus_next = node;
+    }
+
+    /// Whether this view's keymap takes the frame's keys (default on): a window showing two
+    /// views gives them to the one under the pointer.
+    pub fn set_keys(&mut self, on: bool) {
+        self.keys_off = !on;
+        debug_assert_eq!(self.keys_off, !on);
     }
 
     /// Registers the decoded image at project-relative `path` for `prose` image lines.

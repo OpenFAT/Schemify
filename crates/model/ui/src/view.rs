@@ -33,6 +33,7 @@ mod prose;
 mod row;
 
 pub(crate) use paths::paint_paths;
+pub use events::pointer_events;
 pub use row::{DISABLED_ALPHA, row_style};
 
 /// Font size when no style sets one.
