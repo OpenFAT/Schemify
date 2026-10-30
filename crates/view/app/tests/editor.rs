@@ -4,7 +4,7 @@
 //! and undo restoring it byte for byte (one undo per gesture).
 
 mod common;
-use common::{Session, U, lines};
+use common::{Session, U, Ui, lines};
 
 use schemify_doc::TableId;
 use schemify_editor::editor::Tool;
@@ -20,7 +20,7 @@ fn wires(s: &Session) -> Vec<String> {
 
 #[test]
 fn draws_a_wire_and_an_l_wire_one_undo_per_gesture() {
-    let mut s = Session::open("inv", "top.shcomp", "wire", true);
+    let mut s = Session::open("inv", "top.shcomp", "wire", Ui::Default);
     let before = s.text();
     s.move_to((300 * U, 100 * U));
     s.key("w");
@@ -58,7 +58,7 @@ fn draws_a_wire_and_an_l_wire_one_undo_per_gesture() {
 
 #[test]
 fn places_moves_rotates_and_flips_an_instance() {
-    let mut s = Session::open("inv", "top.shcomp", "place", true);
+    let mut s = Session::open("inv", "top.shcomp", "place", Ui::Default);
     s.move_to((300 * U, -100 * U));
     s.key("Ins");
     s.click_node("dialog.choose.filter");
@@ -106,7 +106,7 @@ fn places_moves_rotates_and_flips_an_instance() {
 
 #[test]
 fn drag_moves_and_shift_drag_copies() {
-    let mut s = Session::open("inv", "top.shcomp", "drag", true);
+    let mut s = Session::open("inv", "top.shcomp", "drag", Ui::Default);
     // x2 sits at (140, 0); its body spans the triangle right of the origin.
     s.drag((130 * U, 10 * U), (130 * U, 110 * U), 0);
     let t = s.text();
@@ -121,7 +121,7 @@ fn drag_moves_and_shift_drag_copies() {
 
 #[test]
 fn box_select_delete_and_undo() {
-    let mut s = Session::open("inv", "top.shcomp", "box", true);
+    let mut s = Session::open("inv", "top.shcomp", "box", Ui::Default);
     let before = s.text();
     // Left-to-right box around the VSS rail and its label: fully-inside objects only.
     s.drag((-20 * U, 50 * U), (160 * U, 95 * U), 0);
@@ -143,7 +143,7 @@ fn box_select_delete_and_undo() {
 
 #[test]
 fn duplicate_cut_and_paste() {
-    let mut s = Session::open("inv", "top.shcomp", "dup", true);
+    let mut s = Session::open("inv", "top.shcomp", "dup", Ui::Default);
     s.click((10 * U, 0)); // x1
     assert_eq!(s.ed.selection().len(), 1);
     s.move_to((0, 0));
@@ -166,7 +166,7 @@ fn duplicate_cut_and_paste() {
 
 #[test]
 fn descend_edit_return_keeps_per_document_undo() {
-    let mut s = Session::open("inv", "top.shcomp", "hier", true);
+    let mut s = Session::open("inv", "top.shcomp", "hier", Ui::Default);
     let top = s.text();
     s.click((10 * U, 0)); // x1
     s.key("e");
@@ -204,7 +204,7 @@ fn descend_edit_return_keeps_per_document_undo() {
 
 #[test]
 fn properties_dialog_writes_only_overrides() {
-    let mut s = Session::open("inv", "top.shcomp", "props", true);
+    let mut s = Session::open("inv", "top.shcomp", "props", Ui::Default);
     s.click((150 * U, 0)); // x2: no overrides
     s.key("q");
     // Rows: name, wp (default 2), wn (default 1).
@@ -243,7 +243,7 @@ fn properties_dialog_writes_only_overrides() {
 
 #[test]
 fn escape_cancels_dialogs_and_ok_keeps_unsubmitted_typing() {
-    let mut s = Session::open("inv", "top.shcomp", "esc", true);
+    let mut s = Session::open("inv", "top.shcomp", "esc", Ui::Default);
     let before = s.text();
     s.click((150 * U, 0));
     s.key("q");
@@ -269,7 +269,7 @@ fn escape_cancels_dialogs_and_ok_keeps_unsubmitted_typing() {
 
 #[test]
 fn labels_ports_and_texts_from_the_text_dialog() {
-    let mut s = Session::open("inv", "top.shcomp", "label", true);
+    let mut s = Session::open("inv", "top.shcomp", "label", Ui::Default);
     s.move_to((300 * U, -40 * U));
     s.key("Alt+L");
     s.type_text("net7");
@@ -298,7 +298,7 @@ fn labels_ports_and_texts_from_the_text_dialog() {
 
 #[test]
 fn save_writes_the_canonical_file_and_clears_dirty() {
-    let mut s = Session::open("inv", "top.shcomp", "save", true);
+    let mut s = Session::open("inv", "top.shcomp", "save", Ui::Default);
     s.click((150 * U, 0));
     s.key("Del");
     let (h, _) = s.ed.active().unwrap();
@@ -317,7 +317,7 @@ fn save_writes_the_canonical_file_and_clears_dirty() {
 /// fitted to the real viewport, exactly as when the size is known from the start.
 #[test]
 fn fits_when_the_first_viewport_is_empty() {
-    let want = Session::open("inv", "top.shcomp", "fit-ref", true)
+    let want = Session::open("inv", "top.shcomp", "fit-ref", Ui::Default)
         .ed
         .camera();
     let mut ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
@@ -349,7 +349,7 @@ fn fits_when_the_first_viewport_is_empty() {
 
 #[test]
 fn zoom_pan_and_snap_keys() {
-    let mut s = Session::open("inv", "top.shcomp", "view", true);
+    let mut s = Session::open("inv", "top.shcomp", "view", Ui::Default);
     let c0 = s.ed.camera();
     s.key("Shift+Z");
     assert!(s.ed.camera().scale > c0.scale);
@@ -375,7 +375,7 @@ fn zoom_pan_and_snap_keys() {
 
 #[test]
 fn tabs_open_new_and_switch() {
-    let mut s = Session::open("inv", "top.shcomp", "tabs", true);
+    let mut s = Session::open("inv", "top.shcomp", "tabs", Ui::Default);
     s.key("Ctrl+N");
     assert_eq!(s.ed.session().tabs().len(), 2);
     assert_eq!(s.ed.session().active(), 1);
@@ -399,7 +399,7 @@ fn tabs_open_new_and_switch() {
 
 #[test]
 fn draws_instances_from_the_library_index_without_opening_their_cells() {
-    let s = Session::open("inv", "top.shcomp", "index-symbols", false);
+    let s = Session::open("inv", "top.shcomp", "index-symbols", Ui::Bare);
     assert_eq!(
         s.ed.session().project.handles().count(),
         1,
@@ -438,10 +438,10 @@ fn the_startup_file_reuses_the_index_digest() {
 
 /// Opens cell `inv` from `top` and deletes a text in it before idle ticks hashed the file.
 fn an_edit_before_the_idle_hash(tag: &str) -> Session {
-    let mut s = Session::open("inv", "top.shcomp", tag, true);
+    let mut s = Session::open("inv", "top.shcomp", tag, Ui::Default);
     s.click((10 * U, 0)); // x1
     s.key("e");
-    let (child, _) = s.ed.active().unwrap();
+    let (child, _) = s.ed.active().expect("a cell is open");
     s.click((-50 * U, -145 * U)); // the "CMOS inverter" text
     s.key("Del");
     assert!(s.ed.session().project.is_dirty(child));
@@ -454,15 +454,15 @@ fn an_edit_before_the_idle_hash(tag: &str) -> Session {
 
 /// The journal of `inv` names the sha256 of the file's bytes, so a reopen offers the edit.
 fn assert_the_journal_names_the_disk_hash(dir: &std::path::Path) {
-    let file = std::fs::read(dir.join("inv.shcomp")).unwrap();
+    let file = std::fs::read(dir.join("inv.shcomp")).expect("the fixture is readable");
     let sha = schemify_doc::hex(&schemify_doc::sha256(&file));
     let journal = dir.join(".schemify/journal/inv.shcomp.journal");
     let journal = std::fs::read_to_string(journal).unwrap_or_default();
     assert!(journal.contains(&format!("base {sha}\n")), "{journal}");
-    let mut p = schemify_doc::Project::new(None, None, 7).unwrap();
+    let mut p = schemify_doc::Project::new(None, None, 7).expect("a project with no library opens");
     let opened = p
         .open("", "inv.shcomp", &file, Some(journal.as_bytes()))
-        .unwrap();
+        .expect("the fixture cell opens");
     assert_eq!(opened.recovery, schemify_doc::Recovery::Offer { txs: 1 });
 }
 
@@ -496,10 +496,10 @@ fn a_window_close_names_the_disk_hash_an_early_edit_left_to_idle_ticks() {
     })
     .unwrap();
     let mut w = schemify_app::window::Window::new(ed);
-    std::mem::swap(w.editor(), &mut s.ed);
+    std::mem::swap(w.editor_mut(), &mut s.ed);
     w.close();
     assert!(
-        !w.editor().wants_quit(),
+        !w.editor_mut().wants_quit(),
         "a close asks nothing of the quit command"
     );
     assert_the_journal_names_the_disk_hash(&s.dir);

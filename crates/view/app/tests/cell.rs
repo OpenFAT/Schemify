@@ -4,7 +4,7 @@
 //! undo step per submitted field, and the document left untouched by a rejected value.
 
 mod common;
-use common::Session;
+use common::{Session, Ui};
 
 use schemify_ui::Prop;
 
@@ -35,7 +35,7 @@ fn value(s: &Session, id: &str) -> String {
 
 #[test]
 fn panel_projects_the_interface_by_file_kind() {
-    let mut s = Session::open("rc", "res.shprim", "cell-show", true);
+    let mut s = Session::open("rc", "res.shprim", "cell-show", Ui::Default);
     assert!(!has_node(&s, "cell.pane"), "hidden until asked");
     s.run("view.cell", "");
     assert!(has_node(&s, "cell.pane"));
@@ -56,7 +56,7 @@ fn panel_projects_the_interface_by_file_kind() {
     assert!(!has_node(&s, "cell.pane"));
 
     // A testbench: header only (no interface), with its bench attributes.
-    let mut b = Session::open("rc", "tb.shbench", "cell-bench", true);
+    let mut b = Session::open("rc", "tb.shbench", "cell-bench", Ui::Default);
     b.run("view.cell", "");
     assert_eq!(value(&b, "cell.hdr.corner"), "tt");
     assert!(has_node(&b, "cell.hdr.config"));
@@ -66,7 +66,7 @@ fn panel_projects_the_interface_by_file_kind() {
 
 #[test]
 fn every_netlist_field_edits_through_the_panel() {
-    let mut s = Session::open("rc", "res.shprim", "cell-edit", true);
+    let mut s = Session::open("rc", "res.shprim", "cell-edit", Ui::Default);
     let has = |s: &Session, line: &str| s.text().lines().any(|l| l == line);
 
     // Header.
@@ -159,7 +159,7 @@ fn every_netlist_field_edits_through_the_panel() {
 
 #[test]
 fn rejected_values_leave_the_document_untouched() {
-    let mut s = Session::open("rc", "res.shprim", "cell-reject", true);
+    let mut s = Session::open("rc", "res.shprim", "cell-reject", Ui::Default);
     let before = s.text();
     let cases = [
         ("cell.pin.0.dir=sideways", "dir must be one of"),
@@ -185,7 +185,7 @@ fn rejected_values_leave_the_document_untouched() {
 /// an add button.
 #[test]
 fn panel_edits_by_mouse_and_keyboard() {
-    let mut s = Session::open("rc", "res.shprim", "cell-ui", true);
+    let mut s = Session::open("rc", "res.shprim", "cell-ui", Ui::Default);
     s.click_node("switch.cell");
     assert!(has_node(&s, "cell.pane"));
     s.click_node("cell.pin.0.dir");
@@ -221,7 +221,7 @@ fn panel_edits_by_mouse_and_keyboard() {
 /// adds it and the file saves.
 #[test]
 fn a_new_component_becomes_saveable() {
-    let mut s = Session::open("inv", "top.shcomp", "cell-new", true);
+    let mut s = Session::open("inv", "top.shcomp", "cell-new", Ui::Default);
     s.run("file.clear_schematic", "");
     s.run("file.save", "");
     assert!(!s.status().starts_with("saved"), "{}", s.status());
@@ -234,7 +234,7 @@ fn a_new_component_becomes_saveable() {
 /// The panel's look: a primitive under the Modern preset with the panel open.
 #[test]
 fn golden_cell_panel_modern() {
-    let mut s = Session::open("rc", "res.shprim", "cell-golden", true);
+    let mut s = Session::open("rc", "res.shprim", "cell-golden", Ui::Default);
     s.run("view.theme_modern", "");
     s.run("view.cell", "");
     common::check_golden("cell_panel_modern", s.render());
@@ -244,7 +244,7 @@ fn golden_cell_panel_modern() {
 /// `D` (only `electrical`: inout): against pins `A B` (both inout) a sync removes A, turns
 /// B into an input, adds C and D, and reorders to C B D.
 fn with_va_body(tag: &str) -> Session {
-    let mut s = Session::open("rc", "res.shprim", tag, true);
+    let mut s = Session::open("rc", "res.shprim", tag, Ui::Default);
     s.run("view.cell", "");
     s.run("cell.add_impl", "veriloga");
     let body = "`include \"disciplines.vams\"\n// r with three ports\nmodule r(C, B, D);\n  \
@@ -376,7 +376,7 @@ fn symbol_from_ports_redraws_a_primitive_in_port_order() {
 /// starts with outputs `tau`, `v1m`, a spec on `v1m` and an optimizer `fit`.
 #[test]
 fn bench_outputs_specs_and_optimizers_edit_through_the_panel() {
-    let mut s = Session::open("rc", "tb.shbench", "cell-bench-edit", true);
+    let mut s = Session::open("rc", "tb.shbench", "cell-bench-edit", Ui::Default);
     let has = |s: &Session, line: &str| s.text().lines().any(|l| l == line);
     s.run("view.cell", "");
     assert!(has_node(&s, "cell.add.output") && has_node(&s, "cell.add.opt"));

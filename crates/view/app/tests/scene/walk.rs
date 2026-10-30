@@ -1,11 +1,7 @@
-//! Oracle for the incremental scene (`scene::update`, D39 edits): after every edit of a seeded
-//! random sequence through `doc::apply_edits` (inserts, deletes, moves, attribute changes,
-//! shapes, rotated texts, undo, redo), the incrementally updated scene draws exactly what a
-//! full `scene::build`
-//! draws — per object the same primitives, geometry and connection points, and the same
-//! junction dots — compared as sets (the incremental path appends, so row order differs).
+//! The seeded random walk: random edits through `doc::apply_edits`, each step's incremental
+//! scene and selection rows against a full build and a scan.
 
-use schemify_canvas::{CanvasPrims, LAYER_DEAD, PrimKind};
+use schemify_canvas::{CanvasPrims, PrimKind};
 use schemify_doc::{
     DocHandle, Edit, EditRequest, Mode, Project, TableId, Transaction, apply_edits, ops_from_text,
 };
@@ -14,140 +10,7 @@ use schemify_editor::session::View;
 use schemify_elab::{CellState, no_funcs};
 use schemify_format::FileKind;
 
-const RES: &str = "schemify 1 shprim\n\npin A inout 0 -30\npin B inout 0 30\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n\nline 0 -30 0 -15\nline 0 15 0 30\nrect -5 -15 5 15\n  width 2\narc 0 0 8 0 90\ncircle 10 0 2\n  dash 2\npoly -5 -15 5 -15 0 -20 -5 -15\n  closed true\n\nstext 8 -10 R0 {name}\n  size 0.2\nstext 8 2 R0 R={R}\n  size 0.15\n";
-
-struct Rng(u64);
-
-impl Rng {
-    fn below(&mut self, n: u64) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        (z ^ (z >> 31)) % n
-    }
-    /// A grid coordinate in xschem units (coarse, so ends and T-junctions coincide often).
-    fn at(&mut self) -> i64 {
-        (self.below(13) as i64 - 6) * 20
-    }
-}
-
-fn id(n: u64) -> String {
-    const A: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
-    let v = n.wrapping_mul(0x9e37_79b1) & ((1 << 30) - 1);
-    (0..6)
-        .rev()
-        .map(|k| A[((v >> (5 * k)) & 31) as usize] as char)
-        .collect()
-}
-
-/// Everything drawn, as sorted sets: per object (key, geometry, seg, primitives, connection
-/// points) and the junction dots.
-fn canonical(sc: &Scene) -> (Vec<String>, Vec<(i32, i32)>) {
-    let p = &sc.prims;
-    let mut rows: Vec<String> = Vec::new();
-    let key = |o: u32| -> Option<ObjKey> { (o != u32::MAX).then(|| sc.objs.key[o as usize]) };
-    // Dead rows (an update's removals, kept in place) draw nothing: not part of the picture.
-    let live = |layer: &[u8], i: usize| layer[i] != LAYER_DEAD;
-    for i in (0..p.lines.x0.len()).filter(|&i| live(&p.lines.layer, i)) {
-        let l = &p.lines;
-        let k = key(sc.owner.lines[i]);
-        rows.push(format!(
-            "{k:?} line {} {} {} {} {} {:?}",
-            l.x0[i], l.y0[i], l.x1[i], l.y1[i], l.layer[i], l.style[i]
-        ));
-    }
-    for i in (0..p.rects.x0.len()).filter(|&i| live(&p.rects.layer, i)) {
-        let r = &p.rects;
-        let k = key(sc.owner.rects[i]);
-        rows.push(format!(
-            "{k:?} rect {} {} {} {} {} {:?}",
-            r.x0[i], r.y0[i], r.x1[i], r.y1[i], r.layer[i], r.style[i]
-        ));
-    }
-    let mut dots = Vec::new();
-    for i in (0..p.arcs.cx.len()).filter(|&i| live(&p.arcs.layer, i)) {
-        let a = &p.arcs;
-        match key(sc.owner.arcs[i]) {
-            None => dots.push((a.cx[i], a.cy[i])),
-            k => rows.push(format!(
-                "{k:?} arc {} {} {} {} {} {} {:?}",
-                a.cx[i], a.cy[i], a.r[i], a.start[i], a.sweep[i], a.layer[i], a.style[i]
-            )),
-        }
-    }
-    for (name, polys, owners) in [
-        ("polyline", &p.polylines, &sc.owner.polylines),
-        ("polygon", &p.polygons, &sc.owner.polygons),
-    ] {
-        let mut start = 0;
-        for (k, &end) in polys.end.iter().enumerate() {
-            let pts: Vec<(i32, i32)> = (start..end as usize)
-                .map(|j| (polys.x[j], polys.y[j]))
-                .collect();
-            start = end as usize;
-            if !live(&polys.layer, k) {
-                continue;
-            }
-            rows.push(format!(
-                "{:?} {name} {pts:?} {} {:?}",
-                key(owners[k]),
-                polys.layer[k],
-                polys.style[k]
-            ));
-        }
-    }
-    let t = &p.texts;
-    let mut start = 0;
-    for i in 0..t.x.len() {
-        let end = t.end[i] as usize;
-        if !live(&t.layer, i) {
-            start = end;
-            continue;
-        }
-        rows.push(format!(
-            "{:?} text {} {} {} {} {} {:?}",
-            key(sc.owner.texts[i]),
-            t.x[i],
-            t.y[i],
-            t.size[i],
-            t.layer[i],
-            t.rot[i],
-            &t.text[start..end]
-        ));
-        start = end;
-    }
-    for o in 0..sc.objs.len() {
-        rows.push(format!(
-            "{:?} obj {:?} {}",
-            sc.objs.key[o], sc.objs.geom[o], sc.objs.seg[o]
-        ));
-    }
-    for (pt, o) in sc.conn_points() {
-        rows.push(format!("{:?} conn {pt:?}", key(o)));
-    }
-    // Negative space: a dead row and a dropped point belong to no object.
-    let dead_owned = sc
-        .owner
-        .lines
-        .iter()
-        .zip(&p.lines.layer)
-        .chain(sc.owner.texts.iter().zip(&p.texts.layer))
-        .any(|(&o, &l)| l == LAYER_DEAD && o != u32::MAX);
-    assert!(!dead_owned, "dead rows are unowned");
-    rows.sort();
-    dots.sort();
-    // The index finds every object.
-    for o in 0..sc.objs.len() {
-        assert_eq!(
-            sc.find(sc.objs.key[o]),
-            Some(o as u32),
-            "index of {:?}",
-            sc.objs.key[o]
-        );
-    }
-    (rows, dots)
-}
+use super::{RES, Rng, canonical, id};
 
 /// One random edit as op text, from the document's current objects.
 fn random_ops(rng: &mut Rng, p: &Project, h: DocHandle, next: &mut u64) -> String {
@@ -423,23 +286,29 @@ fn walk(seed: u64, steps: usize, base: usize) -> usize {
         top.push_str(&format!("wire {} {x} {y} {} {y2}\n", id(next), x + 20));
     }
     top.push_str("\nvar rv 2\nvar rw rv*3\n");
-    let mut p = Project::new(None, None, seed).unwrap();
+    let mut p = Project::new(None, None, seed).expect("a project with no library opens");
     let files: [(&str, &[u8]); 2] = [
         ("res.shprim", RES.as_bytes()),
         ("top.shcomp", top.as_bytes()),
     ];
-    p.index_library("", "", &files).unwrap();
+    p.index_library("", "", &files)
+        .expect("the library indexes");
     let res = p
         .open("", "res.shprim", RES.as_bytes(), None)
-        .unwrap()
+        .expect("the fixture cell opens")
         .handle;
     let h = p
         .open("", "top.shcomp", top.as_bytes(), None)
-        .unwrap()
+        .expect("the fixture cell opens")
         .handle;
     let mut symbols = Symbols::default();
     let row = p.resolve(h, "./res").expect("resolves");
-    symbols.refresh(row, Some(res), 0, p.doc(res).unwrap());
+    symbols.refresh(
+        row,
+        Some(res),
+        0,
+        p.doc(res).expect("the open cell's document is loaded"),
+    );
     // The elab state rides along (D19: symbol texts show evaluated values), as the editor
     // drives it: a rebuilt graph builds the scene again, a value edit re-stamps the
     // instances elab names (`revalued`).
@@ -474,7 +343,11 @@ fn walk(seed: u64, steps: usize, base: usize) -> usize {
             .map_or_else(Vec::new, <[_]>::to_vec);
         epoch += 1;
         let done = st.recompute(&p, h, &ops, &mut no_funcs);
-        let ids = &p.doc(h).unwrap().instances().id;
+        let ids = &p
+            .doc(h)
+            .expect("the open cell's document is loaded")
+            .instances()
+            .id;
         let keys: Vec<ObjKey> = st
             .revalued
             .iter()
@@ -555,46 +428,6 @@ fn walk(seed: u64, steps: usize, base: usize) -> usize {
     in_place
 }
 
-/// A symbol graphic's `width` and `dash` reach every placed instance's primitive row; the
-/// graphics without them stay plain (format spec §4, stroke attributes).
-#[test]
-fn symbol_stroke_attributes_reach_the_scene() {
-    use schemify_canvas::LineStyle;
-    let top =
-        "schemify 1 shcomp\n\nimpl sch schematic\n\ninst aaaaaa ./res\n  at 0 0 R90\n  name R1\n";
-    let mut p = Project::new(None, None, 1).unwrap();
-    let files: [(&str, &[u8]); 2] = [
-        ("res.shprim", RES.as_bytes()),
-        ("top.shcomp", top.as_bytes()),
-    ];
-    p.index_library("", "", &files).unwrap();
-    let res = p
-        .open("", "res.shprim", RES.as_bytes(), None)
-        .unwrap()
-        .handle;
-    let h = p
-        .open("", "top.shcomp", top.as_bytes(), None)
-        .unwrap()
-        .handle;
-    let mut symbols = Symbols::default();
-    let row = p.resolve(h, "./res").expect("resolves");
-    symbols.refresh(row, Some(res), 0, p.doc(res).unwrap());
-    let mut sc = Scene::default();
-    scene::build(&mut sc, &p, h, View::Schematic, &symbols, 0, None);
-    let pr = &sc.prims;
-    // The body rect (weight 2) and the four pin squares (plain).
-    let mut rects: Vec<LineStyle> = pr.rects.style.clone();
-    rects.sort();
-    assert_eq!(
-        rects,
-        [LineStyle::PLAIN, LineStyle::PLAIN, LineStyle::new(2, 0)]
-    );
-    assert!(pr.lines.style.iter().all(|&s| s == LineStyle::PLAIN));
-    let arcs: Vec<LineStyle> = pr.arcs.style.clone();
-    assert!(arcs.contains(&LineStyle::new(1, 2)) && arcs.contains(&LineStyle::PLAIN));
-    assert!(pr.polygons.style.iter().all(|&s| s == LineStyle::PLAIN));
-}
-
 #[test]
 fn incremental_scene_equals_full_build() {
     let in_place: usize = (1..=6).map(|seed| walk(seed, 300, 0)).sum();
@@ -606,40 +439,4 @@ fn incremental_scene_equals_full_build() {
 #[ignore = "100k objects, a full build per step: run in release"]
 fn incremental_scene_equals_full_build_at_100k() {
     walk(7, 12, 100_000);
-}
-
-/// The selection set (`scene::Selected`): a reselect clears every bit the last one set, a
-/// scene that shrinks or grows keeps no stale bit, an index outside the scene (`u32::MAX`, the
-/// owner of an unowned primitive) is never selected, and a small selection of a large scene
-/// touches only its own bits.
-#[test]
-fn selection_set_follows_reselects_and_scene_size() {
-    let mut s = scene::Selected::default();
-    assert!(s.is_empty() && !s.contains(0) && !s.contains(u32::MAX));
-    s.set(200, [5, 64, 5, 199]);
-    assert_eq!((s.len(), s.universe()), (3, 200), "duplicates collapse");
-    for o in 0..200 {
-        assert_eq!(s.contains(o), [5, 64, 199].contains(&o), "object {o}");
-    }
-    assert!(
-        !s.contains(200) && !s.contains(u32::MAX),
-        "outside the scene"
-    );
-    s.set(70, [65]);
-    assert!(
-        !s.contains(5) && !s.contains(64) && !s.contains(199),
-        "old bits cleared"
-    );
-    assert!(s.contains(65) && s.len() == 1);
-    s.set(1 << 22, [3, (1 << 22) - 1]);
-    assert!(!s.contains(65) && s.contains(3) && s.contains((1 << 22) - 1));
-    s.set(1 << 22, std::iter::empty());
-    assert!(s.is_empty() && !s.contains(3) && !s.contains((1 << 22) - 1));
-}
-
-/// Selecting an index outside the scene is a programmer error.
-#[test]
-#[should_panic(expected = "selected object out of the scene")]
-fn selection_set_rejects_an_object_outside_the_scene() {
-    scene::Selected::default().set(10, [10]);
 }

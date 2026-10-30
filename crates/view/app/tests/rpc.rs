@@ -7,7 +7,7 @@ mod common;
 
 use std::io::{BufRead, BufReader, Write};
 
-use common::Session;
+use common::{Session, Ui};
 use schemify_app::serve::Pump;
 use schemify_cli::rpc::{INVALID_PARAMS, Json, Listener, METHOD_NOT_FOUND};
 use schemify_editor::commands::CORE;
@@ -18,7 +18,7 @@ use schemify_ui::InputEvents;
 /// queued (not refused), suffix arguments included; anything else is "method not found".
 #[test]
 fn every_registered_command_is_reachable() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-reach", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-reach", Ui::Default);
     let Json::Arr(names) = rpc::methods(&s.ed) else {
         panic!("rpc.methods is a list")
     };
@@ -32,7 +32,8 @@ fn every_registered_command_is_reachable() {
         "the default UI's own commands are listed too"
     );
     let none = Json::Arr(Vec::new());
-    for name in names.iter().filter(|n| *n != "rpc.methods") {
+    let queued = names.iter().filter(|n| *n != "rpc.methods");
+    for name in queued {
         assert!(
             matches!(rpc::dispatch(&mut s.ed, name, &none), Dispatched::Queued(_)),
             "{name}"
@@ -68,7 +69,7 @@ fn every_registered_command_is_reachable() {
 /// event arrives as a notification; a malformed line gets its error in line with the rest.
 #[test]
 fn a_socket_client_drives_the_editor() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-sock", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-sock", Ui::Default);
     let listener = schemify_cli::rpc::listen("127.0.0.1:0").unwrap();
     #[allow(irrefutable_let_patterns)] // TCP is the only kind on Windows
     let Listener::Tcp(tcp) = &listener else {
@@ -172,17 +173,17 @@ struct Client {
 
 impl Client {
     fn connect(s: &Session) -> Client {
-        let listener = schemify_cli::rpc::listen("127.0.0.1:0").unwrap();
+        let listener = schemify_cli::rpc::listen("127.0.0.1:0").expect("a loopback socket listens");
         #[allow(irrefutable_let_patterns)] // TCP is the only kind on Windows
         let Listener::Tcp(tcp) = &listener else {
             panic!("an address listens on TCP")
         };
-        let addr = tcp.local_addr().unwrap();
+        let addr = tcp.local_addr().expect("a bound socket has an address");
         let pump = Pump::start(listener, &s.ed);
-        let out = std::net::TcpStream::connect(addr).unwrap();
+        let out = std::net::TcpStream::connect(addr).expect("the loopback server accepts");
         out.set_read_timeout(Some(std::time::Duration::from_millis(20)))
-            .unwrap();
-        let reader = BufReader::new(out.try_clone().unwrap());
+            .expect("a socket takes a read timeout");
+        let reader = BufReader::new(out.try_clone().expect("a socket clones"));
         Client {
             pump,
             out,
@@ -204,7 +205,7 @@ impl Client {
         ]);
         let mut text = String::new();
         schemify_cli::rpc::write(&req, &mut text);
-        writeln!(self.out, "{text}").unwrap();
+        writeln!(self.out, "{text}").expect("the client socket is writable");
         let mut line = String::new();
         for _ in 0..500 {
             self.pump.take(&mut s.ed);
@@ -214,7 +215,8 @@ impl Client {
                 if !line.ends_with('\n') {
                     continue;
                 }
-                let j = schemify_cli::rpc::parse(line.trim_end()).unwrap();
+                let j = schemify_cli::rpc::parse(line.trim_end())
+                    .expect("the server writes JSON lines");
                 line.clear();
                 if j.get("id") == Some(&Json::Num(id)) {
                     let r = j.get("result").and_then(|r| r.get("status"));
@@ -235,7 +237,7 @@ impl Client {
 /// nothing answers an empty status rather than the previous command's.
 #[test]
 fn each_answer_carries_its_own_status() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-status", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-status", Ui::Default);
     let mut c = Client::connect(&s);
     assert_eq!(
         c.status(&mut s, "edit.pop", &[]),
@@ -263,13 +265,13 @@ fn with_bad_actor(tag: &str, fuel: u64) -> Session {
         "/crates/plugins/plugin/tests/fixtures/bad_actor.wasm"
     ));
     let manifest = dir.join("schemify.project");
-    let mut text = std::fs::read_to_string(&manifest).unwrap();
+    let mut text = std::fs::read_to_string(&manifest).expect("the fixture is readable");
     text.push_str(&format!(
         "\nplugin bad path {}\n  grant read_project\n  fuel {fuel}\n",
         // Quoted with the format's escapes: a Windows path holds `\`.
         schemify_editor::docs::quote(&wasm.display().to_string())
     ));
-    std::fs::write(&manifest, text).unwrap();
+    std::fs::write(&manifest, text).expect("the test's temp dir is writable");
     let ed = schemify_editor::editor::Editor::new(schemify_editor::editor::Options {
         path: Some(dir.join("top.shcomp")),
         seed: 7,
@@ -322,7 +324,7 @@ fn out_of_fuel_is_reported_not_silent() {
 /// without an argument it opens the chooser as before.
 #[test]
 fn file_open_with_an_argument_opens_that_cell() {
-    let mut s = Session::open("inv", "top.shcomp", "rpc-open", true);
+    let mut s = Session::open("inv", "top.shcomp", "rpc-open", Ui::Default);
     let mut c = Client::connect(&s);
     let active = |s: &Session| s.ed.session().name(s.ed.active().unwrap().0);
     assert_eq!(active(&s), "top.shcomp");

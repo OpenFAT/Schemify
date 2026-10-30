@@ -16,13 +16,18 @@
 //! command or its arguments are refused.
 //!
 //! Contents:
-//! - `pub fn command(opts: Options, name: &str, args: &[String]) -> u8`
+//! - `pub fn command(options: Options, name: &str, args: &[String]) -> u8`
+
+use std::thread;
+use std::time::Duration;
 
 use schemify_cli::rpc::Json;
 use schemify_editor::editor::{Editor, Options};
 use schemify_editor::platform;
 use schemify_editor::rpc::{self, Dispatched};
 use schemify_ui::InputEvents;
+
+use crate::paint;
 
 /// How long one command may keep the editor busy (a run's timeout, run spec §5).
 const TIMEOUT_MS: u64 = 3_600_000;
@@ -31,67 +36,87 @@ const VIEW: (f32, f32) = (1280.0, 800.0);
 /// Longest sleep between frames while something is pending.
 const TICK_MAX_MS: u32 = 20;
 
+// The timeout message prints whole seconds; a tick is shorter than the timeout.
+const _: () = assert!(TIMEOUT_MS >= 1000);
+const _: () = assert!(TICK_MAX_MS >= 1);
+const _: () = assert!((TICK_MAX_MS as u64) < TIMEOUT_MS);
+
 /// One command's frame clock and the last plugin log line printed.
 struct Run {
-    start: u64,
-    last: String,
+    start_ms: u64,
+    last_line: String,
 }
 
-/// Runs `name` with `args` in the editor `opts` opens; returns the exit status (0, 1 or 2,
-/// as the module header lists). Prints the editor's open error or the refusal on stderr.
-pub fn command(opts: Options, name: &str, args: &[String]) -> u8 {
-    let mut ed = match Editor::new(opts) {
-        Ok(ed) => ed,
-        Err(e) => {
-            eprintln!("{e}");
+/// Runs `name` with `args` in the editor `options` opens; returns the exit status (0, 1 or
+/// 2, as the module header lists). Prints the editor's open error or the refusal on stderr.
+///
+/// # Panics
+///
+/// A plugin log line is left untaken after the last frame (a bug: every frame takes and
+/// prints the log).
+#[must_use = "the exit status says whether the command failed"]
+pub fn command(options: Options, name: &str, args: &[String]) -> u8 {
+    let mut editor = match Editor::new(options) {
+        Ok(editor) => editor,
+        Err(error) => {
+            eprintln!("{error}");
             return 2;
         }
     };
-    ed.keep_plugin_log();
+    editor.keep_plugin_log();
     let mut run = Run {
-        start: platform::unix_ms(),
-        last: String::new(),
+        start_ms: platform::unix_ms(),
+        last_line: String::new(),
     };
     // The first frames load the plugins; a plugin on a worker (a raised `fuel`,
     // plugin-abi §2) composes its commands a delivery later, so run until nothing is pending.
-    run.frame(&mut ed);
-    run.frame(&mut ed);
-    while let Some(ms) = ed.wake_ms() {
+    run.frame(&mut editor);
+    run.frame(&mut editor);
+    while let Some(ms) = editor.wake_ms() {
         if run.timed_out() {
             break;
         }
         sleep(ms);
-        run.frame(&mut ed);
+        run.frame(&mut editor);
     }
-    let params = Json::Arr(args.iter().map(|a| Json::Str(a.clone())).collect());
-    let ticket = match rpc::dispatch(&mut ed, name, &params) {
-        Dispatched::Queued(t) => t,
+    assert!(
+        editor.wake_ms().is_none() || run.timed_out(),
+        "the editor settled before the command, or the hour ran out"
+    );
+    let params: Vec<Json> = args.iter().map(|arg| Json::Str(arg.clone())).collect();
+    let ticket = match rpc::dispatch(&mut editor, name, &Json::Arr(params)) {
+        Dispatched::Queued(ticket) => ticket,
         Dispatched::Ready(Ok(_)) => return 0,
-        Dispatched::Ready(Err((_, e))) => {
-            eprintln!("{e}");
+        Dispatched::Ready(Err((_, error))) => {
+            eprintln!("{error}");
             return 2;
         }
     };
     // Bounded by TIMEOUT_MS.
     let mut said = None;
-    loop {
-        run.frame(&mut ed);
-        said = said.or_else(|| ed.take_said(ticket));
-        let pending = ed.wake_ms();
-        if said.is_some() && pending.is_none() {
-            break;
+    let said = loop {
+        run.frame(&mut editor);
+        said = said.or_else(|| editor.take_said(ticket));
+        let pending = editor.wake_ms();
+        if pending.is_none()
+            && let Some(said) = said.take()
+        {
+            break said;
         }
         if run.timed_out() {
             eprintln!("{name}: still busy after {} s", TIMEOUT_MS / 1000);
             return 1;
         }
         sleep(pending.unwrap_or(1));
-    }
-    run.frame(&mut ed);
-    let failed = ed.take_plugin_log().1;
-    let said = said.expect("the loop leaves with an answer");
+    };
+    run.frame(&mut editor);
+    let (lines, failed) = editor.take_plugin_log();
+    assert!(
+        lines.is_empty(),
+        "`Run::frame` printed and took every log line"
+    );
     // The answer of a plugin command is its last log line: printed once.
-    if !said.is_empty() && !run.last.ends_with(&said) {
+    if !said.is_empty() && !run.last_line.ends_with(&said) {
         println!("{said}");
     }
     u8::from(failed)
@@ -101,22 +126,23 @@ pub fn command(opts: Options, name: &str, args: &[String]) -> u8 {
 
 impl Run {
     /// One frame with no input, a PNG export it asked for, then the new plugin log lines.
-    fn frame(&mut self, ed: &mut Editor) {
-        ed.update(&InputEvents::default(), VIEW, platform::unix_ms());
-        crate::paint::serve_raster(ed);
-        for line in ed.take_plugin_log().0 {
+    fn frame(&mut self, editor: &mut Editor) {
+        editor.update(&InputEvents::default(), VIEW, platform::unix_ms());
+        paint::serve_raster(editor);
+        let (lines, _) = editor.take_plugin_log();
+        for line in lines {
             println!("{line}");
-            self.last = line;
+            self.last_line = line;
         }
     }
 
     fn timed_out(&self) -> bool {
-        platform::unix_ms().saturating_sub(self.start) > TIMEOUT_MS
+        platform::unix_ms().saturating_sub(self.start_ms) > TIMEOUT_MS
     }
 }
 
 /// Sleeps until the editor's next deadline, at least 1 ms and at most [`TICK_MAX_MS`].
 fn sleep(ms: u32) {
     let ms = ms.clamp(1, TICK_MAX_MS);
-    std::thread::sleep(std::time::Duration::from_millis(u64::from(ms)));
+    thread::sleep(Duration::from_millis(u64::from(ms)));
 }

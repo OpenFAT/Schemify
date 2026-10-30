@@ -1,7 +1,10 @@
 //! Headless editor harness: a copy of the fixture project in a temp directory, scripted
 //! input batches through the real frame spine, and CPU rendering.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses its own part of the harness"
+)]
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +19,22 @@ pub const VIEW: (f32, f32) = (1280.0, 800.0);
 
 /// One xschem unit in milli-units.
 pub const U: i32 = 1000;
+
+/// Whether a session loads the default UI plugin (D6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ui {
+    /// The default UI plugin's menus, toolbar and keymap, as the editor starts.
+    Default,
+    /// No default UI plugin (`--no-default-ui`): the bare shell.
+    Bare,
+}
+
+/// A pointer button's edge.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Edge {
+    Down,
+    Up,
+}
 
 /// Copies `tests/fixtures/<name>` into a fresh temp directory and returns its path. Tests
 /// never open a fixture in place: a GUI session on a fixture leaves `.schemify/` state (a
@@ -36,17 +55,17 @@ pub fn fixture(name: &str, tag: &str) -> PathBuf {
 /// Copies the tree `src` to `dst`, leaving out every `.schemify/` directory (derived editor
 /// state: journals, netlists, runs, exports).
 pub fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for e in std::fs::read_dir(src).unwrap() {
-        let p = e.unwrap().path();
-        let to = dst.join(p.file_name().unwrap());
+    std::fs::create_dir_all(dst).expect("the test's temp dir is writable");
+    for e in std::fs::read_dir(src).expect("the fixture directory lists") {
+        let p = e.expect("the fixture directory lists").path();
+        let to = dst.join(p.file_name().expect("a listed entry has a file name"));
         if p.file_name().is_some_and(|n| n == ".schemify") {
             continue;
         }
         if p.is_dir() {
             copy_dir(&p, &to);
         } else {
-            std::fs::copy(&p, &to).unwrap();
+            std::fs::copy(&p, &to).expect("the fixture copies into the temp dir");
         }
     }
 }
@@ -65,28 +84,23 @@ impl Session {
     /// user config only pins the simulator (the default, espice), so no frame depends on
     /// which simulators this machine has installed (detection, run spec §5): the status bar
     /// names it in every golden.
-    pub fn open(name: &str, file: &str, tag: &str, default_ui: bool) -> Session {
+    pub fn open(name: &str, file: &str, tag: &str, ui: Ui) -> Session {
         let dir = fixture(name, tag);
         let init = dir.join("init.lua");
         std::fs::write(&init, "schemify.opt.simulator = \"espice\"\n").expect("init.lua");
-        Session::open_with(dir, file, default_ui, schemify_config::Startup::File(init))
+        Session::open_with(dir, file, ui, schemify_config::Startup::File(init))
     }
 
     /// As [`Session::open`] with no user config at all (`--clean`): the simulator is then
     /// detected from this machine's `PATH`.
-    pub fn open_clean(name: &str, file: &str, tag: &str, default_ui: bool) -> Session {
+    pub fn open_clean(name: &str, file: &str, tag: &str, ui: Ui) -> Session {
         let dir = fixture(name, tag);
-        Session::open_with(dir, file, default_ui, schemify_config::Startup::Clean)
+        Session::open_with(dir, file, ui, schemify_config::Startup::Clean)
     }
 
-    fn open_with(
-        dir: PathBuf,
-        file: &str,
-        default_ui: bool,
-        config: schemify_config::Startup,
-    ) -> Session {
+    fn open_with(dir: PathBuf, file: &str, ui: Ui, config: schemify_config::Startup) -> Session {
         let ed = Editor::new(Options {
-            no_default_ui: !default_ui,
+            no_default_ui: ui == Ui::Bare,
             path: Some(dir.join(file)),
             seed: 7,
             config,
@@ -153,23 +167,22 @@ impl Session {
         self.send([InputEvent::PointerMove { x, y }]);
     }
 
-    fn button(&mut self, p: Pt, down: bool, button: Button, mods: u8) {
+    fn button(&mut self, p: Pt, edge: Edge, button: Button, mods: u8) {
         let (x, y) = self.ed.to_screen(p);
         self.send([
             InputEvent::Mods { mods: Mods(mods) },
             InputEvent::PointerMove { x, y },
-            if down {
-                InputEvent::PointerDown { x, y, button }
-            } else {
-                InputEvent::PointerUp { x, y, button }
+            match edge {
+                Edge::Down => InputEvent::PointerDown { x, y, button },
+                Edge::Up => InputEvent::PointerUp { x, y, button },
             },
         ]);
     }
 
     /// Left click (press + release) at world point `p` with modifier bits `mods`.
     pub fn click_mods(&mut self, p: Pt, mods: u8) {
-        self.button(p, true, Button::Left, mods);
-        self.button(p, false, Button::Left, mods);
+        self.button(p, Edge::Down, Button::Left, mods);
+        self.button(p, Edge::Up, Button::Left, mods);
         self.send([InputEvent::Mods {
             mods: Mods::default(),
         }]);
@@ -182,12 +195,12 @@ impl Session {
 
     /// Left drag from `a` to `b` (world), in steps.
     pub fn drag(&mut self, a: Pt, b: Pt, mods: u8) {
-        self.button(a, true, Button::Left, mods);
+        self.button(a, Edge::Down, Button::Left, mods);
         for k in 1..=4 {
             let p = (a.0 + (b.0 - a.0) * k / 4, a.1 + (b.1 - a.1) * k / 4);
             self.move_to(p);
         }
-        self.button(b, false, Button::Left, mods);
+        self.button(b, Edge::Up, Button::Left, mods);
     }
 
     /// Clicks the UI node `id` (menus, dialog buttons, list rows).
@@ -278,9 +291,9 @@ impl Drop for Session {
 pub fn save_png(px: &schemify_render::Pixmap, path: &Path) {
     let png = px.clone().into_png().expect("encode png");
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).unwrap();
+        std::fs::create_dir_all(dir).expect("the test's temp dir is writable");
     }
-    std::fs::write(path, png).unwrap();
+    std::fs::write(path, png).expect("the test's temp dir is writable");
 }
 
 /// Compares `pixmap` with `tests/golden/<name>.png`: equal size, and at most 0.1% of pixels
@@ -291,8 +304,8 @@ pub fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
     let path = format!("{dir}/{name}.png");
     let png = pixmap.clone().into_png().expect("encode png");
     if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, &png).unwrap();
+        std::fs::create_dir_all(dir).expect("the test's temp dir is writable");
+        std::fs::write(&path, &png).expect("the test's temp dir is writable");
     }
     let want = std::fs::read(&path)
         .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
@@ -314,7 +327,7 @@ pub fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
     let limit = want.data().len() / 1000;
     if bad > limit {
         let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
-        std::fs::write(&out, &png).unwrap();
+        std::fs::write(&out, &png).expect("the test's temp dir is writable");
         panic!("{name}: {bad} pixels differ (limit {limit}); actual written to {out}");
     }
 }
