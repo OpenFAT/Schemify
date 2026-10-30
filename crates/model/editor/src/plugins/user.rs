@@ -91,13 +91,8 @@ impl Host {
 
     /// The editor events recorded after sequence number `seq` (a value [`Host::notes_seq`]
     /// returned), oldest first, as plugin-abi §6 wire text without the line end; only the
-    /// last [`NOTES_MAX`] are kept.
-    ///
-    /// # Panics
-    ///
-    /// If `seq` is past [`Host::notes_seq`].
+    /// last [`NOTES_MAX`] are kept. A `seq` past [`Host::notes_seq`] yields nothing.
     pub fn notes_since(&self, seq: u64) -> impl Iterator<Item = &Note> {
-        assert!(seq <= self.notes_seq, "note {seq} not recorded yet");
         let new = self
             .notes_seq
             .saturating_sub(seq)
