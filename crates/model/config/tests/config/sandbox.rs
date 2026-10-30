@@ -3,6 +3,7 @@
 //!
 //! Contents: no `pub` items.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use schemify_config::Table;
@@ -34,7 +35,7 @@ fn sandbox_has_no_io_os_debug_or_loaders() {
         e[0].starts_with("init.lua:1:") && e[0].contains("os"),
         "{e:?}"
     );
-    assert!(!std::path::Path::new("/tmp/schemify-sandbox-escape").exists());
+    assert!(!Path::new("/tmp/schemify-sandbox-escape").exists());
     let (_, out) = run("package.loadlib('libc.so.6', 'system')");
     assert!(errors(&out)[0].contains("package"), "{out:?}");
     let (_, out) = run("require('os')");

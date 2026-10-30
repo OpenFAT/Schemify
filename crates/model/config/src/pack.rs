@@ -4,19 +4,37 @@
 //! §5 (grants), §6 (event words).
 //!
 //! Contents:
-//! - `pub(crate) fn pack_add(lua: &Lua, st: &Shared, (here, specs): (Value, Value))`
+//! - `pub(crate) fn pack_add(lua: &Lua, state: &Shared, (here, specs): (Value, Value))`
 
+use std::env;
 use std::path::{Component, Path, PathBuf};
 
-use omnilua::{Lua, Table as LTable, Value};
+use omnilua::{Lua, Table as LuaTable, Value};
 
-use crate::lua::{Shared, bad_arg, field, is_word, push, string, strings, type_name};
-use crate::{Event, PACKS_MAX, PackSpec, Source, error};
+use crate::lua::{self, Shared};
+use crate::{Event, PACKS_MAX, PackSpec, Source};
 
 /// The fields a spec table may have.
 const SPEC_FIELDS: [&str; 10] = [
     "src", "url", "sha256", "path", "name", "rev", "version", "grant", "fuel", "lazy",
 ];
+/// Longest package name, bytes (spec §5).
+const NAME_MAX: usize = 64;
+/// Longest grant or lazy command word, bytes.
+const WORD_MAX: usize = 128;
+/// Smallest per-event fuel override (plugin ABI §2).
+const FUEL_MIN: i64 = 1_000_000;
+/// Largest per-event fuel override (plugin ABI §2).
+const FUEL_MAX: i64 = 100_000_000_000;
+
+/// A spec's `lazy` table: what loads the plugin on first use.
+#[derive(Default)]
+struct Lazy {
+    /// Commands.
+    cmd: Vec<String>,
+    /// Events.
+    event: Vec<Event>,
+}
 
 /// `schemify.pack.add { spec, … }`: appends each valid spec, or replaces the row of the same
 /// name; a bad spec is an error request located at `here` (the caller's `file:line: `).
@@ -24,24 +42,28 @@ const SPEC_FIELDS: [&str; 10] = [
 /// requests.
 pub(crate) fn pack_add(
     _: &Lua,
-    st: &Shared,
+    state: &Shared,
     (here, specs): (Value, Value),
 ) -> omnilua::Result<Option<String>> {
-    let here = string(&here).unwrap_or_default();
+    let here = lua::string(&here).unwrap_or_default();
     let Value::Table(specs) = specs else {
-        return Ok(Some(bad_arg(1, "add", "table", &specs)));
+        return Ok(Some(lua::bad_arg(1, "add", "table", &specs)));
     };
-    let root = st.borrow().root.clone();
+    let root = state.borrow().root.clone();
     for i in 1..=specs.len()? {
-        let spec = match pack_spec(specs.raw_get(i as i64)?, root.as_deref()) {
-            Ok(s) => s,
-            Err(msg) => match push(st, error(format!("{here}pack spec: {msg}"))) {
-                Some(e) => return Ok(Some(e)),
-                None => continue,
-            },
+        let index = i64::try_from(i).expect("a Lua sequence index fits an integer");
+        let spec = match pack_spec(specs.raw_get(index)?, root.as_deref()) {
+            Ok(spec) => spec,
+            Err(message) => {
+                let request = crate::error(format!("{here}pack spec: {message}"));
+                match lua::push(state, request) {
+                    Some(e) => return Ok(Some(e)),
+                    None => continue,
+                }
+            }
         };
-        let mut s = st.borrow_mut();
-        let packs = &mut s.table.packs;
+        let mut state = state.borrow_mut();
+        let packs = &mut state.table.packs;
         if let Some(row) = packs.iter_mut().find(|p| p.name == spec.name) {
             *row = spec;
             continue;
@@ -51,7 +73,16 @@ pub(crate) fn pack_add(
         }
         packs.push(spec);
     }
-    assert!(st.borrow().table.packs.len() <= PACKS_MAX);
+    let state = state.borrow();
+    let packs = &state.table.packs;
+    assert!(packs.len() <= PACKS_MAX);
+    if let Some(last) = packs.last() {
+        let earlier = &packs[..packs.len() - 1];
+        assert!(
+            earlier.iter().all(|p| p.name != last.name),
+            "a spec of a known name replaces its row"
+        );
+    }
     Ok(None)
 }
 
@@ -63,24 +94,25 @@ fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
         Value::String(s) => {
             let url = s.to_str().map_err(|e| e.to_string())?;
             let source = Source::Git { url, rev: None };
-            return named(source, None, Vec::new(), None, (Vec::new(), Vec::new()));
+            return named(source, None, Vec::new(), None, Lazy::default());
         }
         Value::Table(t) => t,
-        other => return Err(format!("a spec is a table, not {}", type_name(&other))),
+        other => return Err(format!("a spec is a table, not {}", lua::type_name(&other))),
     };
-    for pair in t.pairs().map_err(|e| e.to_string())? {
+    let pairs = t.pairs().map_err(|e| e.to_string())?;
+    for pair in pairs {
         let (k, _): (Value, Value) = pair.map_err(|e| e.to_string())?;
         let known = match &k {
             Value::String(k) => k.to_str().is_ok_and(|k| SPEC_FIELDS.contains(&k.as_str())),
             _ => false,
         };
         if !known {
-            let shown = string(&k).unwrap_or_else(|| type_name(&k).to_owned());
+            let shown = lua::string(&k).unwrap_or_else(|| lua::type_name(&k).to_owned());
             return Err(format!("unknown field {shown}"));
         }
     }
     let s = |k: &str| -> Result<Option<String>, String> {
-        match field(&t, k) {
+        match lua::field(&t, k) {
             Value::Nil => Ok(None),
             Value::String(v) => v.to_str().map(Some).map_err(|e| e.to_string()),
             _ => Err(format!("`{k}` must be a string")),
@@ -119,31 +151,33 @@ fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
     if rev.is_some() && !matches!(source, Source::Git { .. }) {
         return Err("`rev`/`version` apply to `src` (git) only".into());
     }
-    let grant = match field(&t, "grant") {
+    let grant = match lua::field(&t, "grant") {
         Value::Nil => Vec::new(),
-        Value::Table(g) => strings(&g).ok_or("`grant` must be a list of strings")?,
+        Value::Table(g) => lua::strings(&g).ok_or("`grant` must be a list of strings")?,
         _ => return Err("`grant` must be a list of strings".into()),
     };
-    if let Some(g) = grant.iter().find(|g| !is_word(g, 128)) {
+    if let Some(g) = grant.iter().find(|g| !lua::is_word(g, WORD_MAX)) {
         return Err(format!("bad grant `{g}`"));
     }
-    let fuel = match field(&t, "fuel") {
+    let fuel = match lua::field(&t, "fuel") {
         Value::Nil => None,
-        Value::Integer(n) if (1_000_000..=100_000_000_000).contains(&n) => Some(n as u64),
+        Value::Integer(n) if (FUEL_MIN..=FUEL_MAX).contains(&n) => {
+            Some(u64::try_from(n).expect("FUEL_MIN > 0"))
+        }
         _ => return Err("`fuel` must be a whole number in [10^6, 10^11]".into()),
     };
-    let lazy = match field(&t, "lazy") {
-        Value::Nil => (Vec::new(), Vec::new()),
+    let lazy = match lua::field(&t, "lazy") {
+        Value::Nil => Lazy::default(),
         Value::Table(l) => {
-            let cmds = words(&l, "cmd")?;
-            let mut events = Vec::new();
+            let cmd = words(&l, "cmd")?;
+            let mut event = Vec::new();
             for w in words(&l, "event")? {
-                events.push(Event::from_word(&w).ok_or(format!("unknown event `{w}`"))?);
+                event.push(Event::from_word(&w).ok_or(format!("unknown event `{w}`"))?);
             }
-            if cmds.is_empty() && events.is_empty() {
+            if cmd.is_empty() && event.is_empty() {
                 return Err("`lazy` needs `cmd` or `event`".into());
             }
-            (cmds, events)
+            Lazy { cmd, event }
         }
         _ => return Err("`lazy` must be a table".into()),
     };
@@ -155,7 +189,7 @@ fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
 /// filesystem can resolve it past a symlink.
 fn expand(p: &str, root: Option<&Path>) -> PathBuf {
     let joined = if let Some(rest) = p.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
+        && let Some(home) = env::var_os("HOME")
     {
         PathBuf::from(home).join(rest)
     } else {
@@ -172,15 +206,16 @@ fn expand(p: &str, root: Option<&Path>) -> PathBuf {
 }
 
 /// `cmd = "x"` or `cmd = { "x", "y" }` of a `lazy` table: words of at most 128 bytes.
-fn words(t: &LTable, key: &str) -> Result<Vec<String>, String> {
+fn words(t: &LuaTable, key: &str) -> Result<Vec<String>, String> {
+    assert!(matches!(key, "cmd" | "event"), "the `lazy` fields");
     let bad = || format!("`lazy.{key}` must be a word or a list of words");
-    let v: Vec<String> = match field(t, key) {
+    let v: Vec<String> = match lua::field(t, key) {
         Value::Nil => Vec::new(),
         Value::String(s) => vec![s.to_str().map_err(|_| bad())?],
-        Value::Table(l) => strings(&l).ok_or_else(bad)?,
+        Value::Table(l) => lua::strings(&l).ok_or_else(bad)?,
         _ => return Err(bad()),
     };
-    if v.iter().any(|w| !is_word(w, 128)) {
+    if v.iter().any(|w| !lua::is_word(w, WORD_MAX)) {
         return Err(bad());
     }
     Ok(v)
@@ -192,7 +227,7 @@ fn named(
     name: Option<String>,
     grant: Vec<String>,
     fuel: Option<u64>,
-    (lazy_cmd, lazy_event): (Vec<String>, Vec<Event>),
+    lazy: Lazy,
 ) -> Result<PackSpec, String> {
     let name = name.unwrap_or_else(|| {
         let from = match &source {
@@ -210,7 +245,7 @@ fn named(
     let ok = !name.is_empty()
         && name != "."
         && name != ".."
-        && name.len() <= 64
+        && name.len() <= NAME_MAX
         && (name.bytes()).all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
     if !ok {
         return Err(format!("bad package name `{name}` (give `name`)"));
@@ -220,12 +255,15 @@ fn named(
         source,
         grant,
         fuel,
-        lazy_cmd,
-        lazy_event,
+        lazy_cmd: lazy.cmd,
+        lazy_event: lazy.event,
     };
+    // `pack_spec` checked each field; the row this crate stores holds them.
     if let Some(fuel) = spec.fuel {
-        assert!((1_000_000..=100_000_000_000).contains(&fuel));
+        assert!(fuel >= FUEL_MIN.unsigned_abs());
+        assert!(fuel <= FUEL_MAX.unsigned_abs());
     }
-    assert!(spec.grant.iter().all(|g| is_word(g, 128)));
+    assert!(spec.grant.iter().all(|g| lua::is_word(g, WORD_MAX)));
+    assert!(spec.lazy_cmd.iter().all(|c| lua::is_word(c, WORD_MAX)));
     Ok(spec)
 }

@@ -40,6 +40,7 @@ pub const APP: &str = "schemify";
 
 impl Os {
     /// The layout of the target this binary was built for.
+    #[must_use]
     pub const fn current() -> Os {
         if cfg!(target_arch = "wasm32") {
             Os::Web
@@ -57,15 +58,21 @@ impl Os {
 ///
 /// `SCHEMIFY_APPNAME` is not one plain path segment, or the variable the default needs
 /// (`HOME`; `LOCALAPPDATA`, `TEMP` on Windows) is unset or relative. The message names it.
+///
+/// # Panics
+///
+/// Not for any environment: the asserts check that the result is absolute and ends in the
+/// app name.
 pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result<PathBuf, String> {
     if os == Os::Web {
-        let p = match dir {
+        let path = match dir {
             Dir::Config => "/config",
             Dir::Data => "/data",
             Dir::State => "/state",
             Dir::Cache => "/cache",
         };
-        return Ok(PathBuf::from(p));
+        assert!(path.starts_with('/'), "OPFS paths are absolute (D31)");
+        return Ok(PathBuf::from(path));
     }
     let app = match env("SCHEMIFY_APPNAME").filter(|a| !a.is_empty()) {
         None => APP.to_owned(),
@@ -76,7 +83,8 @@ pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result
             ));
         }
     };
-    let sep = if os == Os::Windows { '\\' } else { '/' };
+    assert!(is_segment(&app));
+    let separator = if os == Os::Windows { '\\' } else { '/' };
     let xdg = match dir {
         Dir::Config => "XDG_CONFIG_HOME",
         Dir::Data => "XDG_DATA_HOME",
@@ -84,7 +92,7 @@ pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result
         Dir::Cache => "XDG_CACHE_HOME",
     };
     if let Some(base) = env(xdg).filter(|b| is_absolute(b, os)) {
-        return Ok(PathBuf::from(join(&base, &app, sep)));
+        return Ok(PathBuf::from(join(&base, &app, separator)));
     }
     let (var, under, suffix) = match (os, dir) {
         (Os::Windows, Dir::Config) => ("LOCALAPPDATA", "", ""),
@@ -101,11 +109,14 @@ pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result
     let base = if under.is_empty() {
         base
     } else {
-        join(&base, under, sep)
+        join(&base, under, separator)
     };
-    let path = join(&base, &format!("{app}{suffix}"), sep);
-    assert!(path.len() > app.len());
-    assert!(path.ends_with(&format!("{sep}{app}{suffix}")));
+    let path = join(&base, &format!("{app}{suffix}"), separator);
+    assert!(path.ends_with(&format!("{separator}{app}{suffix}")));
+    assert!(
+        is_absolute(&path, os),
+        "an absolute base keeps the path absolute"
+    );
     Ok(PathBuf::from(path))
 }
 
@@ -114,14 +125,19 @@ pub fn stdpath(dir: Dir, os: Os, env: impl Fn(&str) -> Option<String>) -> Result
 /// # Errors
 ///
 /// As [`stdpath`].
+///
+/// # Panics
+///
+/// As [`stdpath`].
 pub fn here(dir: Dir) -> Result<PathBuf, String> {
     stdpath(dir, Os::current(), |k| std::env::var(k).ok())
 }
 
 // ---- private ----
 
-/// One path segment of `A–Z a–z 0–9 . _ -`, not `.` or `..`.
+/// One path segment of `A–Z a–z 0–9 . _ -`, not `.` or `..`; `s` is not empty.
 fn is_segment(s: &str) -> bool {
+    assert!(!s.is_empty(), "an empty app name means unset");
     let ok = s
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
@@ -129,6 +145,11 @@ fn is_segment(s: &str) -> bool {
 }
 
 fn is_absolute(p: &str, os: Os) -> bool {
+    assert_ne!(
+        os,
+        Os::Web,
+        "the web's paths are fixed, never read from a variable"
+    );
     let b = p.as_bytes();
     match os {
         Os::Windows => {
@@ -142,16 +163,21 @@ fn is_absolute(p: &str, os: Os) -> bool {
     }
 }
 
-fn join(base: &str, rest: &str, sep: char) -> String {
+/// `base`, one `separator`, then the relative `rest`.
+fn join(base: &str, rest: &str, separator: char) -> String {
+    assert!(!rest.is_empty());
+    assert!(!rest.starts_with(['/', '\\']), "`rest` is relative");
     let base = base.trim_end_matches(['/', '\\']);
-    format!("{base}{sep}{rest}")
+    format!("{base}{separator}{rest}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+    fn env<'pairs>(
+        pairs: &'pairs [(&'pairs str, &'pairs str)],
+    ) -> impl Fn(&str) -> Option<String> + 'pairs {
         move |k| pairs.iter().find(|p| p.0 == k).map(|p| p.1.to_owned())
     }
 

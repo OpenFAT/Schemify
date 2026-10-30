@@ -3,11 +3,12 @@
 //!
 //! Contents: no `pub` items.
 
+use std::fs;
 use std::path::PathBuf;
 
 use schemify_config::{
-    Config, Event, FnId, Keymaps, Level, Opts, PackSpec, Request, Sim, Source, Startup, Table,
-    Target,
+    Config, Event, FnId, HOOKS_MAX, Keymaps, Level, Opts, PackSpec, REQUESTS_MAX, Request, Sim,
+    SimKind, Source, Startup, Table, Target, USER_LAYERS,
 };
 
 use crate::{SHA, errors, run};
@@ -74,7 +75,7 @@ schemify.pack.add {{
             grid: 25_500,
             show_grid: false,
             light: true,
-            simulator: Some(schemify_config::SimKind::Espice),
+            simulator: Some(SimKind::Espice),
             ..Opts::default()
         },
         keymaps: Keymaps {
@@ -160,7 +161,7 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
     ));
     assert!(out.is_empty(), "{out:?}");
     let o = cfg.table().opts;
-    let mut want = [None; schemify_config::USER_LAYERS];
+    let mut want = [None; USER_LAYERS];
     want[1] = Some(0x0000_ccff);
     want[4] = Some(0x00ff_8000);
     want[21] = Some(0x0000_0001);
@@ -170,7 +171,7 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
     let d = Opts::default();
     assert_eq!(
         (d.layer_colors, d.dim, d.line_width_tenths),
-        ([None; schemify_config::USER_LAYERS], 0, 10)
+        ([None; USER_LAYERS], 0, 10)
     );
     // Negative space: each bad value is one located error, and the options keep their
     // defaults.
@@ -273,7 +274,7 @@ fn bad_pack_specs_are_reported_and_dropped() {
 fn sim_env_must_map_names_to_strings() {
     let (cfg, out) = run("schemify.sim('espice', { path = 'espice', env = { ZIG = '/z' } })");
     assert!(out.is_empty(), "{out:?}");
-    let row = cfg.table().sim(schemify_config::SimKind::Espice).unwrap();
+    let row = cfg.table().sim(SimKind::Espice).unwrap();
     assert_eq!(row.env, vec![("ZIG".to_owned(), "/z".to_owned())]);
     for bad in [
         "schemify.sim('espice', { path = 'espice', env = 'ZIG=/z' })",
@@ -285,7 +286,7 @@ fn sim_env_must_map_names_to_strings() {
         let e = errors(&out);
         assert_eq!(e.len(), 1, "{bad}: {out:?}");
         assert!(e[0].contains("`env` must map"), "{bad}: {}", e[0]);
-        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
+        assert!(cfg.table().sim(SimKind::Espice).is_none());
     }
     for bad in [
         "schemify.sim('espice', { path = 'espice', args = '-b' })",
@@ -295,7 +296,7 @@ fn sim_env_must_map_names_to_strings() {
         let e = errors(&out);
         assert_eq!(e.len(), 1, "{bad}: {out:?}");
         assert!(e[0].contains("`args` must be a list"), "{bad}: {}", e[0]);
-        assert!(cfg.table().sim(schemify_config::SimKind::Espice).is_none());
+        assert!(cfg.table().sim(SimKind::Espice).is_none());
     }
 }
 
@@ -315,14 +316,14 @@ fn require_reads_config_modules_once() {
     #[cfg(target_os = "wasi")]
     let tmp = PathBuf::from("/tmp");
     let root = tmp.join(format!("schemify-config-req-{tag}"));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("lua/keys")).unwrap();
-    std::fs::write(
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("lua/keys")).unwrap();
+    fs::write(
         root.join("lua/keys/init.lua"),
         "count = (count or 0) + 1\nreturn { chord = 'F6' }",
     )
     .unwrap();
-    std::fs::write(root.join("lua/loop.lua"), "require('loop')").unwrap();
+    fs::write(root.join("lua/loop.lua"), "require('loop')").unwrap();
     let (cfg, out) = Config::from_source(
         "local k = require('keys')\nlocal again = require('keys')\n\
          assert(k == again and count == 1)\n\
@@ -379,7 +380,7 @@ fn require_reads_config_modules_once() {
             "{name}: {out:?}"
         );
     }
-    let _ = std::fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&root);
 }
 
 /// The documented example config runs without an error.
@@ -455,17 +456,17 @@ fn bad_arguments_are_located_errors_that_set_nothing() {
 fn capacities_fail_the_call_past_their_limit() {
     let (_, out) = run(&format!(
         "for i = 1, {} do schemify.cmd('x.y') end",
-        schemify_config::REQUESTS_MAX + 1
+        REQUESTS_MAX + 1
     ));
-    assert_eq!(out.len(), schemify_config::REQUESTS_MAX + 1);
+    assert_eq!(out.len(), REQUESTS_MAX + 1);
     let e = errors(&out);
     assert_eq!(e, vec!["init.lua:1: more than 256 requests in one call"]);
     let (cfg, out) = run(&format!(
         "for i = 1, {} do schemify.on('saved', function() end) end",
-        schemify_config::HOOKS_MAX + 1
+        HOOKS_MAX + 1
     ));
     assert_eq!(errors(&out), vec!["init.lua:1: more than 1024 hooks"]);
-    assert_eq!(cfg.table().hooks.len(), schemify_config::HOOKS_MAX);
+    assert_eq!(cfg.table().hooks.len(), HOOKS_MAX);
 }
 
 /// A function the config never returned, a config without Lua, and an unreadable `-u` file

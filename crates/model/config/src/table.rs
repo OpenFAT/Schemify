@@ -6,19 +6,21 @@
 //! Contents:
 //! - `pub const KEYMAPS_MAX`, `pub const PACKS_MAX`, `pub const HOOKS_MAX`,
 //!   `pub const REQUESTS_MAX`, `pub const SIM_ENV_MAX`, `pub const USER_LAYERS`
-//! - `pub struct Table`, `Table::sim(&self, kind: SimKind) -> Option<&Sim>`
-//! - `pub struct Opts` (`impl Default`)
+//! - the option domains: `pub(crate) const STEP_MIN`, `STEP_MAX`, `DIM_MAX`,
+//!   `LINE_WIDTH_TENTHS_MIN`, `LINE_WIDTH_TENTHS_MAX`
+//! - `pub struct Table`, `Table::sim(&self, kind: SimKind) -> Option<&Sim>`,
+//!   `Table::assert_invariants(&self)`
+//! - `pub struct Opts` (`impl Default`), `Opts::assert_in_domain(&self)`
 //! - `pub struct FnId`, `pub enum Target`
 //! - `pub struct Keymaps`, `Keymaps::records(&self) -> String`
 //! - `pub enum SimKind`, `SimKind::ALL`, `SimKind::SIMULATORS`, `SimKind::word(self)`
 //! - `pub struct Sim`
 //! - `pub enum Source`, `Source::word(&self)`
 //! - `pub struct PackSpec`
-//! - `pub enum Event`, `Event::ALL`, `Event::word(self)`, `Event::from_word(w: &str)`
+//! - `pub enum Event`, `Event::ALL`, `Event::word(self)`, `Event::from_word(word: &str)`
 //! - `pub enum Level`, `pub enum Request`
 //! - `pub fn fn_of_command(name: &str) -> Option<FnId>`
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 /// Most keymaps in one config.
@@ -33,6 +35,16 @@ pub const REQUESTS_MAX: usize = 256;
 pub const SIM_ENV_MAX: usize = 64;
 /// Canvas layers a colour can be set for (`layer_colors`, xschem's 22 `cadlayers`).
 pub const USER_LAYERS: usize = 22;
+/// Smallest snap or grid step, milli-units (spec §3).
+pub(crate) const STEP_MIN: i32 = 1;
+/// Largest snap or grid step, milli-units (spec §3).
+pub(crate) const STEP_MAX: i32 = 1_000_000_000;
+/// Largest dimming, percent.
+pub(crate) const DIM_MAX: u8 = 100;
+/// Thinnest canvas line, tenths of a pixel.
+pub(crate) const LINE_WIDTH_TENTHS_MIN: u8 = 1;
+/// Widest canvas line, tenths of a pixel.
+pub(crate) const LINE_WIDTH_TENTHS_MAX: u8 = 100;
 
 /// The user-config table (spec §6). Rows are read whole, so each table is a `Vec` of rows
 /// except the keymaps, whose columns the editor compares and renders separately.
@@ -227,30 +239,108 @@ const _: () = assert!(SimKind::ALL.len() == SimKind::Spectre as usize + 1);
 const _: () = assert!(Event::ALL.len() == Event::RunDone as usize + 1);
 const _: () = assert!(SimKind::SIMULATORS.len() + 2 == SimKind::ALL.len());
 
+/// The default options (spec §3); [`Opts::default`] returns them.
+const OPTS_DEFAULT: Opts = Opts {
+    snap: 10_000,
+    grid: 20_000,
+    show_grid: true,
+    light: false,
+    layer_colors: [None; USER_LAYERS],
+    dim: 0,
+    line_width_tenths: 10,
+    simulator: None,
+};
+
+// The defaults sit inside the domains `schemify.opt` enforces (spec §3).
+const _: () = assert!(OPTS_DEFAULT.snap >= STEP_MIN);
+const _: () = assert!(OPTS_DEFAULT.snap <= STEP_MAX);
+const _: () = assert!(OPTS_DEFAULT.grid >= STEP_MIN);
+const _: () = assert!(OPTS_DEFAULT.grid <= STEP_MAX);
+const _: () = assert!(OPTS_DEFAULT.line_width_tenths >= LINE_WIDTH_TENTHS_MIN);
+const _: () = assert!(OPTS_DEFAULT.line_width_tenths <= LINE_WIDTH_TENTHS_MAX);
+
 /// The function a `user.lua.<id>` command name ([`Keymaps::records`]) stands for.
+#[must_use]
 pub fn fn_of_command(name: &str) -> Option<FnId> {
-    name.strip_prefix(FN_COMMAND)?.parse().ok().map(FnId)
+    let id: u16 = name.strip_prefix(FN_COMMAND)?.parse().ok()?;
+    Some(FnId(id))
 }
 
 impl Table {
     /// The configured program of `kind`, if any.
+    #[must_use]
     pub fn sim(&self, kind: SimKind) -> Option<&Sim> {
         self.sims[kind as usize].as_ref()
+    }
+
+    /// Asserts what every table this crate hands out holds: the capacities, the keymap
+    /// columns in step, the option domains, sorted `env` rows, unique package names. The
+    /// partner of the checks each `schemify.*` writer makes before it appends a row.
+    pub(crate) fn assert_invariants(&self) {
+        let keymaps = &self.keymaps;
+        assert_eq!(keymaps.chord.len(), keymaps.target.len());
+        assert_eq!(keymaps.chord.len(), keymaps.desc.len());
+        assert!(keymaps.chord.len() <= KEYMAPS_MAX);
+        assert!(self.packs.len() <= PACKS_MAX);
+        assert!(self.hooks.len() <= HOOKS_MAX);
+        self.opts.assert_in_domain();
+        for sim in self.sims.iter().flatten() {
+            assert!(!sim.path.is_empty());
+            assert!(sim.env.len() <= SIM_ENV_MAX);
+            assert!(
+                sim.env.windows(2).all(|pair| pair[0].0 < pair[1].0),
+                "`env` rows are sorted by name and the names are unique"
+            );
+        }
+        for (i, pack) in self.packs.iter().enumerate() {
+            let earlier = &self.packs[..i];
+            assert!(
+                earlier.iter().all(|other| other.name != pack.name),
+                "a second spec of package `{}` replaces its row",
+                pack.name
+            );
+        }
+        // O(n log n) over up to `KEYMAPS_MAX` chords: checked in debug builds only.
+        if cfg!(debug_assertions) {
+            let mut chords: Vec<&str> = keymaps.chord.iter().map(String::as_str).collect();
+            chords.sort_unstable();
+            debug_assert!(
+                chords.windows(2).all(|pair| pair[0] != pair[1]),
+                "a second `set` of a chord replaces its row"
+            );
+        }
+    }
+}
+
+impl Opts {
+    /// Asserts each option lies in the domain `schemify.opt` lets through (spec §3).
+    pub(crate) fn assert_in_domain(&self) {
+        assert!(
+            (STEP_MIN..=STEP_MAX).contains(&self.snap),
+            "snap {}",
+            self.snap
+        );
+        assert!(
+            (STEP_MIN..=STEP_MAX).contains(&self.grid),
+            "grid {}",
+            self.grid
+        );
+        assert!(self.dim <= DIM_MAX);
+        assert!(self.line_width_tenths >= LINE_WIDTH_TENTHS_MIN);
+        assert!(self.line_width_tenths <= LINE_WIDTH_TENTHS_MAX);
+        if let Some(kind) = self.simulator {
+            assert!(
+                SimKind::SIMULATORS.contains(&kind),
+                "`{}` is a compiler, never the default simulator",
+                kind.word()
+            );
+        }
     }
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts {
-            snap: 10_000,
-            grid: 20_000,
-            show_grid: true,
-            light: false,
-            layer_colors: [None; USER_LAYERS],
-            dim: 0,
-            line_width_tenths: 10,
-            simulator: None,
-        }
+        OPTS_DEFAULT
     }
 }
 
@@ -261,11 +351,14 @@ impl Keymaps {
     /// # Panics
     ///
     /// The columns differ in length (a bug in the writer).
+    #[must_use]
     pub fn records(&self) -> String {
+        use std::fmt::Write as _;
         assert_eq!(self.chord.len(), self.target.len());
         assert_eq!(self.chord.len(), self.desc.len());
         let mut out = String::new();
-        for (chord, target) in self.chord.iter().zip(&self.target) {
+        let rows = self.chord.iter().zip(&self.target);
+        for (chord, target) in rows {
             match target {
                 Target::Command(c) => writeln!(out, "key {chord} {c}"),
                 Target::Function(f) => writeln!(out, "key {chord} {FN_COMMAND}{}", f.0),
@@ -299,6 +392,7 @@ impl SimKind {
     ];
 
     /// The `schemify.sim` name.
+    #[must_use]
     pub fn word(self) -> &'static str {
         match self {
             SimKind::Ngspice => "ngspice",
@@ -314,6 +408,7 @@ impl SimKind {
 
 impl Source {
     /// The lockfile `kind` word.
+    #[must_use]
     pub fn word(&self) -> &'static str {
         match self {
             Source::Git { .. } => "git",
@@ -336,6 +431,7 @@ impl Event {
     ];
 
     /// The wire word.
+    #[must_use]
     pub fn word(self) -> &'static str {
         match self {
             Event::Load => "load",
@@ -349,8 +445,9 @@ impl Event {
     }
 
     /// The event a wire word names; `None` for any other word.
-    pub fn from_word(w: &str) -> Option<Event> {
-        Event::ALL.into_iter().find(|e| e.word() == w)
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Event> {
+        Event::ALL.into_iter().find(|e| e.word() == word)
     }
 }
 
@@ -361,12 +458,14 @@ mod tests {
     /// Round trips: every word maps back to its value, and a foreign word to nothing.
     #[test]
     fn words_round_trip() {
-        for (i, e) in Event::ALL.into_iter().enumerate() {
+        let events = Event::ALL.into_iter().enumerate();
+        for (i, e) in events {
             assert_eq!(e as usize, i);
             assert_eq!(Event::from_word(e.word()), Some(e));
         }
         assert_eq!(Event::from_word("Load"), None);
-        for (i, k) in SimKind::ALL.into_iter().enumerate() {
+        let kinds = SimKind::ALL.into_iter().enumerate();
+        for (i, k) in kinds {
             assert_eq!(k as usize, i);
         }
         let keys = Keymaps {
