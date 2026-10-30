@@ -2,6 +2,7 @@
 //!
 //! Contents:
 //! - `pub(super) enum NetlistOf`
+//! - `pub(super) enum Stream`
 //! - `pub(super) const CHANGELOG_ROWS`
 //! - `Editor::find_in_text`
 //! - `Editor::netlist`
@@ -31,6 +32,15 @@ pub(super) enum NetlistOf {
     Top,
     /// The cell shown at this level (`Shift+N`).
     Level,
+}
+
+/// Which output stream of a job a log tab shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stream {
+    /// `stdout.log`: the job's data.
+    Out,
+    /// `stderr.log`: the job's errors.
+    Err,
 }
 
 /// Rows of hierarchy the changelog lists at most.
@@ -268,27 +278,25 @@ impl Editor {
     }
     /// Simulation → View last job data / errors: the selected job's `stdout.log` /
     /// `stderr.log`.
-    pub(super) fn job_log(&mut self, errors: bool) {
+    pub(super) fn job_log(&mut self, stream: Stream) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(dir) = self.sim.dir() else {
                 self.session.say("no run in this session");
                 return;
             };
-            let name = if errors {
-                schemify_run::STDERR
-            } else {
-                schemify_run::STDOUT
+            let (name, title) = match stream {
+                Stream::Out => (schemify_run::STDOUT, "job output"),
+                Stream::Err => (schemify_run::STDERR, "job errors"),
             };
             let path = dir.join(self.sim.selected.to_string()).join(name);
             let body = platform::read(&path)
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
                 .unwrap_or_else(|e| e);
-            let title = if errors { "job errors" } else { "job output" };
             self.text_tab(title, title, body);
         }
         #[cfg(target_arch = "wasm32")]
-        let _ = errors;
+        let _ = stream;
     }
 }
 

@@ -173,15 +173,24 @@ type KeyMap = HashMap<u64, u32, BuildHasherDefault<KeyHasher>>;
 #[derive(Default)]
 struct KeyHasher(u64);
 
+/// How a click hits an object: by distance to a segment or inside a box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hit {
+    /// Wires and symbol lines: `geom` is the segment's end points.
+    Segment,
+    /// Everything else: `geom` is the bounding box.
+    Box,
+}
+
 impl Objects {
-    fn push(&mut self, key: ObjKey, geom: [i32; 4], seg: bool) -> u32 {
+    fn push(&mut self, key: ObjKey, geom: [i32; 4], hit: Hit) -> u32 {
         assert!(
             self.key.len() < CanvasPrims::CAPACITY,
             "scene object capacity"
         );
         self.key.push(key);
         self.geom.push(geom);
-        self.seg.push(seg);
+        self.seg.push(hit == Hit::Segment);
         let s = self.fresh_stamp();
         self.stamp.push(s);
         assert_eq!(self.geom.len(), self.key.len(), "object columns in step");
@@ -370,7 +379,7 @@ mod tests {
                 table: TableId::Wires,
                 key: i as u32,
             };
-            objs.push(key, g, i % 3 == 0);
+            objs.push(key, g, if i % 3 == 0 { Hit::Segment } else { Hit::Box });
         }
         objs
     }
@@ -449,7 +458,8 @@ mod tests {
                 table: TableId::Wires,
                 key: k,
             };
-            objs.push(key, [x, y, x + w, y + h], k % 3 == 0);
+            let hit = if k % 3 == 0 { Hit::Segment } else { Hit::Box };
+            objs.push(key, [x, y, x + w, y + h], hit);
         }
         let full = |p: (f64, f64), tol: f64| {
             let (mut s, mut b) = (None, None);

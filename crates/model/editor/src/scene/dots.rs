@@ -30,6 +30,13 @@ pub(super) struct Wiring {
     pub(super) dots: BTreeMap<Pt, u32>,
 }
 
+/// Whether a wire's ends and run enter or leave the wiring.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    Add,
+    Remove,
+}
+
 impl Wiring {
     /// The wiring of every wire row of `w` (bulk: one sort, not an insert per end).
     pub(super) fn of(w: &Wires) -> Wiring {
@@ -37,7 +44,7 @@ impl Wiring {
         for i in 0..w.id.len() {
             let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
             out.xy.extend([(p[0], p[1]), (p[2], p[3])]);
-            out.runs(p, true);
+            out.runs(p, Change::Add);
         }
         out.xy.sort_unstable();
         out.yx = out.xy.iter().map(|p| (p.1, p.0)).collect();
@@ -47,62 +54,65 @@ impl Wiring {
         out
     }
 
-    /// Adds (`add`) or removes the two ends of wire `w`.
-    pub(super) fn ends(&mut self, w: [i32; 4], add: bool) {
+    /// Adds or removes the two ends of wire `w`.
+    fn ends(&mut self, w: [i32; 4], change: Change) {
         for p in [(w[0], w[1]), (w[2], w[3])] {
             for (v, k) in [(&mut self.xy, p), (&mut self.yx, (p.1, p.0))] {
                 let i = v.partition_point(|q| *q < k);
-                if add {
-                    v.insert(i, k);
-                } else {
-                    assert_eq!(v.get(i), Some(&k), "a drawn wire end");
-                    v.remove(i);
+                match change {
+                    Change::Add => v.insert(i, k),
+                    Change::Remove => {
+                        assert_eq!(v.get(i), Some(&k), "a drawn wire end");
+                        v.remove(i);
+                    }
                 }
             }
         }
         debug_assert_eq!(self.xy.len(), self.yx.len());
     }
 
-    /// Adds (`add`) or removes the run of wire `w` from the per-row/column maps.
-    pub(super) fn runs(&mut self, w: [i32; 4], add: bool) {
+    /// Adds or removes the run of wire `w` from the per-row/column maps.
+    fn runs(&mut self, w: [i32; 4], change: Change) {
         let (map, key, run) = if w[1] == w[3] {
             (&mut self.horiz, w[1], (w[0].min(w[2]), w[0].max(w[2])))
         } else if w[0] == w[2] {
             (&mut self.vert, w[0], (w[1].min(w[3]), w[1].max(w[3])))
         } else {
-            if add {
-                self.diag.push(w);
-            } else {
-                let i = self
-                    .diag
-                    .iter()
-                    .position(|d| *d == w)
-                    .expect("a drawn wire");
-                self.diag.swap_remove(i);
+            match change {
+                Change::Add => self.diag.push(w),
+                Change::Remove => {
+                    let i = self
+                        .diag
+                        .iter()
+                        .position(|d| *d == w)
+                        .expect("a drawn wire");
+                    self.diag.swap_remove(i);
+                }
             }
             return;
         };
         let runs = map.entry(key).or_default();
-        if add {
-            runs.push(run);
-        } else {
-            let i = runs.iter().position(|r| *r == run).expect("a drawn run");
-            runs.swap_remove(i);
+        match change {
+            Change::Add => runs.push(run),
+            Change::Remove => {
+                let i = runs.iter().position(|r| *r == run).expect("a drawn run");
+                runs.swap_remove(i);
+            }
         }
     }
 
     pub(super) fn add(&mut self, w: [i32; 4]) {
         let before = self.xy.len();
-        self.ends(w, true);
-        self.runs(w, true);
+        self.ends(w, Change::Add);
+        self.runs(w, Change::Add);
         assert_eq!(self.xy.len(), before + 2, "a wire adds its two ends");
     }
 
     pub(super) fn remove(&mut self, w: [i32; 4]) {
         assert!(self.xy.len() >= 2, "a drawn wire's ends");
         let before = self.xy.len();
-        self.ends(w, false);
-        self.runs(w, false);
+        self.ends(w, Change::Remove);
+        self.runs(w, Change::Remove);
         assert_eq!(self.xy.len() + 2, before, "a wire removes its two ends");
     }
 

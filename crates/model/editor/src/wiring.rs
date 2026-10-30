@@ -20,7 +20,7 @@
 //! - `pub fn inst_pins`
 //! - `pub fn on_interior`
 //! - `pub fn route`
-//! - `pub fn connected`
+//! - `pub enum Junctions`, `pub fn connected`
 //! - `pub fn align`
 
 mod cut;
@@ -59,12 +59,11 @@ pub fn inst_pins(project: &Project, h: DocHandle, doc: &Document, i: usize) -> V
         return Vec::new();
     };
     let pins = iface.pins();
+    assert_eq!(pins.y.len(), pins.x.len(), "pin columns in step");
     let (o, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
-    let out: Vec<Pt> = (0..pins.x.len())
+    (0..pins.x.len())
         .map(|k| geometry::place(o, at, (pins.x[k], pins.y[k])))
-        .collect();
-    assert_eq!(out.len(), pins.x.len());
-    out
+        .collect()
 }
 
 /// Whether `p` lies on segment `a`–`b`, end points excluded (exact integer test).
@@ -86,21 +85,42 @@ pub fn on_interior(p: Pt, a: Pt, b: Pt) -> bool {
 
 /// Points of a wire from `a` to `b` routed by Manhattan `mode` (0 straight, 1 horizontal
 /// first, 2 vertical first), zero-length legs dropped.
+///
+/// # Panics
+///
+/// If `mode` is past 2.
 #[must_use]
 pub fn route(a: Pt, b: Pt, mode: u8) -> Vec<Pt> {
+    assert!(
+        mode <= 2,
+        "Manhattan mode {mode}: straight, horizontal or vertical first"
+    );
     let mut pts = match mode {
         1 if a.0 != b.0 && a.1 != b.1 => vec![a, (b.0, a.1), b],
         2 if a.0 != b.0 && a.1 != b.1 => vec![a, (a.0, b.1), b],
         _ => vec![a, b],
     };
     pts.dedup();
+    assert!(
+        pts.windows(2).all(|l| l[0].0 == l[1].0 || l[0].1 == l[1].1) || mode == 0,
+        "a routed wire's legs are Manhattan"
+    );
     pts
 }
 
+/// Whether a [`connected`] walk continues through a junction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Junctions {
+    /// The walk continues through every point.
+    Cross,
+    /// The walk does not continue through a point where three or more wire ends meet or a
+    /// T joins (xschem Ctrl+right button).
+    Stop,
+}
+
 /// The wires, labels and ports reachable from `seeds` through shared points (wire ends,
-/// anchors, seed instances' pins; a T junction joins a wire end to another wire's interior).
-/// With `stop_at_junctions` the walk does not continue through a point where three or more
-/// wire ends meet or a T joins (xschem Ctrl+right button).
+/// anchors, seed instances' pins; a T junction joins a wire end to another wire's interior),
+/// across or up to junctions as `junctions` says.
 ///
 /// Cost: O(visited × W) for the T test; bounded by the wire count.
 ///
@@ -112,7 +132,7 @@ pub fn connected(
     project: &Project,
     h: DocHandle,
     seeds: &[ObjKey],
-    stop_at_junctions: bool,
+    junctions: Junctions,
 ) -> Vec<ObjKey> {
     let Some(doc) = project.doc(h) else {
         return Vec::new();
@@ -152,7 +172,7 @@ pub fn connected(
             .collect();
         let junction = here.len() + 2 * interior.len() >= 3;
         let is_seed_point = visited_pts.len() == 1;
-        if stop_at_junctions && junction && !is_seed_point {
+        if junctions == Junctions::Stop && junction && !is_seed_point {
             continue;
         }
         here.append(&mut interior);

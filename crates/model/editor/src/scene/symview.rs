@@ -13,7 +13,7 @@ use schemify_format::RecordKind;
 use crate::geometry::Pt;
 
 use super::refresh::Build;
-use super::{DOT_R, LAYER_JUNCTION, ObjKey, PIN_HALF, UNIT, symbols};
+use super::{DOT_R, Hit, LAYER_JUNCTION, ObjKey, PIN_HALF, UNIT, symbols};
 
 /// Makes the junction dots at `points` (sorted, unique) match xschem's rule for the current
 /// wiring ([`Wiring::dot_at`]): adds missing dots, kills stale ones. Dots belong to no
@@ -63,13 +63,13 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
             RecordKind::Line => {
                 let (l, layer, st) = p.lines[li];
                 li += 1;
-                let obj = b.sc.objs.push(key, l, true);
+                let obj = b.sc.objs.push(key, l, Hit::Segment);
                 b.line((l[0], l[1]), (l[2], l[3]), layer, st, obj);
             }
             RecordKind::Rect => {
                 let (r, layer, st) = p.rects[ri];
                 ri += 1;
-                let obj = b.sc.objs.push(key, r, false);
+                let obj = b.sc.objs.push(key, r, Hit::Box);
                 b.rect((r[0], r[1]), (r[2], r[3]), layer, st, obj);
             }
             RecordKind::Arc | RecordKind::Circle => {
@@ -78,7 +78,7 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
                 let obj = b.sc.objs.push(
                     key,
                     [a[0] - a[2], a[1] - a[2], a[0] + a[2], a[1] + a[2]],
-                    false,
+                    Hit::Box,
                 );
                 b.arc((a[0], a[1]), a[2], a[3], a[4], layer, st, obj);
             }
@@ -97,13 +97,15 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
                         bx[3].max(q.1),
                     ];
                 }
-                let obj = b.sc.objs.push(key, bx, false);
+                let obj = b.sc.objs.push(key, bx, Hit::Box);
                 b.poly(pts, *closed, *layer, *st, obj);
             }
             RecordKind::Stext => {
                 let t = &p.texts[ti];
                 ti += 1;
-                let obj = b.sc.objs.push(key, [t.at.0, t.at.1, t.at.0, t.at.1], false);
+                let obj =
+                    b.sc.objs
+                        .push(key, [t.at.0, t.at.1, t.at.0, t.at.1], Hit::Box);
                 let rot = t.orient.quarter_turns();
                 let at = symbols::sym_text_at(t.at, t, &t.raw, rot, t.orient.mirrored());
                 let bx = b.text_rot(at, t.size, t.layer, &t.raw, rot, obj);
@@ -128,7 +130,7 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
                 q.0 + PIN_HALF,
                 q.1 + PIN_HALF,
             ],
-            false,
+            Hit::Box,
         );
         b.rect(
             (q.0 - PIN_HALF, q.1 - PIN_HALF),

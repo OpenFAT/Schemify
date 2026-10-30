@@ -30,7 +30,7 @@ use super::refresh;
 use super::refresh::Build;
 use super::symbols;
 use super::symbols::{SymText, Symbols};
-use super::{LAYER_BUS, LAYER_MISSING, ObjKey, PIN_HALF, Scene, UNIT};
+use super::{Hit, LAYER_BUS, LAYER_MISSING, ObjKey, PIN_HALF, Scene, UNIT};
 
 /// Reusable buffers of instance stamping (resolved cells, template inputs, text).
 #[derive(Default)]
@@ -75,7 +75,7 @@ pub(super) fn instance<'d>(
         let u = 10 * UNIT;
         let obj =
             b.sc.objs
-                .push(key, [at.0 - u, at.1 - u, at.0 + u, at.1 + u], false);
+                .push(key, [at.0 - u, at.1 - u, at.0 + u, at.1 + u], Hit::Box);
         b.rect(
             (at.0 - u, at.1 - u),
             (at.0 + u, at.1 + u),
@@ -95,7 +95,7 @@ pub(super) fn instance<'d>(
     };
     let x = |q: Pt| geometry::place(o, at, q);
     let (c0, c1) = (x((p.bbox[0], p.bbox[1])), x((p.bbox[2], p.bbox[3])));
-    let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], false);
+    let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], Hit::Box);
     for &(l, layer, st) in &p.lines {
         b.line(x((l[0], l[1])), x((l[2], l[3])), layer, st, obj);
     }
@@ -205,7 +205,7 @@ pub(super) fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
         key: w.id[i].0,
     };
     let bus = symbols::attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
-    let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], true);
+    let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], Hit::Segment);
     b.line(a, c, if bus { LAYER_BUS } else { 1 }, LineStyle::PLAIN, obj);
     b.conn_at(a, obj);
     b.conn_at(c, obj);
@@ -270,7 +270,7 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
             };
             let (x, y) = (n.x[i], n.y[i]);
             let r = 4 * UNIT;
-            let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], false);
+            let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], Hit::Box);
             b.line((x - r, y - r), (x + r, y + r), 4, LineStyle::PLAIN, obj);
             b.line((x - r, y + r), (x + r, y - r), 4, LineStyle::PLAIN, obj);
             b.conn_at((x, y), obj);
@@ -284,7 +284,7 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
             let size = symbols::size_of(symbols::attr(doc, t.attrs[i], "size"), 0.4);
             let layer = symbols::layer_attr(doc, t.attrs[i], 3);
             let at = (t.x[i], t.y[i]);
-            let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
+            let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], Hit::Box);
             // Rotated texts (format spec §3 orientation): turned about the anchor; a mirror
             // keeps the text readable.
             let rot = t.orient[i].quarter_turns();
@@ -314,11 +314,11 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
     let st = symbols::style_attr(doc, sh.attrs[i]);
     match sh.form[i] {
         RecordKind::Line if c.len() == 4 => {
-            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], true);
+            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], Hit::Segment);
             b.line((c[0], c[1]), (c[2], c[3]), layer, st, obj);
         }
         RecordKind::Rect if c.len() == 4 => {
-            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], false);
+            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], Hit::Box);
             b.rect((c[0], c[1]), (c[2], c[3]), layer, st, obj);
         }
         RecordKind::Arc | RecordKind::Circle if c.len() >= 3 => {
@@ -329,7 +329,7 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
             let r = c[2].max(0);
             let obj =
                 b.sc.objs
-                    .push(key, [c[0] - r, c[1] - r, c[0] + r, c[1] + r], false);
+                    .push(key, [c[0] - r, c[1] - r, c[0] + r, c[1] + r], Hit::Box);
             b.arc((c[0], c[1]), r, start, sweep, layer, st, obj);
         }
         RecordKind::Poly if c.len() >= 4 => {
@@ -337,7 +337,7 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
             let closed = symbols::attr(doc, sh.attrs[i], "closed") == Some("true");
             let obj =
                 b.sc.objs
-                    .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], false);
+                    .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], Hit::Box);
             b.poly(&pts, closed, layer, st, obj);
         }
         _ => {}
@@ -367,7 +367,7 @@ pub(super) fn arc_placed(o: Orient, start: i32, sweep: i32) -> (i32, i32) {
 /// A label (`port = false`) or port: pin square or arrow at the anchor and the name beside
 /// it, on the side the orientation points to.
 pub(super) fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &str, port: bool) {
-    let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
+    let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], Hit::Box);
     let dir = geometry::place(o, (0, 0), (1, 0));
     let size = 16 * UNIT;
     let (w, h) = symbols::text_size(size, name);

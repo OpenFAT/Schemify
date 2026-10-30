@@ -98,6 +98,7 @@ impl Editor {
         self.scene.conn_points().map(|c| c.0).min_by_key(|&q| d(q))
     }
     pub(super) fn fit(&mut self, b: [i32; 4]) {
+        assert!(b[0] <= b[2] && b[1] <= b[3], "an ordered box: {b:?}");
         let v = self.canvas_rect();
         if v.width() <= 0.0 || v.height() <= 0.0 {
             return;

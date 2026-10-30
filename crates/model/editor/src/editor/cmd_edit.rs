@@ -293,8 +293,12 @@ impl Editor {
                 {
                     seeds.push(self.scene.objs.key[o as usize]);
                 }
-                let stop = cmd == Cmd::SelectConnectedStop;
-                let keys = wiring::connected(&self.session.project, h, &seeds, stop);
+                let junctions = if cmd == Cmd::SelectConnectedStop {
+                    wiring::Junctions::Stop
+                } else {
+                    wiring::Junctions::Cross
+                };
+                let keys = wiring::connected(&self.session.project, h, &seeds, junctions);
                 self.session
                     .say(format!("{} connected object(s)", keys.len()));
                 self.set_selection(keys);

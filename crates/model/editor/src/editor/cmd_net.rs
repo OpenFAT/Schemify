@@ -18,7 +18,7 @@ use super::highlight;
 use super::symbol;
 use super::symbol::PITCH;
 use super::text;
-use super::text::NetlistOf;
+use super::text::{NetlistOf, Stream};
 use super::tool::{Placement, Tool};
 
 impl Editor {
@@ -55,7 +55,8 @@ impl Editor {
                 }
             }
             Cmd::ShowNetlist => self.show_netlist = !self.show_netlist,
-            Cmd::Simulate | Cmd::Optimize => self.simulate(h, cmd == Cmd::Optimize, arg),
+            Cmd::Simulate => self.simulate(h, None),
+            Cmd::Optimize => self.simulate(h, Some(arg.trim())),
             Cmd::SimCancel => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -222,7 +223,8 @@ impl Editor {
             }
             Cmd::ListProcesses => self.list_processes(),
             Cmd::PackageStatus => self.package_status(),
-            Cmd::JobData | Cmd::JobErrors => self.job_log(cmd == Cmd::JobErrors),
+            Cmd::JobData => self.job_log(Stream::Out),
+            Cmd::JobErrors => self.job_log(Stream::Err),
             Cmd::WavesClear => {
                 self.waves = None;
                 self.shell.invalidate();

@@ -41,8 +41,9 @@ const BENCH_NAMES_MAX: u32 = 100;
 impl Editor {
     /// `s` / Optimize: only a `.shbench` runs (D11b; a component gets the message and the
     /// New-bench command). Starts the run without blocking; a refused gate lists its blocking
-    /// violations in the checks panel.
-    pub(super) fn simulate(&mut self, h: DocHandle, optimize: bool, arg: &str) {
+    /// violations in the checks panel. `optimize` names the `optimize` record to run (empty:
+    /// the first); `None` simulates.
+    pub(super) fn simulate(&mut self, h: DocHandle, optimize: Option<&str>) {
         let kind = self.session.project.doc(h).map(Document::kind);
         if kind != Some(FileKind::Shbench) {
             self.session.say(
@@ -72,10 +73,9 @@ impl Editor {
             let env = highlight::env_refs(&self.env);
             let host = &mut self.host;
             let mut funcs = |name: &str, args: &[Value<'_>]| host.call_fn(name, args);
-            let what = optimize.then_some(arg.trim());
             match self
                 .sim
-                .start(&mut self.session, h, what, &probe, &env, &mut funcs)
+                .start(&mut self.session, h, optimize, &probe, &env, &mut funcs)
             {
                 Ok(msg) => {
                     self.blocked.clear();
@@ -95,7 +95,7 @@ impl Editor {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (optimize, arg);
+            let _ = optimize;
             self.session
                 .say("simulate: no simulator on the web (D16: runner plugins)");
         }
@@ -335,7 +335,10 @@ impl Editor {
                 }
             }
         }
-        debug_assert!(seen.len() <= open.len() + 1);
+        debug_assert!(
+            seen.len() <= open.len() + 1,
+            "each open document visited once"
+        );
         false
     }
     /// Stages the optimizer's best point on its bench (D18): one `set_field var` per varied
