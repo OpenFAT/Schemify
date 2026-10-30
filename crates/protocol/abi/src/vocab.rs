@@ -5,12 +5,18 @@
 //! edits spec §1 (edit modes).
 //!
 //! Contents:
-//! - `pub enum Code`: `ALL`, `name`, `parse`, `from_raw`, `neg`, `check`, `Display`
+//! - `pub enum Code`: `ALL`, `name`, `parse`, `from_raw`, `neg`, `check`, `Display`,
+//!   `FromStr`
 //! - `pub enum Cap`: `parse_grant`, `env_name`
 //! - `pub enum Kind`: `COUNT`, `words`, `scoped`
 //! - `pub enum Level`, `pub enum EditMode`
 //! - every named enum (`Cap`, `Kind`, `Level`, `EditMode`, `schema::ColType`): `ALL`,
-//!   `pub const fn name(self) -> &'static str`, `pub fn parse(name: &str) -> Option<Self>`
+//!   `pub const fn name(self) -> &'static str`, `pub fn parse(name: &str) -> Option<Self>`,
+//!   `FromStr` (`Err = Code`)
+
+use std::fmt;
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 use crate::text;
 
@@ -57,13 +63,28 @@ macro_rules! named_enum {
             pub const ALL: &'static [$T] = &[$($T::$V,)*];
 
             /// Returns the wire name.
+            #[must_use]
             pub const fn name(self) -> &'static str {
                 match self { $($T::$V => $s,)* }
             }
 
             /// Parses a wire name; `None` for anything else, including another case.
+            #[must_use]
             pub fn parse(name: &str) -> Option<$T> {
-                match name { $($s => Some($T::$V),)* _ => None }
+                let parsed = match name { $($s => Some($T::$V),)* _ => None };
+                if let Some(value) = parsed {
+                    debug_assert_eq!(value.name(), name, "name and parse are inverses");
+                }
+                parsed
+            }
+        }
+
+        impl std::str::FromStr for $T {
+            type Err = $crate::Code;
+
+            /// As the inherent `parse`, failing with [`Code::Parse`](crate::Code::Parse).
+            fn from_str(name: &str) -> Result<$T, $crate::Code> {
+                $T::parse(name).ok_or($crate::Code::Parse)
             }
         }
     };
@@ -154,7 +175,18 @@ const CODE_NAMES: [&str; 11] = [
 /// Longest environment variable name a `read:` grant may carry.
 const ENV_NAME_BYTES_MAX: usize = 64;
 const _: () = assert!(Code::Module as usize == Code::ALL.len());
+// `name` indexes `CODE_NAMES` with `code - 1` and `neg` promises a negative value: both need
+// the first code to be 1.
+const _: () = assert!(Code::ALL[0] as u8 == 1);
 const _: () = assert!(Kind::COUNT == 9);
+// A kind without record words would reject every non-empty contribution of itself.
+const _: () = {
+    let mut index = 0;
+    while index < Kind::COUNT {
+        assert!(!Kind::ALL[index].words().is_empty());
+        index += 1;
+    }
+};
 
 impl Code {
     /// Every code, in numeric order (`ALL[i] as u8 == i + 1`). An array, not a slice, so
@@ -174,25 +206,31 @@ impl Code {
     ];
 
     /// Returns the spec name (`E_DENIED`, …), which is also the wire form in events.
+    #[must_use]
     pub const fn name(self) -> &'static str {
         CODE_NAMES[self as usize - 1]
     }
 
     /// Parses a spec name; `None` for anything else.
+    #[must_use]
     pub fn parse(name: &str) -> Option<Code> {
-        let i = CODE_NAMES.iter().position(|&n| n == name)?;
-        Some(Code::ALL[i])
+        let index = CODE_NAMES.iter().position(|&known| known == name)?;
+        let code = Code::ALL[index];
+        debug_assert_eq!(code.name(), name, "name and parse are inverses");
+        Some(code)
     }
 
     /// Returns the code with numeric value `raw`; `None` outside `1..=11`.
+    #[must_use]
     pub fn from_raw(raw: u32) -> Option<Code> {
-        let i = usize::try_from(raw.checked_sub(1)?).ok()?;
-        let code = Code::ALL.get(i).copied()?;
+        let index = usize::try_from(raw.checked_sub(1)?).ok()?;
+        let code = Code::ALL.get(index).copied()?;
         debug_assert_eq!(code as u32, raw);
         Some(code)
     }
 
     /// Returns the negated value an import returns for this error (always `< 0`).
+    #[must_use]
     pub const fn neg(self) -> i32 {
         -(self as i32)
     }
@@ -205,15 +243,24 @@ impl Code {
     /// (only a misbehaving host produces one).
     pub fn check(ret: i32) -> Result<u32, Code> {
         match u32::try_from(ret) {
-            Ok(v) => Ok(v),
+            Ok(value) => Ok(value),
             Err(_) => Err(Code::from_raw(ret.unsigned_abs()).unwrap_or(Code::Range)),
         }
     }
 }
 
-impl std::fmt::Display for Code {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for Code {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+impl FromStr for Code {
+    type Err = Code;
+
+    /// As [`Code::parse`], failing with [`Code::Parse`].
+    fn from_str(name: &str) -> Result<Code, Code> {
+        Code::parse(name).ok_or(Code::Parse)
     }
 }
 
@@ -226,30 +273,43 @@ impl Cap {
     /// containing a path separator (grants name a binary, never a path), a `read` whose
     /// argument is not an environment variable name ([`Cap::env_name`]), or an argument on a
     /// capability that takes none.
+    #[must_use]
     pub fn parse_grant(grant: &str) -> Option<(Cap, &str)> {
         let (name, arg) = grant.split_once(':').unwrap_or((grant, ""));
         let cap = Cap::parse(name)?;
-        let ok = match cap {
+        let well_formed = match cap {
             Cap::Spawn => !arg.is_empty() && !arg.contains(['/', '\\']) && text::is_bare(arg),
             Cap::ReadEnv => Cap::env_name(arg),
             Cap::ReadProject | Cap::WriteProject | Cap::Network | Cap::Clipboard => {
                 arg.is_empty() && !grant.contains(':')
             }
         };
-        if ok && matches!(cap, Cap::Spawn | Cap::ReadEnv) {
+        if well_formed && matches!(cap, Cap::Spawn | Cap::ReadEnv) {
             debug_assert!(!arg.is_empty());
         }
-        ok.then_some((cap, arg))
+        debug_assert!(
+            grant.ends_with(arg),
+            "the argument borrows the grant's tail"
+        );
+        well_formed.then_some((cap, arg))
     }
 
     /// Whether `name` can follow `read:`: an environment variable name, `[A-Z_][A-Z0-9_]*`,
     /// at most 64 bytes.
+    #[must_use]
     pub fn env_name(name: &str) -> bool {
-        let mut b = name.bytes();
-        name.len() <= ENV_NAME_BYTES_MAX
-            && b.next()
-                .is_some_and(|c| c.is_ascii_uppercase() || c == b'_')
-            && b.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+        let Some((&first, tail)) = name.as_bytes().split_first() else {
+            return false;
+        };
+        let valid = name.len() <= ENV_NAME_BYTES_MAX
+            && (first.is_ascii_uppercase() || first == b'_')
+            && tail
+                .iter()
+                .all(|&byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_');
+        if valid {
+            debug_assert!(text::is_bare(name), "a `read:` argument is written bare");
+        }
+        valid
     }
 }
 
@@ -259,6 +319,7 @@ impl Kind {
 
     /// Top-level record words legal inside a contribution of this kind; anything else is
     /// rejected with `E_PARSE`.
+    #[must_use]
     pub const fn words(self) -> &'static [&'static str] {
         match self {
             Kind::Ui => &["node", "style", "remove", "set"],
@@ -274,6 +335,7 @@ impl Kind {
     }
 
     /// Returns whether the kind carries a scope (`contribute annotations <scope>`).
+    #[must_use]
     pub const fn scoped(self) -> bool {
         matches!(self, Kind::Annotations)
     }
@@ -286,13 +348,13 @@ mod tests {
     /// Oracle: the §8 table (numbers 1..=11 in this order, `E_` names).
     #[test]
     fn codes_round_trip_by_value_and_name() {
-        for (i, &c) in Code::ALL.iter().enumerate() {
-            assert_eq!(c as usize, i + 1);
-            assert_eq!(Code::from_raw(c as u32), Some(c));
-            assert_eq!(Code::parse(c.name()), Some(c));
-            assert_eq!(Code::check(c.neg()), Err(c));
-            assert!(c.neg() < 0);
-            assert_eq!(c.to_string(), c.name());
+        for (i, &code) in Code::ALL.iter().enumerate() {
+            assert_eq!(code as usize, i + 1);
+            assert_eq!(Code::from_raw(code as u32), Some(code));
+            assert_eq!(Code::parse(code.name()), Some(code));
+            assert_eq!(Code::check(code.neg()), Err(code));
+            assert!(code.neg() < 0);
+            assert_eq!(code.to_string(), code.name());
         }
         assert_eq!(Code::Parse.name(), "E_PARSE");
         assert_eq!(Code::from_raw(0), None);
@@ -345,19 +407,36 @@ mod tests {
 
     #[test]
     fn named_enums_are_dense_and_round_trip() {
-        for (i, &k) in Kind::ALL.iter().enumerate() {
-            assert_eq!(k as usize, i);
-            assert_eq!(Kind::parse(k.name()), Some(k));
-            assert!(!k.words().is_empty());
-            assert_eq!(k.scoped(), k == Kind::Annotations);
+        for (i, &kind) in Kind::ALL.iter().enumerate() {
+            assert_eq!(kind as usize, i);
+            assert_eq!(Kind::parse(kind.name()), Some(kind));
+            assert!(!kind.words().is_empty());
+            assert_eq!(kind.scoped(), kind == Kind::Annotations);
         }
-        for (i, &l) in Level::ALL.iter().enumerate() {
-            assert_eq!(l as usize, i);
-            assert_eq!(Level::parse(l.name()), Some(l));
+        for (i, &level) in Level::ALL.iter().enumerate() {
+            assert_eq!(level as usize, i);
+            assert_eq!(Level::parse(level.name()), Some(level));
         }
         assert_eq!(Kind::COUNT, 9);
         assert_eq!(Kind::parse("nope"), None);
         assert_eq!(Kind::parse("UI"), None);
         assert_eq!(EditMode::parse("stage"), Some(EditMode::Stage));
+    }
+
+    /// `FromStr` agrees with the inherent `parse` on every name and fails with `E_PARSE`.
+    #[test]
+    fn from_str_matches_parse() {
+        for &kind in Kind::ALL {
+            let parsed: Result<Kind, Code> = kind.name().parse();
+            assert_eq!(parsed, Ok(kind));
+        }
+        for code in Code::ALL {
+            let parsed: Result<Code, Code> = code.name().parse();
+            assert_eq!(parsed, Ok(code));
+        }
+        let mode: Result<EditMode, Code> = "Stage".parse();
+        assert_eq!(mode, Err(Code::Parse));
+        let code: Result<Code, Code> = "E_NOPE".parse();
+        assert_eq!(code, Err(Code::Parse));
     }
 }

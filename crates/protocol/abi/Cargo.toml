@@ -16,6 +16,16 @@ missing_docs = "warn"
 [lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
+# The workspace's Google Rust style guide lints (root Cargo.toml), copied because this
+# crate cannot inherit `[workspace.lints]` (see above).
+unwrap_used = "warn"
+wildcard_imports = "warn"
+needless_for_each = "warn"
+string_add = "warn"
+ref_option = "warn"
+missing_panics_doc = "warn"
+missing_errors_doc = "warn"
+must_use_candidate = "warn"
 
 [features]
 # Guest SDK: `export!`, `Host`, the input arena. Compiled only for wasm32.

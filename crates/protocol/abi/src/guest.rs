@@ -25,17 +25,19 @@
 //! and the calls into it that hand the host a pointer into our own memory.
 //!
 //! Contents:
-//! - `pub struct Host`: `len`, `epoch`, `column`, `strings`, `eval`, `log`, `fs_read`,
+//! - `pub struct Host`: `len`, `is_empty`, `epoch`, `column`, `strings`, `eval`, `log`, `fs_read`,
 //!   `fs_list`, `fs_write`, `fs_remove`, `spawn`, `fetch`, `clipboard_get`, `clipboard_set`
 //! - `export!` (re-exported), `pub fn no_functions(..) -> Result<(), Code>`
 //! - hidden, for `export!`: `__alloc`, `__on_event`, `__call`
 
 #![allow(unsafe_code)]
 
+use std::mem;
 use std::ops::Range;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard};
 
-use crate::{Code, ColType, Event, Level, Out, Scalar, Table, pack, text};
+use crate::text;
+use crate::{Code, ColType, Event, Level, Out, Scalar, Table};
 
 pub use crate::export;
 
@@ -44,8 +46,22 @@ mod sys {
     unsafe extern "C" {
         pub safe fn table_len(table: u32) -> i32;
         pub safe fn table_epoch(table: u32) -> i32;
-        pub fn read_column(t: u32, c: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32;
-        pub fn read_strings(t: u32, c: u32, start: u32, count: u32, dst: u32, dst_len: u32) -> i32;
+        pub fn read_column(
+            table: u32,
+            column: u32,
+            start: u32,
+            count: u32,
+            dst: u32,
+            dst_len: u32,
+        ) -> i32;
+        pub fn read_strings(
+            table: u32,
+            column: u32,
+            start: u32,
+            count: u32,
+            dst: u32,
+            dst_len: u32,
+        ) -> i32;
         pub fn eval(doc: u32, ptr: u32, len: u32) -> i32;
         pub fn log(level: u32, ptr: u32, len: u32);
         pub fn fs_read(path: u32, path_len: u32) -> i32;
@@ -123,6 +139,15 @@ impl Host {
         Code::check(sys::table_len(table as u32))
     }
 
+    /// Returns whether `table` has no rows.
+    ///
+    /// # Errors
+    ///
+    /// As [`Host::len`].
+    pub fn is_empty(&self, table: Table) -> Result<bool, Code> {
+        self.len(table).map(|rows| rows == 0)
+    }
+
     /// Returns a value that changes whenever `table` changes.
     ///
     /// # Errors
@@ -145,12 +170,13 @@ impl Host {
         column: u32,
         rows: Range<u32>,
     ) -> Result<Vec<T>, Code> {
-        let def = table.columns().get(column as usize).ok_or(Code::Column)?;
-        if def.ty != T::TY || T::TY == ColType::Str {
+        let column_def = table.columns().get(column as usize).ok_or(Code::Column)?;
+        if column_def.ty != T::TY || T::TY == ColType::Str {
             return Err(Code::Column);
         }
         let count = rows.end.checked_sub(rows.start).ok_or(Code::Range)?;
         let mut dst = vec![T::default(); count as usize];
+        debug_assert_eq!(len32(&dst), count * u32::from(T::TY.width()));
         // SAFETY: `dst` is an initialized, exclusively borrowed buffer of exactly
         // `len32(&dst)` bytes; the host writes at most that many bytes into it, and any bit
         // pattern is a valid `u8`/`u16`/`u32`/`i32` (wasm32 is little-endian, like the wire).
@@ -182,8 +208,8 @@ impl Host {
         column: u32,
         rows: Range<u32>,
     ) -> Result<Vec<String>, Code> {
-        let def = table.columns().get(column as usize).ok_or(Code::Column)?;
-        if def.ty != ColType::Str {
+        let column_def = table.columns().get(column as usize).ok_or(Code::Column)?;
+        if column_def.ty != ColType::Str {
             return Err(Code::Column);
         }
         let count = rows.end.checked_sub(rows.start).ok_or(Code::Range)?;
@@ -206,13 +232,17 @@ impl Host {
         let mut rest = &bytes[..];
         while let Some((len, tail)) = rest.split_first_chunk::<4>() {
             let len = u32::from_le_bytes(*len) as usize;
-            let s = tail.get(..len).ok_or(Code::Parse)?;
-            out.push(String::from_utf8(s.to_vec()).map_err(|_| Code::Parse)?);
+            let string = tail.get(..len).ok_or(Code::Parse)?;
+            out.push(String::from_utf8(string.to_vec()).map_err(|_| Code::Parse)?);
             rest = &tail[len..];
         }
         if out.len() != count as usize || !rest.is_empty() {
             return Err(Code::Parse);
         }
+        debug_assert!(
+            out.capacity() >= count as usize,
+            "sized once, before the loop"
+        );
         Ok(out)
     }
 
@@ -265,9 +295,9 @@ impl Host {
     ///
     /// As [`Host::fs_read`].
     pub fn fs_write(&self, path: &str, data: &[u8]) -> Result<u32, Code> {
-        let p = path.as_bytes();
+        let path = path.as_bytes();
         // SAFETY: the host only reads the given byte ranges.
-        Code::check(unsafe { sys::fs_write(addr(p), len32(p), addr(data), len32(data)) })
+        Code::check(unsafe { sys::fs_write(addr(path), len32(path), addr(data), len32(data)) })
     }
 
     /// Requests removing a project-relative file or directory tree (capability
@@ -279,9 +309,9 @@ impl Host {
     /// `E_DENIED` without the grant, for a path outside `.schemify/` (or `.schemify` itself),
     /// or one naming `schemify.project`/`schemify.lock`; `E_SPACE` when the host queue is full.
     pub fn fs_remove(&self, path: &str) -> Result<u32, Code> {
-        let p = path.as_bytes();
+        let path = path.as_bytes();
         // SAFETY: the host only reads the given byte range.
-        Code::check(unsafe { sys::fs_remove(addr(p), len32(p)) })
+        Code::check(unsafe { sys::fs_remove(addr(path), len32(path)) })
     }
 
     /// Requests running `argv` (capability `spawn:<argv[0]>`, native only); stdout arrives
@@ -292,15 +322,19 @@ impl Host {
     /// `E_DENIED` unless `argv[0]` is exactly a granted binary; `E_PARSE` for empty `argv`.
     pub fn spawn(&self, argv: &[&str], stdin: &[u8]) -> Result<u32, Code> {
         let mut line = String::new();
-        for (i, a) in argv.iter().enumerate() {
-            if i > 0 {
+        for (index, arg) in argv.iter().enumerate() {
+            if index > 0 {
                 line.push(' ');
             }
-            text::push_value(&mut line, a);
+            text::push_value(&mut line, arg);
         }
-        let l = line.as_bytes();
+        debug_assert!(
+            !line.contains(['\n', '\r', '\0']),
+            "argv travels as one line of values"
+        );
+        let line = line.as_bytes();
         // SAFETY: the host only reads the given byte ranges.
-        Code::check(unsafe { sys::spawn(addr(l), len32(l), addr(stdin), len32(stdin)) })
+        Code::check(unsafe { sys::spawn(addr(line), len32(line), addr(stdin), len32(stdin)) })
     }
 
     /// Requests an HTTP fetch of `url` with `body` (capability `network`).
@@ -309,9 +343,9 @@ impl Host {
     ///
     /// `E_DENIED` without the grant.
     pub fn fetch(&self, url: &str, body: &[u8]) -> Result<u32, Code> {
-        let u = url.as_bytes();
+        let url = url.as_bytes();
         // SAFETY: the host only reads the given byte ranges.
-        Code::check(unsafe { sys::fetch(addr(u), len32(u), addr(body), len32(body)) })
+        Code::check(unsafe { sys::fetch(addr(url), len32(url), addr(body), len32(body)) })
     }
 
     /// Requests the clipboard text (capability `clipboard`).
@@ -329,22 +363,24 @@ impl Host {
     ///
     /// `E_DENIED` without the grant.
     pub fn clipboard_set(&self, text: &str) -> Result<u32, Code> {
-        let t = text.as_bytes();
+        let text = text.as_bytes();
         // SAFETY: the host only reads the given byte range.
-        Code::check(unsafe { sys::clipboard_set(addr(t), len32(t)) })
+        Code::check(unsafe { sys::clipboard_set(addr(text), len32(text)) })
     }
 }
 
 #[doc(hidden)]
+#[must_use]
 pub fn __alloc(len: u32) -> u32 {
-    let mut input = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut input = lock(&INPUT);
     input.clear();
     if input.try_reserve_exact(len as usize).is_err() {
         return 0;
     }
     input.resize(len as usize, 0);
     let ptr = input.as_mut_ptr() as u32;
-    debug_assert!(ptr != 0 && input.len() == len as usize);
+    debug_assert_ne!(ptr, 0, "0 is the out-of-memory answer");
+    debug_assert_eq!(input.len(), len as usize);
     ptr
 }
 
@@ -354,11 +390,17 @@ pub fn __on_event(ptr: u32, len: u32, handler: fn(Event<'_>, &Host, &mut Out)) -
         return 0;
     };
     let mut out = Out::new();
-    match Event::parse(&input) {
+    let parsed = Event::parse(&input);
+    match parsed {
         Ok(event) => handler(event, &HOST, &mut out),
         Err(code) => out.log_at(Level::Error, &format!("unparsable event ({code})")),
     }
-    publish(out.into_string().into_bytes())
+    let packed = publish(out.into_string().into_bytes());
+    debug_assert!(
+        parsed.is_ok() || packed != 0,
+        "an unparsable event is answered with a log"
+    );
+    packed
 }
 
 #[doc(hidden)]
@@ -366,19 +408,27 @@ pub fn __call(
     fn_id: u32,
     ptr: u32,
     len: u32,
-    f: fn(u32, &str, &mut String) -> Result<(), Code>,
+    call: fn(u32, &str, &mut String) -> Result<(), Code>,
 ) -> u64 {
     let Some(input) = take_input(ptr, len) else {
-        return pack(0, Code::Range as u32);
+        return crate::pack(0, Code::Range as u32);
     };
     let Ok(args) = std::str::from_utf8(&input) else {
-        return pack(0, Code::Parse as u32);
+        return crate::pack(0, Code::Parse as u32);
     };
     let mut result = String::new();
-    match f(fn_id, args, &mut result) {
-        Ok(()) if !result.is_empty() => publish(result.into_bytes()),
-        Ok(()) => pack(0, Code::Parse as u32),
-        Err(code) => pack(0, code as u32),
+    match call(fn_id, args, &mut result) {
+        Ok(()) if !result.is_empty() => {
+            let packed = publish(result.into_bytes());
+            debug_assert_ne!(
+                crate::unpack(packed).0,
+                0,
+                "a result must not read as the failure form (pointer 0)"
+            );
+            packed
+        }
+        Ok(()) => crate::pack(0, Code::Parse as u32),
+        Err(code) => crate::pack(0, code as u32),
     }
 }
 
@@ -399,16 +449,20 @@ fn fill_retrying(guess: usize, mut read: impl FnMut(&mut [u8]) -> i32) -> Result
     let mut buf = vec![0u8; guess.max(4)];
     for _ in 0..2 {
         match Code::check(read(&mut buf)) {
-            Ok(n) => {
-                buf.truncate(n as usize);
+            Ok(written) => {
+                buf.truncate(written as usize);
                 return Ok(buf);
             }
             Err(Code::Space) => {
-                let need = u32::from_le_bytes(buf[..4].try_into().expect("4 bytes")) as usize;
+                let Some(&need) = buf.first_chunk::<4>() else {
+                    unreachable!("the buffer starts at 4 bytes and only grows");
+                };
+                let need = u32::from_le_bytes(need) as usize;
                 if need <= buf.len() {
                     return Err(Code::Space);
                 }
                 buf = vec![0u8; need];
+                debug_assert!(buf.len() > 4);
             }
             Err(code) => return Err(code),
         }
@@ -418,9 +472,14 @@ fn fill_retrying(guess: usize, mut read: impl FnMut(&mut [u8]) -> i32) -> Result
 
 /// Takes the input buffer if `(ptr, len)` is what `__alloc` handed out; `None` otherwise.
 fn take_input(ptr: u32, len: u32) -> Option<Vec<u8>> {
-    let mut input = INPUT.lock().unwrap_or_else(PoisonError::into_inner);
-    let ok = input.as_ptr() as u32 == ptr && input.len() == len as usize;
-    ok.then(|| std::mem::take(&mut *input))
+    let mut input = lock(&INPUT);
+    let handed_out = input.as_ptr() as u32 == ptr && input.len() == len as usize;
+    let taken = handed_out.then(|| mem::take(&mut *input));
+    debug_assert!(
+        !handed_out || input.is_empty(),
+        "an input is taken at most once"
+    );
+    taken
 }
 
 /// Parks `bytes` as the call's output and returns the packed pointer; 0 for no output.
@@ -428,23 +487,32 @@ fn publish(bytes: Vec<u8>) -> u64 {
     if bytes.is_empty() {
         return 0;
     }
-    let mut output = OUTPUT.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut output = lock(&OUTPUT);
     *output = bytes;
-    pack(output.as_ptr() as u32, len32(&output))
+    debug_assert_ne!(output.as_ptr() as u32, 0, "0 means no output");
+    crate::pack(output.as_ptr() as u32, len32(&output))
+}
+
+/// Locks one of the call buffers.
+fn lock(buffer: &'static Mutex<Vec<u8>>) -> MutexGuard<'static, Vec<u8>> {
+    // A guest panic traps (wasm32 is `panic = "abort"`), so no lock is ever left poisoned.
+    buffer
+        .lock()
+        .expect("a guest panic aborts, so no buffer lock is poisoned")
 }
 
 /// Guest-memory address of a slice the host only reads, as the ABI's `u32` pointer.
-fn addr<T>(s: &[T]) -> u32 {
-    s.as_ptr() as u32
+fn addr<T>(slice: &[T]) -> u32 {
+    slice.as_ptr() as u32
 }
 
 /// Guest-memory address of a buffer the host writes into; derived from a unique borrow so
 /// the write is permitted.
-fn addr_mut<T>(s: &mut [T]) -> u32 {
-    s.as_mut_ptr() as u32
+fn addr_mut<T>(slice: &mut [T]) -> u32 {
+    slice.as_mut_ptr() as u32
 }
 
 /// Byte length of a slice as the ABI's `u32` length (guest memory is below 4 GiB).
-fn len32<T>(s: &[T]) -> u32 {
-    u32::try_from(std::mem::size_of_val(s)).expect("wasm32 slices fit u32")
+fn len32<T>(slice: &[T]) -> u32 {
+    u32::try_from(mem::size_of_val(slice)).expect("wasm32 slices fit u32")
 }

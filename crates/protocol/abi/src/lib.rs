@@ -88,11 +88,13 @@ const _: () = assert!(unpack(pack(0, u32::MAX)).1 == u32::MAX);
 ///
 /// `ptr == 0` means "no buffer": for `on_event` that is "no outputs" (`len` 0); for `call`
 /// it is failure, with the [`Code`] in `len`.
+#[must_use]
 pub const fn pack(ptr: u32, len: u32) -> u64 {
     ((ptr as u64) << 32) | len as u64
 }
 
 /// Splits a value produced by [`pack`] into `(ptr, len)`; the inverse of [`pack`].
+#[must_use]
 pub const fn unpack(packed: u64) -> (u32, u32) {
     ((packed >> 32) as u32, packed as u32)
 }

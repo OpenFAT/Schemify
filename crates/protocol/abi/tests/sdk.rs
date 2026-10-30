@@ -13,7 +13,7 @@ fn camel(snake: &str) -> String {
         .map(|w| {
             let mut c = w.chars();
             c.next().map_or(String::new(), |f| {
-                f.to_ascii_uppercase().to_string() + c.as_str()
+                format!("{}{}", f.to_ascii_uppercase(), c.as_str())
             })
         })
         .collect()
@@ -110,7 +110,8 @@ fn zig() -> String {
     for &k in Kind::ALL {
         s += &format!("    {},\n", k.name());
     }
-    s + "};\n"
+    s.push_str("};\n");
+    s
 }
 
 fn odin() -> String {
@@ -148,7 +149,8 @@ fn odin() -> String {
     for &k in Kind::ALL {
         s += &format!("\t.{} = \"{}\",\n", ada(k.name()), k.name());
     }
-    s + "}\n"
+    s.push_str("}\n");
+    s
 }
 
 fn go() -> String {
@@ -183,7 +185,8 @@ fn go() -> String {
     for &k in Kind::ALL {
         s += &format!("\tKind{} Kind = \"{}\"\n", camel(k.name()), k.name());
     }
-    s + ")\n"
+    s.push_str(")\n");
+    s
 }
 
 fn assemblyscript() -> String {
