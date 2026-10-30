@@ -21,9 +21,13 @@
 //! Contents:
 //! - `pub const DIFF_EDITS_MAX: usize`
 //! - `pub struct CanvasDiff`, `CanvasDiff::update`, `CanvasDiff::edits_of`
-//! - `pub enum TableChange<'a> { Same, Any, Rows(&'a [Vec<u32>; 6]) }`
+//! - `pub enum TableChange<'report> { Same, Any, Rows(&'report [Vec<u32>; 6]) }`
+//! - `pub(crate) struct RowEdits { removed, added }`
 
-use crate::row::{TABLES, Table, len, mix, row};
+use std::array;
+use std::mem;
+
+use crate::row::{self, TABLES, Table};
 use crate::{CanvasPrims, Marks, PrimKind};
 
 /// Edits (rows removed plus rows added) one table may differ by before the diff gives up and
@@ -36,17 +40,17 @@ pub const DIFF_EDITS_MAX: usize = 128;
 pub struct CanvasDiff {
     /// Per sequence (the six kinds of each input table in order, then the marks): the hashes
     /// of the version the last call saw.
-    seqs: Vec<Seq>,
+    sequences: Vec<Sequence>,
     /// The sequences replaced by the last call, kept for their allocations.
-    spare: Vec<Seq>,
+    spare: Vec<Sequence>,
     /// Per sequence: the rows the last call found removed and added (see
     /// [`CanvasDiff::edits_of`]).
-    last: Vec<(Vec<u32>, Vec<u32>)>,
+    last: Vec<RowEdits>,
 }
 
 /// How one table changed since the previous [`CanvasDiff::update`].
 #[derive(Clone, Copy, Debug)]
-pub enum TableChange<'a> {
+pub enum TableChange<'report> {
     /// Not at all: neither hashed nor diffed.
     Same,
     /// In any way: every row is hashed and the two versions diffed.
@@ -56,11 +60,19 @@ pub enum TableChange<'a> {
     /// rows listed there may instead be rewritten in place with the same box, as texts are
     /// drawn from the table every frame) and appending rows past the previous version's end;
     /// every other row is as it was.
-    Rows(&'a [Vec<u32>; 6]),
+    Rows(&'report [Vec<u32>; 6]),
+}
+
+/// One kind's edit script: the rows removed (indices before the edit) and added (after),
+/// each ascending.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RowEdits {
+    pub(crate) removed: Vec<u32>,
+    pub(crate) added: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
-struct Seq {
+struct Sequence {
     hash: Vec<u64>,
     /// Rows of the version the last call saw.
     rows: usize,
@@ -85,22 +97,24 @@ impl CanvasDiff {
     ///
     /// # Panics
     ///
-    /// If a reported killed row is past the table, or a mark is past its table.
+    /// If a reported killed row is past the table, a mark is past its table, or the marks'
+    /// columns are out of step.
     pub fn update(
         &mut self,
         tables: &[(&CanvasPrims, TableChange<'_>)],
         marks: (&CanvasPrims, &Marks, bool),
     ) -> bool {
+        let (marked, marks, marks_changed) = marks;
         let n = tables.len() * TABLES.len() + 1;
-        let first = self.seqs.len() != n;
+        let first = self.sequences.len() != n;
         if first {
-            self.seqs = vec![Seq::default(); n];
+            self.sequences = vec![Sequence::default(); n];
         }
-        self.spare.resize_with(n, Seq::default);
-        self.last.resize_with(n, Default::default);
-        for (gone, new) in &mut self.last {
-            gone.clear();
-            new.clear();
+        self.spare.resize_with(n, Sequence::default);
+        self.last.resize_with(n, RowEdits::default);
+        for edits in &mut self.last {
+            edits.removed.clear();
+            edits.added.clear();
         }
         // Once one sequence is unknown the call returns false: later ones are still hashed
         // (the next call diffs against them) but no longer diffed.
@@ -111,7 +125,7 @@ impl CanvasDiff {
                 match change {
                     TableChange::Same if !first => {}
                     TableChange::Rows(killed) => {
-                        known = self.reported(k, len(t, table), &killed[kind], known);
+                        known = self.reported(k, row::len(t, table), &killed[kind], known);
                     }
                     TableChange::Same | TableChange::Any => {
                         fill(&mut self.spare[k], t, table);
@@ -120,11 +134,11 @@ impl CanvasDiff {
                 }
             }
         }
-        if marks.2 || first {
-            fill_marks(&mut self.spare[n - 1], marks.0, marks.1);
+        if marks_changed || first {
+            fill_marks(&mut self.spare[n - 1], marked, marks);
             known = self.diffed(n - 1, known);
         }
-        assert_eq!(self.seqs.len(), n);
+        assert_eq!(self.sequences.len(), n);
         assert_eq!(self.last.len(), n);
         known
     }
@@ -138,14 +152,18 @@ impl CanvasDiff {
     /// # Panics
     ///
     /// If `table` is not an input of the last call.
+    #[must_use]
     pub fn edits_of(&self, table: usize) -> [(&[u32], &[u32]); 6] {
         assert!(
             self.last.len() > (table + 1) * TABLES.len(),
-            "a table of the last call"
+            "table {table} is not an input of the last call"
         );
-        std::array::from_fn(|k| {
-            let (gone, new) = &self.last[table * TABLES.len() + k];
-            (&gone[..], &new[..])
+        array::from_fn(|kind| {
+            let edits = &self.last[table * TABLES.len() + kind];
+            // The other side of the producers' contract (`reported`, `edits`): ascending.
+            debug_assert!(edits.removed.is_sorted(), "removed rows ascend");
+            debug_assert!(edits.added.is_sorted(), "added rows ascend");
+            (&edits.removed[..], &edits.added[..])
         })
     }
 }
@@ -157,102 +175,133 @@ impl CanvasDiff {
     /// out and in again (their content changed), the appended rows in. Leaves the hashes
     /// stale. Returns whether the edits are still known.
     fn reported(&mut self, k: usize, now: usize, killed: &[u32], known: bool) -> bool {
-        let s = &mut self.seqs[k];
-        let was = s.rows;
-        (s.rows, s.hashed) = (now, false);
+        assert!(now <= CanvasPrims::CAPACITY, "row indices fit u32");
+        let sequence = &mut self.sequences[k];
+        let was = sequence.rows;
+        (sequence.rows, sequence.hashed) = (now, false);
         let known = known && now >= was;
         if known {
-            let (gone, new) = &mut self.last[k];
+            let RowEdits { removed, added } = &mut self.last[k];
+            assert!(
+                removed.is_empty(),
+                "edits of sequence {k} cleared by `update`"
+            );
+            assert!(
+                added.is_empty(),
+                "edits of sequence {k} cleared by `update`"
+            );
             // A row appended and killed since the last call is among the appended.
-            for &r in killed.iter().filter(|&&r| (r as usize) < was) {
+            let killed_before = killed.iter().filter(|&&r| (r as usize) < was);
+            for &r in killed_before {
                 assert!((r as usize) < now, "rows are killed, never removed");
-                gone.push(r);
-                new.push(r);
+                removed.push(r);
+                added.push(r);
             }
-            new.extend(was as u32..now as u32);
-            gone.sort_unstable();
-            new.sort_unstable();
+            added.extend(was as u32..now as u32);
+            removed.sort_unstable();
+            added.sort_unstable();
+            // Every removed row comes back (killed in place), so there are at least as many
+            // added.
+            assert!(removed.len() <= added.len(), "a killed row is also added");
         }
         known
     }
 
-    /// Diffs the freshly hashed `spare[k]` against `seqs[k]` (when still `known`), then makes
-    /// it the current version. Returns whether the edits are still known.
+    /// Diffs the freshly hashed `spare[k]` against `sequences[k]` (when still `known`), then
+    /// makes it the current version. Returns whether the edits are still known.
     fn diffed(&mut self, k: usize, known: bool) -> bool {
-        let (old, new) = (&self.seqs[k], &self.spare[k]);
+        let (old, new) = (&self.sequences[k], &self.spare[k]);
         assert!(new.hashed, "a diffed sequence is hashed");
-        let (gone, added) = &mut self.last[k];
-        let known = known && old.hashed && edits(&old.hash, &new.hash, gone, added);
-        std::mem::swap(&mut self.seqs[k], &mut self.spare[k]);
+        let RowEdits { removed, added } = &mut self.last[k];
+        assert!(
+            removed.is_empty(),
+            "edits of sequence {k} cleared by `update`"
+        );
+        assert!(
+            added.is_empty(),
+            "edits of sequence {k} cleared by `update`"
+        );
+        let known = known && old.hashed && edits(&old.hash, &new.hash, removed, added);
+        mem::swap(&mut self.sequences[k], &mut self.spare[k]);
         known
     }
 }
 
-/// Refills `s` with the hashes of `table`'s rows: one tight loop per kind.
-fn fill(s: &mut Seq, t: &CanvasPrims, table: Table) {
-    let n = len(t, table);
-    s.hash.clear();
-    s.hash.reserve(n);
-    (s.rows, s.hashed) = (n, true);
-    // Matched outside the loop so each loop inlines one kind's `row`.
-    let h = &mut s.hash;
+/// Refills `sequence` with the hashes of `table`'s rows: one tight loop per kind.
+fn fill(sequence: &mut Sequence, t: &CanvasPrims, table: Table) {
+    let n = row::len(t, table);
+    assert!(n <= CanvasPrims::CAPACITY, "row indices fit u32");
+    sequence.hash.clear();
+    sequence.hash.reserve(n);
+    (sequence.rows, sequence.hashed) = (n, true);
+    // Matched outside the loop so each loop inlines one kind's `row::read`.
+    let h = &mut sequence.hash;
     match table {
-        Table::Lines => h.extend((0..n).map(|i| row(t, Table::Lines, i).0)),
-        Table::Rects => h.extend((0..n).map(|i| row(t, Table::Rects, i).0)),
-        Table::Arcs => h.extend((0..n).map(|i| row(t, Table::Arcs, i).0)),
-        Table::Polylines => h.extend((0..n).map(|i| row(t, Table::Polylines, i).0)),
-        Table::Polygons => h.extend((0..n).map(|i| row(t, Table::Polygons, i).0)),
-        Table::Texts => h.extend((0..n).map(|i| row(t, Table::Texts, i).0)),
+        Table::Lines => h.extend((0..n).map(|i| row::read(t, Table::Lines, i).hash)),
+        Table::Rects => h.extend((0..n).map(|i| row::read(t, Table::Rects, i).hash)),
+        Table::Arcs => h.extend((0..n).map(|i| row::read(t, Table::Arcs, i).hash)),
+        Table::Polylines => h.extend((0..n).map(|i| row::read(t, Table::Polylines, i).hash)),
+        Table::Polygons => h.extend((0..n).map(|i| row::read(t, Table::Polygons, i).hash)),
+        Table::Texts => h.extend((0..n).map(|i| row::read(t, Table::Texts, i).hash)),
     }
-    assert_eq!(s.hash.len(), n);
+    assert_eq!(sequence.hash.len(), n);
 }
 
 /// The marks as rows: what they recolor (the marked row's content, not its index, which
 /// moves when other rows are removed) and in which color.
-fn fill_marks(s: &mut Seq, prims: &CanvasPrims, m: &Marks) {
-    assert_eq!(m.index.len(), m.kind.len(), "index column in step");
-    assert_eq!(m.color.len(), m.kind.len(), "color column in step");
-    s.hash.clear();
-    (s.rows, s.hashed) = (m.kind.len(), true);
-    for i in 0..m.kind.len() {
-        let table = match m.kind[i] {
+fn fill_marks(sequence: &mut Sequence, prims: &CanvasPrims, marks: &Marks) {
+    assert_eq!(marks.index.len(), marks.kind.len(), "index column in step");
+    assert_eq!(marks.color.len(), marks.kind.len(), "color column in step");
+    sequence.hash.clear();
+    (sequence.rows, sequence.hashed) = (marks.kind.len(), true);
+    for i in 0..marks.kind.len() {
+        let table = match marks.kind[i] {
             PrimKind::Line => Table::Lines,
             PrimKind::Rect => Table::Rects,
             PrimKind::Arc => Table::Arcs,
             PrimKind::Polyline => Table::Polylines,
             PrimKind::Polygon => Table::Polygons,
         };
-        let (h, _) = row(prims, table, m.index[i] as usize);
-        s.hash.push(mix(h, i64::from(m.color[i])));
+        let marked = marks.index[i] as usize;
+        assert!(
+            marked < row::len(prims, table),
+            "mark {i} recolors row {marked} past its {table:?} table"
+        );
+        let hash = row::read(prims, table, marked).hash;
+        sequence
+            .hash
+            .push(row::mix(hash, i64::from(marks.color[i])));
     }
-    assert_eq!(s.hash.len(), m.kind.len());
+    assert_eq!(sequence.hash.len(), marks.kind.len());
 }
 
 /// Pushes the indices of `a` (removed) and `b` (added) outside one longest common
 /// subsequence of the two, ascending: Myers' diff after trimming the common prefix and
 /// suffix. Returns false, leaving the lists partial, past [`DIFF_EDITS_MAX`] edits or a work
 /// budget of a few passes over the rows.
-fn edits(a: &[u64], b: &[u64], gone: &mut Vec<u32>, new: &mut Vec<u32>) -> bool {
-    let pre = a.iter().zip(b).take_while(|(x, y)| x == y).count();
-    let (a1, b1) = (&a[pre..], &b[pre..]);
-    let suf = a1
+fn edits(a: &[u64], b: &[u64], removed: &mut Vec<u32>, added: &mut Vec<u32>) -> bool {
+    assert!(a.len() <= CanvasPrims::CAPACITY, "old row indices fit u32");
+    assert!(b.len() <= CanvasPrims::CAPACITY, "new row indices fit u32");
+    let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let (a1, b1) = (&a[prefix..], &b[prefix..]);
+    let suffix = a1
         .iter()
         .rev()
         .zip(b1.iter().rev())
         .take_while(|(x, y)| x == y)
         .count();
-    let (a1, b1) = (&a1[..a1.len() - suf], &b1[..b1.len() - suf]);
+    let (a1, b1) = (&a1[..a1.len() - suffix], &b1[..b1.len() - suffix]);
     let (n, m) = (a1.len() as isize, b1.len() as isize);
-    let at = |i: isize| (pre as isize + i) as u32;
-    let dmax = DIFF_EDITS_MAX as isize;
+    let at = |i: isize| (prefix as isize + i) as u32;
+    let d_max = DIFF_EDITS_MAX as isize;
     if n == 0 || m == 0 {
         // Only removals or only additions: no search needed.
-        gone.extend((0..n).map(at));
-        new.extend((0..m).map(at));
-        return n + m <= dmax;
+        removed.extend((0..n).map(at));
+        added.extend((0..m).map(at));
+        return n + m <= d_max;
     }
     // v[k + off]: furthest x on diagonal k (x - y = k); one snapshot of v per edit count.
-    let off = dmax + 1;
+    let off = d_max + 1;
     let mut v = vec![0isize; (2 * off + 1) as usize];
     let mut trace: Vec<Vec<isize>> = Vec::new();
     let mut budget = 4 * (n + m) + 4096;
@@ -260,7 +309,7 @@ fn edits(a: &[u64], b: &[u64], gone: &mut Vec<u32>, new: &mut Vec<u32>) -> bool 
     let down = |v: &[isize], d: isize, k: isize| {
         k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize])
     };
-    'search: for d in 0..=dmax {
+    'search: for d in 0..=d_max {
         trace.push(v.clone());
         for k in (-d..=d).step_by(2) {
             let mut x = if down(&v, d, k) {
@@ -284,15 +333,19 @@ fn edits(a: &[u64], b: &[u64], gone: &mut Vec<u32>, new: &mut Vec<u32>) -> bool 
             return false;
         }
     }
-    let Some(dend) = end else {
+    let Some(d_end) = end else {
         return false;
     };
+    assert!(
+        trace.len() <= DIFF_EDITS_MAX + 1,
+        "one snapshot per edit count"
+    );
     // Walk back from (n, m): each step came off diagonal k ± 1 as one addition (y moved)
     // or one removal (x moved), then slid down its snake. The walk runs backwards, so each
     // list comes out descending and is reversed at the end.
-    let (g0, n0) = (gone.len(), new.len());
+    let (removed_from, added_from) = (removed.len(), added.len());
     let (mut x, mut y) = (n, m);
-    for d in (1..=dend).rev() {
+    for d in (1..=d_end).rev() {
         let v = &trace[d as usize];
         let k = x - y;
         let down = down(v, d, k);
@@ -300,28 +353,32 @@ fn edits(a: &[u64], b: &[u64], gone: &mut Vec<u32>, new: &mut Vec<u32>) -> bool 
         let px = v[(off + pk) as usize];
         let py = px - pk;
         if down {
-            new.push(at(py));
+            added.push(at(py));
         } else {
-            gone.push(at(px));
+            removed.push(at(px));
         }
         (x, y) = (px, py);
     }
-    gone[g0..].reverse();
-    new[n0..].reverse();
-    assert_eq!(gone.len() - g0 + new.len() - n0, dend as usize);
+    removed[removed_from..].reverse();
+    added[added_from..].reverse();
+    assert_eq!(
+        removed.len() - removed_from + added.len() - added_from,
+        d_end as usize
+    );
+    debug_assert!(removed[removed_from..].is_sorted(), "removed rows ascend");
+    debug_assert!(added[added_from..].is_sorted(), "added rows ascend");
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::rng;
 
-    /// Oracle: dropping `gone` from `a` and `new` from `b` leaves the same sequence, as long
+    /// Oracle: dropping `removed` from `a` and `added` from `b` leaves the same sequence, as long
     /// as a quadratic LCS says it can be; both lists ascend.
     #[test]
     fn edits_are_a_minimal_script() {
-        let mut next = rng(0x9e37_79b9_7f4a_7c15);
+        let mut next = crate::tests::rng(0x9e37_79b9_7f4a_7c15);
         for round in 0..400 {
             let n = next(60) as usize;
             let a: Vec<u64> = (0..n).map(|_| next(6)).collect();
@@ -338,18 +395,18 @@ mod tests {
                     _ => b.insert(next(b.len() as u64 + 1) as usize, next(6)),
                 }
             }
-            let (mut gone, mut new) = (Vec::new(), Vec::new());
-            assert!(edits(&a, &b, &mut gone, &mut new), "round {round}");
-            assert!(gone.windows(2).all(|w| w[0] < w[1]), "round {round}");
-            assert!(new.windows(2).all(|w| w[0] < w[1]), "round {round}");
+            let (mut removed, mut added) = (Vec::new(), Vec::new());
+            assert!(edits(&a, &b, &mut removed, &mut added), "round {round}");
+            assert!(removed.windows(2).all(|w| w[0] < w[1]), "round {round}");
+            assert!(added.windows(2).all(|w| w[0] < w[1]), "round {round}");
             let kept = |s: &[u64], drop: &[u32]| -> Vec<u64> {
                 (0..s.len())
                     .filter(|i| !drop.contains(&(*i as u32)))
                     .map(|i| s[i])
                     .collect()
             };
-            let (ka, kb) = (kept(&a, &gone), kept(&b, &new));
-            assert_eq!(ka, kb, "round {round}: kept rows agree");
+            let (kept_a, kept_b) = (kept(&a, &removed), kept(&b, &added));
+            assert_eq!(kept_a, kept_b, "round {round}: kept rows agree");
             let mut lcs = vec![vec![0usize; b.len() + 1]; a.len() + 1];
             for i in 0..a.len() {
                 for j in 0..b.len() {
@@ -360,7 +417,11 @@ mod tests {
                     };
                 }
             }
-            assert_eq!(ka.len(), lcs[a.len()][b.len()], "round {round}: minimal");
+            assert_eq!(
+                kept_a.len(),
+                lcs[a.len()][b.len()],
+                "round {round}: minimal"
+            );
         }
     }
 
@@ -414,7 +475,11 @@ mod tests {
         assert!(d.update(&[(&t, TableChange::Any), same], (&t, &marks, true)));
         assert_eq!(d.edits_of(0)[1], (&[5][..], &[5][..]));
         assert_eq!(d.edits_of(1)[1], (&[][..], &[][..]), "unchanged");
-        assert_eq!(d.last[2 * TABLES.len()], (vec![0], vec![0]), "the mark");
+        let mark = RowEdits {
+            removed: vec![0],
+            added: vec![0],
+        };
+        assert_eq!(d.last[2 * TABLES.len()], mark, "the mark");
         let one = [(&t, TableChange::Any)];
         assert!(!d.update(&one, (&t, &marks, false)), "fewer tables");
     }
@@ -424,8 +489,9 @@ mod tests {
         let a: Vec<u64> = (0..10_000).collect();
         let b: Vec<u64> = (0..10_000).map(|i| i * 7 % 10_000).collect();
         assert!(!edits(&a, &b, &mut Vec::new(), &mut Vec::new()));
-        let (mut gone, mut new) = (Vec::new(), Vec::new());
-        assert!(edits(&a, &a, &mut gone, &mut new));
-        assert!(gone.is_empty() && new.is_empty());
+        let (mut removed, mut added) = (Vec::new(), Vec::new());
+        assert!(edits(&a, &a, &mut removed, &mut added));
+        assert!(removed.is_empty());
+        assert!(added.is_empty());
     }
 }
