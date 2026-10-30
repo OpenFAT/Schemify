@@ -10,6 +10,7 @@
 //! `schemify-app` paints it below the editor (`Editor::picture` lends its tables).
 //!
 //! Contents:
+//! - `pub struct DockFrame`
 //! - `pub struct WavesView`, `WavesView::open`, `WavesView::update`, `WavesView::reload`,
 //!   `WavesView::add_trace`, `WavesView::traces`, `WavesView::picture`
 //! - `pub fn spice_device`
@@ -24,6 +25,15 @@ use schemify_ui::{
     UiLayout, UiState, UiTables, records,
 };
 use schemify_wave::{Applied, MAX_DATASETS, RawPlot, Request, Waves};
+
+/// What one dock frame ([`WavesView::update`]) asks of the editor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DockFrame {
+    /// The dock needs a repaint.
+    pub redraw: bool,
+    /// Return to the schematic: close the dock.
+    pub close: bool,
+}
 
 /// One open waveform window.
 pub struct WavesView {
@@ -116,13 +126,12 @@ impl WavesView {
         }
     }
 
-    /// One frame of input. Returns `(redraw, close)`; `close` asks the editor to return to
-    /// the schematic.
+    /// One frame of input.
     ///
     /// # Panics
     ///
     /// If a `viewport` dimension is negative.
-    pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now: u64) -> (bool, bool) {
+    pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now: u64) -> DockFrame {
         assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
         assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         let close_keys = [
@@ -135,7 +144,10 @@ impl WavesView {
                 && (idle || *chord == close_keys[0]))
         });
         if close {
-            return (true, true);
+            return DockFrame {
+                redraw: true,
+                close: true,
+            };
         }
         let mut changed = viewport != self.viewport;
         let mut recompose = changed;
@@ -192,7 +204,10 @@ impl WavesView {
         changed |= routed.redraw || recompose;
         self.routed = routed;
         assert!(self.requests.is_empty(), "every request applied this frame");
-        (changed, false)
+        DockFrame {
+            redraw: changed,
+            close: false,
+        }
     }
 
     /// Shows or closes the graph properties dialog as a `ui::waves` effect asks.

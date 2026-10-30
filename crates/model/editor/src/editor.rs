@@ -417,9 +417,9 @@ impl Editor {
                     dock_view,
                 } = self.split_input(events, viewport);
                 let w = self.waves.as_mut().expect("checked above");
-                let (redraw, close) = w.update(&dock, dock_view, now_ms);
-                changed |= redraw;
-                if close {
+                let frame = w.update(&dock, dock_view, now_ms);
+                changed |= frame.redraw;
+                if frame.close {
                     self.waves = None;
                     self.shell.invalidate();
                     changed = true;
