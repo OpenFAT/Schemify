@@ -246,7 +246,44 @@ impl Editor {
             let kind = f.record_kind(r);
             match kind {
                 RecordKind::Header => DocTarget::header(),
-                _ => DocTarget::new(kind, f.field(r, 0).unwrap_or("")),
+                RecordKind::Pin
+                | RecordKind::Param
+                | RecordKind::Impl
+                | RecordKind::Line
+                | RecordKind::Rect
+                | RecordKind::Arc
+                | RecordKind::Circle
+                | RecordKind::Poly
+                | RecordKind::Stext
+                | RecordKind::Inst
+                | RecordKind::Wire
+                | RecordKind::Label
+                | RecordKind::Port
+                | RecordKind::Noconn
+                | RecordKind::Text
+                | RecordKind::Shape
+                | RecordKind::Constraint
+                | RecordKind::Waive
+                | RecordKind::Prose
+                | RecordKind::Var
+                | RecordKind::Body
+                | RecordKind::Corner
+                | RecordKind::Config
+                | RecordKind::Sweep
+                | RecordKind::Montecarlo
+                | RecordKind::Optimize
+                | RecordKind::Output
+                | RecordKind::Spec
+                | RecordKind::Code
+                | RecordKind::Lib
+                | RecordKind::Plugin
+                | RecordKind::Set
+                | RecordKind::Locked
+                | RecordKind::Key
+                | RecordKind::Sim
+                | RecordKind::PluginOrder
+                | RecordKind::Class
+                | RecordKind::Unknown => DocTarget::new(kind, f.field(r, 0).unwrap_or("")),
             }
         };
         let graphic = |k: RecordKind| k.rank() == schemify_format::RANK_POSITIONAL;

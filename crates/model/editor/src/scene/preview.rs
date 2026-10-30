@@ -147,7 +147,42 @@ pub fn preview_records_on(recs: &[RecordBuf], x: Xform, layer: u8, out: &mut Can
             RecordKind::Wire => out.line(c(1), c(2), c(3), c(4), layer),
             RecordKind::Line => out.line(c(0), c(1), c(2), c(3), layer),
             RecordKind::Rect => out.rect(c(0), c(1), c(2), c(3), layer),
-            _ => {
+            RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Arc
+            | RecordKind::Circle
+            | RecordKind::Poly
+            | RecordKind::Stext
+            | RecordKind::Inst
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => {
                 let Some(a) = crate::geometry::anchor(&r) else {
                     continue;
                 };
@@ -158,7 +193,41 @@ pub fn preview_records_on(recs: &[RecordBuf], x: Xform, layer: u8, out: &mut Can
                     RecordKind::Label | RecordKind::Port | RecordKind::Text => {
                         r.fields.get(4).cloned()
                     }
-                    _ => None,
+                    RecordKind::Header
+                    | RecordKind::Pin
+                    | RecordKind::Param
+                    | RecordKind::Impl
+                    | RecordKind::Line
+                    | RecordKind::Rect
+                    | RecordKind::Arc
+                    | RecordKind::Circle
+                    | RecordKind::Poly
+                    | RecordKind::Stext
+                    | RecordKind::Wire
+                    | RecordKind::Noconn
+                    | RecordKind::Shape
+                    | RecordKind::Constraint
+                    | RecordKind::Waive
+                    | RecordKind::Prose
+                    | RecordKind::Var
+                    | RecordKind::Body
+                    | RecordKind::Corner
+                    | RecordKind::Config
+                    | RecordKind::Sweep
+                    | RecordKind::Montecarlo
+                    | RecordKind::Optimize
+                    | RecordKind::Output
+                    | RecordKind::Spec
+                    | RecordKind::Code
+                    | RecordKind::Lib
+                    | RecordKind::Plugin
+                    | RecordKind::Set
+                    | RecordKind::Locked
+                    | RecordKind::Key
+                    | RecordKind::Sim
+                    | RecordKind::PluginOrder
+                    | RecordKind::Class
+                    | RecordKind::Unknown => None,
                 };
                 if let Some(t) = text.filter(|t| !t.is_empty()) {
                     out.text(a.0 + u, a.1 - 3 * u, 12 * UNIT, layer, &t);

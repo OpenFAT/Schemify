@@ -95,7 +95,27 @@ impl WaveUi {
                 self.active_pane = self.active_pane.min(last);
                 self.selected_trace = None;
             }
-            _ => {}
+            Request::AddTrace { .. }
+            | Request::MoveTrace { .. }
+            | Request::SetStyle { .. }
+            | Request::SetColor { .. }
+            | Request::AddPane
+            | Request::SetPane { .. }
+            | Request::ZoomX { .. }
+            | Request::ZoomY { .. }
+            | Request::PanX { .. }
+            | Request::PanY { .. }
+            | Request::BoxX { .. }
+            | Request::BoxY { .. }
+            | Request::SetX { .. }
+            | Request::SetY { .. }
+            | Request::Autoscale
+            | Request::AutoscaleY { .. }
+            | Request::LogX { .. }
+            | Request::LogY { .. }
+            | Request::Cursor { .. }
+            | Request::HCursor { .. }
+            | Request::SwapCursors => {}
         }
         let on = waves.cursors().map(|c| c.is_some());
         fx.recompose |= on != self.cursors_on

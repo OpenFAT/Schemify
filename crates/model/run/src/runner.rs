@@ -162,7 +162,7 @@ impl SimCommand {
                 "spectre",
                 &["-format", "nutbin", "-raw", "{raw}", "{netlist}"],
             ),
-            _ => unreachable!("checked above"),
+            Dialect::Cdl | Dialect::Verilog | Dialect::Hspice => unreachable!("checked above"),
         };
         let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
         assert!(

@@ -531,7 +531,12 @@ impl Editor {
                 self.set_camera(cam);
                 true
             }
-            _ => false,
+            InputEvent::PointerLeave
+            | InputEvent::Key { .. }
+            | InputEvent::Text { .. }
+            | InputEvent::Preedit { .. }
+            | InputEvent::Activate { .. }
+            | InputEvent::Mods { .. } => false,
         }
     }
 }

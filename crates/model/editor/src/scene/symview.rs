@@ -108,7 +108,39 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
                 let bx = b.text_rot(at, t.size, t.layer, &t.raw, rot, obj);
                 b.sc.objs.geom[obj as usize] = bx;
             }
-            _ => {}
+            RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Inst
+            | RecordKind::Wire
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => {}
         }
     }
     assert!(

@@ -235,7 +235,16 @@ impl TableId {
             K::Output => TableId::Outputs,
             K::Spec => TableId::Specs,
             K::Code => TableId::Codes,
-            _ => return None,
+            K::Header
+            | K::Lib
+            | K::Plugin
+            | K::Set
+            | K::Locked
+            | K::Key
+            | K::Sim
+            | K::PluginOrder
+            | K::Class
+            | K::Unknown => return None,
         };
         Some(t)
     }

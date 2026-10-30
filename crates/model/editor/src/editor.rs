@@ -562,7 +562,13 @@ impl Editor {
                 InputEvent::Mods { mods } => self.mods = mods.0,
                 InputEvent::PointerMove { x, y } => self.pointer = (x, y),
                 InputEvent::Key { .. } => break,
-                _ => {}
+                InputEvent::PointerDown { .. }
+                | InputEvent::PointerUp { .. }
+                | InputEvent::PointerLeave
+                | InputEvent::Wheel { .. }
+                | InputEvent::Text { .. }
+                | InputEvent::Preedit { .. }
+                | InputEvent::Activate { .. } => {}
             }
         }
         if let Some(InputEvent::Mods { mods }) = events

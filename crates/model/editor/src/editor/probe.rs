@@ -84,14 +84,28 @@ impl Editor {
                     self.dock_drag = false;
                     continue;
                 }
-                _ => {}
+                InputEvent::PointerMove { .. }
+                | InputEvent::PointerDown { .. }
+                | InputEvent::PointerUp { .. }
+                | InputEvent::PointerLeave
+                | InputEvent::Wheel { .. }
+                | InputEvent::Key { .. }
+                | InputEvent::Text { .. }
+                | InputEvent::Preedit { .. }
+                | InputEvent::Activate { .. }
+                | InputEvent::Mods { .. } => {}
             }
             let pointer_y = match e {
                 InputEvent::PointerMove { y, .. }
                 | InputEvent::PointerDown { y, .. }
                 | InputEvent::PointerUp { y, .. }
                 | InputEvent::Wheel { y, .. } => Some(y),
-                _ => None,
+                InputEvent::PointerLeave
+                | InputEvent::Key { .. }
+                | InputEvent::Text { .. }
+                | InputEvent::Preedit { .. }
+                | InputEvent::Activate { .. }
+                | InputEvent::Mods { .. } => None,
             };
             if let Some(y) = pointer_y {
                 self.dock_focus = y >= split;
@@ -102,7 +116,14 @@ impl Editor {
                     mine.push(e);
                     true
                 }
-                _ => self.dock_focus,
+                InputEvent::PointerMove { .. }
+                | InputEvent::PointerDown { .. }
+                | InputEvent::PointerUp { .. }
+                | InputEvent::Wheel { .. }
+                | InputEvent::Key { .. }
+                | InputEvent::Text { .. }
+                | InputEvent::Preedit { .. }
+                | InputEvent::Activate { .. } => self.dock_focus,
             };
             if !to_dock {
                 mine.push(e);
@@ -126,7 +147,12 @@ impl Editor {
                     dx,
                     dy,
                 },
-                other => other,
+                other @ (InputEvent::PointerLeave
+                | InputEvent::Key { .. }
+                | InputEvent::Text { .. }
+                | InputEvent::Preedit { .. }
+                | InputEvent::Activate { .. }
+                | InputEvent::Mods { .. }) => other,
             });
         }
         // A drag in this batch moves the divider now: both sides lay out at the new split.

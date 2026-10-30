@@ -434,7 +434,11 @@ impl Document {
                 Err(Code::E041)
             }
             KeyRule::Name if taken(self.locate(rec.kind, key)) => Err(Code::E024),
-            _ => Ok(()),
+            KeyRule::Header
+            | KeyRule::Id
+            | KeyRule::Name
+            | KeyRule::TypeName
+            | KeyRule::Position => Ok(()),
         }
     }
 }

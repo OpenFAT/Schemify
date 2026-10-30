@@ -345,7 +345,16 @@ impl Plugins {
                 let name = &self.names[row];
                 let detail = match code {
                     Code::Fuel => format!("{name}: call {fn_id}: out of fuel (budget {fuel})"),
-                    _ => format!("{name}: call {fn_id} aborted ({code:?})"),
+                    Code::Denied
+                    | Code::Gone
+                    | Code::Space
+                    | Code::Table
+                    | Code::Column
+                    | Code::Range
+                    | Code::Parse
+                    | Code::Version
+                    | Code::Trap
+                    | Code::Module => format!("{name}: call {fn_id} aborted ({code:?})"),
                 };
                 self.health.fault(plugin, code, detail);
                 self.strike(row, code);

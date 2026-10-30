@@ -85,7 +85,26 @@ pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
             TableId::Instances => doc.instances().id[loc.row as usize],
             TableId::Labels => doc.labels().id[loc.row as usize],
             TableId::Ports => doc.ports().id[loc.row as usize],
-            _ => doc.texts().id[loc.row as usize],
+            TableId::Pins
+            | TableId::Params
+            | TableId::Impls
+            | TableId::Graphics
+            | TableId::Wires
+            | TableId::Noconns
+            | TableId::Texts
+            | TableId::Shapes
+            | TableId::Constraints
+            | TableId::Waivers
+            | TableId::DocBlocks
+            | TableId::Bodies
+            | TableId::Corners
+            | TableId::Configs
+            | TableId::Sweeps
+            | TableId::Montecarlos
+            | TableId::Optimizes
+            | TableId::Outputs
+            | TableId::Specs
+            | TableId::Codes => doc.texts().id[loc.row as usize],
         };
         let target = Target::new(h.kind, &id.text(s));
         ops.push(match h.attr {

@@ -271,7 +271,31 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
                 }
                 Vec::new()
             }
-            _ => Vec::new(),
+            RecordKind::Header
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => Vec::new(),
         };
         for i in slots {
             if let Some(s) = rec.fields.get(i).and_then(|t| snapped(t)) {
@@ -342,7 +366,24 @@ fn points_of(project: &Project, h: DocHandle, doc: &Document, key: ObjKey) -> Ve
         TableId::Labels => vec![(doc.labels().x[r], doc.labels().y[r])],
         TableId::Ports => vec![(doc.ports().x[r], doc.ports().y[r])],
         TableId::Noconns => vec![(doc.noconns().x[r], doc.noconns().y[r])],
-        _ => Vec::new(),
+        TableId::Pins
+        | TableId::Params
+        | TableId::Impls
+        | TableId::Graphics
+        | TableId::Texts
+        | TableId::Shapes
+        | TableId::Constraints
+        | TableId::Waivers
+        | TableId::DocBlocks
+        | TableId::Bodies
+        | TableId::Corners
+        | TableId::Configs
+        | TableId::Sweeps
+        | TableId::Montecarlos
+        | TableId::Optimizes
+        | TableId::Outputs
+        | TableId::Specs
+        | TableId::Codes => Vec::new(),
     }
 }
 

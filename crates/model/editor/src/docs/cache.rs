@@ -135,7 +135,11 @@ pub fn drop_stale_caches(doc: &Document, ops: &mut Vec<Op>) {
             Op::SetAttr { target, key, .. } | Op::RemoveAttr { target, key, .. } => {
                 key == "cached" && target == t
             }
-            _ => false,
+            Op::Insert { .. }
+            | Op::Delete(_)
+            | Op::Put { .. }
+            | Op::SetField { .. }
+            | Op::Reorder { .. } => false,
         })
     };
     let mut stale: Vec<Target> = Vec::new();
@@ -161,13 +165,13 @@ pub fn drop_stale_caches(doc: &Document, ops: &mut Vec<Op>) {
                 }
                 false
             }
-            _ => false,
+            Op::Insert { .. } | Op::Delete(_) | Op::Put { .. } | Op::Reorder { .. } => false,
         };
         let target = match op {
             Op::SetField { target, .. }
             | Op::SetAttr { target, .. }
             | Op::RemoveAttr { target, .. } => target,
-            _ => continue,
+            Op::Insert { .. } | Op::Delete(_) | Op::Put { .. } | Op::Reorder { .. } => continue,
         };
         if changes_expr && !stale.contains(target) {
             stale.push(target.clone());
@@ -202,7 +206,43 @@ pub(super) fn named<'d>(
     let t = match kind {
         RecordKind::Param => doc.params(),
         RecordKind::Var => doc.doc_blocks(),
-        _ => return None,
+        RecordKind::Header
+        | RecordKind::Pin
+        | RecordKind::Impl
+        | RecordKind::Line
+        | RecordKind::Rect
+        | RecordKind::Arc
+        | RecordKind::Circle
+        | RecordKind::Poly
+        | RecordKind::Stext
+        | RecordKind::Inst
+        | RecordKind::Wire
+        | RecordKind::Label
+        | RecordKind::Port
+        | RecordKind::Noconn
+        | RecordKind::Text
+        | RecordKind::Shape
+        | RecordKind::Constraint
+        | RecordKind::Waive
+        | RecordKind::Prose
+        | RecordKind::Body
+        | RecordKind::Corner
+        | RecordKind::Config
+        | RecordKind::Sweep
+        | RecordKind::Montecarlo
+        | RecordKind::Optimize
+        | RecordKind::Output
+        | RecordKind::Spec
+        | RecordKind::Code
+        | RecordKind::Lib
+        | RecordKind::Plugin
+        | RecordKind::Set
+        | RecordKind::Locked
+        | RecordKind::Key
+        | RecordKind::Sim
+        | RecordKind::PluginOrder
+        | RecordKind::Class
+        | RecordKind::Unknown => return None,
     };
     let s = doc.strings();
     let row = (0..t.kind.len()).find(|&r| t.kind[r] == kind && s.get(t.fields[r][0]) == name);

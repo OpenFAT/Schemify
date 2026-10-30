@@ -346,7 +346,11 @@ pub(crate) fn subject(op: &Op) -> Subject<'_> {
     let (kind, key) = op.subject();
     let attr: Option<&str> = match op {
         Op::SetAttr { key, .. } | Op::RemoveAttr { key, .. } => Some(key.as_str()),
-        _ => None,
+        Op::Insert { .. }
+        | Op::Delete(_)
+        | Op::Put { .. }
+        | Op::SetField { .. }
+        | Op::Reorder { .. } => None,
     };
     Subject { kind, key, attr }
 }
@@ -378,14 +382,47 @@ impl<'ops> Touched<'ops> {
                 RecordKind::Var => match op {
                     Op::SetField { index: 1, .. } => t.vars = true,
                     _ if attr_op && attr == Some("cached") => t.cached_vars.push(key),
-                    _ => t.graph = true,
+                    Op::Insert { .. }
+                    | Op::Delete(_)
+                    | Op::Put { .. }
+                    | Op::SetField { .. }
+                    | Op::SetAttr { .. }
+                    | Op::RemoveAttr { .. }
+                    | Op::Reorder { .. } => t.graph = true,
                 },
                 RecordKind::Waive => t.waived = true,
                 RecordKind::Param if attr_op && attr == Some("cached") => t.cached_params.push(key),
                 RecordKind::Param | RecordKind::Pin | RecordKind::Impl | RecordKind::Header => {
                     return None;
                 }
-                _ => {}
+                RecordKind::Line
+                | RecordKind::Rect
+                | RecordKind::Arc
+                | RecordKind::Circle
+                | RecordKind::Poly
+                | RecordKind::Stext
+                | RecordKind::Text
+                | RecordKind::Shape
+                | RecordKind::Constraint
+                | RecordKind::Prose
+                | RecordKind::Body
+                | RecordKind::Corner
+                | RecordKind::Config
+                | RecordKind::Sweep
+                | RecordKind::Montecarlo
+                | RecordKind::Optimize
+                | RecordKind::Output
+                | RecordKind::Spec
+                | RecordKind::Code
+                | RecordKind::Lib
+                | RecordKind::Plugin
+                | RecordKind::Set
+                | RecordKind::Locked
+                | RecordKind::Key
+                | RecordKind::Sim
+                | RecordKind::PluginOrder
+                | RecordKind::Class
+                | RecordKind::Unknown => {}
             }
         }
         assert!(t.insts.len() <= ops.len());

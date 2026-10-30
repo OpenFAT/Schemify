@@ -247,7 +247,39 @@ impl Table for Graphics {
             RecordKind::Line | RecordKind::Rect | RecordKind::Circle | RecordKind::Poly => {
                 (pool.push_coords(m), Sym::NONE, Orient::R0, [Sym::NONE; 2])
             }
-            k => panic!("{k:?} is not a graphic"),
+            k @ (RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Inst
+            | RecordKind::Wire
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown) => panic!("{k:?} is not a graphic"),
         };
         self.shape.push(rec.kind);
         self.coords.push(coords);
@@ -266,7 +298,42 @@ impl Table for Graphics {
             RecordKind::Arc => assert_eq!(coords, 3, "an arc stores cx cy r"),
             RecordKind::Stext => assert_eq!(coords, 2, "an stext stores x y"),
             RecordKind::Poly => assert!(coords.is_multiple_of(2), "a poly stores x y pairs"),
-            _ => {}
+            RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Line
+            | RecordKind::Rect
+            | RecordKind::Circle
+            | RecordKind::Inst
+            | RecordKind::Wire
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => {}
         }
         assert_eq!(
             self.angles[row][0] == Sym::NONE,
@@ -286,7 +353,43 @@ impl Table for Graphics {
                 sink.field(self.orient[row].as_str());
                 sink.field(strings.get(self.text[row]));
             }
-            _ => {}
+            RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Line
+            | RecordKind::Rect
+            | RecordKind::Circle
+            | RecordKind::Poly
+            | RecordKind::Inst
+            | RecordKind::Wire
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => {}
         }
         pool::emit_attrs(self.attrs[row], strings, pool, sink);
         pool::emit_comments(self.comments[row], strings, pool, sink);

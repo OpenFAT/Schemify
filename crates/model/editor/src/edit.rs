@@ -86,7 +86,27 @@ pub fn loc_of(doc: &Document, key: ObjKey) -> Option<Loc> {
                 table: key.table,
                 row: key.key,
             }),
-        t => doc.find_id(ObjId(key.key)).filter(|l| l.table == t),
+        t @ (TableId::Params
+        | TableId::Impls
+        | TableId::Instances
+        | TableId::Wires
+        | TableId::Labels
+        | TableId::Ports
+        | TableId::Noconns
+        | TableId::Texts
+        | TableId::Shapes
+        | TableId::Constraints
+        | TableId::Waivers
+        | TableId::DocBlocks
+        | TableId::Bodies
+        | TableId::Corners
+        | TableId::Configs
+        | TableId::Sweeps
+        | TableId::Montecarlos
+        | TableId::Optimizes
+        | TableId::Outputs
+        | TableId::Specs
+        | TableId::Codes) => doc.find_id(ObjId(key.key)).filter(|l| l.table == t),
     };
     if let Some(l) = loc {
         assert_eq!(l.table, key.table);
@@ -324,7 +344,7 @@ pub fn insert_copies(
                 names.insert(rec.fields[0].clone());
             }
             KeyRule::Position => {}
-            _ => continue,
+            KeyRule::Header | KeyRule::Name | KeyRule::TypeName => continue,
         }
         if rec.kind == RecordKind::Inst
             && let Some(a) = rec.attrs.iter_mut().find(|a| a.key == "name")
@@ -461,7 +481,9 @@ fn target(rec: &RecordBuf, loc: Loc) -> Target {
     );
     let key = match rec.kind.key() {
         KeyRule::Position => loc.row.to_string(),
-        _ => rec.fields.first().cloned().unwrap_or_default(),
+        KeyRule::Header | KeyRule::Id | KeyRule::Name | KeyRule::TypeName => {
+            rec.fields.first().cloned().unwrap_or_default()
+        }
     };
     assert!(!key.is_empty(), "every addressable record has a key");
     Target::new(rec.kind, &key)

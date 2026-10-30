@@ -132,7 +132,9 @@ fn member(kind: Kind, name: u8, variant: u8) -> Member {
             format!("function ns.{word} {variant} 2"),
             format!("function ns.{word}"),
         ),
-        _ => unreachable!("not generated"),
+        Kind::Dialects | Kind::Runners | Kind::Checks | Kind::ConstraintTypes => {
+            unreachable!("not generated")
+        }
     };
     Member { text, key }
 }

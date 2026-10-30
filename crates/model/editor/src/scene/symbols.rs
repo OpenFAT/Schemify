@@ -215,7 +215,39 @@ pub(super) fn sym_prims(doc: &Document) -> SymPrims {
                 });
                 grow(&mut bbox, c[0], c[1]);
             }
-            k => unreachable!("{k:?} is not a graphic"),
+            k @ (RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Inst
+            | RecordKind::Wire
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown) => unreachable!("{k:?} is not a graphic"),
         }
     }
     let pins = doc.pins();
