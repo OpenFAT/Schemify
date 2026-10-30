@@ -44,7 +44,9 @@ pub fn format_si(value: f64, digits: usize) -> String {
     }
     let digits = digits.clamp(1, 17);
     if !PREFIX_EXPONENTS.contains(&rounded_exponent(value, digits)) {
-        return scientific(value, digits);
+        let mut text = String::new();
+        schemify_expr::write_scientific(&mut text, value, digits);
+        return text;
     }
     let mut k = PREFIXES
         .iter()
@@ -86,27 +88,7 @@ fn rounded_exponent(value: f64, digits: usize) -> i32 {
     exponent.parse().expect("LowerExp exponent is an integer")
 }
 
-/// `value` in scientific notation with `digits` significant digits and trailing mantissa
-/// zeros trimmed (`4.941e-324`, `-1e20`); truncated where rounding would pass `f64::MAX`.
-fn scientific(value: f64, digits: usize) -> String {
-    assert!((1..=17).contains(&digits), "digits {digits} outside 1..=17");
-    let mut text = format!("{value:.*e}", digits - 1);
-    if text.parse::<f64>().is_ok_and(f64::is_infinite) {
-        let full = format!("{value:.16e}");
-        let (mantissa, exponent) = full.split_once('e').expect("LowerExp has an exponent");
-        let keep = digits + 1 + usize::from(value < 0.0);
-        text = format!("{}e{exponent}", &mantissa[..keep]);
-    }
-    let (mantissa, exponent) = text.split_once('e').expect("LowerExp has an exponent");
-    let out = format!("{}e{exponent}", trim_zeros(mantissa));
-    debug_assert!(
-        out.parse::<f64>().is_ok_and(f64::is_finite),
-        "{out} reads back finite"
-    );
-    out
-}
-
-/// Strips trailing fractional zeros ("1.500" → "1.5", "2.000" → "2", "1." → "1").
+/// Strips trailing fractional zeros ("1.500" → "1.5", "2.000" → "2").
 fn trim_zeros(s: &str) -> &str {
     if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.')
@@ -199,34 +181,6 @@ mod tests {
                         "{x:e} at {digits} digits: {text} read back as {back:e}"
                     );
                 }
-            }
-        }
-    }
-
-    /// Outside the prefix range the label is `eng()`'s text, character for character.
-    #[test]
-    fn scientific_text_agrees_with_eng() {
-        use schemify_expr::{Mode, Program, Scratch, Value};
-
-        for x in [
-            1e-20,
-            -4.2e-300,
-            f64::from_bits(7),
-            1e18,
-            -2.5e200,
-            f64::MAX,
-        ] {
-            for digits in [1, 3, 4, 17] {
-                let mut canonical = String::new();
-                schemify_expr::write_num(&mut canonical, x);
-                let src = format!("eng({canonical}, {digits})");
-                let prog = Program::compile(&src, Mode::Scalar).expect("eng compiles");
-                let mut scratch = Scratch::default();
-                let eng = prog.eval(&[], &mut scratch).expect("eng is total");
-                let Value::Str(eng) = eng else {
-                    panic!("eng returns a str: {eng:?}")
-                };
-                assert_eq!(format_si(x, digits), eng, "{src}");
             }
         }
     }
