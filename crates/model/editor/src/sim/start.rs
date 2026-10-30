@@ -16,19 +16,16 @@
 
 use std::fmt::Write as _;
 
-use schemify_doc::DocHandle;
+use schemify_doc::{Digest, DocHandle};
 use schemify_elab::Funcs;
 use schemify_netlist::NameMap;
 use schemify_plugin::RunRequest;
 use schemify_run::{NO_SAMPLE, OptRun, Plan, RunnerConfig, Select};
 
 use crate::session::Session;
-use crate::spines;
-use crate::waves::spice_device;
+use crate::{spines, waves};
 
-use super::{
-    BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim, session_name,
-};
+use super::{BenchRun, JobLog, Kind, PROBE_DEVICES_MAX, QUEUE_MAX, RUNS_MAX, Request, Sim};
 
 /// The quantities saved for each MOSFET (every ngspice MOS model has them).
 const MOS_SAVES: [&str; 6] = ["id", "gm", "gds", "vgs", "vds", "vdsat"];
@@ -45,6 +42,10 @@ impl Sim {
     /// A cell cannot be opened, the plan or selection is refused, the gate blocks (the
     /// message names the blocking violations), the queue is full, or [`RUNS_MAX`] runs are
     /// in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: requests past [`QUEUE_MAX`] are refused.
     pub fn start<F: Funcs>(
         &mut self,
         session: &mut Session,
@@ -54,6 +55,7 @@ impl Sim {
         env: &[(&str, &str)],
         funcs: &mut F,
     ) -> Result<String, String> {
+        assert!(self.queue.len() <= QUEUE_MAX);
         let waits = self.index_of(top).is_some_and(|i| !self.runs[i].idle())
             || self
                 .queue
@@ -70,7 +72,7 @@ impl Sim {
             });
             return Ok(format!(
                 "{}: queued after the run in flight",
-                session_name(session, top)
+                super::session_name(session, top)
             ));
         }
         self.start_now(session, top, optimize, probe, env, funcs)
@@ -135,7 +137,7 @@ impl Sim {
             None => Kind::Simulate,
         };
         let jobs = run.jobs.len();
-        let name = session_name(session, top);
+        let name = super::session_name(session, top);
         self.install(BenchRun {
             bench: top,
             name,
@@ -146,6 +148,7 @@ impl Sim {
             saved: false,
         });
         self.show(top);
+        assert!(self.index_of(top).is_some(), "the started run is kept");
         Ok(match opt_name {
             Some(n) => format!("optimize {n}: started"),
             None => format!("simulate: {jobs} job(s) queued"),
@@ -154,6 +157,7 @@ impl Sim {
 
     /// Frees a slot for a run of `top` (its own old run, else the oldest idle run not shown).
     pub(super) fn make_room(&mut self, top: DocHandle) -> Result<(), String> {
+        assert!(self.runs.len() <= RUNS_MAX);
         if self.index_of(top).is_some() || self.runs.len() < RUNS_MAX {
             return Ok(());
         }
@@ -176,8 +180,14 @@ impl Sim {
         if self.shown == Some(r.bench) {
             self.reset_view();
         }
+        let bench = r.bench;
         self.runs.push(r);
         assert!(self.runs.len() <= RUNS_MAX);
+        assert_eq!(
+            self.index_of(bench),
+            Some(self.runs.len() - 1),
+            "the newest run is last"
+        );
     }
 
     /// Shows `bench`'s results (the table, plots, OP annotation and stale check follow).
@@ -186,6 +196,7 @@ impl Sim {
             self.shown = Some(bench);
             self.reset_view();
         }
+        assert_eq!(self.shown, Some(bench));
     }
 
     pub(super) fn reset_view(&mut self) {
@@ -202,10 +213,7 @@ impl Sim {
 
     /// The runner configuration for a run of `session`'s project: the run directory under
     /// its root, every library's directory, the user config's programs.
-    pub(super) fn config(
-        &self,
-        session: &Session,
-    ) -> impl FnOnce(&schemify_doc::Digest) -> RunnerConfig + use<> {
+    pub(super) fn config(&self, session: &Session) -> impl FnOnce(&Digest) -> RunnerConfig + use<> {
         let root = session.root.clone();
         let lib_dirs = session.lib_dirs();
         let tools = self.tools.clone();
@@ -219,6 +227,10 @@ impl Sim {
 
     /// Cancels every run in flight (children are killed, unprepared jobs cancelled) and
     /// drops the queued requests. Returns whether anything was running.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the run is idle afterwards.
     pub fn cancel(&mut self) -> bool {
         let was = self.busy();
         for r in &mut self.runs {
@@ -235,6 +247,10 @@ impl Sim {
 
     /// Enqueues plugin run requests (bounded by [`QUEUE_MAX`]; the rest are refused with a
     /// status note).
+    ///
+    /// # Panics
+    ///
+    /// Never: requests past [`QUEUE_MAX`] are refused, not queued.
     pub fn enqueue(&mut self, reqs: Vec<RunRequest>) {
         for r in reqs {
             if self.queue.len() >= QUEUE_MAX {
@@ -250,6 +266,10 @@ impl Sim {
     /// bench's run (a fresh run when the bench has none or its results are stale), a
     /// Simulate/Optimize starts once its bench's run is idle. A request behind a waiting
     /// one of the same bench waits too.
+    ///
+    /// # Panics
+    ///
+    /// Never: the queue only shrinks here.
     pub fn serve_queue<F: Funcs>(
         &mut self,
         session: &mut Session,
@@ -301,6 +321,7 @@ impl Sim {
             }
         }
         assert!(self.queue.len() <= QUEUE_MAX);
+        assert_eq!(blocked.len(), self.queue.len(), "every request left waits");
     }
 
     /// One plugin request for bench `top`: a job of its run, or of a fresh run of it.
@@ -320,7 +341,7 @@ impl Sim {
             });
             match fresh {
                 Ok(run) => {
-                    let name = session_name(session, top);
+                    let name = super::session_name(session, top);
                     self.install(BenchRun {
                         bench: top,
                         name,
@@ -341,6 +362,7 @@ impl Sim {
             }
         }
         let k = self.index_of(top).expect("a run of this bench");
+        assert!(self.runs.len() <= RUNS_MAX, "make_room keeps the run cap");
         let r = &mut self.runs[k];
         let opt = |s: &str| (!s.is_empty()).then(|| s.to_owned());
         let (config, corner) = (opt(&req.config), opt(&req.corner));
@@ -355,6 +377,7 @@ impl Sim {
             .push(config.as_deref(), corner.as_deref(), NO_SAMPLE, &vary)
         {
             Ok(j) => {
+                assert!(j < r.run.jobs.len(), "a pushed job is a row of its run");
                 r.plugin_jobs.push((j, req.plugin));
                 r.saved = false;
                 self.table.dirty |= self.shown == Some(top);
@@ -369,13 +392,15 @@ impl Sim {
 /// `.options savecurrents` adds every device's terminal currents (`@r1[i]`, `@m.x1.mm2[id]`:
 /// cross-probe and OP marks), and one `.save` per MOSFET the netlist names directly saves
 /// its OP quantities (`@m1[gm]`, …), for at most [`PROBE_DEVICES_MAX`] leaves of `map`.
+///
+/// # Panics
+///
+/// Never: the assert checks that the text ends with a line break.
 pub fn probe_lines(map: &NameMap) -> String {
     let mut t = String::from(".save all\n.options savecurrents\n");
-    for dev in map
-        .leaves(PROBE_DEVICES_MAX)
-        .iter()
-        .map(|e| spice_device(e))
-    {
+    let leaves = map.leaves(PROBE_DEVICES_MAX);
+    let devices = leaves.iter().map(|e| waves::spice_device(e));
+    for dev in devices {
         if !dev.starts_with('m') {
             continue;
         }

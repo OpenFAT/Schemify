@@ -12,7 +12,7 @@
 
 use schemify_canvas::{CanvasPrims, Marks, PrimKind};
 
-use super::refresh::stamped;
+use super::refresh;
 use super::{Objects, Scene};
 
 /// The selected objects of a scene: a bitset over object indices beside the sorted list of
@@ -38,6 +38,11 @@ pub struct Selected {
 /// Cost: one integer pass over `objs.geom` (the box each object's hit area fits in, inflated
 /// by `tol`), then the exact distance or box test on the few objects that pass it; candidates
 /// are tested in ascending order, so ties resolve as a full scan resolves them.
+///
+/// # Panics
+///
+/// If `tol` is negative or not finite.
+#[must_use]
 pub fn hit(objs: &Objects, p: (f64, f64), tol: f64) -> Option<u32> {
     assert!(tol >= 0.0 && tol.is_finite());
     assert_eq!(objs.geom.len(), objs.seg.len());
@@ -101,6 +106,10 @@ pub(super) fn hit_one(
 ///
 /// Cost: O(selection · log rows) to find each object's rows by its stamp, plus a sort of the
 /// rows found.
+///
+/// # Panics
+///
+/// If `selected` was sized for another scene (its universe is not the object count).
 pub fn selected_prims(sc: &Scene, selected: &Selected, out: &mut Vec<(u8, u32)>) {
     assert_eq!(selected.universe(), sc.objs.len());
     out.clear();
@@ -108,7 +117,7 @@ pub fn selected_prims(sc: &Scene, selected: &Selected, out: &mut Vec<(u8, u32)>)
         let at = out.len();
         let stamps = sc.stamps.cols()[kind];
         for &o in &selected.objs {
-            let rows = stamped(stamps, sc.objs.stamp[o as usize]);
+            let rows = refresh::stamped(stamps, sc.objs.stamp[o as usize]);
             debug_assert!(rows.clone().all(|r| sc.owner.cols()[kind][r] == o));
             out.extend(rows.map(|r| (kind as u8, r as u32)));
         }
@@ -119,6 +128,11 @@ pub fn selected_prims(sc: &Scene, selected: &Selected, out: &mut Vec<(u8, u32)>)
 
 /// Objects selected by a box `[x0, y0, x1, y1]` (any corner order): fully inside it, or,
 /// with `touch` (xschem's right-to-left drag), any object whose box meets it.
+///
+/// # Panics
+///
+/// If a coordinate of `r` is not finite.
+#[must_use]
 pub fn box_select(objs: &Objects, r: [f64; 4], touch: bool) -> Vec<u32> {
     assert!(r.iter().all(|v| v.is_finite()), "a finite box");
     assert!(objs.len() <= CanvasPrims::CAPACITY);
@@ -185,6 +199,7 @@ impl Selected {
 
     /// Whether object `o` is selected; false for any index outside the scene (`u32::MAX`, the
     /// owner of an unowned primitive, included).
+    #[must_use]
     pub fn contains(&self, o: u32) -> bool {
         self.words
             .get(o as usize / 64)
@@ -192,16 +207,19 @@ impl Selected {
     }
 
     /// Number of scene objects the set was made for (the scene's `objs.len()` when current).
+    #[must_use]
     pub fn universe(&self) -> usize {
         self.universe as usize
     }
 
     /// Number of selected objects.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.objs.len()
     }
 
     /// True when nothing is selected.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.objs.is_empty()
     }
@@ -209,6 +227,10 @@ impl Selected {
 
 /// Recolors every primitive of a selected object in `color`, in table then row order, from
 /// the selection's rows ([`selected_prims`] of `sc`). Cost: O(selected primitives).
+///
+/// # Panics
+///
+/// Never: the assert checks at most one mark per primitive.
 pub fn marks(sc: &Scene, rows: &[(u8, u32)], color: u32, out: &mut Marks) {
     *out = Marks::default();
     const KINDS: [PrimKind; 5] = [

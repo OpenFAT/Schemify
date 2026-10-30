@@ -6,7 +6,7 @@
 //! - `Editor::build_markers`
 //! - `Editor::build_decor`
 
-use schemify_doc::{DocHandle, ObjId};
+use schemify_doc::{DocHandle, Document, ObjId};
 use schemify_elab::AnnotationRequest;
 
 use crate::checks;
@@ -159,6 +159,10 @@ impl Editor {
             }
             _ => Vec::new(),
         };
+        debug_assert!(
+            comps.windows(2).all(|w| w[0] < w[1]),
+            "components in net order, once"
+        );
         let prefix = self.level_prefix();
         let has_op = self.annotations.has_source(SOURCE_OP);
         // Net keys for annotation lookup: computed before borrowing the scene and the doc.
@@ -206,7 +210,7 @@ impl Editor {
 // ---- private ----
 
 /// The object ids of mark targets `targets` (sorted, unique; a path or name target has none).
-fn ids_of(targets: &[String], doc: &schemify_doc::Document) -> Vec<u32> {
+fn ids_of(targets: &[String], doc: &Document) -> Vec<u32> {
     let s = doc.strings();
     let mut ids: Vec<u32> = targets
         .iter()

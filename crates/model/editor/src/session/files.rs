@@ -19,8 +19,7 @@ use std::path::{Path, PathBuf};
 use schemify_doc::{DocHandle, OpenError, Recovery};
 use schemify_format::FileKind;
 
-use crate::libs::cell_relpath;
-use crate::libs::{self, BUILTIN_DIR, absolute, rel_path};
+use crate::libs::{self, BUILTIN_DIR};
 use crate::platform;
 
 use super::Session;
@@ -34,14 +33,23 @@ impl Session {
     /// # Errors
     ///
     /// The file cannot be read or does not parse.
+    ///
+    /// # Panics
+    ///
+    /// If `lib` is not a library row.
     pub fn open_file(&mut self, lib: u8, relpath: &str) -> Result<DocHandle, String> {
+        assert!(
+            usize::from(lib) < self.lib_dir.len(),
+            "library row {lib} of {}",
+            self.lib_dir.len()
+        );
         let dir = self
             .lib_dir
             .get(usize::from(lib))
             .and_then(Option::as_deref);
         let kept = self
             .kept
-            .take_if(|(p, _)| dir.is_some_and(|d| absolute(&d.join(relpath)) == *p));
+            .take_if(|(p, _)| dir.is_some_and(|d| libs::absolute(&d.join(relpath)) == *p));
         let indexed = kept.is_some();
         let (path, bytes, builtin) = match kept {
             Some((path, bytes)) => (path, bytes, false),
@@ -86,14 +94,17 @@ impl Session {
         match opened.recovery {
             Recovery::None => {}
             Recovery::Offer { txs } | Recovery::Diverged { txs } => {
+                assert!(txs > 0, "an offer holds journal records");
                 self.recovery.push((h, txs));
                 self.status = format!("{relpath}: {txs} unsaved edit(s) can be recovered");
             }
         }
+        let before = self.docs.len();
         self.docs.handle.push(h);
         self.docs.path.push(path);
         self.docs.journal.push(journal_path);
         self.docs.epoch.push(0);
+        assert_eq!(self.docs.len(), before + 1, "one row per opened document");
         self.flush_journal(h);
         assert!(self.project.doc(h).is_some());
         Ok(h)
@@ -104,11 +115,15 @@ impl Session {
     /// # Errors
     ///
     /// As [`Session::open_file`].
+    ///
+    /// # Panics
+    ///
+    /// If `row` is not a row of the current cell index (a row kept across a re-index).
     pub fn open_cell(&mut self, row: usize) -> Result<DocHandle, String> {
         let cells = self.project.cells();
         assert!(row < cells.lib.len(), "cell row from a previous index");
         let lib = cells.lib[row];
-        let rel = cell_relpath(&self.project, row);
+        let rel = libs::cell_relpath(&self.project, row);
         self.open_file(lib, &rel)
     }
 
@@ -118,29 +133,41 @@ impl Session {
     /// # Errors
     ///
     /// The file is outside every local library, unreadable, or does not parse.
+    ///
+    /// # Panics
+    ///
+    /// Never: `doc` caps library rows at 256.
     pub fn open_path(&mut self, path: &Path) -> Result<DocHandle, String> {
         let (lib, rel) = self
             .lib_of(path)
             .ok_or_else(|| format!("{}: outside the project", path.display()))?;
-        self.open_file(lib as u8, &rel)
+        let lib = u8::try_from(lib).expect("library rows fit u8 (`doc` caps them)");
+        self.open_file(lib, &rel)
     }
 
     /// The local library holding `path` and the path relative to it: the longest matching
     /// directory wins (libraries may live under the root).
     fn lib_of(&self, path: &Path) -> Option<(usize, String)> {
-        let abs = absolute(path);
+        let abs = libs::absolute(path);
         let mut best: Option<(usize, String, usize)> = None;
         for (row, dir) in self.lib_dir.iter().enumerate() {
             let Some(dir) = dir else { continue };
-            let dir = absolute(dir);
-            if let Some(rel) = rel_path(&dir, &abs) {
+            let dir = libs::absolute(dir);
+            if let Some(rel) = libs::rel_path(&dir, &abs) {
                 let depth = dir.components().count();
                 if best.as_ref().is_none_or(|b| depth > b.2) {
                     best = Some((row, rel, depth));
                 }
             }
         }
-        best.map(|(row, rel, _)| (row, rel))
+        let found = best.map(|(row, rel, _)| (row, rel));
+        assert!(
+            found
+                .as_ref()
+                .is_none_or(|(row, _)| self.lib_dir[*row].is_some()),
+            "only a local library holds a file"
+        );
+        found
     }
 
     /// The next document waiting for a crash-recovery decision: (document, journal records
@@ -153,6 +180,10 @@ impl Session {
 
     /// Recovers (`true`: replays the journal's unsaved edits) or discards the offer of `h`,
     /// writes the journal, and reports the outcome in the status line.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that `h` left the recovery list.
     pub fn decide_recovery(&mut self, h: DocHandle, recover: bool) {
         let Some(i) = self.recovery.iter().position(|r| r.0 == h) else {
             return;
@@ -179,6 +210,10 @@ impl Session {
 
     /// Closes `h` dropping its unsaved edits and its journal (Save As moved them to another
     /// file). Tabs must no longer show it.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that `h` was closed.
     pub fn close_discarding(&mut self, h: DocHandle) {
         if let Some(path) = self.path(h).map(Path::to_path_buf) {
             self.drop_journal(&path);
@@ -198,6 +233,10 @@ impl Session {
     /// Re-indexes the local library whose directory holds `path` (a file was written or
     /// deleted there), so choosers and `lib:cell` references see it. Cell rows shift: callers
     /// drop anything keyed by row (the symbol cache).
+    ///
+    /// # Panics
+    ///
+    /// Never: `lib_of` matches local libraries only.
     pub fn reindex(&mut self, path: &Path) {
         let Some((row, _)) = self.lib_of(path) else {
             return;
@@ -222,11 +261,18 @@ impl Session {
     /// # Errors
     ///
     /// `doc` refuses (too many documents).
+    ///
+    /// # Panics
+    ///
+    /// If `kind` is not `Shcomp` or `Shprim`.
     pub fn create(&mut self, kind: FileKind) -> Result<DocHandle, String> {
         assert!(matches!(kind, FileKind::Shcomp | FileKind::Shprim));
         let ext = kind.word();
         let rel = loop {
-            self.untitled += 1;
+            self.untitled = self
+                .untitled
+                .checked_add(1)
+                .expect("fewer than 2^32 new cells");
             let rel = format!("untitled{}.{ext}", self.untitled);
             if !platform::exists(&self.root.join(&rel)) {
                 break rel;
@@ -237,10 +283,17 @@ impl Session {
             .create("", &rel, kind)
             .map_err(|c| format!("{rel}: {c}"))?;
         let path = self.root.join(&rel);
+        let before = self.docs.len();
         self.docs.handle.push(h);
         self.docs.journal.push(self.journal_path(&path));
         self.docs.path.push(path);
         self.docs.epoch.push(0);
+        assert_eq!(self.docs.len(), before + 1, "one row per created document");
+        debug_assert!(
+            !platform::exists(&self.docs.path[before]),
+            "a new cell is unsaved"
+        );
+        assert!(self.project.doc(h).is_some());
         Ok(h)
     }
 }
@@ -248,14 +301,21 @@ impl Session {
 impl Session {
     /// `.schemify/journal/<project-relative cell path>.journal` (edits spec §3).
     fn journal_path(&self, file: &Path) -> PathBuf {
-        let rel = rel_path(&absolute(&self.root), &absolute(file)).unwrap_or_else(|| {
-            file.file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-        });
-        self.root
+        let rel = libs::rel_path(&libs::absolute(&self.root), &libs::absolute(file))
+            .unwrap_or_else(|| {
+                file.file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            });
+        let journal = self
+            .root
             .join(".schemify")
             .join("journal")
-            .join(format!("{rel}.journal"))
+            .join(format!("{rel}.journal"));
+        assert!(
+            journal.starts_with(&self.root),
+            "journals live under the project"
+        );
+        journal
     }
 
     /// Writes the journal bytes `doc` produced for `h` since the last call.
@@ -284,6 +344,10 @@ impl Session {
     /// # Errors
     ///
     /// `doc` refuses (read-only, conflict, kind rules) or the write fails.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that a saved document is clean.
     pub fn save(&mut self, h: DocHandle) -> Result<bool, String> {
         let req = self
             .project

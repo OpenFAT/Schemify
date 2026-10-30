@@ -25,11 +25,10 @@ use schemify_format::{FileKind, Orient, RecordKind};
 use crate::edit::Ids;
 use crate::geometry::Pt;
 use crate::scene::ObjKey;
-use crate::wiring::{on_interior, route};
-use crate::{checks, edit, platform};
+use crate::{checks, edit, platform, wiring};
 
-use super::Editor;
-use super::symbol::{PITCH, symbol_records};
+use super::symbol::PITCH;
+use super::{Editor, symbol};
 
 /// Net of a connection point that belongs to no net (a noconn): foreign to every crossing.
 const NO_COMP: u32 = u32::MAX;
@@ -64,9 +63,17 @@ struct Crossing {
     net: u32,
 }
 
-/// What `make_subcircuit` writes and commits: (new file, its text, the parent's ops, port
-/// count).
-type Plan = (PathBuf, String, Vec<Op>, usize);
+/// What `make_subcircuit` writes and commits.
+struct Plan {
+    /// The new cell's file.
+    file: PathBuf,
+    /// Its text.
+    text: String,
+    /// The parent's ops: the selection out, the instance and its wiring in.
+    ops: Vec<Op>,
+    /// Ports of the new cell.
+    ports: usize,
+}
 
 impl Editor {
     /// Symbol → Make schematic and symbol from selected components: the selected schematic
@@ -122,7 +129,12 @@ impl Editor {
             let mut ids = Ids::new(&mut self.rng);
             plan(doc, cell, &sel, &path, centre, width, &mut ids)
         };
-        let (file, text, ops, ports) = match made {
+        let Plan {
+            file,
+            text,
+            ops,
+            ports,
+        } = match made {
             Ok(m) => m,
             Err(e) => {
                 self.session.say(format!("make subcircuit: {e}"));
@@ -137,6 +149,7 @@ impl Editor {
         self.symbols.clear();
         self.symbols_key = None;
         self.invalidate_cells();
+        assert!(!ops.is_empty(), "the selection leaves the parent");
         self.commit(reqs, h, "make subcircuit", ops);
         self.set_selection(Vec::new());
         self.set_partial(Vec::new());
@@ -156,6 +169,7 @@ impl Editor {
 fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Crossing>, Side) {
     let n = &cell.nets;
     let w = doc.wires();
+    assert!(wiring::wires_in_step(w), "wire columns in step");
     assert_eq!(
         n.wire_net.len(),
         w.id.len(),
@@ -208,6 +222,7 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
         }
     }
     let inst = doc.instances();
+    assert!(wiring::instances_in_step(inst), "instance columns in step");
     for i in 0..inst.id.len() {
         let key = ObjKey {
             table: TableId::Instances,
@@ -250,7 +265,7 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
                 || outside
                     .segs
                     .iter()
-                    .any(|&(d, a, b)| d == c && on_interior(p, a, b));
+                    .any(|&(d, a, b)| d == c && wiring::on_interior(p, a, b));
             if touches {
                 contacts.push(p);
             }
@@ -259,7 +274,7 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
             if inside
                 .segs
                 .iter()
-                .any(|&(d, a, b)| d == c && on_interior(q, a, b))
+                .any(|&(d, a, b)| d == c && wiring::on_interior(q, a, b))
             {
                 contacts.push(q);
             }
@@ -299,13 +314,14 @@ fn touches(q: Pt, outside: &Side) -> bool {
         || outside
             .segs
             .iter()
-            .any(|&(_, a, b)| q == a || q == b || on_interior(q, a, b))
+            .any(|&(_, a, b)| q == a || q == b || wiring::on_interior(q, a, b))
 }
 
 /// The first place for the new instance around `centre` (ring by ring, grid offsets of
 /// [`PITCH`]) where none of its `pins` (instance-local, orientation `R0`) touches the outside
 /// geometry; `None` when every candidate does.
 fn free_spot(centre: Pt, pins: &[Pt], outside: &Side) -> Option<Pt> {
+    const { assert!(RINGS > 0, "a ring around the centre") };
     for ring in 0..=RINGS {
         for i in -ring..=ring {
             for j in -ring..=ring {
@@ -342,18 +358,18 @@ fn clear_route(
     segs: &[(u32, Pt, Pt)],
 ) -> Option<Vec<Pt>> {
     for mode in [1u8, 2] {
-        let path = route(q, p, mode);
+        let path = wiring::route(q, p, mode);
         assert!(!path.is_empty() && path[0] == q);
         let legs_clear = path.windows(2).all(|l| {
             pts.iter()
-                .all(|&(d, f)| d == net || !on_interior(f, l[0], l[1]))
+                .all(|&(d, f)| d == net || !wiring::on_interior(f, l[0], l[1]))
         });
         let corners = &path[1..path.len().saturating_sub(1).max(1)];
         let corners_clear = corners.iter().all(|&v| {
             pts.iter().all(|&(d, f)| d == net || f != v)
-                && segs
-                    .iter()
-                    .all(|&(d, a, b)| d == net || (v != a && v != b && !on_interior(v, a, b)))
+                && segs.iter().all(|&(d, a, b)| {
+                    d == net || (v != a && v != b && !wiring::on_interior(v, a, b))
+                })
         });
         if legs_clear && corners_clear {
             return Some(path);
@@ -408,7 +424,7 @@ fn plan(
             (c.name.clone(), o, c.port_at)
         })
         .collect();
-    let symbol = symbol_records(&ports, width);
+    let symbol = symbol::symbol_records(&ports, width);
     let local: Vec<(String, Pt)> = symbol
         .iter()
         .filter(|r| r.kind == RecordKind::Pin)
@@ -427,7 +443,7 @@ fn plan(
             .filter(|r| r.kind.rank() == 3),
     );
     for (name, o, at) in &ports {
-        let (id, _) = ids.draw(doc);
+        let id = ids.draw(doc).text;
         frag.push(edit::placed(RecordKind::Port, *at, *o, name, &id));
     }
     // A clipboard fragment is a `.shcomp` with one schematic impl: the new cell's file.
@@ -450,7 +466,7 @@ fn plan(
     };
     let mut ops = edit::delete(doc, sel);
     let name = edit::unique_name(doc, "X", &mut HashSet::new());
-    let (id, _) = ids.draw(doc);
+    let id = ids.draw(doc).text;
     ops.push(Op::Insert {
         rec: edit::instance(&format!("./{sub_stem}"), at, Orient::R0, &name, &id),
         at: None,
@@ -476,7 +492,7 @@ fn plan(
                         segs.push((c.net, l[0], l[1]));
                         pts.push((c.net, l[1]));
                     }
-                    ops.extend(edit::wires(doc, &path, ids).0);
+                    ops.extend(edit::wires(doc, &path, ids).ops);
                 }
                 None => {
                     label_at.push((q, c.name.as_str()));
@@ -488,7 +504,7 @@ fn plan(
     label_at.sort_unstable();
     label_at.dedup();
     for (p, net) in label_at {
-        let (id, _) = ids.draw(doc);
+        let id = ids.draw(doc).text;
         ops.push(Op::Insert {
             rec: edit::placed(RecordKind::Label, p, Orient::R0, net, &id),
             at: None,
@@ -498,5 +514,10 @@ fn plan(
         ops.iter().any(|o| matches!(o, Op::Insert { .. })),
         "the instance replaces the selection"
     );
-    Ok((file, text, ops, cuts.len()))
+    Ok(Plan {
+        file,
+        text,
+        ops,
+        ports: cuts.len(),
+    })
 }

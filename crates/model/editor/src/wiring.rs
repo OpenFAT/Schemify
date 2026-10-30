@@ -20,8 +20,10 @@
 //! - `pub fn inst_pins`
 //! - `pub fn on_interior`
 //! - `pub fn route`
-//! - `pub fn connected`
+//! - `pub enum Junctions`, `pub fn connected`
 //! - `pub fn align`
+//! - `pub(crate) fn wires_in_step`, `pub(crate) fn instances_in_step`,
+//!   `pub(crate) fn placed_in_step`
 
 mod cut;
 mod join;
@@ -29,20 +31,26 @@ mod stretch;
 
 use std::collections::HashSet;
 
-use schemify_doc::{DocHandle, Document, Op, Project, RecordBuf, TableId};
-use schemify_format::{RecordKind, parse_coord};
+use schemify_doc::{
+    Attr, DocHandle, Document, Instances, Op, Placed, Project, RecordBuf, TableId, Wires,
+};
+use schemify_format::RecordKind;
 
-use crate::edit;
-use crate::geometry::{Pt, coord, place, snap};
+use crate::geometry::Pt;
 use crate::scene::ObjKey;
+use crate::{edit, geometry};
 
-use cut::rec_pt;
 pub use cut::{break_at, remove_through};
 pub use join::join_trim;
 pub use stretch::{Moved, Stretched, stretch};
 
 /// World positions of the interface pins of instance row `i` (empty when its cell does not
 /// resolve), in pin order.
+///
+/// # Panics
+///
+/// If `i` is not an instance row of `doc`.
+#[must_use]
 pub fn inst_pins(project: &Project, h: DocHandle, doc: &Document, i: usize) -> Vec<Pt> {
     let inst = doc.instances();
     assert!(i < inst.id.len(), "instance row {i}");
@@ -55,15 +63,15 @@ pub fn inst_pins(project: &Project, h: DocHandle, doc: &Document, i: usize) -> V
         return Vec::new();
     };
     let pins = iface.pins();
+    assert_eq!(pins.y.len(), pins.x.len(), "pin columns in step");
     let (o, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
-    let out: Vec<Pt> = (0..pins.x.len())
-        .map(|k| place(o, at, (pins.x[k], pins.y[k])))
-        .collect();
-    assert_eq!(out.len(), pins.x.len());
-    out
+    (0..pins.x.len())
+        .map(|k| geometry::place(o, at, (pins.x[k], pins.y[k])))
+        .collect()
 }
 
 /// Whether `p` lies on segment `a`–`b`, end points excluded (exact integer test).
+#[must_use]
 pub fn on_interior(p: Pt, a: Pt, b: Pt) -> bool {
     if p == a || p == b {
         return false;
@@ -81,32 +89,60 @@ pub fn on_interior(p: Pt, a: Pt, b: Pt) -> bool {
 
 /// Points of a wire from `a` to `b` routed by Manhattan `mode` (0 straight, 1 horizontal
 /// first, 2 vertical first), zero-length legs dropped.
+///
+/// # Panics
+///
+/// If `mode` is past 2.
+#[must_use]
 pub fn route(a: Pt, b: Pt, mode: u8) -> Vec<Pt> {
+    assert!(
+        mode <= 2,
+        "Manhattan mode {mode}: straight, horizontal or vertical first"
+    );
     let mut pts = match mode {
         1 if a.0 != b.0 && a.1 != b.1 => vec![a, (b.0, a.1), b],
         2 if a.0 != b.0 && a.1 != b.1 => vec![a, (a.0, b.1), b],
         _ => vec![a, b],
     };
     pts.dedup();
+    assert!(
+        pts.windows(2).all(|l| l[0].0 == l[1].0 || l[0].1 == l[1].1) || mode == 0,
+        "a routed wire's legs are Manhattan"
+    );
     pts
 }
 
+/// Whether a [`connected`] walk continues through a junction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Junctions {
+    /// The walk continues through every point.
+    Cross,
+    /// The walk does not continue through a point where three or more wire ends meet or a
+    /// T joins (xschem Ctrl+right button).
+    Stop,
+}
+
 /// The wires, labels and ports reachable from `seeds` through shared points (wire ends,
-/// anchors, seed instances' pins; a T junction joins a wire end to another wire's interior).
-/// With `stop_at_junctions` the walk does not continue through a point where three or more
-/// wire ends meet or a T joins (xschem Ctrl+right button).
+/// anchors, seed instances' pins; a T junction joins a wire end to another wire's interior),
+/// across or up to junctions as `junctions` says.
 ///
 /// Cost: O(visited × W) for the T test; bounded by the wire count.
+///
+/// # Panics
+///
+/// Never: the assert checks that each point is visited once.
+#[must_use]
 pub fn connected(
     project: &Project,
     h: DocHandle,
     seeds: &[ObjKey],
-    stop_at_junctions: bool,
+    junctions: Junctions,
 ) -> Vec<ObjKey> {
     let Some(doc) = project.doc(h) else {
         return Vec::new();
     };
     let w = doc.wires();
+    assert!(wires_in_step(w), "wire columns in step");
     let ends = |r: usize| [(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])];
     // Wire-end index: point → wire rows.
     let mut at: Vec<(Pt, usize)> = (0..w.id.len())
@@ -141,7 +177,7 @@ pub fn connected(
             .collect();
         let junction = here.len() + 2 * interior.len() >= 3;
         let is_seed_point = visited_pts.len() == 1;
-        if stop_at_junctions && junction && !is_seed_point {
+        if junctions == Junctions::Stop && junction && !is_seed_point {
             continue;
         }
         here.append(&mut interior);
@@ -174,6 +210,7 @@ pub fn connected(
         (TableId::Labels, doc.labels()),
         (TableId::Ports, doc.ports()),
     ] {
+        assert!(placed_in_step(t), "{table:?} columns in step");
         for i in 0..t.id.len() {
             let p = (t.x[i], t.y[i]);
             if visited_pts.contains(&p) || on_seen(p) {
@@ -196,6 +233,7 @@ pub fn connected(
 /// # Panics
 ///
 /// Panics if `snap` is not positive.
+#[must_use]
 pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
     assert!(snap_m > 0, "snap must be positive");
     let keys: Vec<ObjKey> = if sel.is_empty() {
@@ -204,8 +242,8 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
         sel.to_vec()
     };
     let snapped = |t: &str| -> Option<String> {
-        let v = parse_coord(t).ok()?;
-        Some(coord(snap(f64::from(v), snap_m)))
+        let v = schemify_format::parse_coord(t).ok()?;
+        Some(geometry::coord(geometry::snap(f64::from(v), snap_m)))
     };
     let mut ops = Vec::new();
     for (_, target, mut rec) in edit::selected_records(doc, &keys) {
@@ -243,7 +281,7 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
         if rec == before {
             continue;
         }
-        if rec.kind == RecordKind::Wire && rec_pt(&rec, 1) == rec_pt(&rec, 3) {
+        if rec.kind == RecordKind::Wire && cut::rec_pt(&rec, 1) == cut::rec_pt(&rec, 3) {
             ops.push(Op::Delete(target));
         } else {
             ops.push(Op::Put { target, rec });
@@ -252,15 +290,38 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
     ops
 }
 
+/// Whether the wire table's columns are in step: the `doc` invariant every scan here
+/// indexes by.
+pub(crate) fn wires_in_step(w: &Wires) -> bool {
+    let n = w.id.len();
+    w.x1.len() == n && w.y1.len() == n && w.x2.len() == n && w.y2.len() == n
+}
+
+/// Whether the instance table's columns are in step.
+pub(crate) fn instances_in_step(t: &Instances) -> bool {
+    let n = t.id.len();
+    t.cell.len() == n
+        && t.name.len() == n
+        && t.x.len() == n
+        && t.y.len() == n
+        && t.orient.len() == n
+}
+
+/// Whether a label, port or text table's columns are in step.
+pub(crate) fn placed_in_step(t: &Placed) -> bool {
+    let n = t.id.len();
+    t.x.len() == n && t.y.len() == n && t.orient.len() == n && t.text.len() == n
+}
+
 // ---- private ----
 
-fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[schemify_doc::Attr]) -> RecordBuf {
+fn wire_rec(id: &str, a: Pt, b: Pt, attrs: &[Attr]) -> RecordBuf {
     let mut r = RecordBuf::new(RecordKind::Wire)
         .field(id)
-        .field(&coord(a.0))
-        .field(&coord(a.1))
-        .field(&coord(b.0))
-        .field(&coord(b.1));
+        .field(&geometry::coord(a.0))
+        .field(&geometry::coord(a.1))
+        .field(&geometry::coord(b.0))
+        .field(&geometry::coord(b.1));
     r.attrs = attrs.to_vec();
     r
 }
@@ -287,7 +348,7 @@ fn points_of(project: &Project, h: DocHandle, doc: &Document, key: ObjKey) -> Ve
 
 #[cfg(test)]
 mod tests {
-    use super::join::{covered, gcd, line_of};
+    use super::join;
     use super::*;
 
     #[test]
@@ -302,20 +363,28 @@ mod tests {
 
     #[test]
     fn lines_are_canonical_in_both_directions_and_on_diagonals() {
-        assert_eq!(line_of((0, 0), (10, 0)), (1, 0, 0));
-        assert_eq!(line_of((10, 5), (0, 5)), (1, 0, 5));
-        assert_eq!(line_of((0, 0), (0, -7)), (0, 1, 0));
-        assert_eq!(line_of((3, 0), (3, 9)), (0, 1, -3));
-        assert_eq!(line_of((0, 0), (4, 4)), (1, 1, 0));
-        assert_eq!(line_of((6, 6), (2, 2)), line_of((0, 0), (4, 4)));
-        assert_ne!(line_of((0, 1), (4, 5)), line_of((0, 0), (4, 4)), "parallel");
-        assert_eq!(line_of((0, 0), (6, -4)), (3, -2, 0), "reduced by the gcd");
-        assert_eq!(gcd(-12, 18), 6);
-        assert!(covered(&[(0, 10), (20, 30)], 10));
-        assert!(covered(&[(0, 10), (20, 30)], 20));
-        assert!(!covered(&[(0, 10), (20, 30)], 15));
-        assert!(!covered(&[(0, 10)], -1));
-        assert!(!covered(&[], 0));
+        assert_eq!(join::line_of((0, 0), (10, 0)), (1, 0, 0));
+        assert_eq!(join::line_of((10, 5), (0, 5)), (1, 0, 5));
+        assert_eq!(join::line_of((0, 0), (0, -7)), (0, 1, 0));
+        assert_eq!(join::line_of((3, 0), (3, 9)), (0, 1, -3));
+        assert_eq!(join::line_of((0, 0), (4, 4)), (1, 1, 0));
+        assert_eq!(join::line_of((6, 6), (2, 2)), join::line_of((0, 0), (4, 4)));
+        assert_ne!(
+            join::line_of((0, 1), (4, 5)),
+            join::line_of((0, 0), (4, 4)),
+            "parallel"
+        );
+        assert_eq!(
+            join::line_of((0, 0), (6, -4)),
+            (3, -2, 0),
+            "reduced by the gcd"
+        );
+        assert_eq!(join::gcd(-12, 18), 6);
+        assert!(join::covered(&[(0, 10), (20, 30)], 10));
+        assert!(join::covered(&[(0, 10), (20, 30)], 20));
+        assert!(!join::covered(&[(0, 10), (20, 30)], 15));
+        assert!(!join::covered(&[(0, 10)], -1));
+        assert!(!join::covered(&[], 0));
     }
 
     #[test]

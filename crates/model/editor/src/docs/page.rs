@@ -11,19 +11,19 @@
 use schemify_doc::{Document, RecordKind};
 use schemify_elab::{CellState, Val};
 use schemify_expr::{Mode, Program, Scratch, Value};
-use schemify_ui::prose::{Segment, split_plots};
+use schemify_ui::prose::Segment;
 
-use super::{Page, attr, editor_id, node, prose_text, value_text, var_value};
+use super::Page;
 
 /// What the page shows besides its document.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Extras<'a> {
+pub struct Extras<'frame> {
     /// `(expression, None when its graph has data | Some(why the slot is empty))` per plot
     /// slot with results; a fence missing here shows "no results yet".
-    pub plots: &'a [(String, Option<String>)],
+    pub plots: &'frame [(String, Option<String>)],
     /// The staged edit under review (D18 optimizer, plugin stages): its label and the
     /// document with it applied (`doc::Project::preview`).
-    pub staged: Option<(&'a str, &'a Document)>,
+    pub staged: Option<(&'frame str, &'frame Document)>,
     /// Show prose blocks as their verbatim Markdown / LaTeX source (`docs.source`) instead of
     /// rendered; var blocks and an open editor are unaffected.
     pub source: bool,
@@ -45,6 +45,10 @@ pub struct Extras<'a> {
 // height of each prose source per width (its prose cache already holds the layout), the page
 // windows by those heights and estimates unmeasured blocks, re-anchoring on the first block
 // on screen.
+///
+/// # Panics
+///
+/// `doc` holds more than 2^12 blocks (the doc capacity).
 pub fn contribute(
     t: &mut String,
     doc: &Document,
@@ -57,58 +61,60 @@ pub fn contribute(
     let s = doc.strings();
     let n = blocks.kind.len();
     assert!(n <= 1 << 12, "doc blocks over capacity");
+    let graphs_before = graphs.len();
     if let Some((label, _)) = extras.staged {
-        node(t, "docs.staged", "panel", "docs.page");
-        attr(t, "style", "docs-staged-bar");
-        node(t, "docs.staged.label", "label", "docs.staged");
-        attr(t, "label", &format!("Staged: {label}"));
-        attr(t, "style", "docs-staged");
+        super::node(t, "docs.staged", "panel", "docs.page");
+        super::attr(t, "style", "docs-staged-bar");
+        super::node(t, "docs.staged.label", "label", "docs.staged");
+        super::attr(t, "label", &format!("Staged: {label}"));
+        super::attr(t, "style", "docs-staged");
         for (id, text, cmd) in [
             ("docs.staged.accept", "Accept", "edit.accept_staged"),
             ("docs.staged.reject", "Reject", "edit.reject_staged"),
         ] {
-            node(t, id, "button", "docs.staged");
-            attr(t, "label", text);
-            attr(t, "command", cmd);
+            super::node(t, id, "button", "docs.staged");
+            super::attr(t, "label", text);
+            super::attr(t, "command", cmd);
         }
     }
     if n == 0 {
-        node(t, "docs.empty", "label", "docs.page");
-        attr(
+        super::node(t, "docs.empty", "label", "docs.page");
+        super::attr(
             t,
             "label",
             "No docs yet: + Text adds a text block, + Var a variable.",
         );
-        attr(t, "style", "docs-hint");
+        super::attr(t, "style", "docs-hint");
     }
     let mut v = 0usize;
-    for r in 0..n as u32 {
+    let rows = u32::try_from(n).expect("n ≤ 2^12");
+    for r in 0..rows {
         let id = format!("docs.b.{r}");
         let style = if page.sel == Some(r) {
             "docs-block-sel"
         } else {
             "docs-block"
         };
-        node(t, &id, "panel", "docs.page");
-        attr(t, "style", style);
+        super::node(t, &id, "panel", "docs.page");
+        super::attr(t, "style", style);
         match blocks.kind[r as usize] {
             RecordKind::Prose => match &page.editing {
                 Some((e, text)) if *e == r => {
-                    node(t, &editor_id(r), "text_area", &id);
-                    attr(t, "value", text);
-                    attr(t, "command", "docs.prose_ok");
-                    attr(t, "input", "field.typed");
+                    super::node(t, &super::editor_id(r), "text_area", &id);
+                    super::attr(t, "value", text);
+                    super::attr(t, "command", "docs.prose_ok");
+                    super::attr(t, "input", "field.typed");
                     preview(t, &id, text);
-                    node(t, &format!("{id}.hint"), "label", &id);
-                    attr(
+                    super::node(t, &format!("{id}.hint"), "label", &id);
+                    super::attr(
                         t,
                         "label",
                         "Markdown with $math$ and $$display math$$; Ctrl+Enter applies, Esc cancels",
                     );
-                    attr(t, "style", "docs-hint");
+                    super::attr(t, "style", "docs-hint");
                 }
-                _ if extras.source => source(t, &id, &prose_text(doc, r)),
-                _ => prose(t, &id, &prose_text(doc, r), extras.plots, graphs),
+                _ if extras.source => source(t, &id, &super::prose_text(doc, r)),
+                _ => prose(t, &id, &super::prose_text(doc, r), extras.plots, graphs),
             },
             RecordKind::Var => {
                 let f = blocks.fields[r as usize];
@@ -131,15 +137,20 @@ pub fn contribute(
                 if let Some((_, preview)) = extras.staged
                     && let Some(new) = var_expr(preview, name).filter(|e| *e != expr)
                 {
-                    node(t, &format!("{id}.staged"), "label", &format!("{id}.row"));
-                    attr(t, "label", &format!("→ {new}"));
-                    attr(t, "style", "docs-staged");
+                    super::node(t, &format!("{id}.staged"), "label", &format!("{id}.row"));
+                    super::attr(t, "label", &format!("→ {new}"));
+                    super::attr(t, "style", "docs-staged");
                 }
                 v += 1;
             }
             _ => {}
         }
     }
+    assert!(v <= n, "vars are a subset of the blocks");
+    assert!(
+        graphs.len() >= graphs_before,
+        "graph slots are only appended"
+    );
 }
 
 /// The live preview under an open prose editor: a caption and `text` (what the user has
@@ -147,14 +158,14 @@ pub fn contribute(
 /// click on it is a click away from the editor (which applies). A ```` ```plot ```` fence
 /// previews as a code block; images not yet on the page preview as their alt text.
 pub(super) fn preview(t: &mut String, id: &str, text: &str) {
-    debug_assert!(id.starts_with("docs.b."));
-    node(t, &format!("{id}.preview.cap"), "label", id);
-    attr(t, "label", "Preview");
-    attr(t, "style", "docs-preview-cap");
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
+    super::node(t, &format!("{id}.preview.cap"), "label", id);
+    super::attr(t, "label", "Preview");
+    super::attr(t, "style", "docs-preview-cap");
     let pid = format!("{id}.preview");
-    node(t, &pid, "prose", id);
+    super::node(t, &pid, "prose", id);
     let shown = text.trim_end();
-    attr(
+    super::attr(
         t,
         "value",
         if shown.trim().is_empty() {
@@ -163,8 +174,8 @@ pub(super) fn preview(t: &mut String, id: &str, text: &str) {
             shown
         },
     );
-    attr(t, "style", "docs-preview");
-    debug_assert!(
+    super::attr(t, "style", "docs-preview");
+    assert!(
         t.ends_with("\"docs-preview\"\n"),
         "the preview is the last node written"
     );
@@ -174,14 +185,14 @@ pub(super) fn preview(t: &mut String, id: &str, text: &str) {
 /// code fence, so it lays out verbatim in monospace on a faint shade (no markup, no math).
 /// Clicking it opens the editor like a rendered block.
 pub(super) fn source(t: &mut String, id: &str, text: &str) {
-    debug_assert!(id.starts_with("docs.b."));
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
     let pid = format!("{id}.0");
-    node(t, &pid, "prose", id);
-    attr(t, "command", "docs.edit");
-    attr(t, "style", "docs-source");
+    super::node(t, &pid, "prose", id);
+    super::attr(t, "command", "docs.edit");
+    super::attr(t, "style", "docs-source");
     let text = text.trim_end();
     if text.trim().is_empty() {
-        attr(t, "value", "*(empty text block: click to edit)*");
+        super::attr(t, "value", "*(empty text block: click to edit)*");
         return;
     }
     // A fence the text does not use, so the code block cannot end early.
@@ -190,8 +201,9 @@ pub(super) fn source(t: &mut String, id: &str, text: &str) {
     let fenced = |f: &str| text.lines().any(|l| l.trim_start().starts_with(f));
     let fence = if fenced("~~~") { "```" } else { "~~~" };
     let value = format!("{fence}\n{text}\n{fence}");
-    debug_assert!(value.starts_with(fence) && value.ends_with(fence));
-    attr(t, "value", &value);
+    assert!(value.starts_with(fence));
+    assert!(value.ends_with(fence));
+    super::attr(t, "value", &value);
 }
 
 /// A prose block: prose segments and `plot` slots in source order. A slot whose expression
@@ -203,48 +215,56 @@ pub(super) fn prose(
     plots: &[(String, Option<String>)],
     graphs: &mut Vec<(String, String)>,
 ) {
-    let parts = split_plots(text);
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
+    let graphs_before = graphs.len();
+    let parts = schemify_ui::prose::split_plots(text);
+    let segments = parts.len();
     if parts.is_empty() {
-        node(t, &format!("{id}.0"), "prose", id);
-        attr(t, "value", "*(empty text block: click to edit)*");
-        attr(t, "command", "docs.edit");
+        super::node(t, &format!("{id}.0"), "prose", id);
+        super::attr(t, "value", "*(empty text block: click to edit)*");
+        super::attr(t, "command", "docs.edit");
     }
     for (k, part) in parts.into_iter().enumerate() {
         let pid = format!("{id}.{k}");
         match part {
             Segment::Prose(src) => {
-                node(t, &pid, "prose", id);
-                attr(t, "value", src.trim_end());
-                attr(t, "command", "docs.edit");
+                super::node(t, &pid, "prose", id);
+                super::attr(t, "value", src.trim_end());
+                super::attr(t, "command", "docs.edit");
             }
             Segment::Plot(expr) => {
                 let expr = expr.trim();
                 let state = plots.iter().find(|p| p.0 == expr).map(|p| p.1.as_deref());
                 if let Some(None) = state {
-                    node(t, &pid, "graph", id);
-                    attr(t, "style", "docs-graph");
+                    super::node(t, &pid, "graph", id);
+                    super::attr(t, "style", "docs-graph");
                     graphs.push((pid, expr.to_owned()));
                     continue;
                 }
-                node(t, &pid, "panel", id);
-                attr(t, "style", "docs-plot");
-                node(t, &format!("{pid}.expr"), "label", &pid);
-                attr(t, "label", &format!("plot  {expr}"));
-                node(t, &format!("{pid}.none"), "label", &pid);
+                super::node(t, &pid, "panel", id);
+                super::attr(t, "style", "docs-plot");
+                super::node(t, &format!("{pid}.expr"), "label", &pid);
+                super::attr(t, "label", &format!("plot  {expr}"));
+                super::node(t, &format!("{pid}.none"), "label", &pid);
                 let why = state
                     .flatten()
                     .unwrap_or("no results yet: run the bench to fill this graph");
-                attr(t, "label", why);
-                attr(t, "style", "docs-hint");
+                super::attr(t, "label", why);
+                super::attr(t, "style", "docs-hint");
             }
         }
     }
+    assert!(
+        graphs.len() - graphs_before <= segments,
+        "one graph per plot slot at most"
+    );
 }
 
 // ---- private ----
 
 /// The expression of var `name` in `doc`, if it has one.
 fn var_expr<'d>(doc: &'d Document, name: &str) -> Option<&'d str> {
+    assert!(!name.is_empty());
     let b = doc.doc_blocks();
     let s = doc.strings();
     (0..b.kind.len())
@@ -262,44 +282,47 @@ fn var_row(
     cell: Option<&CellState>,
     v: usize,
 ) {
+    assert!(id.starts_with("docs.b."), "a block's node: {id}");
+    assert!(!name.is_empty(), "a var block is named");
     let row = format!("{id}.row");
-    node(t, &row, "panel", id);
-    attr(t, "style", "docs-var");
-    node(t, &format!("{id}.name"), "label", &row);
-    attr(t, "label", name);
-    attr(t, "command", "docs.select");
-    attr(t, "style", "docs-var-name");
+    super::node(t, &row, "panel", id);
+    super::attr(t, "style", "docs-var");
+    super::node(t, &format!("{id}.name"), "label", &row);
+    super::attr(t, "label", name);
+    super::attr(t, "command", "docs.select");
+    super::attr(t, "style", "docs-var-name");
     if let Some(h) = help {
-        attr(t, "tooltip", h);
+        super::attr(t, "tooltip", h);
     }
-    node(t, &format!("{id}.eq"), "label", &row);
-    attr(t, "label", "=");
-    node(t, &format!("{id}.expr"), "text_input", &row);
-    attr(t, "value", expr);
-    attr(t, "command", "docs.var_ok");
-    attr(t, "style", "docs-expr");
-    let Some((val, unverified)) = cell.and_then(|c| var_value(c, name, v)) else {
+    super::node(t, &format!("{id}.eq"), "label", &row);
+    super::attr(t, "label", "=");
+    super::node(t, &format!("{id}.expr"), "text_input", &row);
+    super::attr(t, "value", expr);
+    super::attr(t, "command", "docs.var_ok");
+    super::attr(t, "style", "docs-expr");
+    let Some(cell) = cell else { return };
+    let Some((val, unverified)) = super::var_value(cell, name, v) else {
         return;
     };
     let (text, ok) = match val {
         Val::Err(e) => (format!("{:?} {}", e.code, e.msg), false),
         Val::Upstream => ("(an input has an error)".to_owned(), false),
         _ => {
-            let shown = value_text(val, unit.unwrap_or(""));
-            match bound_status(val, min, max, cell.expect("value implies a cell")) {
+            let shown = super::value_text(val, unit.unwrap_or(""));
+            match bound_status(val, min, max, cell) {
                 Some(why) => (format!("= {shown}  ({why})"), false),
                 None => (format!("= {shown}"), true),
             }
         }
     };
-    node(t, &format!("{id}.val"), "label", &row);
-    attr(t, "label", &text);
-    attr(t, "style", if ok { "docs-value" } else { "docs-value-bad" });
+    super::node(t, &format!("{id}.val"), "label", &row);
+    super::attr(t, "label", &text);
+    super::attr(t, "style", if ok { "docs-value" } else { "docs-value-bad" });
     if unverified {
-        node(t, &format!("{id}.unverified"), "label", &row);
-        attr(t, "label", "unverified (cached; plugin not loaded)");
-        attr(t, "style", "docs-unverified");
-        attr(
+        super::node(t, &format!("{id}.unverified"), "label", &row);
+        super::attr(t, "label", "unverified (cached; plugin not loaded)");
+        super::attr(t, "style", "docs-unverified");
+        super::attr(
             t,
             "tooltip",
             "D20: the plugin this value needs is missing; the value stored in the file is shown",

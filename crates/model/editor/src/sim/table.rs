@@ -5,9 +5,8 @@
 
 use std::fmt::Write as _;
 
-use schemify_run::{JOB_LEVEL, Jobs, NO_SAMPLE, Pass, Results, State, yield_summary};
-use schemify_ui::records::{spacer, window};
-use schemify_wave::format_si;
+use schemify_run::{JOB_LEVEL, Jobs, NO_SAMPLE, Pass, Results, State};
+use schemify_ui::records;
 
 use crate::docs::quote as q;
 
@@ -20,7 +19,12 @@ impl Sim {
     /// job rows of [`TableView::rows`](super::TableView::rows) near the list's scroll offset `scroll_px` (at most
     /// [`TABLE_WINDOW`], spacers standing in for the rest; each row's button picks the job);
     /// error rows; the bench's earlier runs.
+    ///
+    /// # Panics
+    ///
+    /// If `scroll_px` is not finite.
     pub fn contribute(&self, t: &mut String, scroll_px: f32) {
+        assert!(scroll_px.is_finite(), "a scroll offset");
         let _ = writeln!(
             t,
             "node results.pane panel\n  parent bottom\n  style bottom-pane"
@@ -132,7 +136,7 @@ impl Sim {
             let rid = "results.yield";
             row(t, rid);
             cell(t, &format!("{rid}.job"), rid, "MC", "results-key");
-            let ys = yield_summary(plan, jobs, res);
+            let ys = schemify_run::yield_summary(plan, jobs, res);
             let total = ys.first().map_or(0, |y| y.total);
             cell(
                 t,
@@ -151,7 +155,7 @@ impl Sim {
                     "-".to_owned()
                 } else {
                     let mean = vals.iter().sum::<f64>() / vals.len() as f64;
-                    format!("μ {}", format_si(mean, 4))
+                    format!("μ {}", schemify_wave::format_si(mean, 4))
                 };
                 cell(t, &format!("{rid}.o{o}"), rid, &text, "results-cell");
             }
@@ -182,9 +186,9 @@ impl Sim {
                 t,
                 "node results.best.{j} button\n  parent {rid}\n  label best\n  command results.pick\n  style results-pick"
             );
-            let mut key = format!("{name}: score {} at", format_si(b.score, 4));
+            let mut key = format!("{name}: score {} at", schemify_wave::format_si(b.score, 4));
             for (p, v) in o.opt.params().iter().zip(b.params) {
-                let _ = write!(key, " {}={}", p.name, format_si(*v, 4));
+                let _ = write!(key, " {}={}", p.name, schemify_wave::format_si(*v, 4));
             }
             cell(t, &format!("{rid}.key"), rid, &key, "results-yield");
             self.job_cells(t, rid, jobs, res, j);
@@ -192,10 +196,12 @@ impl Sim {
         // Job rows near the scroll offset; spacers keep the list's full height.
         let shown = self.table.rows.len() as u32;
         let data_px = scroll_px - ROW_PX * (1 + extra_rows) as f32;
-        let (start, end) = window(data_px, ROW_PX, shown, TABLE_WINDOW);
+        let (start, end) = records::window(data_px, ROW_PX, shown, TABLE_WINDOW);
+        assert!(start <= end && end <= shown, "a window of the rows");
+        assert!(extra_rows <= 2, "the yield and best rows");
         // The list's gap (1) follows every row, so a row's pitch is ROW_PX.
         let gap = |t: &mut String, id: &str, rows: u32| {
-            spacer(t, "results.list", id, rows * ROW_PX as u32, 1);
+            records::spacer(t, "results.list", id, rows * ROW_PX as u32, 1);
         };
         gap(t, "results.gap-top", start);
         let mut key = String::new();
@@ -249,7 +255,8 @@ impl Sim {
                 );
             }
         }
-        for (e, (j, o, msg)) in res.errors().take(8).enumerate() {
+        let first_errors = res.errors().take(8);
+        for (e, (j, o, msg)) in first_errors.enumerate() {
             let what = if o == JOB_LEVEL {
                 format!("job {j}: {msg}")
             } else {
@@ -263,7 +270,8 @@ impl Sim {
                 "results-fail",
             );
         }
-        for (i, d) in self.history.iter().enumerate().take(HISTORY_MAX) {
+        let shown = &self.history[..self.history.len().min(HISTORY_MAX)];
+        for (i, d) in shown.iter().enumerate() {
             let label = format!(
                 "run {}",
                 d.file_name()
@@ -279,6 +287,7 @@ impl Sim {
 
     /// The state, output and spec cells of job `j` in row `rid`.
     fn job_cells(&self, t: &mut String, rid: &str, jobs: &Jobs, res: &Results, j: u32) {
+        assert!(j < jobs.len(), "job {j}");
         let cell = |t: &mut String, id: String, text: &str, style: &str| {
             let _ = writeln!(
                 t,
@@ -294,7 +303,9 @@ impl Sim {
         };
         cell(t, format!("{rid}.state"), st.word(), st_style);
         for o in 0..res.outputs().len() as u16 {
-            let v = res.value(j, o).map_or("-".to_owned(), |x| format_si(x, 4));
+            let v = res
+                .value(j, o)
+                .map_or("-".to_owned(), |x| schemify_wave::format_si(x, 4));
             cell(t, format!("{rid}.o{o}"), &v, "results-cell");
         }
         for s in 0..res.specs() as u16 {

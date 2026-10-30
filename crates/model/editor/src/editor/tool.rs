@@ -4,6 +4,7 @@
 //! - `pub(super) const HIT_PX`
 //! - `pub(super) const ZOOM_STEP`
 //! - `pub enum Placement`
+//! - `pub enum Carry`
 //! - `pub enum Tool`
 //! - `pub enum Form`, `Form::points`
 //! - `pub(super) fn constrain`
@@ -32,14 +33,32 @@ pub enum Placement {
     Inst(String),
     /// A net label.
     Label(String),
-    /// A port (`true` = output).
-    Port(String, bool),
+    /// A port.
+    Port {
+        /// The port's net name.
+        name: String,
+        /// An output port (else an input).
+        output: bool,
+    },
     /// An annotation text.
     Text(String),
     /// A symbol pin (symbol view).
     SymPin(String),
     /// Clipboard records, relative to the pointer.
     Paste(Vec<RecordBuf>),
+}
+
+/// What a move does with the selection and the wires attached to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carry {
+    /// Copies the selection; nothing attached follows.
+    Copy,
+    /// Moves the selection alone.
+    Plain,
+    /// Moves the selection and stretches the wires attached to it.
+    Stretch,
+    /// Stretches attached wires and adds "kissing" wires where a pin leaves a pin.
+    Kiss,
 }
 
 /// The `tool_state` table: one row, the gesture in progress.
@@ -80,12 +99,10 @@ pub enum Tool {
         to: Pt,
         /// Rotation/flip about `from`.
         lin: Xform,
-        /// Copy instead of move.
-        copy: bool,
+        /// Copy, plain move, or a move whose attached wires follow.
+        carry: Carry,
         /// Ends on button release (a drag) instead of on click.
         drag: bool,
-        /// 0 plain move, 1 stretch attached wires, 2 stretch and add "kissing" wires.
-        stretch: u8,
     },
     /// Drawing a wire from `from` to `to`.
     Wire {
@@ -161,6 +178,18 @@ const DRAG_PX: f32 = 8.0;
 /// Double-click window.
 const DOUBLE_CLICK_MS: u64 = 400;
 
+impl Carry {
+    /// `Stretch` when `stretch`, else `Plain`: a move key or drag under the Options →
+    /// enable stretch toggle (or its Ctrl inversion).
+    pub(super) fn stretch_if(stretch: bool) -> Carry {
+        if stretch {
+            Carry::Stretch
+        } else {
+            Carry::Plain
+        }
+    }
+}
+
 impl Form {
     /// Points that complete the shape (`None`: open-ended polygon).
     pub(super) fn points(self) -> Option<usize> {
@@ -174,11 +203,14 @@ impl Form {
 
 /// Snaps `to` onto the constraint axis through `from`.
 pub(super) fn constrain(from: Pt, to: Pt, c: u8) -> Pt {
-    match c {
+    assert!(c <= 2, "free, horizontal or vertical");
+    let p = match c {
         1 => (to.0, from.1),
         2 => (from.0, to.1),
         _ => to,
-    }
+    };
+    debug_assert!(c != 1 || p.1 == from.1, "a horizontal constraint keeps y");
+    p
 }
 
 impl Editor {
@@ -198,6 +230,7 @@ impl Editor {
         let ctrl = self.mods & Mods::CTRL != 0;
         match ev {
             InputEvent::PointerMove { x, y } => {
+                assert!(x.is_finite() && y.is_finite(), "a pointer position");
                 let prev = self.pointer;
                 self.pointer = (x, y);
                 if let Some(p) = self.pan {
@@ -214,6 +247,10 @@ impl Editor {
                         let (dx, dy) = (x - at.0, y - at.1);
                         if dx * dx + dy * dy >= DRAG_PX * DRAG_PX {
                             let (world, hit, at) = (*world, *hit, *at);
+                            assert!(
+                                hit.is_none_or(|o| (o as usize) < self.scene.objs.len()),
+                                "a press hit names a scene object"
+                            );
                             // The press already selected what it hit (unless Alt), so a drag
                             // that starts on an object moves the selection (intuitive mode).
                             let keys = self.session.level().map_or(&[][..], |l| &l.sel);
@@ -224,19 +261,19 @@ impl Editor {
                             });
                             // xschem: Ctrl+drag stretches (swapped by `enable_stretch`),
                             // Ctrl+Shift+drag stretches with kissing wires, Shift+drag copies.
-                            let stretch = match (ctrl, shift) {
-                                (true, true) => 2,
-                                (true, false) => u8::from(!self.opts.stretch),
-                                (false, _) => u8::from(self.opts.stretch),
+                            let carry = match (ctrl, shift) {
+                                (true, true) => Carry::Kiss,
+                                (true, false) => Carry::stretch_if(!self.opts.stretch),
+                                (false, true) => Carry::Copy,
+                                (false, false) => Carry::stretch_if(self.opts.stretch),
                             };
                             self.tool = if on_selected {
                                 Tool::Move {
                                     from: world,
                                     to: w,
                                     lin: Xform::IDENTITY,
-                                    copy: shift && !ctrl,
+                                    carry,
                                     drag: true,
-                                    stretch: if shift && !ctrl { 0 } else { stretch },
                                 }
                             } else {
                                 Tool::Box {
@@ -265,6 +302,7 @@ impl Editor {
                 true
             }
             InputEvent::PointerDown { x, y, button } => {
+                assert!(x.is_finite() && y.is_finite(), "a pointer position");
                 self.pointer = (x, y);
                 if self.space_pan {
                     self.space_pan = false;
@@ -288,11 +326,10 @@ impl Editor {
                         from,
                         to,
                         lin,
-                        copy,
+                        carry,
                         drag: false,
-                        stretch,
                     } => {
-                        self.finish_move(reqs, h, from, to, lin, copy, stretch);
+                        self.finish_move(reqs, h, from, to, lin, carry);
                     }
                     Tool::Wire { from, to, .. } => {
                         let to = if shift {
@@ -399,6 +436,7 @@ impl Editor {
                 true
             }
             InputEvent::PointerUp { x, y, button } => {
+                assert!(x.is_finite() && y.is_finite(), "a pointer position");
                 self.pointer = (x, y);
                 match button {
                     Button::Middle => {
@@ -426,10 +464,9 @@ impl Editor {
                         from,
                         to,
                         lin,
-                        copy,
+                        carry,
                         drag: true,
-                        stretch,
-                    } => self.finish_move(reqs, h, from, to, lin, copy, stretch),
+                    } => self.finish_move(reqs, h, from, to, lin, carry),
                     Tool::Wire {
                         from,
                         to,
@@ -451,13 +488,18 @@ impl Editor {
                             [from.0, from.1, to.0, to.1],
                             touch,
                         );
+                        debug_assert!(
+                            hits.iter().all(|&o| (o as usize) < self.scene.objs.len()),
+                            "box hits name scene objects"
+                        );
                         let sel = if unselect {
                             self.unselected(&hits)
                         } else {
                             let keys = hits.iter().map(|&o| self.scene.objs.key[o as usize]);
-                            let mut sel = match additive {
-                                true => self.selection().to_vec(),
-                                false => Vec::new(),
+                            let mut sel = if additive {
+                                self.selection().to_vec()
+                            } else {
+                                Vec::new()
                             };
                             sel.extend(keys);
                             sel
@@ -476,6 +518,7 @@ impl Editor {
                 true
             }
             InputEvent::Wheel { x, y, dy, .. } => {
+                assert!(dy.is_finite(), "a wheel step");
                 let v = self.canvas_rect();
                 let mut cam = self.camera();
                 if shift {

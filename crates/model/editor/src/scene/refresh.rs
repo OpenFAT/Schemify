@@ -10,6 +10,8 @@
 //! - `pub(super) fn counts`
 //! - `pub(super) fn stamped`
 
+use std::ops::Range;
+
 use schemify_canvas::{CanvasPrims, LineStyle};
 use schemify_doc::{DocHandle, ObjId, Project, TableId, Write};
 use schemify_elab::CellState;
@@ -18,14 +20,13 @@ use crate::geometry::Pt;
 use crate::session::View;
 
 use super::dots::Wiring;
-use super::draw::{Stamp, instance, one_other, other_objects, revalue_texts, wire};
-use super::symbols::{Symbols, rotated_extent, text_size, text_start};
-use super::symview::{redot, symbol};
-use super::{ObjKey, Objects, Owners, Scene, pack};
+use super::draw::Stamp;
+use super::symbols::Symbols;
+use super::{ObjKey, Objects, Owners, Scene, draw, symbols, symview};
 
 /// Scene builder state: the scene being filled plus the extent accumulator.
-pub(super) struct Build<'a> {
-    pub(super) sc: &'a mut Scene,
+pub(super) struct Build<'scene> {
+    pub(super) sc: &'scene mut Scene,
     ext: [i32; 4],
 }
 
@@ -39,6 +40,7 @@ impl Build<'_> {
     /// Records the owner and stamp of a row just pushed to kind `kind` (`o == u32::MAX`: a
     /// junction dot, which takes a stamp of its own).
     pub(super) fn owned(&mut self, kind: usize, o: u32) {
+        debug_assert!(kind < 6, "a primitive kind");
         let s = match o {
             u32::MAX => self.sc.objs.fresh_stamp(),
             o => self.sc.objs.stamp[o as usize],
@@ -47,11 +49,21 @@ impl Build<'_> {
         debug_assert!(stamps[kind].last().is_none_or(|&l| l <= s), "stamps ascend");
         stamps[kind].push(s);
         self.sc.owner.cols_mut()[kind].push(o);
+        debug_assert_eq!(
+            self.sc.stamps.cols()[kind].len(),
+            self.sc.owner.cols()[kind].len(),
+            "owner and stamp columns in step"
+        );
     }
     /// A connection point of object `o`.
     pub(super) fn conn_at(&mut self, p: Pt, o: u32) {
         self.sc.conn.push((p, o));
         self.sc.conn_stamp.push(self.sc.objs.stamp[o as usize]);
+        debug_assert_eq!(
+            self.sc.conn.len(),
+            self.sc.conn_stamp.len(),
+            "columns in step"
+        );
     }
     pub(super) fn line(&mut self, a: Pt, b: Pt, layer: u8, style: LineStyle, o: u32) {
         self.sc.prims.line_styled(a.0, a.1, b.0, b.1, layer, style);
@@ -65,7 +77,10 @@ impl Build<'_> {
         self.grow(a.0, a.1);
         self.grow(b.0, b.1);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the arc primitive's own fields plus its owner, as `CanvasPrims::arc_styled` takes them"
+    )]
     pub(super) fn arc(
         &mut self,
         c: Pt,
@@ -76,6 +91,7 @@ impl Build<'_> {
         style: LineStyle,
         o: u32,
     ) {
+        assert!(r >= 0, "a non-negative radius, got {r}");
         self.sc
             .prims
             .arc_styled(c.0, c.1, r, start, sweep, layer, style);
@@ -84,6 +100,7 @@ impl Build<'_> {
         self.grow(c.0 + r, c.1 + r);
     }
     pub(super) fn poly(&mut self, pts: &[Pt], closed: bool, layer: u8, style: LineStyle, o: u32) {
+        debug_assert!(pts.len() >= 2, "a polyline has two points");
         self.sc.prims.poly_styled(pts, closed, layer, style);
         self.owned(if closed { 4 } else { 3 }, o);
         for p in pts {
@@ -94,7 +111,6 @@ impl Build<'_> {
     pub(super) fn text(&mut self, at: Pt, size: i32, layer: u8, s: &str, o: u32) -> [i32; 4] {
         self.text_rot(at, size, layer, s, 0, o)
     }
-    /// Text turned `rot` quarter turns clockwise about `at`; returns its box.
     /// Draws `s` turned `rot` clockwise quarter turns about `at`; returns its box. Text is
     /// never drawn upside down (format spec §3): a half turn draws the glyphs upright and a
     /// three-quarter turn as a quarter turn, from the far corner of the turned box, so the
@@ -112,8 +128,8 @@ impl Build<'_> {
         if s.is_empty() || size <= 0 {
             return [at.0, at.1, at.0, at.1];
         }
-        let (from, drawn) = text_start(at, size, s, rot).expect("a drawn text");
-        let (dx, dy) = rotated_extent(text_size(size, s), rot % 4);
+        let (from, drawn) = symbols::text_start(at, size, s, rot).expect("a drawn text");
+        let (dx, dy) = symbols::rotated_extent(symbols::text_size(size, s), rot % 4);
         let (q0, q1) = ((at.0, at.1), (at.0 + dx, at.1 + dy));
         self.sc
             .prims
@@ -173,18 +189,18 @@ pub fn build(
         View::Schematic => {
             let mut st = Stamp::default();
             for i in 0..doc.instances().id.len() {
-                instance(&mut b, project, h, doc, symbols, values, i, &mut st);
+                draw::instance(&mut b, project, h, doc, symbols, values, i, &mut st);
             }
             for i in 0..doc.wires().id.len() {
-                wire(&mut b, doc, i);
+                draw::wire(&mut b, doc, i);
             }
             b.sc.wiring = Wiring::of(doc.wires());
             let mut ends = b.sc.wiring.xy.clone();
             ends.dedup();
-            redot(&mut b, &ends);
-            other_objects(&mut b, doc, 0..usize::MAX);
+            symview::redot(&mut b, &ends);
+            draw::other_objects(&mut b, doc, 0..usize::MAX);
         }
-        View::Symbol => symbol(&mut b, doc),
+        View::Symbol => symview::symbol(&mut b, doc),
     }
     let ext = if b.ext[0] > b.ext[2] { [0; 4] } else { b.ext };
     sc.extent = ext;
@@ -195,7 +211,7 @@ pub fn build(
             .key
             .iter()
             .enumerate()
-            .map(|(i, &k)| (pack(k), i as u32)),
+            .map(|(i, &k)| (super::pack(k), i as u32)),
     );
     sc.built = Some((h, view, epoch, symbols.epoch));
     sc.generation = generation;
@@ -232,6 +248,10 @@ pub(super) fn drawn(t: TableId) -> bool {
 ///
 /// Cost: O((touched + revalued objects) · (log rows + their primitives)), plus the index
 /// inserts.
+///
+/// # Panics
+///
+/// If a key of `revalued` is not an instance, or two objects share a key.
 pub fn update(
     sc: &mut Scene,
     project: &Project,
@@ -294,7 +314,7 @@ pub fn update(
                 return true;
             };
             edited.binary_search(&key).is_ok()
-                || !revalue_texts(
+                || !draw::revalue_texts(
                     sc,
                     project,
                     h,
@@ -332,15 +352,17 @@ pub fn update(
         };
         let i = loc.row as usize;
         match key.table {
-            TableId::Instances => instance(&mut b, project, h, doc, symbols, values, i, &mut st),
+            TableId::Instances => {
+                draw::instance(&mut b, project, h, doc, symbols, values, i, &mut st)
+            }
             TableId::Wires => {
-                wire(&mut b, doc, i);
+                draw::wire(&mut b, doc, i);
                 let w = doc.wires();
                 let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
                 b.sc.wiring.add(p);
                 wires.push(p);
             }
-            t => one_other(&mut b, doc, t, i),
+            t => draw::one_other(&mut b, doc, t, i),
         }
     }
     for &w in &wires {
@@ -348,12 +370,12 @@ pub fn update(
     }
     points.sort_unstable();
     points.dedup();
-    redot(&mut b, &points);
+    symview::redot(&mut b, &points);
     let ext = b.ext;
     sc.extent = if ext[0] > ext[2] { [0; 4] } else { ext };
     fit_boxes(sc, prims0);
     for o in objs0..sc.objs.len() {
-        let prev = sc.index.insert(pack(sc.objs.key[o]), o as u32);
+        let prev = sc.index.insert(super::pack(sc.objs.key[o]), o as u32);
         assert!(prev.is_none(), "one object per key");
     }
     sc.built = Some((h, View::Schematic, epoch, symbols.epoch));
@@ -370,7 +392,7 @@ pub(super) fn counts(sc: &Scene) -> [usize; 6] {
 }
 
 /// The rows (or connection points) carrying stamp `s` in a non-decreasing stamp column.
-pub(super) fn stamped(col: &[u32], s: u32) -> std::ops::Range<usize> {
+pub(super) fn stamped(col: &[u32], s: u32) -> Range<usize> {
     let lo = col.partition_point(|&x| x < s);
     let hi = lo + col[lo..].partition_point(|&x| x == s);
     assert!(hi <= col.len());
@@ -411,7 +433,7 @@ fn check_tables(sc: &Scene) {
 ///
 /// Cost: O(log rows) per kind plus the rows of the two objects involved.
 fn remove_object(sc: &mut Scene, key: ObjKey) {
-    let Some(o) = sc.index.remove(&pack(key)) else {
+    let Some(o) = sc.index.remove(&super::pack(key)) else {
         return;
     };
     let s = sc.objs.stamp[o as usize];
@@ -434,7 +456,7 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
     // The last object moves into `o`'s slot.
     if let Some(slot) = sc.objs.swap_remove(o as usize) {
         let (moved, ms) = (sc.objs.key[slot], sc.objs.stamp[slot]);
-        sc.index.insert(pack(moved), o);
+        sc.index.insert(super::pack(moved), o);
         let last = sc.objs.len() as u32;
         for kind in 0..6 {
             for r in stamped(sc.stamps.cols()[kind], ms) {
@@ -455,6 +477,22 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
 fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
     let p = &sc.prims;
     let o = &sc.owner;
+    let rows = [
+        p.lines.x0.len(),
+        p.rects.x0.len(),
+        p.arcs.cx.len(),
+        p.polylines.end.len(),
+        p.polygons.end.len(),
+        p.texts.x.len(),
+    ];
+    assert!(
+        from.iter().zip(rows).all(|(&f, n)| f <= n),
+        "fits from existing rows: {from:?} of {rows:?}"
+    );
+    assert!(
+        o.cols().iter().zip(rows).all(|(c, n)| c.len() == n),
+        "an owner per primitive row"
+    );
     let objs = &mut sc.objs;
     let mut grow = |owner: u32, x0: i32, y0: i32, x1: i32, y1: i32| {
         if owner == u32::MAX || objs.seg[owner as usize] {
@@ -490,7 +528,8 @@ fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
         (&p.polylines, &o.polylines, from[3]),
         (&p.polygons, &o.polygons, from[4]),
     ] {
-        for (k, (&end, &owner)) in polys.end.iter().zip(owners).enumerate().skip(k0) {
+        let tail = polys.end.iter().zip(owners).enumerate().skip(k0);
+        for (k, (&end, &owner)) in tail {
             let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
             for j in start..end as usize {
                 grow(owner, polys.x[j], polys.y[j], polys.x[j], polys.y[j]);
@@ -501,7 +540,10 @@ fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
     for i in from[5]..t.x.len() {
         let start = if i == 0 { 0 } else { t.end[i - 1] as usize };
         let rot = t.rot.get(i).copied().unwrap_or(0);
-        let (w, h) = rotated_extent(text_size(t.size[i], &t.text[start..t.end[i] as usize]), rot);
+        let (w, h) = symbols::rotated_extent(
+            symbols::text_size(t.size[i], &t.text[start..t.end[i] as usize]),
+            rot,
+        );
         grow(o.texts[i], t.x[i], t.y[i], t.x[i] + w, t.y[i] + h);
     }
 }

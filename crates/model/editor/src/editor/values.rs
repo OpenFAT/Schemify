@@ -11,17 +11,17 @@
 //! - `Editor::sync_page`
 //! - `pub(super) fn row_of_doc`
 
-use schemify_doc::{DocHandle, Edit, EditRequest, Op, Outcome, TableId};
+use schemify_doc::{DocHandle, Edit, EditRequest, Op, Outcome, Project, TableId};
 use schemify_elab::CellState;
 use schemify_expr::Value;
-use schemify_ui::{CommandRequests, InputEvent, InputEvents};
+use schemify_ui::{CommandRequests, InputEvent, InputEvents, Key};
 
 use crate::commands::Cmd;
 use crate::scene::ObjKey;
 use crate::{docs, spines};
 
 use super::Editor;
-use super::apply::push_req;
+use super::apply;
 
 /// Cell states kept for documents that are not active ([`Editor`]'s `parked`).
 pub(super) const PARKED_MAX: usize = 8;
@@ -97,8 +97,11 @@ impl Editor {
             }
         });
         self.undid |= matches!(o, Outcome::Undone { .. } | Outcome::Redone { .. });
-        debug_assert!(self.cell_key.is_some() || self.cell_ops.is_empty());
-        debug_assert!(self.parked.len() <= PARKED_MAX);
+        assert!(
+            self.cell_key.is_some() || self.cell_ops.is_empty(),
+            "ops queue on a current state"
+        );
+        assert!(self.parked.len() <= PARKED_MAX);
     }
     /// `elab::CellState::recompute` for the active document: incremental over the queued ops
     /// when `cell` is current, else a full build (a document shown for the first time or
@@ -169,6 +172,11 @@ impl Editor {
             self.values_gen = self.values_gen.wrapping_add(1);
         }
         assert!(self.cell_ops.is_empty());
+        assert!(
+            self.cell_key.is_none_or(|k| k.0 == h),
+            "the state is the active document's"
+        );
+        assert!(self.parked.len() <= PARKED_MAX);
         true
     }
     /// Keeps `p` among the parked states (replacing an older one of its document), dropping
@@ -180,8 +188,14 @@ impl Editor {
         if self.parked.len() >= PARKED_MAX {
             self.parked.remove(0);
         }
+        let doc = p.doc;
         self.parked.push(p);
         assert!(self.parked.len() <= PARKED_MAX);
+        assert_eq!(
+            self.parked.iter().filter(|q| q.doc == doc).count(),
+            1,
+            "one parked state per document"
+        );
     }
     /// `project.reload` (pdk spec §9.2): the session re-reads the manifest and lockfile and
     /// re-indexes; everything keyed by cell row (symbol cache, cell states, scenes) rebuilds.
@@ -206,7 +220,8 @@ impl Editor {
         for d in docs {
             self.session.bump(d);
         }
-        assert!(self.cell_key.is_none() && self.symbols_key.is_none());
+        assert!(self.cell_key.is_none(), "cell states rebuild");
+        assert!(self.symbols_key.is_none(), "the symbol cache rebuilds");
     }
     /// Drops every cell state (active and parked): plugin functions may answer differently,
     /// a document was recovered or the cell index changed.
@@ -237,7 +252,7 @@ impl Editor {
             return false;
         }
         match self.amend.as_ref().and_then(|a| a.3.filter(|_| a.0 == h)) {
-            Some(seq) => push_req(reqs, h, Edit::Extend(seq, ops)),
+            Some(seq) => apply::push_req(reqs, h, Edit::Extend(seq, ops)),
             None if self.undid => return false,
             None => self.commit(reqs, h, "update plugin cache", ops),
         }
@@ -254,13 +269,18 @@ impl Editor {
         cmds: &CommandRequests,
         reqs: &mut Vec<EditRequest>,
     ) -> bool {
-        let Some((row, _)) = self.page.editing else {
+        let Some(row) = self.page.editing.as_ref().map(|e| e.0) else {
             return false;
         };
         let focus = self.shell.ui.focus();
         let id = docs::editor_id(row);
         // Typing reaches the page before the focus test: one batch may type and click away.
         let typed = Cmd::FieldTyped.name();
+        assert_eq!(
+            cmds.node.len(),
+            cmds.command.len(),
+            "request columns in step"
+        );
         for i in 0..cmds.len() {
             let s = &self.shell.strings;
             if s.get(cmds.command[i]) == typed
@@ -279,10 +299,13 @@ impl Editor {
         if !self.page.focused || submitted {
             return false;
         }
-        let escape = events.events.iter().any(
-            |e| matches!(e, InputEvent::Key { chord } if chord.key() == schemify_ui::Key::ESCAPE),
-        );
-        let (row, text) = self.page.editing.take().expect("checked above");
+        let escape = events
+            .events
+            .iter()
+            .any(|e| matches!(e, InputEvent::Key { chord } if chord.key() == Key::ESCAPE));
+        let Some((row, text)) = self.page.editing.take() else {
+            return false;
+        };
         self.page.focused = false;
         if !escape && let Some((h, _)) = self.active() {
             let ops = self.with_doc(h, |d, _| docs::prose_ops(d, row, &text));
@@ -294,7 +317,7 @@ impl Editor {
 
 /// The cell row whose open document is `h` (a scan of the cell index); `None` for a
 /// document outside it (a new, unsaved file).
-pub(super) fn row_of_doc(project: &schemify_doc::Project, h: DocHandle) -> Option<u32> {
+pub(super) fn row_of_doc(project: &Project, h: DocHandle) -> Option<u32> {
     let doc = project.doc(h)?;
     let cells = project.cells();
     (0..cells.lib.len())

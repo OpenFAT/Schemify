@@ -18,7 +18,7 @@
 //! - `pub fn snap`
 
 use schemify_doc::RecordBuf;
-use schemify_format::{Orient, RecordKind, format_coord, parse_coord};
+use schemify_format::{Orient, RecordKind};
 
 /// A point in milli-units.
 pub type Pt = (i32, i32);
@@ -57,7 +57,21 @@ const ORIENTS: [Orient; 8] = [
     Orient::MR270,
 ];
 
+// `ORIENTS[k]` is the orientation of `ORIENT_MATRIX[k]`, and every matrix is a signed
+// permutation (one ±1 per row and column), so `orient_of` and `place` stay in the group.
+const _: () = {
+    let mut k = 0;
+    while k < 8 {
+        assert!(ORIENTS[k] as usize == k);
+        let m = ORIENT_MATRIX[k];
+        assert!(m[0] * m[3] - m[1] * m[2] == 1 || m[0] * m[3] - m[1] * m[2] == -1);
+        assert!((m[0] == 0) != (m[1] == 0));
+        k += 1;
+    }
+};
+
 /// Maps a symbol-local point through an instance placement (format spec §3).
+#[must_use]
 pub fn place(o: Orient, at: Pt, p: Pt) -> Pt {
     let m = ORIENT_MATRIX[o as usize];
     let (x, y) = (i64::from(p.0), i64::from(p.1));
@@ -65,12 +79,18 @@ pub fn place(o: Orient, at: Pt, p: Pt) -> Pt {
         i64::from(m[0]) * x + i64::from(m[1]) * y + i64::from(at.0),
         i64::from(m[2]) * x + i64::from(m[3]) * y + i64::from(at.1),
     );
+    // A grid symmetry keeps the Manhattan length of the offset from the placement.
+    debug_assert_eq!(
+        (q.0 - i64::from(at.0)).abs() + (q.1 - i64::from(at.1)).abs(),
+        x.abs() + y.abs()
+    );
     (sat(q.0), sat(q.1))
 }
 
 /// The orientation of something placed with `inner` inside a symbol placed with `outer`
 /// (a symbol text in an instance): `place(compose(outer, inner), at, p)` equals
 /// `place(outer, at, place(inner, (0, 0), p))`.
+#[must_use]
 pub fn compose(outer: Orient, inner: Orient) -> Orient {
     orient_of(mat_mul(
         ORIENT_MATRIX[outer as usize],
@@ -86,24 +106,30 @@ impl Xform {
     };
 
     /// A translation by `(dx, dy)`.
+    #[must_use]
     pub fn translate(dx: i32, dy: i32) -> Xform {
-        Xform {
+        let x = Xform {
             m: [1, 0, 0, 1],
             t: (i64::from(dx), i64::from(dy)),
-        }
+        };
+        debug_assert!(x.is_translation());
+        x
     }
 
     /// A clockwise quarter turn (on screen) about `pivot`.
+    #[must_use]
     pub fn rotate(pivot: Pt) -> Xform {
         Xform::about(ORIENT_MATRIX[Orient::R90 as usize], pivot)
     }
 
     /// A horizontal flip (`x → 2·pivot.x − x`).
+    #[must_use]
     pub fn flip_x(pivot: Pt) -> Xform {
         Xform::about(ORIENT_MATRIX[Orient::MR0 as usize], pivot)
     }
 
     /// A vertical flip (`y → 2·pivot.y − y`); xschem's "vertical flip" is rotate 180 + flip.
+    #[must_use]
     pub fn flip_y(pivot: Pt) -> Xform {
         Xform::about(ORIENT_MATRIX[Orient::MR180 as usize], pivot)
     }
@@ -115,31 +141,38 @@ impl Xform {
             i64::from(m[0]) * cx + i64::from(m[1]) * cy,
             i64::from(m[2]) * cx + i64::from(m[3]) * cy,
         );
-        Xform {
+        let x = Xform {
             m,
             t: (cx - mc.0, cy - mc.1),
-        }
+        };
+        assert_eq!(x.point(c), c, "the pivot is a fixed point");
+        x
     }
 
     /// Returns `other ∘ self` (apply `self` first).
+    #[must_use]
     pub fn then(self, other: Xform) -> Xform {
         let o = other.m;
         let t = (
             i64::from(o[0]) * self.t.0 + i64::from(o[1]) * self.t.1 + other.t.0,
             i64::from(o[2]) * self.t.0 + i64::from(o[3]) * self.t.1 + other.t.1,
         );
-        Xform {
+        let x = Xform {
             m: mat_mul(o, self.m),
             t,
-        }
+        };
+        debug_assert!(ORIENT_MATRIX.contains(&x.m), "grid symmetries are closed");
+        x
     }
 
     /// Returns whether this is a pure translation.
+    #[must_use]
     pub fn is_translation(self) -> bool {
         self.m == [1, 0, 0, 1]
     }
 
     /// Maps a point (saturating at the i32 range; the doc layer rejects out-of-range records).
+    #[must_use]
     pub fn point(self, p: Pt) -> Pt {
         let (x, y) = (i64::from(p.0), i64::from(p.1));
         (
@@ -149,12 +182,14 @@ impl Xform {
     }
 
     /// Composes an object orientation with this transform's linear part.
+    #[must_use]
     pub fn orient(self, o: Orient) -> Orient {
         orient_of(mat_mul(self.m, ORIENT_MATRIX[o as usize]))
     }
 
     /// Maps an arc `(start, sweep)` in degrees (clockwise on screen, like the renderer):
     /// a mirror reverses direction, so the result keeps the same sweep and a new start.
+    #[must_use]
     pub fn arc(self, start: f64, sweep: f64) -> (f64, f64) {
         let o = orient_of(self.m);
         let (mut a, s) = (start, sweep);
@@ -162,21 +197,95 @@ impl Xform {
             a = 180.0 - a - s;
         }
         a += 90.0 * f64::from(o.quarter_turns());
-        (a.rem_euclid(360.0), s)
+        let a = a.rem_euclid(360.0);
+        // `rem_euclid` may round a tiny negative angle up to exactly 360.
+        debug_assert!((0.0..=360.0).contains(&a) || a.is_nan(), "start {a}");
+        (a, s)
     }
 }
 
 /// The shortest decimal text of coordinate `v` (milli-units), as the format writes it.
 pub(crate) fn coord(v: i32) -> String {
     let mut s = String::new();
-    format_coord(v, &mut s);
+    schemify_format::format_coord(v, &mut s);
+    assert!(!s.is_empty(), "every coordinate prints a digit");
     s
 }
 
 /// Applies `x` to every coordinate, orientation and arc angle of `rec` (any record kind;
 /// kinds without geometry are unchanged). Returns `None`, leaving `rec` partly mapped, when
 /// a coordinate field does not parse; records read from a `doc::Document` always parse.
+///
+/// # Panics
+///
+/// A record of a geometry kind with fewer fields than its kind's schema (records read from a
+/// `doc::Document` always have them).
 pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
+    let (kind, fields, attrs) = (rec.kind, rec.fields.len(), rec.attrs.len());
+    let mapped = map_record(rec, x);
+    assert_eq!(rec.kind, kind, "a transform keeps the record's kind");
+    assert_eq!(
+        rec.fields.len(),
+        fields,
+        "a transform rewrites fields in place"
+    );
+    assert_eq!(
+        rec.attrs.len(),
+        attrs,
+        "a transform rewrites attributes in place"
+    );
+    mapped
+}
+
+/// Rounds a world coordinate to the nearest multiple of `snap` (ties away from zero).
+///
+/// # Panics
+///
+/// A `snap` that is not positive.
+#[must_use]
+pub fn snap(v: f64, snap: i32) -> i32 {
+    assert!(snap > 0, "snap must be positive");
+    let s = f64::from(snap);
+    let r = (v / s).round() * s;
+    let snapped = sat_f64(r);
+    debug_assert!(
+        snapped % snap == 0 || snapped == i32::MIN || snapped == i32::MAX || v.is_nan(),
+        "{v} snapped to {snapped}"
+    );
+    snapped
+}
+
+/// Returns the anchor of a record: the point an in-place rotate or flip pivots on
+/// (instance origin, label anchor, wire first endpoint, first graphic point).
+#[must_use]
+pub fn anchor(rec: &RecordBuf) -> Option<Pt> {
+    let f = &rec.fields;
+    let pair = |i: usize| Some((read_coord(f.get(i)?)?, read_coord(f.get(i + 1)?)?));
+    match rec.kind {
+        RecordKind::Inst => {
+            let at = rec.find_attr("at")?;
+            Some((
+                read_coord(at.values.first()?)?,
+                read_coord(at.values.get(1)?)?,
+            ))
+        }
+        RecordKind::Wire | RecordKind::Label | RecordKind::Port | RecordKind::Text => pair(1),
+        RecordKind::Noconn => pair(1),
+        RecordKind::Pin => pair(2),
+        RecordKind::Line
+        | RecordKind::Rect
+        | RecordKind::Circle
+        | RecordKind::Arc
+        | RecordKind::Poly
+        | RecordKind::Stext => pair(0),
+        RecordKind::Shape => pair(2),
+        _ => None,
+    }
+}
+
+// ---- private ----
+
+fn map_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
     let f = &mut rec.fields;
     match rec.kind {
         RecordKind::Inst => {
@@ -192,6 +301,7 @@ pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
             map_pair(f, 3, x)?;
         }
         RecordKind::Label | RecordKind::Port | RecordKind::Text => {
+            assert!(f.len() >= 4, "{:?} record: id, x, y, orient", rec.kind);
             map_pair(f, 1, x)?;
             map_orient(&mut f[3], x)?;
         }
@@ -203,6 +313,7 @@ pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
         }
         RecordKind::Circle => map_pair(f, 0, x)?,
         RecordKind::Arc => {
+            assert!(f.len() >= 5, "arc record: x, y, r, start, sweep");
             map_pair(f, 0, x)?;
             // The sweep is invariant (a mirror moves the start instead), so its text stays.
             let (a, s) = (f[3].parse::<f64>().ok()?, f[4].parse::<f64>().ok()?);
@@ -216,6 +327,7 @@ pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
             }
         }
         RecordKind::Stext => {
+            assert!(f.len() >= 3, "stext record: x, y, orient");
             map_pair(f, 0, x)?;
             map_orient(&mut f[2], x)?;
         }
@@ -242,43 +354,6 @@ pub fn transform_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
     Some(())
 }
 
-/// Returns the anchor of a record: the point an in-place rotate or flip pivots on
-/// (instance origin, label anchor, wire first endpoint, first graphic point).
-pub fn anchor(rec: &RecordBuf) -> Option<Pt> {
-    let f = &rec.fields;
-    let pair = |i: usize| Some((read_coord(f.get(i)?)?, read_coord(f.get(i + 1)?)?));
-    match rec.kind {
-        RecordKind::Inst => {
-            let at = rec.find_attr("at")?;
-            Some((
-                read_coord(at.values.first()?)?,
-                read_coord(at.values.get(1)?)?,
-            ))
-        }
-        RecordKind::Wire | RecordKind::Label | RecordKind::Port | RecordKind::Text => pair(1),
-        RecordKind::Noconn => pair(1),
-        RecordKind::Pin => pair(2),
-        RecordKind::Line
-        | RecordKind::Rect
-        | RecordKind::Circle
-        | RecordKind::Arc
-        | RecordKind::Poly
-        | RecordKind::Stext => pair(0),
-        RecordKind::Shape => pair(2),
-        _ => None,
-    }
-}
-
-/// Rounds a world coordinate to the nearest multiple of `snap` (ties away from zero).
-pub fn snap(v: f64, snap: i32) -> i32 {
-    assert!(snap > 0, "snap must be positive");
-    let s = f64::from(snap);
-    let r = (v / s).round() * s;
-    r.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-}
-
-// ---- private ----
-
 fn mat_mul(a: [i8; 4], b: [i8; 4]) -> [i8; 4] {
     [
         a[0] * b[0] + a[1] * b[2],
@@ -304,20 +379,31 @@ fn orient_of(m: [i8; 4]) -> Orient {
 }
 
 fn sat(v: i64) -> i32 {
-    v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+    i32::try_from(v.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).expect("clamped")
+}
+
+/// `v` rounded toward zero into the i32 range (NaN → 0), as an `as` cast does.
+fn sat_f64(v: f64) -> i32 {
+    v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
 fn read_coord(s: &str) -> Option<i32> {
-    parse_coord(s).ok()
+    schemify_format::parse_coord(s).ok()
 }
 
 fn set_coord(slot: &mut String, v: i32) {
     slot.clear();
-    format_coord(v, slot);
+    schemify_format::format_coord(v, slot);
+    assert!(!slot.is_empty());
 }
 
 /// Maps the coordinate pair at fields `i, i + 1`.
 fn map_pair(fields: &mut [String], i: usize, x: Xform) -> Option<()> {
+    assert!(
+        i + 1 < fields.len(),
+        "a coordinate pair at fields {i}, {}",
+        i + 1
+    );
     let p = (read_coord(&fields[i])?, read_coord(&fields[i + 1])?);
     let q = x.point(p);
     set_coord(&mut fields[i], q.0);
@@ -334,7 +420,8 @@ fn map_orient(slot: &mut String, x: Xform) -> Option<()> {
 /// Shortest decimal text of an angle in `[0, 360)` with at most 3 fractional digits.
 fn degrees(v: f64) -> String {
     let milli = ((v * 1000.0).round() as i64).rem_euclid(360_000);
-    coord(milli as i32)
+    assert!((0..360_000).contains(&milli), "an angle in [0, 360)");
+    coord(i32::try_from(milli).expect("< 360000"))
 }
 
 #[cfg(test)]

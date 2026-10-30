@@ -7,8 +7,8 @@
 
 use schemify_canvas::CanvasPrims;
 
-use super::ops::{Glyphs, Lang, Used, page_ops};
-use super::{FONT_NAMES, Look, Page};
+use super::ops::{Glyphs, Lang, Used};
+use super::{FONT_NAMES, Look, Page, ops};
 
 /// ASCII85 (PDF `/ASCII85Decode`) of `bytes` with its `~>` end marker and a line break
 /// every 80 characters, so a PDF carrying a font stays 7-bit text.
@@ -41,6 +41,11 @@ pub(super) fn ascii85(bytes: &[u8]) -> String {
         }
     }
     out.push_str("~>");
+    assert!(out.is_ascii(), "ASCII85 digits are `!`..`u` and `z`");
+    assert!(
+        out.len() >= bytes.len().div_ceil(4) + 2,
+        "a digit or more per word, then `~>`"
+    );
     out
 }
 
@@ -54,6 +59,7 @@ pub(super) fn ascii85(bytes: &[u8]) -> String {
 /// # Panics
 ///
 /// Panics if `pages` is empty or a bound is inverted.
+#[must_use]
 pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u8> {
     use std::fmt::Write;
     assert!(!pages.is_empty(), "a PDF has at least one page");
@@ -62,8 +68,9 @@ pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u
     let contents: Vec<String> = pages
         .iter()
         .map(|(prims, b)| {
-            assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
-            page_ops(prims, *b, look, size, Lang::Pdf, &mut used)
+            assert!(b[0] <= b[2], "inverted bounds: x0 {} > x1 {}", b[0], b[2]);
+            assert!(b[1] <= b[3], "inverted bounds: y0 {} > y1 {}", b[1], b[3]);
+            ops::page_ops(prims, *b, look, size, Lang::Pdf, &mut used)
         })
         .collect();
     // 1 catalog, 2 pages, (page, content) pairs from 3, then five objects per printing face.
@@ -136,6 +143,7 @@ pub fn pdf(pages: &[(&CanvasPrims, [i32; 4])], look: &Look, page: Page) -> Vec<u
 /// The `ToUnicode` CMap of the glyphs one face prints, so viewers extract and search the text.
 fn to_unicode(glyphs: &Glyphs) -> String {
     use std::fmt::Write;
+    assert!(!glyphs.is_empty(), "only a face that prints gets a map");
     let rows: Vec<(u16, char)> = glyphs
         .iter()
         .filter(|(g, _)| **g != 0)
@@ -161,6 +169,7 @@ fn to_unicode(glyphs: &Glyphs) -> String {
         s.push_str("endbfchar\n");
     }
     s.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    assert_eq!(s.matches("beginbfchar").count(), rows.len().div_ceil(100));
     s
 }
 

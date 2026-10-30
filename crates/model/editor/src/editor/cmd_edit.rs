@@ -13,10 +13,10 @@ use crate::scene::ObjKey;
 use crate::session::View;
 use crate::{edit, platform, wiring};
 
-use super::Editor;
-use super::apply::push_req;
 use super::dialog::TextFor;
-use super::tool::{Form, Placement, Tool};
+use super::finish::Outline;
+use super::tool::{Carry, Form, Placement, Tool};
+use super::{Editor, apply};
 
 impl Editor {
     /// Edit and Tools commands: undo, the clipboard, transforms, drawing tools, wire tools. Returns whether anything visible changed.
@@ -39,16 +39,22 @@ impl Editor {
                 } else {
                     Edit::Redo
                 };
-                push_req(reqs, h, edit);
+                apply::push_req(reqs, h, edit);
             }
             Cmd::Delete => {
                 let ops = self.with_doc(h, edit::delete);
                 self.commit(reqs, h, "delete", ops);
                 self.set_selection(Vec::new());
+                assert!(self.selection().is_empty());
             }
             Cmd::SelectAll => {
                 let all: Vec<ObjKey> = self.scene.objs.key.clone();
                 self.set_selection(all);
+                assert_eq!(
+                    self.selection().len(),
+                    self.scene.objs.len(),
+                    "one key per object"
+                );
             }
             Cmd::Copy | Cmd::Cut => {
                 let base = self.selection_pivot();
@@ -59,10 +65,15 @@ impl Editor {
                         .collect::<Vec<_>>()
                 });
                 let back = Xform::translate(-base.0, -base.1);
+                let copied = recs.len();
                 self.clipboard = recs
                     .into_iter()
                     .filter_map(|mut r| crate::geometry::transform_record(&mut r, back).map(|()| r))
                     .collect();
+                assert!(
+                    self.clipboard.len() <= copied,
+                    "a copy is dropped, never added"
+                );
                 self.session
                     .say(format!("{} object(s) copied", self.clipboard.len()));
                 if self.system_clipboard
@@ -104,11 +115,11 @@ impl Editor {
             Cmd::Duplicate | Cmd::Move | Cmd::MoveKiss | Cmd::MoveStretch => {
                 // xschem: `m` moves, Ctrl+M stretches (swapped by `enable_stretch`), Shift+M
                 // stretches and adds "kissing" wires.
-                let stretch = match cmd {
-                    Cmd::Move => u8::from(self.opts.stretch),
-                    Cmd::MoveStretch => u8::from(!self.opts.stretch),
-                    Cmd::MoveKiss => 2,
-                    _ => 0,
+                let carry = match cmd {
+                    Cmd::Move => Carry::stretch_if(self.opts.stretch),
+                    Cmd::MoveStretch => Carry::stretch_if(!self.opts.stretch),
+                    Cmd::MoveKiss => Carry::Kiss,
+                    _ => Carry::Copy,
                 };
                 let partial = cmd != Cmd::Duplicate && !self.partial_ends().is_empty();
                 if !self.selection().is_empty() || partial {
@@ -116,9 +127,8 @@ impl Editor {
                         from: ptr,
                         to: ptr,
                         lin: Xform::IDENTITY,
-                        copy: cmd == Cmd::Duplicate,
+                        carry,
                         drag: false,
-                        stretch,
                     };
                 }
             }
@@ -152,8 +162,8 @@ impl Editor {
             Cmd::ConstrainV => self.opts.constrain = if self.opts.constrain == 2 { 0 } else { 2 },
             Cmd::Unconstrained => self.opts.constrain = 0,
             Cmd::PlaceLabel | Cmd::PlaceWireLabel => self.open_text(TextFor::Label, "Net label"),
-            Cmd::PlaceInPort => self.open_text(TextFor::Port(false), "Input port"),
-            Cmd::PlaceOutPort => self.open_text(TextFor::Port(true), "Output port"),
+            Cmd::PlaceInPort => self.open_text(TextFor::Port { output: false }, "Input port"),
+            Cmd::PlaceOutPort => self.open_text(TextFor::Port { output: true }, "Output port"),
             Cmd::InsertText => self.open_text(TextFor::Text, "Text"),
             Cmd::PlaceSymPin => {
                 if view == View::Symbol {
@@ -189,11 +199,14 @@ impl Editor {
                     pts: vec![ptr],
                     to: ptr,
                 };
-                let _ = view;
             }
             Cmd::CycleManhattan => match self.tool {
                 Tool::Wire { .. } | Tool::Move { .. } | Tool::Shape { .. } => {
                     self.opts.manhattan = (self.opts.manhattan + 1) % 3;
+                    assert!(
+                        self.opts.manhattan < 3,
+                        "straight, horizontal or vertical first"
+                    );
                 }
                 _ => {
                     self.space_pan = true;
@@ -232,7 +245,7 @@ impl Editor {
                     ..
                 } = std::mem::take(&mut self.tool)
                 {
-                    self.finish_shape(reqs, h, view, Form::Poly, &pts, true);
+                    self.finish_shape(reqs, h, view, Form::Poly, &pts, Outline::Closed);
                 }
             }
             Cmd::AlignGrid => {
@@ -257,7 +270,7 @@ impl Editor {
                                 .collect()
                         });
                         p.doc(h)
-                            .map_or_else(Vec::new, |d| wiring::break_at(d, &pts, &mut ids).0)
+                            .map_or_else(Vec::new, |d| wiring::break_at(d, &pts, &mut ids))
                     }
                 };
                 self.commit(reqs, h, cmd.name(), ops);
@@ -280,8 +293,12 @@ impl Editor {
                 {
                     seeds.push(self.scene.objs.key[o as usize]);
                 }
-                let stop = cmd == Cmd::SelectConnectedStop;
-                let keys = wiring::connected(&self.session.project, h, &seeds, stop);
+                let junctions = if cmd == Cmd::SelectConnectedStop {
+                    wiring::Junctions::Stop
+                } else {
+                    wiring::Junctions::Cross
+                };
+                let keys = wiring::connected(&self.session.project, h, &seeds, junctions);
                 self.session
                     .say(format!("{} connected object(s)", keys.len()));
                 self.set_selection(keys);

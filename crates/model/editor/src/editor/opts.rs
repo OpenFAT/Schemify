@@ -13,6 +13,8 @@ use crate::scene::UNIT;
 use super::Editor;
 use super::canvas::USER_LAYERS;
 use super::dialog::{Dialog, TextFor};
+use crate::export::Page;
+use schemify_config::Opts;
 
 /// Interaction options (xschem Options/View state).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,7 +87,7 @@ pub struct EditOpts {
     /// Box width make-symbol draws, milli-units.
     pub symbol_width: i32,
     /// Paper PDF and EPS exports are fitted to.
-    pub export_page: crate::export::Page,
+    pub export_page: Page,
     /// PNG export scale, percent of screen resolution (100 = one image pixel per logical
     /// pixel, 96 dpi), `[10, 1600]`.
     pub png_scale: u16,
@@ -127,7 +129,7 @@ impl Default for EditOpts {
             toolbar: true,
             fullscreen: false,
             symbol_width: 150 * UNIT,
-            export_page: crate::export::Page::default(),
+            export_page: Page::default(),
             png_scale: 100,
         }
     }
@@ -164,7 +166,7 @@ impl Editor {
                 _ => ("Snap (units)", units(self.opts.snap)),
             };
             self.open_text(TextFor::Setting(cmd), title);
-            if let Dialog::Text(_, _, typed) = &mut self.dialog {
+            if let Dialog::Text { typed, .. } = &mut self.dialog {
                 *typed = value;
             }
             return;
@@ -215,12 +217,20 @@ impl Editor {
             },
             _ => {}
         }
+        assert!(
+            self.opts.snap > 0 && self.opts.grid > 0,
+            "a positive snap and grid"
+        );
+        assert!(
+            self.opts.width_tenths >= 1 && self.opts.dim <= 100,
+            "a visible line width, a dim factor in [0, 1]"
+        );
     }
 }
 
 /// The user config's layer colors (`schemify.opt.layer_colors`, config spec §3) as the
 /// editor's `(layer, 0xRRGGBB)` overrides, by layer.
-pub(super) fn user_layer_colors(o: &schemify_config::Opts) -> Vec<(u8, u32)> {
+pub(super) fn user_layer_colors(o: &Opts) -> Vec<(u8, u32)> {
     let out: Vec<(u8, u32)> = o
         .layer_colors
         .iter()

@@ -72,19 +72,20 @@ mod text;
 mod tool;
 mod values;
 
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::fmt;
 use std::path::PathBuf;
 
 use schemify_canvas::{CanvasPrims, Marks, Palette};
 use schemify_doc::{DocHandle, Document, EditRequest, Op, RecordBuf};
 use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_format::{FileKind, IdRng};
-use schemify_ui::{InputEvent, InputEvents, Routed, route_input};
+use schemify_ui::{InputEvent, InputEvents, Routed};
 
-use crate::cell;
-use crate::checks::Members;
+use crate::checks::{Diff, Markers, Members};
 use crate::commands::{Cmd, Commands};
 use crate::docs::Page;
-use crate::platform;
 use crate::plugins::Host;
 use crate::scene::{self, ObjKey, Scene, Symbols};
 use crate::session::{Session, View};
@@ -92,18 +93,23 @@ use crate::shell::Shell;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sim::Sim;
 use crate::waves::WavesView;
+use crate::{cell, platform};
 
 use canvas::ShownKey;
 use compare::Compare;
 use decor::DecorKey;
 use dialog::Dialog;
-use files::{default_view, project_root};
+
 pub use opts::EditOpts;
 pub use picture::{CanvasPicture, DockPicture, GraphPicture, Picture, Raster, UiView};
 pub use queue::QUEUED_MAX;
-use queue::Said;
-pub use tool::{Form, Placement, Tool};
-use values::{Parked, row_of_doc};
+use queue::{Queued, Said};
+use schemify_config::Startup;
+use schemify_netlist::NameMap;
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_run::SimCommand;
+pub use tool::{Carry, Form, Placement, Tool};
+use values::Parked;
 
 /// Which panel the `bottom` container shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,7 +134,7 @@ pub struct Options {
     /// The simulator command line (`None`: the user config's, by default
     /// `ngspice -b -r {raw} {netlist}`, D7/D15). Tests pass a fake simulator.
     #[cfg(not(target_arch = "wasm32"))]
-    pub sim: Option<schemify_run::SimCommand>,
+    pub sim: Option<SimCommand>,
     /// Directory of user state (the recent-files list); `None` keeps it in memory only.
     /// `schemify_app::window::run` uses `platform::state_dir()`; tests leave it `None` or pass a temp dir.
     pub state_dir: Option<PathBuf>,
@@ -137,7 +143,7 @@ pub struct Options {
     pub system_clipboard: bool,
     /// Which user config runs (config spec §2). The default is `--clean`, so tests never read
     /// the developer's own `init.lua`; the binary passes its flags.
-    pub config: schemify_config::Startup,
+    pub config: Startup,
 }
 
 /// An interactive editing session: project, UI, plugins, scene, tool and dialogs.
@@ -214,7 +220,7 @@ pub struct Editor {
     ui_stale: bool,
     /// The state contribution's block of commands refused by the active file kind, and the
     /// key it was made for (see `state_contribution`); a projection cache.
-    kind_block: std::cell::RefCell<(Option<u64>, String)>,
+    kind_block: RefCell<(Option<u64>, String)>,
     /// Derived values of the active level's document (owner: `elab`; D19, D20).
     cell: Option<CellState>,
     /// What `cell` is current for: (document, its edit epoch, plugin composition epoch).
@@ -255,13 +261,13 @@ pub struct Editor {
     /// the decor draws).
     op_gen: u32,
     /// The violation markers of the `checks` source, kept per marked object.
-    markers: crate::checks::Markers,
+    markers: Markers,
     /// Targets of the `checks` marks patched since the markers were placed (`None`: the
     /// overlay was replaced, so every marker is placed anew).
     marker_targets: Option<Vec<String>>,
     /// Name map of the active tab's top cell (ngspice, default request), for hierarchy-wide
     /// net keys, cross-probe names and OP targets: (top document, edit generation, map).
-    hier: Option<(DocHandle, u32, schemify_netlist::NameMap)>,
+    hier: Option<(DocHandle, u32, NameMap)>,
     /// The panel under the work area.
     panel: Panel,
     /// Blocking violation lines of the last refused netlist or run (checks panel).
@@ -287,7 +293,7 @@ pub struct Editor {
     /// The clock of the last update.
     now: u64,
     /// The visual diff of the staged edit under review and its key (document, stage id).
-    diff: crate::checks::Diff,
+    diff: Diff,
     diff_key: Option<(DocHandle, u32)>,
     /// Which of the active document's staged edits is under review (index; clamped).
     stage_pick: usize,
@@ -321,8 +327,8 @@ pub struct Editor {
     shown: Option<CanvasPrims>,
     /// (scene build, symbol mode) `shown` was made for.
     shown_key: Option<ShownKey>,
-    /// Commands queued by [`Editor::command`]: (name, argument, ticket of an answered one).
-    queued: Vec<(String, String, Option<u32>)>,
+    /// Commands queued by [`Editor::command`].
+    queued: Vec<Queued>,
     /// Edit requests from outside the frame ([`Editor::request_edits`]), joined to the next
     /// frame's `edit_requests` before dispatch (at most [`QUEUED_MAX`]).
     queued_edits: Vec<EditRequest>,
@@ -345,8 +351,8 @@ pub struct Editor {
 /// ~1 ms of sha256, so the 6 MB of a 100k-object cell take a few dozen ticks after it opens.
 const IDLE_STEP_BYTES: usize = 128 << 10;
 
-impl std::fmt::Debug for Editor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Editor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Editor")
             .field("tabs", &self.session.tabs().len())
             .field("tool", &self.tool)
@@ -392,14 +398,24 @@ impl Editor {
     /// One frame: input in, tables updated. Returns whether the picture changed. `now_ms`
     /// is a monotonic clock (double-click detection, waves UI, plugin timers). An empty
     /// `events` is a tick ([`Editor::wake_ms`]): it polls the run and plugin completions.
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
     pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
-        assert!(viewport.0 >= 0.0 && viewport.1 >= 0.0, "negative viewport");
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         self.now = now_ms;
         // 0. the waves dock: its share of the window and the input over it
         let mut changed = false;
         let (events, viewport) = match self.waves.is_some() {
             true => {
-                let (mine, dock, view, dock_view) = self.split_input(events, viewport);
+                let probe::Split {
+                    mine,
+                    dock,
+                    view,
+                    dock_view,
+                } = self.split_input(events, viewport);
                 let w = self.waves.as_mut().expect("checked above");
                 let (redraw, close) = w.update(&dock, dock_view, now_ms);
                 changed |= redraw;
@@ -408,9 +424,9 @@ impl Editor {
                     self.shell.invalidate();
                     changed = true;
                 }
-                (std::borrow::Cow::Owned(mine), view)
+                (Cow::Owned(mine), view)
             }
-            false => (std::borrow::Cow::Borrowed(events), viewport),
+            false => (Cow::Borrowed(events), viewport),
         };
         let events: &InputEvents = &events;
         let snapshot_due = std::mem::take(&mut self.snapshot_due);
@@ -423,7 +439,7 @@ impl Editor {
         self.ui_step(false, resized);
         let mut routed = std::mem::take(&mut self.routed);
         // 1. input → command_requests + canvas events
-        route_input(
+        schemify_ui::route_input(
             &self.shell.tables,
             &self.shell.layout,
             &self.shell.strings,
@@ -461,6 +477,7 @@ impl Editor {
             }
             changed |= self.apply(&mut reqs);
         }
+        assert!(reqs.is_empty(), "every delivered request was applied");
         changed |= self.auto_trim(&mut reqs);
         // 5. symbols of the active document (I/O); a journal's crash recovery asks first
         self.load_symbols();
@@ -557,16 +574,6 @@ impl Editor {
             self.mods = mods.0;
         }
     }
-
-    // ------------------------------------------------------------------ dispatch
-
-    // ------------------------------------------------------------------ helpers
-
-    // ------------------------------------------------------------------ dialogs
-
-    // ------------------------------------------------------------------ canvas gestures
-
-    // ------------------------------------------------------------------ spine steps
 }
 
 /// Whether a cell of `kind` has the `view` side: a `.shcomp` has both, a `.shprim` only a
@@ -582,6 +589,7 @@ pub(crate) fn has_view(kind: FileKind, view: View) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::path::Path;
 
     use schemify_doc::TableId;
@@ -649,7 +657,7 @@ mod tests {
             ed.set_selection(sel);
             ed.update(&InputEvents::default(), (1280.0, 800.0), 2 + round);
             let hits: Vec<u32> = (0..next(n)).map(|_| next(n)).collect();
-            let gone: std::collections::BTreeSet<ObjKey> = hits
+            let gone: BTreeSet<ObjKey> = hits
                 .iter()
                 .map(|&o| ed.scene.objs.key[o as usize])
                 .collect();
@@ -705,7 +713,10 @@ mod tests {
         assert!(ed.page.images_failed.is_empty(), "compose reads no file");
         assert_eq!(
             ed.ui_inputs(),
-            (false, true),
+            compose::UiInputs {
+                loaded: false,
+                restyle: true
+            },
             "nothing loaded; the plugins composed"
         );
         assert_eq!(ed.page.images_failed, ["img/missing.png"]);

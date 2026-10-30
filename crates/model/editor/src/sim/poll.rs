@@ -15,26 +15,28 @@ use std::path::{Path, PathBuf};
 
 use schemify_doc::{DocHandle, Project};
 use schemify_elab::Funcs;
-use schemify_run::{Plan, RunnerConfig, State, read_results};
-use schemify_wave::format_si;
+use schemify_run::{Blocked, Plan, Runner, RunnerConfig, State};
 
 use crate::platform;
 use crate::session::Session;
 use crate::spines::{BENCH, Run};
 
-use super::{
-    BenchRun, Best, HISTORY_MAX, Kind, Polled, RUNS_MAX, SUBMIT_PER_FRAME, Sim, session_name,
-};
+use super::{BenchRun, Best, HISTORY_MAX, Kind, Polled, RUNS_MAX, SUBMIT_PER_FRAME, Sim};
 
 impl Sim {
     /// One frame of every run: prepares and submits up to [`SUBMIT_PER_FRAME`] jobs in all,
     /// polls the runners, steps the optimizers, saves a run's results when it goes idle.
+    ///
+    /// # Panics
+    ///
+    /// Never: runs past [`RUNS_MAX`] are refused, not started.
     pub fn poll<F: Funcs>(
         &mut self,
         project: &Project,
         env: &[(&str, &str)],
         funcs: &mut F,
     ) -> Polled {
+        assert!(self.runs.len() <= RUNS_MAX);
         let mut out = Polled::default();
         let active = self.running().max(1) as u32;
         let budget = (SUBMIT_PER_FRAME / active).max(1);
@@ -125,11 +127,20 @@ impl Sim {
             let _ = write!(self.status, "; {n}");
         }
         assert!(self.runs.len() <= RUNS_MAX);
+        assert!(
+            out.best.len() <= self.runs.len(),
+            "one best per run at most"
+        );
         out
     }
 
     /// The status line of the shown run: progress while busy, a summary when done, and how
     /// many other runs are in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the job states partition the jobs.
+    #[must_use]
     pub fn progress(&self) -> String {
         let Some(br) = self.shown_run() else {
             return String::new();
@@ -139,12 +150,16 @@ impl Sim {
         let n = |s: State| st.iter().filter(|&&x| x == s).count();
         let (done, failed, cancelled) = (n(State::Done), n(State::Failed), n(State::Cancelled));
         let running = n(State::Running);
+        assert!(
+            done + failed + cancelled + running <= st.len(),
+            "states partition the jobs"
+        );
         let mut t = match &br.kind {
             Kind::Optimize(o, name) => {
                 let best = o
                     .opt
                     .best()
-                    .map_or("-".to_owned(), |b| format_si(b.score, 4));
+                    .map_or("-".to_owned(), |b| schemify_wave::format_si(b.score, 4));
                 format!(
                     "optimize {name}: {} evaluation(s), best score {best}",
                     o.opt.n_evals()
@@ -204,7 +219,7 @@ impl Sim {
             let (bench, base, dialect) = (br.bench, &br.base, br.run.dialect);
             match schemify_run::design(&session.project, bench, base, env, dialect, funcs) {
                 Ok(d) => stale = d != br.run.digest,
-                Err(schemify_run::Blocked::NeedsOpen(rows))
+                Err(Blocked::NeedsOpen(rows))
                     if rows.iter().all(|&r| session.open_cell(r as usize).is_ok()) =>
                 {
                     continue;
@@ -220,12 +235,18 @@ impl Sim {
     /// Shows the results of bench `top`: its run in memory, else the newest saved one
     /// (`.schemify/runs/*/bench` naming it). Lists the bench's run directories in
     /// [`Sim::history`]. Returns whether the shown results changed.
+    ///
+    /// # Panics
+    ///
+    /// Never: the history is cut to [`HISTORY_MAX`] runs.
     pub fn load_latest(&mut self, session: &Session, top: DocHandle) -> bool {
-        let name = session_name(session, top);
+        let name = super::session_name(session, top);
         self.history = history(&session.root, &name);
+        assert!(self.history.len() <= HISTORY_MAX);
         if self.index_of(top).is_some() {
             let changed = self.shown != Some(top);
             self.show(top);
+            assert_eq!(self.shown, Some(top));
             return changed;
         }
         let Some(dir) = self.history.first().cloned() else {
@@ -240,6 +261,10 @@ impl Sim {
     ///
     /// The bench's run is in flight, the bench's plan no longer reads, the results file is
     /// missing or invalid, or [`RUNS_MAX`] runs are in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check that the loaded run is kept and shown.
     pub fn load_dir(
         &mut self,
         session: &Session,
@@ -254,7 +279,7 @@ impl Sim {
         let plan = Plan::read(doc).map_err(|e| format!("bench: {e:?}"))?;
         let text = platform::read(&dir.join(schemify_run::RESULTS))?;
         let text = String::from_utf8(text).map_err(|e| e.to_string())?;
-        let (jobs, results) = read_results(&text)?;
+        let (jobs, results) = schemify_run::read_results(&text)?;
         let digest = *results.design();
         let mut cfg = RunnerConfig::new(&session.root, &digest);
         cfg.dir = dir.to_path_buf();
@@ -264,7 +289,7 @@ impl Sim {
             next: jobs.len(),
             jobs,
             results,
-            runner: schemify_run::Runner::new(cfg),
+            runner: Runner::new(cfg),
             digest,
             finished: Vec::new(),
             extra: String::new(),
@@ -272,7 +297,7 @@ impl Sim {
             // selected now (the design hash covers the dialect).
             dialect: self.dialect,
         };
-        let name = session_name(session, top);
+        let name = super::session_name(session, top);
         self.install(BenchRun {
             bench: top,
             name,
@@ -285,11 +310,18 @@ impl Sim {
         self.show(top);
         self.reset_view();
         self.status = format!("results loaded from {}", dir.display());
+        assert_eq!(self.shown, Some(top));
+        assert!(self.index_of(top).is_some(), "the loaded run is kept");
         Ok(())
     }
 
     /// The raw file of job `j` of the shown run (`<run dir>/<j>/out.raw`, else the first
     /// `.raw` the job wrote, as the runner reads it).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the file is the job's.
+    #[must_use]
     pub fn job_raw(&self, j: u32) -> Option<PathBuf> {
         let dir = self.dir()?.join(j.to_string());
         let main = dir.join(schemify_run::RAW);
@@ -297,9 +329,14 @@ impl Sim {
             return Some(main);
         }
         let files = platform::list_files(&dir, &[]);
-        files
+        let raw = files
             .into_iter()
-            .find(|p| p.extension().is_some_and(|x| x == "raw"))
+            .find(|p| p.extension().is_some_and(|x| x == "raw"));
+        assert!(
+            raw.as_ref().is_none_or(|p| p.starts_with(&dir)),
+            "a file of the job"
+        );
+        raw
     }
 }
 

@@ -75,6 +75,9 @@ pub struct Page {
     pub portrait: bool,
 }
 
+// `Page::paper` is a `u8` row of `PAPER`.
+const _: () = assert!(PAPER.len() <= u8::MAX as usize);
+
 /// PostScript names of the embedded UI faces (Type 42 resources, PDF `BaseFont`s), indexed
 /// like [`schemify_ui::ui_fonts`]; a PDF page names face `f` `/F<f + 1>`.
 const FONT_NAMES: [&str; 2] = ["SchemifyUI-NotoSans", "SchemifyUI-KaTeXMain"];
@@ -83,11 +86,17 @@ const FONT_NAMES: [&str; 2] = ["SchemifyUI-NotoSans", "SchemifyUI-KaTeXMain"];
 ///
 /// # Panics
 ///
-/// Panics if `keep` is not one flag per scene object.
+/// Panics if `keep` is not one flag per scene object, or the scene's owner columns are out
+/// of step with its primitives.
+#[must_use]
 pub fn subset(sc: &Scene, keep: &[bool]) -> CanvasPrims {
     assert_eq!(keep.len(), sc.objs.len(), "one flag per object");
     let on = |o: u32| keep.get(o as usize).copied().unwrap_or(false);
     let (p, o) = (&sc.prims, &sc.owner);
+    assert_eq!(o.lines.len(), p.lines.x0.len(), "one owner per line");
+    assert_eq!(o.rects.len(), p.rects.x0.len(), "one owner per rect");
+    assert_eq!(o.arcs.len(), p.arcs.cx.len(), "one owner per arc");
+    assert_eq!(o.texts.len(), p.texts.x.len(), "one owner per text");
     let mut out = CanvasPrims::default();
     for i in 0..p.lines.x0.len() {
         if on(o.lines[i]) {
@@ -146,6 +155,11 @@ pub fn subset(sc: &Scene, keep: &[bool]) -> CanvasPrims {
 }
 
 /// World bounds `[x0, y0, x1, y1]` of every live row of `prims` (`None` when there is none).
+///
+/// # Panics
+///
+/// The text columns of `prims` out of step.
+#[must_use]
 pub fn bounds(prims: &CanvasPrims) -> Option<[i32; 4]> {
     let mut b = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     let mut grow = |x: i32, y: i32| {
@@ -153,22 +167,31 @@ pub fn bounds(prims: &CanvasPrims) -> Option<[i32; 4]> {
     };
     let live = |layer: &[u8], i: usize| layer[i] != LAYER_DEAD;
     let l = &prims.lines;
-    for i in (0..l.x0.len()).filter(|&i| live(&l.layer, i)) {
-        grow(l.x0[i], l.y0[i]);
-        grow(l.x1[i], l.y1[i]);
+    for i in 0..l.x0.len() {
+        if live(&l.layer, i) {
+            grow(l.x0[i], l.y0[i]);
+            grow(l.x1[i], l.y1[i]);
+        }
     }
     let r = &prims.rects;
-    for i in (0..r.x0.len()).filter(|&i| live(&r.layer, i)) {
-        grow(r.x0[i], r.y0[i]);
-        grow(r.x1[i], r.y1[i]);
+    for i in 0..r.x0.len() {
+        if live(&r.layer, i) {
+            grow(r.x0[i], r.y0[i]);
+            grow(r.x1[i], r.y1[i]);
+        }
     }
     let a = &prims.arcs;
-    for i in (0..a.cx.len()).filter(|&i| live(&a.layer, i)) {
-        grow(a.cx[i] - a.r[i], a.cy[i] - a.r[i]);
-        grow(a.cx[i] + a.r[i], a.cy[i] + a.r[i]);
+    for i in 0..a.cx.len() {
+        if live(&a.layer, i) {
+            grow(a.cx[i] - a.r[i], a.cy[i] - a.r[i]);
+            grow(a.cx[i] + a.r[i], a.cy[i] + a.r[i]);
+        }
     }
     for polys in [&prims.polylines, &prims.polygons] {
-        for k in (0..polys.end.len()).filter(|&k| live(&polys.layer, k)) {
+        for k in 0..polys.end.len() {
+            if !live(&polys.layer, k) {
+                continue;
+            }
             let start = if k == 0 { 0 } else { polys.end[k - 1] as usize };
             for j in start..polys.end[k] as usize {
                 grow(polys.x[j], polys.y[j]);
@@ -176,6 +199,7 @@ pub fn bounds(prims: &CanvasPrims) -> Option<[i32; 4]> {
         }
     }
     let t = &prims.texts;
+    assert_eq!(t.end.len(), t.x.len(), "text columns in step");
     let mut start = 0usize;
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
@@ -189,11 +213,21 @@ pub fn bounds(prims: &CanvasPrims) -> Option<[i32; 4]> {
         grow(t.x[i].saturating_add(w), t.y[i].saturating_add(t.size[i]));
         start = end;
     }
-    (b[0] <= b[2]).then_some(b)
+    let found = b[0] <= b[2];
+    assert_eq!(found, b[1] <= b[3], "x and y grow together");
+    found.then_some(b)
 }
 
 /// Grows `b` by `pad` milli-units on every side (saturating).
+///
+/// # Panics
+///
+/// A negative `pad`, or `b` is not ordered (`x0 ≤ x1`, `y0 ≤ y1`).
+#[must_use]
 pub fn padded(b: [i32; 4], pad: i32) -> [i32; 4] {
+    assert!(pad >= 0, "a padding grows the box, got {pad}");
+    assert!(b[0] <= b[2], "bounds from `bounds` are ordered");
+    assert!(b[1] <= b[3], "bounds from `bounds` are ordered");
     [
         b[0].saturating_sub(pad),
         b[1].saturating_sub(pad),
@@ -205,11 +239,12 @@ pub fn padded(b: [i32; 4], pad: i32) -> [i32; 4] {
 impl Page {
     /// Parses `<paper> [portrait|landscape]` (`a3`, `letter portrait`, `A4-portrait`;
     /// case-insensitive, landscape by default). `None` for an unknown paper or word.
+    #[must_use]
     pub fn parse(s: &str) -> Option<Page> {
         let lower = s.trim().to_ascii_lowercase();
         let mut words = lower.split([' ', '-', '_']).filter(|w| !w.is_empty());
         let name = words.next()?;
-        let paper = PAPER.iter().position(|p| p.0 == name)? as u8;
+        let paper = u8::try_from(PAPER.iter().position(|p| p.0 == name)?).ok()?;
         let portrait = match words.next() {
             None | Some("landscape") => false,
             Some("portrait") => true,
@@ -219,12 +254,18 @@ impl Page {
     }
 
     /// Width and height in points.
+    #[must_use]
     pub fn points(self) -> (f64, f64) {
+        debug_assert!(
+            usize::from(self.paper) < PAPER.len(),
+            "a page from `parse` or `default`"
+        );
         let (_, w, h) = PAPER[usize::from(self.paper) % PAPER.len()];
         if self.portrait { (w, h) } else { (h, w) }
     }
 
     /// The spelling [`Page::parse`] reads back (`a4 landscape`).
+    #[must_use]
     pub fn name(self) -> String {
         let o = if self.portrait {
             "portrait"
@@ -266,6 +307,7 @@ impl Look {
 
 /// Arc end point at `deg_milli` (clockwise on screen, y down), rounded to milli-units.
 fn arc_point(cx: i32, cy: i32, r: i32, deg_milli: i64) -> (i64, i64) {
+    assert!(r >= 0, "an arc radius is a length, got {r}");
     let t = (deg_milli as f64 / 1000.0).to_radians();
     let r = f64::from(r);
     (

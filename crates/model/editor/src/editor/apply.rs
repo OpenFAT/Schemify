@@ -10,17 +10,17 @@
 //! - `pub(super) fn push_req`
 
 use schemify_doc::{
-    DocHandle, Document, Edit, EditRequest, Mode, Op, Outcome, TableId, Transaction, apply_edits,
-    ops_from_text,
+    DocHandle, Document, Edit, EditRequest, Mode, Op, Outcome, TableId, Transaction,
 };
 use schemify_plugin::abi::Event;
-use schemify_ui::CommandRequests;
+use schemify_ui::{CommandRequests, Sym};
 
 use crate::scene::ObjKey;
 use crate::{docs, platform, plugins};
 
 use super::Editor;
 use super::queue::KEPT_LOG_MAX;
+use crate::plugins::PluginEdit;
 
 /// Edit requests one frame may carry.
 const REQUESTS_MAX: usize = 1 << 10;
@@ -44,15 +44,18 @@ impl Editor {
         label: &str,
         ops: Vec<Op>,
     ) {
+        assert!(!label.is_empty(), "an undo entry has a label");
         if ops.is_empty() {
             return;
         }
+        let before = reqs.len();
         let tx = Transaction {
             label: label.to_owned(),
             mode: Mode::Commit,
             ops,
         };
         push_req(reqs, h, Edit::Tx(tx));
+        assert_eq!(reqs.len(), before + 1, "one transaction per commit");
     }
     /// [`Editor::commit`] for a docs-page edit, remembered so a D20 cache write it causes
     /// lands in the same undo entry (`sync_cache`).
@@ -68,6 +71,7 @@ impl Editor {
         }
         self.amend = Some((h, label.to_owned(), ops.clone(), None));
         self.commit(reqs, h, label, ops);
+        assert!(self.amend.as_ref().is_some_and(|a| a.0 == h));
     }
     /// `plugin::deliver`: snapshots, events, and the plugins' requests into `reqs`.
     pub(super) fn deliver(&mut self, reqs: &mut Vec<EditRequest>) -> bool {
@@ -84,7 +88,7 @@ impl Editor {
             let mut cmds = CommandRequests::default();
             for (name, args) in &d.commands {
                 cmds.command.push(self.shell.strings.intern(name));
-                cmds.node.push(schemify_ui::Sym::NONE);
+                cmds.node.push(Sym::NONE);
                 cmds.args.push_str(args);
                 cmds.arg_end.push(cmds.args.len() as u32);
             }
@@ -92,11 +96,17 @@ impl Editor {
         }
         #[cfg(not(target_arch = "wasm32"))]
         self.sim.enqueue(d.runs);
-        for (doc, label, text, stage) in d.edits {
+        for PluginEdit {
+            doc,
+            label,
+            ops: text,
+            stage,
+        } in d.edits
+        {
             let Some(kind) = self.session.project.doc(doc).map(Document::kind) else {
                 continue;
             };
-            match ops_from_text(&text, kind) {
+            match schemify_doc::ops_from_text(&text, kind) {
                 Ok(ops) => {
                     let mode = if stage { Mode::Stage } else { Mode::Commit };
                     push_req(reqs, doc, Edit::Tx(Transaction { label, mode, ops }));
@@ -115,6 +125,7 @@ impl Editor {
             lines.extend(d.logs.iter().cloned());
             let over = lines.len().saturating_sub(KEPT_LOG_MAX);
             lines.drain(..over);
+            assert!(lines.len() <= KEPT_LOG_MAX);
             *failed |= d.failed;
         }
         self.resolve_said(&d.logs);
@@ -133,6 +144,7 @@ impl Editor {
             .filter(|k| !matches!(k.table, TableId::Pins | TableId::Graphics))
             .map(|k| k.key)
             .collect();
+        assert!(sel.len() <= self.selection().len());
         #[cfg(not(target_arch = "wasm32"))]
         let rows = self.sim.result_rows();
         #[cfg(target_arch = "wasm32")]
@@ -144,8 +156,9 @@ impl Editor {
         // What the document tables are filled from: unchanged on a click, so a selection
         // change does not copy every row again.
         let key = {
+            use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut h = DefaultHasher::new();
             let project = &self.session.project;
             for d in project.handles() {
                 (d, project.is_dirty(d), self.session.epoch(d)).hash(&mut h);
@@ -169,7 +182,7 @@ impl Editor {
                 docs::drop_stale_caches(doc, &mut tx.ops);
             }
         }
-        let outcomes = apply_edits(&mut self.session.project, reqs);
+        let outcomes = schemify_doc::apply_edits(&mut self.session.project, reqs);
         assert_eq!(outcomes.len(), reqs.len());
         let mut changed = false;
         for (r, o) in reqs.iter().zip(&outcomes) {
@@ -218,4 +231,5 @@ pub(super) fn push_req(reqs: &mut Vec<EditRequest>, doc: DocHandle, edit: Edit) 
         edit,
         unix_ms: platform::unix_ms(),
     });
+    assert!(reqs.len() <= REQUESTS_MAX);
 }

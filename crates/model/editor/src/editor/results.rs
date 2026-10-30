@@ -9,9 +9,11 @@
 
 use schemify_doc::{DocHandle, ObjId};
 
+use crate::checks;
 use crate::commands::Cmd;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::platform;
 use crate::scene::{ObjKey, UNIT};
-use crate::{checks, platform};
 
 use super::Editor;
 
@@ -46,6 +48,11 @@ impl Editor {
             return;
         };
         self.set_selection(vec![key]);
+        assert_eq!(
+            self.selection(),
+            [key],
+            "the picked violation's object alone"
+        );
         let o = self.scene.find(key).expect("filtered");
         let b = self.scene.objs.bbox(o as usize);
         let pad = 60 * UNIT;
@@ -55,6 +62,17 @@ impl Editor {
     /// raw file in the waves dock, load an earlier run (`results.hist.<i>`), sort by a header
     /// column (`results.head.<col>`) or filter the rows (`arg`: the filter field's text).
     pub(super) fn results_cmd(&mut self, cmd: Cmd, node: &str, arg: &str) {
+        assert!(
+            matches!(
+                cmd,
+                Cmd::ResultsPick
+                    | Cmd::ResultsWaves
+                    | Cmd::ResultsHistory
+                    | Cmd::ResultsSort
+                    | Cmd::ResultsFilter
+            ),
+            "{cmd:?} is no results command"
+        );
         #[cfg(not(target_arch = "wasm32"))]
         {
             let index = node.rsplit('.').next().and_then(|n| n.parse::<u32>().ok());

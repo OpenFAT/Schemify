@@ -12,10 +12,15 @@
 //! - `pub fn decode`
 
 use schemify_doc::RecordBuf;
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
 
 /// Writes `recs` as a fragment file. Records that are not drawable (`drawable`) are
 /// skipped; the rest are written in rank order, canonical, after `impl clipboard schematic`.
+///
+/// # Panics
+///
+/// Only if `schemify_format::write` stops writing the file header (a bug there).
+#[must_use]
 pub fn encode(recs: &[RecordBuf]) -> String {
     let mut order: Vec<&RecordBuf> = recs
         .iter()
@@ -28,6 +33,10 @@ pub fn encode(recs: &[RecordBuf]) -> String {
         .take_while(|r| r.kind == RecordKind::Pin)
         .count();
     let impl_at = pins; // pins first (rank 1, file order), then the impl, then the rest
+    assert!(
+        order[impl_at..].iter().all(|r| r.kind != RecordKind::Pin),
+        "pins sort first"
+    );
     let mut wrote_impl = false;
     for (i, r) in order.iter().enumerate() {
         if i == impl_at {
@@ -43,7 +52,7 @@ pub fn encode(recs: &[RecordBuf]) -> String {
         d.push_field("clipboard");
         d.push_field("schematic");
     }
-    let text = write(&d);
+    let text = schemify_format::write(&d);
     assert!(text.starts_with("schemify "));
     text
 }
@@ -54,8 +63,12 @@ pub fn encode(recs: &[RecordBuf]) -> String {
 /// # Errors
 ///
 /// The text is not a Schemify file (the first diagnostic), or holds no drawable record.
+///
+/// # Panics
+///
+/// Never: the assert checks that only drawable records are kept.
 pub fn decode(text: &str) -> Result<Vec<RecordBuf>, String> {
-    let d = parse(text.as_bytes()).map_err(|e| {
+    let d = schemify_format::parse(text.as_bytes()).map_err(|e| {
         e.diagnostics.first().map_or_else(
             || "not a Schemify fragment".to_owned(),
             |d| format!("{}:{}: {}", d.line, d.col, d.detail),
@@ -71,6 +84,10 @@ pub fn decode(text: &str) -> Result<Vec<RecordBuf>, String> {
     if recs.is_empty() {
         return Err("the clipboard holds no schematic objects".into());
     }
+    assert!(
+        recs.iter().all(|r| drawable(r.kind)),
+        "decode keeps drawable records only"
+    );
     Ok(recs)
 }
 
@@ -83,6 +100,7 @@ fn drawable(kind: RecordKind) -> bool {
 }
 
 fn write_rec(d: &mut FormatDoc<'_>, r: &RecordBuf) {
+    assert!(drawable(r.kind), "encode filters to drawable records");
     d.begin_record(r.kind);
     for f in &r.fields {
         d.push_field(f);

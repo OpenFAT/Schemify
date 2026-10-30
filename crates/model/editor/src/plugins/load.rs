@@ -6,11 +6,12 @@
 //! - `pub(super) fn load_installed`
 //! - `pub(super) fn content_hash`
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use schemify_cli::pack::{self, Installed};
 use schemify_config::{Config, Request, Startup};
-use schemify_doc::Project;
+use schemify_doc::{Attr, Project};
 use schemify_plugin::abi::FUEL_DEFAULT;
 use schemify_plugin::{PluginEvents, PluginId, Plugins, RequestQueues, Snapshots};
 
@@ -33,6 +34,10 @@ impl Host {
     /// every manifest plugin with a `path` source (a `.wasm` file, or a directory holding
     /// `<name>.wasm`), granting what the manifest declares. Load failures and config errors
     /// are returned as messages; plugin failures are also in the health report.
+    ///
+    /// # Panics
+    ///
+    /// Only on a broken internal invariant (a loaded plugin without its content hash).
     pub fn new(
         project: &Project,
         root: &Path,
@@ -108,7 +113,12 @@ impl Host {
             }
         }
         let faults_seen = plugins.health().recorded();
-        let host = Host {
+        assert_eq!(
+            hashes.len(),
+            plugins.ids().len(),
+            "one content hash per loaded plugin"
+        );
+        let mut host = Host {
             plugins,
             events: PluginEvents::new(),
             snapshots: Snapshots::new(),
@@ -127,12 +137,11 @@ impl Host {
             user_cmds: Vec::new(),
             user_logs: Vec::new(),
             user_ready: false,
-            notes: std::collections::VecDeque::new(),
+            notes: VecDeque::new(),
             notes_seq: 0,
             // Load faults are in the startup notes already.
             faults_seen,
         };
-        let mut host = host;
         // Startup errors go out with the load notes (all of them reach the status line).
         for r in startup_out {
             match r {
@@ -153,6 +162,8 @@ pub(super) fn load_installed(
     notes: &mut Vec<String>,
     p: &Installed,
 ) -> Option<PluginId> {
+    assert!(!p.name.is_empty(), "an installed package is named");
+    let hashed = hashes.len();
     let wasm = match platform::read(&p.wasm) {
         Ok(w) => w,
         Err(e) => {
@@ -166,6 +177,7 @@ pub(super) fn load_installed(
         Ok(id) => {
             let _ = plugins.set_worker(id, fuel > FUEL_DEFAULT);
             hashes.push((id, content_hash(&wasm)));
+            assert_eq!(hashes.len(), hashed + 1);
             Some(id)
         }
         Err(c) => {
@@ -179,7 +191,11 @@ pub(super) fn load_installed(
 pub(super) fn content_hash(bytes: &[u8]) -> String {
     let mut h = schemify_doc::hex(&schemify_doc::sha256(bytes));
     h.truncate(HASH_HEX);
-    debug_assert_eq!(h.len(), HASH_HEX);
+    assert_eq!(h.len(), HASH_HEX, "a sha256 has 64 hex digits");
+    assert!(
+        !h.contains(|c: char| c.is_ascii_uppercase()),
+        "lowercase hex"
+    );
     h
 }
 
@@ -192,7 +208,7 @@ pub(super) fn content_hash(bytes: &[u8]) -> String {
 ///
 /// The value is not a whole number in `[FUEL_MIN, FUEL_MAX]`; the caller reports it and
 /// falls back to the default rather than trusting a project file's number.
-fn manifest_fuel(attr: Option<&schemify_doc::Attr>) -> Result<u64, String> {
+fn manifest_fuel(attr: Option<&Attr>) -> Result<u64, String> {
     let Some(attr) = attr else {
         return Ok(FUEL_DEFAULT);
     };

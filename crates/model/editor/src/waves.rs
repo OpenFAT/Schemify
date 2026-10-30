@@ -15,12 +15,15 @@
 //! - `pub fn spice_device`
 //! - `pub fn current_probe`
 
+use std::fmt;
+
+use crate::editor::{DockPicture, UiView};
 use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
 use schemify_ui::{
     Chord, Contribution, InputEvent, InputEvents, Key, Mods, Routed, Strings, Sym, TextSystem,
-    UiLayout, UiState, UiTables, compose, layout, records, route_input,
+    UiLayout, UiState, UiTables, records,
 };
-use schemify_wave::{MAX_DATASETS, Request, Waves, group_datasets, parse_raw};
+use schemify_wave::{Applied, MAX_DATASETS, RawPlot, Request, Waves};
 
 /// One open waveform window.
 pub struct WavesView {
@@ -42,8 +45,8 @@ pub struct WavesView {
     pub title: String,
 }
 
-impl std::fmt::Debug for WavesView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for WavesView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WavesView")
             .field("title", &self.title)
             .finish()
@@ -56,6 +59,10 @@ impl WavesView {
     /// # Errors
     ///
     /// The reader's error text, or more than `wave::MAX_DATASETS` datasets.
+    ///
+    /// # Panics
+    ///
+    /// Never: the built-in waves UI parses (a test pins it).
     pub fn open(title: &str, bytes: &[u8]) -> Result<WavesView, String> {
         let waves = Waves::new(datasets(title, bytes)?);
         let mut strings = Strings::new();
@@ -86,12 +93,12 @@ impl WavesView {
     fn rebuild(&mut self) {
         for _ in 0..3 {
             self.session = self.ui.contribute(&self.waves, &mut self.strings);
-            self.tables = compose(
+            self.tables = schemify_ui::compose(
                 &self.strings,
                 &self.base,
                 &[(self.session_name, &self.session)],
             );
-            self.frame = layout(
+            self.frame = schemify_ui::layout(
                 &self.tables,
                 &self.strings,
                 &mut self.text,
@@ -111,7 +118,13 @@ impl WavesView {
 
     /// One frame of input. Returns `(redraw, close)`; `close` asks the editor to return to
     /// the schematic.
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
     pub fn update(&mut self, events: &InputEvents, viewport: (f32, f32), now: u64) -> (bool, bool) {
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         let close_keys = [
             Chord::new(Mods(Mods::CTRL), Key('w' as u32)),
             Chord::new(Mods::default(), Key::ESCAPE),
@@ -132,7 +145,7 @@ impl WavesView {
             self.rebuild();
         }
         let mut routed = std::mem::take(&mut self.routed);
-        route_input(
+        schemify_ui::route_input(
             &self.tables,
             &self.frame,
             &self.strings,
@@ -176,6 +189,7 @@ impl WavesView {
         }
         changed |= routed.redraw || recompose;
         self.routed = routed;
+        assert!(self.requests.is_empty(), "every request applied this frame");
         (changed, false)
     }
 
@@ -198,8 +212,13 @@ impl WavesView {
     /// # Errors
     ///
     /// The reader's error text; the viewer is unchanged then.
+    ///
+    /// # Panics
+    ///
+    /// Never: the reader caps the datasets at `MAX_DATASETS`.
     pub fn reload(&mut self, title: &str, bytes: &[u8]) -> Result<String, String> {
         let dropped = self.waves.reload(datasets(title, bytes)?);
+        assert!(self.waves.datasets().len() <= MAX_DATASETS);
         self.title = title.to_owned();
         if self.viewport.0 > 0.0 {
             self.rebuild();
@@ -218,6 +237,10 @@ impl WavesView {
     /// # Errors
     ///
     /// No dataset evaluates `src` (the last dataset's reason), or the viewer is full.
+    ///
+    /// # Panics
+    ///
+    /// Never: the viewer holds at most `MAX_DATASETS` (256) datasets.
     pub fn add_trace(&mut self, src: &str) -> Result<(), String> {
         if self.traces().iter().any(|t| t.eq_ignore_ascii_case(src)) {
             return Ok(());
@@ -226,12 +249,12 @@ impl WavesView {
         for d in (0..self.waves.datasets().len()).rev() {
             let req = Request::AddTrace {
                 src: src.to_owned(),
-                dataset: d as u8,
+                dataset: u8::try_from(d).expect("dataset indices < MAX_DATASETS fit u8"),
                 pane: self.ui.active_pane(),
             };
             let res = self.waves.apply(&req);
             match &res {
-                Ok(schemify_wave::Applied::Trace(_)) => {
+                Ok(Applied::Trace(_)) => {
                     self.ui.note(&self.waves, &req, &res);
                     if self.viewport.0 > 0.0 {
                         self.rebuild();
@@ -254,10 +277,10 @@ impl WavesView {
 
     /// The dock's tables as [`crate::editor::Editor::picture`] lends them, painted `dy`
     /// logical px below the window's top.
-    pub(crate) fn picture(&mut self, dy: f64) -> crate::editor::DockPicture<'_> {
+    pub(crate) fn picture(&mut self, dy: f64) -> DockPicture<'_> {
         assert!(dy >= 0.0, "a dock below the window's top");
-        crate::editor::DockPicture {
-            ui: crate::editor::UiView {
+        DockPicture {
+            ui: UiView {
                 tables: &self.tables,
                 layout: &self.frame,
                 strings: &self.strings,
@@ -274,15 +297,27 @@ impl WavesView {
 
 /// ngspice's name of the device emitted as `emitted`: lowercase, and inside a subcircuit
 /// its type letter and a dot in front (`X1.MM2` → `m.x1.mm2`, top-level `MM1` → `mm1`).
+///
+/// # Panics
+///
+/// If `emitted` is empty.
+#[must_use]
 pub fn spice_device(emitted: &str) -> String {
+    assert!(!emitted.is_empty(), "an emitted device name");
     let lower = emitted.to_ascii_lowercase();
-    match lower.rsplit_once('.') {
+    let dev = match lower.rsplit_once('.') {
         Some((_, last)) if !last.is_empty() => {
             let letter = &last[..last.chars().next().map_or(0, char::len_utf8)];
             format!("{letter}.{lower}")
         }
         _ => lower,
-    }
+    };
+    assert!(dev.len() >= emitted.len(), "a prefix, never a cut");
+    debug_assert!(
+        !dev.bytes().any(|b| b.is_ascii_uppercase()),
+        "ngspice lowercases"
+    );
+    dev
 }
 
 /// The waves calculator expression of the current into `pin` of the device emitted as
@@ -292,6 +327,11 @@ pub fn spice_device(emitted: &str) -> String {
 /// `p` = `i` + the pin's initial for MOS and JFET drain/gate/source/bulk and BJT
 /// collector/base/emitter/substrate pins (`id`, `ic` when the pin name says nothing), else
 /// `id` for a diode and `i` for two-terminal devices.
+///
+/// # Panics
+///
+/// If `emitted` is empty.
+#[must_use]
 pub fn current_probe(emitted: &str, pin: &str) -> String {
     let dev = spice_device(emitted);
     let last = emitted.rsplit('.').next().unwrap_or(emitted);
@@ -312,18 +352,22 @@ pub fn current_probe(emitted: &str, pin: &str) -> String {
         'q' => "ic".to_owned(),
         _ => "i".to_owned(),
     };
-    let out = format!("i(\"@{dev}[{param}]\")");
-    assert!(out.len() > 6);
-    out
+    format!("i(\"@{dev}[{param}]\")")
 }
 
 // ---- private ----
 
 /// The datasets of a `.raw` file (ngspice/Xyce/LTspice, binary or ASCII), `.step` blocks
 /// grouped; errors name `title`.
-fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<schemify_wave::RawPlot>, String> {
-    let plots = parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
-    let d = group_datasets(plots);
+fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<RawPlot>, String> {
+    let plots = schemify_wave::parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
+    let d = schemify_wave::group_datasets(plots);
+    const {
+        assert!(
+            MAX_DATASETS <= u8::MAX as usize + 1,
+            "dataset indices fit u8"
+        )
+    };
     if d.len() > MAX_DATASETS {
         return Err(format!(
             "{title}: {} datasets (at most {MAX_DATASETS})",

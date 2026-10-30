@@ -10,9 +10,12 @@
 //! - `pub(super) fn arc_beziers`
 //! - `pub(super) fn page_ops`
 
-use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
+use std::collections::BTreeMap;
 
-use super::{FONT_NAMES, Look, arc_point};
+use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
+use schemify_ui::FontGlyph;
+
+use super::{FONT_NAMES, Look};
 
 /// Which page-description language a vector page is written in: PDF content-stream
 /// operators or PostScript. Same geometry, two spellings.
@@ -24,7 +27,7 @@ pub(super) enum Lang {
 
 /// Glyphs one face prints: glyph id → (advance in font units, a character it prints).
 /// Ordered, so the font tables written from it are deterministic.
-pub(super) type Glyphs = std::collections::BTreeMap<u16, (u16, char)>;
+pub(super) type Glyphs = BTreeMap<u16, (u16, char)>;
 
 /// Glyphs the texts of a document print, per [`schemify_ui::ui_fonts`] face; a face with
 /// none is not embedded.
@@ -33,11 +36,30 @@ pub(super) type Used = [Glyphs; 2];
 /// Page coordinates of world bounds `b` fitted (aspect kept) into a `page` of points with a
 /// `margin`: `(scale points per milli-unit, x offset, y top)`. PDF and PostScript have y up.
 pub(super) fn fit(b: [i32; 4], page: (f64, f64), margin: f64) -> (f64, f64, f64) {
+    assert!(margin >= 0.0);
+    assert!(
+        page.0 > 2.0 * margin,
+        "page width {} inside its margins",
+        page.0
+    );
+    assert!(
+        page.1 > 2.0 * margin,
+        "page height {} inside its margins",
+        page.1
+    );
     let w = (f64::from(b[2]) - f64::from(b[0])).max(1.0);
     let h = (f64::from(b[3]) - f64::from(b[1])).max(1.0);
     let s = ((page.0 - 2.0 * margin) / w).min((page.1 - 2.0 * margin) / h);
     let ox = margin + ((page.0 - 2.0 * margin) - w * s) / 2.0;
     let top = page.1 - margin - ((page.1 - 2.0 * margin) - h * s) / 2.0;
+    assert!(
+        s > 0.0,
+        "a drawing of ≥ 1 milli-unit a side has a positive scale"
+    );
+    assert!(
+        ox >= margin - 1e-9,
+        "the drawing starts inside the left margin"
+    );
     (s, ox, top)
 }
 
@@ -46,15 +68,20 @@ pub(super) fn fit(b: [i32; 4], page: (f64, f64), margin: f64) -> (f64, f64, f64)
 /// at most 90°, each rounded to a milli-unit (so platform `sin`/`cos`/`tan` last-bit
 /// differences do not reach the bytes). Radial error below 0.03% of the radius.
 pub(super) fn arc_beziers(cx: i32, cy: i32, r: i32, start: i64, sweep: i64) -> Vec<(i32, i32)> {
+    assert!(r >= 0, "an arc radius is a length, got {r}");
     let sweep = sweep.clamp(-360_000, 360_000);
-    let n = sweep.unsigned_abs().div_ceil(90_000).max(1) as i64;
+    let n = i64::try_from(sweep.unsigned_abs().div_ceil(90_000).max(1)).expect("≤ 4 segments");
+    assert!(
+        (1..=4).contains(&n),
+        "segments of at most 90° over at most a full turn"
+    );
     let rf = f64::from(r);
     let at = |x: f64, y: f64| {
         let q = |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
         (q(f64::from(cx) + x), q(f64::from(cy) + y))
     };
     let end = |d: i64| {
-        let p = arc_point(cx, cy, r, d);
+        let p = super::arc_point(cx, cy, r, d);
         let q = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
         (q(p.0), q(p.1))
     };
@@ -92,6 +119,16 @@ pub(super) fn page_ops(
     assert!(
         page.0 > 48.0 && page.1 > 48.0,
         "a page wider than its margins"
+    );
+    assert_eq!(
+        prims.texts.end.len(),
+        prims.texts.x.len(),
+        "text columns in step"
+    );
+    assert_eq!(
+        prims.polygons.end.len(),
+        prims.polygons.layer.len(),
+        "polygon columns"
     );
     let (s, ox, top) = fit(b, page, 24.0);
     let px = |x: i32| ox + (f64::from(x) - f64::from(b[0])) * s;
@@ -280,7 +317,7 @@ pub(super) fn page_ops(
     }
     let t = &prims.texts;
     let mut start = 0usize;
-    let mut glyphs: Vec<schemify_ui::FontGlyph> = Vec::new();
+    let mut glyphs: Vec<FontGlyph> = Vec::new();
     for i in 0..t.x.len() {
         let end = t.end[i] as usize;
         let text = &t.text[start..end];
@@ -346,5 +383,6 @@ pub(super) fn page_ops(
             ),
         };
     }
+    assert!(!o.is_empty(), "the clip path is always written");
     o
 }

@@ -9,7 +9,7 @@
 //! - `pub fn methods`
 
 use schemify_cli::rpc::{INVALID_PARAMS, Json, METHOD_NOT_FOUND};
-use schemify_plugin::abi::text;
+use schemify_plugin::abi::{Kind, text};
 
 use crate::commands::{CORE, Target};
 use crate::editor::Editor;
@@ -29,6 +29,10 @@ pub enum Dispatched {
 /// names (core and plugin rows, `<name>.<word>` suffix arguments included) plus
 /// `rpc.methods`; params are an array of strings, passed as line-record values (the `args`
 /// a menu row or key carries).
+///
+/// # Panics
+///
+/// Never: the assert checks one value per param.
 pub fn dispatch(ed: &mut Editor, method: &str, params: &Json) -> Dispatched {
     if method == "rpc.methods" {
         return Dispatched::Ready(Ok(methods(ed)));
@@ -50,11 +54,19 @@ pub fn dispatch(ed: &mut Editor, method: &str, params: &Json) -> Dispatched {
         }
         text::push_value(&mut arg, a);
     }
+    assert!(
+        arg.len() + 1 >= args.len(),
+        "a value per param, space separated"
+    );
     Dispatched::Queued(ed.command_answered(method, &arg))
 }
 
 /// Every method name: `rpc.methods`, the core commands, then the plugin commands, sorted
 /// within each group.
+///
+/// # Panics
+///
+/// Never: the asserts check one name per method.
 pub fn methods(ed: &Editor) -> Json {
     let mut names = vec![Json::Str("rpc.methods".into())];
     names.extend(CORE.iter().map(|(n, _)| Json::Str((*n).to_owned())));
@@ -62,12 +74,18 @@ pub fn methods(ed: &Editor) -> Json {
         .host()
         .plugins
         .composed()
-        .of(schemify_plugin::abi::Kind::Commands)
+        .of(Kind::Commands)
         .iter()
         .filter_map(|r| r.key.strip_prefix("command "))
         .collect();
     plugin.sort_unstable();
     plugin.dedup();
+    let total = names.len() + plugin.len();
     names.extend(plugin.into_iter().map(|n| Json::Str(n.to_owned())));
+    assert_eq!(names.len(), total, "one name per method");
+    assert!(
+        names.len() > CORE.len(),
+        "`rpc.methods` and every core command"
+    );
     Json::Arr(names)
 }

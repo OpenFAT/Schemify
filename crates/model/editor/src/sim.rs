@@ -58,6 +58,7 @@ mod results;
 mod start;
 mod table;
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use schemify_doc::DocHandle;
@@ -254,8 +255,8 @@ enum Request {
 /// Bytes read from the end of a log file to find its tail.
 const LOG_TAIL_BYTES: u64 = 8 << 10;
 
-impl std::fmt::Debug for Sim {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Sim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Sim")
             .field("runs", &self.runs.len())
             .field("shown", &self.shown)
@@ -267,6 +268,7 @@ impl std::fmt::Debug for Sim {
 impl Sim {
     /// An idle run state whose runners start `tools` (the user config's `sim` rows; tests
     /// pass a fake simulator).
+    #[must_use]
     pub fn new(tools: Tools) -> Sim {
         Sim {
             tools,
@@ -294,58 +296,93 @@ impl Sim {
     }
 
     /// Whether a run is in flight or requests wait.
+    #[must_use]
     pub fn busy(&self) -> bool {
         self.runs.iter().any(|r| !r.idle()) || !self.queue.is_empty()
     }
 
     /// Runs in flight.
+    ///
+    /// # Panics
+    ///
+    /// Never: runs are capped at [`RUNS_MAX`].
+    #[must_use]
     pub fn running(&self) -> usize {
-        self.runs.iter().filter(|r| !r.idle()).count()
+        assert!(self.runs.len() <= RUNS_MAX);
+        let n = self.runs.iter().filter(|r| !r.idle()).count();
+        assert!(n <= self.runs.len());
+        n
     }
 
     /// Requests waiting for their bench.
+    ///
+    /// # Panics
+    ///
+    /// Never: requests past [`QUEUE_MAX`] are refused.
+    #[must_use]
     pub fn queued(&self) -> usize {
+        assert!(self.queue.len() <= QUEUE_MAX);
         self.queue.len()
     }
 
     /// Milliseconds until the next poll: [`POLL_MS`] while busy, `None` when idle (D39).
+    #[must_use]
     pub fn wake_ms(&self) -> Option<u32> {
         self.busy().then_some(POLL_MS)
     }
 
     /// The bench whose results are shown.
+    #[must_use]
     pub fn bench(&self) -> Option<DocHandle> {
         self.shown
     }
 
     /// Whether the shown results belong to another design than the documents now open.
+    #[must_use]
     pub fn stale(&self) -> bool {
         self.stale
     }
 
     fn index_of(&self, bench: DocHandle) -> Option<usize> {
-        self.runs.iter().position(|r| r.bench == bench)
+        assert!(self.runs.len() <= RUNS_MAX);
+        let i = self.runs.iter().position(|r| r.bench == bench);
+        debug_assert!(
+            i.is_none_or(|i| !self.runs[i + 1..].iter().any(|r| r.bench == bench)),
+            "one run per bench"
+        );
+        i
     }
 
     fn shown_run(&self) -> Option<&BenchRun> {
-        self.shown
+        let r = self
+            .shown
             .and_then(|b| self.index_of(b))
-            .map(|i| &self.runs[i])
+            .map(|i| &self.runs[i]);
+        assert!(r.is_none_or(|r| Some(r.bench) == self.shown));
+        r
     }
 
     /// Plan, jobs and results of the shown run, if any.
+    #[must_use]
     pub fn tables(&self) -> Option<(&Plan, &Jobs, &Results)> {
         self.shown_run()
             .map(|r| (&r.run.plan, &r.run.jobs, &r.run.results))
     }
 
     /// Plan, jobs and results of `bench`'s run, if it has one.
+    ///
+    /// # Panics
+    ///
+    /// Never: the run found is `bench`'s.
+    #[must_use]
     pub fn tables_of(&self, bench: DocHandle) -> Option<(&Plan, &Jobs, &Results)> {
         let r = &self.runs[self.index_of(bench)?];
+        assert_eq!(r.bench, bench);
         Some((&r.run.plan, &r.run.jobs, &r.run.results))
     }
 
     /// The run directory of the shown results.
+    #[must_use]
     pub fn dir(&self) -> Option<&Path> {
         self.shown_run()
             .map(|r| r.run.runner.config().dir.as_path())

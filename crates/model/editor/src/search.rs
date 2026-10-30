@@ -15,7 +15,7 @@
 //! - `pub fn find`
 //! - `pub fn replace`
 
-use schemify_doc::{Document, Op, TableId, Target};
+use schemify_doc::{Document, Instances, Op, TableId, Target};
 use schemify_format::RecordKind;
 
 use crate::scene::ObjKey;
@@ -46,6 +46,7 @@ struct Hit {
 /// # Panics
 ///
 /// Panics if `q.value` is empty.
+#[must_use]
 pub fn find(doc: &Document, q: &Query) -> Vec<ObjKey> {
     let mut keys: Vec<ObjKey> = hits(doc, q).into_iter().map(|h| h.key).collect();
     keys.sort_unstable();
@@ -59,10 +60,13 @@ pub fn find(doc: &Document, q: &Query) -> Vec<ObjKey> {
 /// # Panics
 ///
 /// Panics if `q.value` is empty.
+#[must_use]
 pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
     let s = doc.strings();
     let mut ops = Vec::new();
-    for h in hits(doc, q) {
+    let found = hits(doc, q);
+    let n = found.len();
+    for h in found {
         let new = q.replaced(&h.text, with);
         if new == h.text {
             continue;
@@ -70,6 +74,13 @@ pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
         let Some(loc) = crate::edit::loc_of(doc, h.key) else {
             continue;
         };
+        assert!(
+            matches!(
+                h.key.table,
+                TableId::Instances | TableId::Labels | TableId::Ports | TableId::Texts
+            ),
+            "search reads these tables only"
+        );
         let id = match h.key.table {
             TableId::Instances => doc.instances().id[loc.row as usize],
             TableId::Labels => doc.labels().id[loc.row as usize],
@@ -90,6 +101,7 @@ pub fn replace(doc: &Document, q: &Query, with: &str) -> Vec<Op> {
             },
         });
     }
+    assert!(ops.len() <= n, "one op per match at most");
     ops
 }
 
@@ -123,6 +135,10 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
     let s = doc.strings();
     let mut out = Vec::new();
     let inst = doc.instances();
+    assert!(
+        crate::wiring::instances_in_step(inst),
+        "instance columns in step"
+    );
     for i in 0..inst.id.len() {
         let key = ObjKey {
             table: TableId::Instances,
@@ -153,7 +169,7 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
             let Some(&v0) = v.first() else { continue };
             let v = s.get(v0);
             let named = q.field == k && !matches!(k, "name" | "at");
-            let any = q.field == "*" && schemify_doc::Instances::is_override(k);
+            let any = q.field == "*" && Instances::is_override(k);
             if (named || any) && q.hit(v) {
                 out.push(Hit {
                     key,
@@ -174,6 +190,10 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
         if !q.wants(field) {
             continue;
         }
+        assert!(
+            crate::wiring::placed_in_step(t),
+            "{table:?} columns in step"
+        );
         for i in 0..t.id.len() {
             let text = s.get(t.text[i]);
             if q.hit(text) {
@@ -190,6 +210,7 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
             }
         }
     }
+    debug_assert!(out.iter().all(|h| q.hit(&h.text)), "every hit matches");
     out
 }
 

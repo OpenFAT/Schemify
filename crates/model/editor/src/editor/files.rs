@@ -72,6 +72,13 @@ impl Editor {
         self.session.switch_tab(i);
     }
     pub(super) fn descend(&mut self, h: DocHandle, cmd: Cmd) {
+        assert!(
+            matches!(
+                cmd,
+                Cmd::Descend | Cmd::DescendSymbol | Cmd::OpenSubTab | Cmd::OpenSymbolTab
+            ),
+            "{cmd:?} is no descent"
+        );
         let Some(key) = self.one_instance() else {
             self.session.say("select exactly one instance");
             return;
@@ -135,7 +142,12 @@ impl Editor {
             return;
         }
         self.confirm = None;
-        if let Err(e) = self.session.close_active_tab() {
+        let closed = self.session.close_active_tab();
+        assert!(
+            closed.is_err() || !self.session.tabs().is_empty(),
+            "the last tab is replaced"
+        );
+        if let Err(e) = closed {
             self.session.say(e);
         }
         self.tool = Tool::Idle;
@@ -153,6 +165,10 @@ impl Editor {
             Ok(bytes) => match self.session.project.external_change(h, &bytes) {
                 Ok(External::Unchanged) => self.session.say("file unchanged"),
                 Ok(e) => {
+                    debug_assert!(
+                        !self.session.project.is_dirty(h),
+                        "a clean document reloads clean"
+                    );
                     self.session.say(format!("reloaded ({e:?})"));
                     self.session.bump(h);
                     self.session.flush_journal(h);
@@ -171,6 +187,7 @@ impl Editor {
             return;
         }
         crate::recent::push(&mut self.recent, crate::libs::absolute(p));
+        assert!(self.recent.len() <= crate::recent::RECENT_MAX);
         if let Some(dir) = &self.state_dir
             && let Err(e) = crate::recent::save(dir, &self.recent)
         {
@@ -180,6 +197,10 @@ impl Editor {
     /// Opens recent file `i`: in a tab when it belongs to this project (or one of its local
     /// libraries), else by switching to its project (`switch_project`).
     pub(super) fn open_recent(&mut self, i: usize, reqs: &mut Vec<EditRequest>) {
+        assert!(
+            self.recent.len() <= crate::recent::RECENT_MAX,
+            "the recent list keeps its cap"
+        );
         let Some(path) = self.recent.get(i).cloned() else {
             self.session.say("no recent file");
             return;
@@ -192,12 +213,12 @@ impl Editor {
         }
         match self.session.open_path(&path) {
             Ok(d) => {
-                let view = super::default_view(self.session.project.doc(d));
+                let view = default_view(self.session.project.doc(d));
                 self.session.open_tab(d, view);
                 self.remember(d);
                 self.tool = Tool::Idle;
             }
-            Err(_) if super::project_root(&path) != crate::libs::absolute(&self.session.root) => {
+            Err(_) if project_root(&path) != crate::libs::absolute(&self.session.root) => {
                 self.switch_project(path, reqs);
             }
             Err(e) => self.session.say(e),
@@ -256,7 +277,8 @@ impl Editor {
         *self = next;
         self.refresh_palette();
         self.session.say(format!("project {}", root.display()));
-        assert!(reqs.is_empty() && self.active().is_some());
+        assert!(reqs.is_empty(), "the old project's requests are dropped");
+        assert!(self.active().is_some(), "the new project shows a document");
     }
 }
 
@@ -295,6 +317,11 @@ impl Editor {
                 }
             }
         }
+        assert_eq!(out[0], h, "the top document first");
+        debug_assert!(
+            out.iter().enumerate().all(|(k, d)| !out[..k].contains(d)),
+            "each once"
+        );
         out
     }
 }
@@ -318,10 +345,14 @@ pub(super) fn project_root(file: &Path) -> PathBuf {
     // Bounded by the path depth.
     while let Some(d) = dir {
         if platform::exists(&d.join("schemify.project")) {
+            assert!(abs.starts_with(&d), "an ancestor of the file");
             return d;
         }
         dir = d.parent().map(Path::to_path_buf);
     }
-    abs.parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    let root = abs
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    assert!(abs.starts_with(&root) || root == Path::new("."));
+    root
 }

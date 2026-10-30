@@ -23,7 +23,7 @@ use crate::session::View;
 use crate::{checks, edit, export, scene};
 
 use super::Editor;
-use super::finish::{arc_3, dist};
+use super::finish;
 use super::tool::{Form, Placement, Tool};
 
 /// What a displayed scene (`shown`) was made for: (scene build key, symbol mode, symbol texts).
@@ -47,6 +47,7 @@ impl Editor {
             self.symbols_key = Some(key);
             self.refresh_symbols_of(h);
         }
+        assert_eq!(self.symbols_key, Some(key));
     }
     /// Makes the symbol cache current for every cell `d` instantiates, from the library
     /// index (`Project::interface`): an open cell draws its edited document, any other its
@@ -113,6 +114,11 @@ impl Editor {
                     revalued,
                 );
             }
+            assert!(
+                self.session.project.doc(h).is_none()
+                    || self.scene.built == Some((h, view, epoch, self.symbols.epoch)),
+                "the scene is built for the active level"
+            );
             self.canvas_gen[0] += 1;
             self.scene_values = self.values_gen;
             self.revalued.clear();
@@ -150,6 +156,7 @@ impl Editor {
                 self.sel_color,
                 &mut self.marks,
             );
+            assert!(self.sel_prims.len() <= self.scene.prims.len());
             self.canvas_gen[3] += 1;
             self.sel_changed = false;
         }
@@ -200,7 +207,7 @@ impl Editor {
                         }
                     }
                     Placement::Label(t)
-                    | Placement::Port(t, _)
+                    | Placement::Port { name: t, .. }
                     | Placement::Text(t)
                     | Placement::SymPin(t) => {
                         o.rect(
@@ -297,6 +304,7 @@ impl Editor {
             .iter()
             .map(|k| k.table == TableId::Instances)
             .collect();
+        assert_eq!(boxed.len(), sc.objs.len(), "one flag per object");
         let keep: Vec<bool> = boxed.iter().map(|b| !b).collect();
         let mut out = export::subset(sc, &keep);
         if !texts {
@@ -348,17 +356,25 @@ impl Editor {
         let cam = self.camera();
         let w = self.view_world_rect();
         if let Tool::Shape { form, pts, to } = &self.tool {
+            assert!(!pts.is_empty(), "a shape tool holds its first point");
             let layer = self.opts.layer;
             match form {
                 Form::Rect => {
                     o.rect(pts[0].0, pts[0].1, to.0, to.1, layer);
                 }
                 Form::Circle => {
-                    o.arc(pts[0].0, pts[0].1, dist(pts[0], *to), 0, 360_000, layer);
+                    o.arc(
+                        pts[0].0,
+                        pts[0].1,
+                        finish::dist(pts[0], *to),
+                        0,
+                        360_000,
+                        layer,
+                    );
                 }
                 Form::Arc if pts.len() == 2 => {
-                    if let Some((cx, cy, r, s, sw)) = arc_3(pts[0], pts[1], *to) {
-                        o.arc(cx, cy, r, s, sw, layer);
+                    if let Some(a) = finish::arc_3(pts[0], pts[1], *to) {
+                        o.arc(a.center.0, a.center.1, a.r, a.start, a.sweep, layer);
                     } else {
                         o.line(pts[0].0, pts[0].1, pts[1].0, pts[1].1, layer);
                     }

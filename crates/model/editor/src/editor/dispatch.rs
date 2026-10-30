@@ -1,6 +1,7 @@
 //! Command dispatch: a command name → a core command's arm (`run`, `run_cmd`) or a plugin event.
 //!
 //! Contents:
+//! - `pub(super) enum Caller`, `pub(super) struct Ran`
 //! - `pub(super) fn kind_refusal`
 //! - `Editor::dispatch_all`
 //! - `Editor::dispatch`
@@ -9,6 +10,7 @@
 
 use schemify_doc::{Document, EditRequest};
 use schemify_format::FileKind;
+use schemify_plugin::PluginId;
 use schemify_plugin::abi::Event;
 use schemify_ui::CommandRequests;
 
@@ -17,7 +19,24 @@ use crate::commands::{Cmd, Target};
 use super::Editor;
 use super::dialog::Dialog;
 
-/// A `.shprim` has only a symbol; everything else opens on its schematic.
+/// Who runs a command: an unknown name goes to the user config only for the user's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Caller {
+    /// A menu row, key or button (routed input, the user config's `schemify.cmd`).
+    User,
+    /// The command stream ([`Editor::command`]): CLI, JSON-RPC, scripted tests.
+    Stream,
+}
+
+/// What [`Editor::dispatch`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Ran {
+    /// Anything changed.
+    pub(super) changed: bool,
+    /// The plugin a command event was queued for.
+    pub(super) plugin: Option<PluginId>,
+}
+
 /// The status line for `cmd` refused on a file of `kind`: what the command needs.
 pub(super) fn kind_refusal(cmd: Cmd, kind: FileKind) -> String {
     let ext = |k: &FileKind| format!(".{}", format!("{k:?}").to_lowercase());
@@ -45,46 +64,60 @@ impl Editor {
             } else {
                 self.shell.strings.get(cmds.node[i]).to_owned()
             };
-            changed |= self.dispatch(&name, cmds.arg(i), &node, true, reqs).0;
+            changed |= self
+                .dispatch(&name, cmds.arg(i), &node, Caller::User, reqs)
+                .changed;
         }
         changed
     }
     /// Runs command `name` with `arg` (else its `<name>.<word>` suffix): a core command, or
     /// an `Event::Command` to the plugin that owns it (returned once queued). An unknown name
-    /// goes to the user config (a Lua keymap function, a lazy package) when `user`. Returns
-    /// whether anything changed.
+    /// goes to the user config (a Lua keymap function, a lazy package) for a
+    /// [`Caller::User`].
     pub(super) fn dispatch(
         &mut self,
         name: &str,
         arg: &str,
         node: &str,
-        user: bool,
+        caller: Caller,
         reqs: &mut Vec<EditRequest>,
-    ) -> (bool, Option<schemify_plugin::PluginId>) {
+    ) -> Ran {
+        assert!(!name.is_empty(), "a command has a name");
         let (target, suffix) = self.commands.resolve_arg(name);
         let arg = if arg.is_empty() { suffix } else { arg };
-        match target {
-            Target::Core(cmd) => (self.run(cmd, arg, node, reqs), None),
+        let ran = |changed: bool, plugin: Option<PluginId>| Ran { changed, plugin };
+        let out = match target {
+            Target::Core(cmd) => ran(self.run(cmd, arg, node, reqs), None),
             Target::Plugin(id) => match self
                 .host
                 .push(Some(id), &Event::Command { name, args: arg })
             {
-                Ok(()) => (true, Some(id)),
+                Ok(()) => ran(true, Some(id)),
                 Err(e) => {
                     self.session.say(e);
-                    (true, None)
+                    ran(true, None)
                 }
             },
             // A Lua keymap function or a lazy package's first command (config spec §3, §5).
-            Target::Unknown if user && self.host.user_command(name, arg) => (true, None),
+            Target::Unknown if caller == Caller::User && self.host.user_command(name, arg) => {
+                ran(true, None)
+            }
             Target::Unknown => {
                 self.session.say(format!("{name}: not available yet"));
-                (true, None)
+                ran(true, None)
             }
-        }
+        };
+        assert!(
+            out.plugin.is_none() || out.changed,
+            "a queued plugin event is a change"
+        );
+        out
     }
     /// Runs one core command. Returns whether anything visible changed.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the modal gate and the routing of every core command to its family, in one place"
+    )]
     pub(super) fn run(
         &mut self,
         cmd: Cmd,
@@ -96,7 +129,7 @@ impl Editor {
             // Typing in a field: allowed in every dialog and tab, changes no document.
             return self.field_typed(node, arg);
         }
-        if matches!(self.dialog, Dialog::Ctx(_)) && cmd != Cmd::DialogClose {
+        if matches!(self.dialog, Dialog::Ctx { .. }) && cmd != Cmd::DialogClose {
             // A context-menu row: the menu closes and its command runs as from the menubar.
             self.close_dialog();
         }

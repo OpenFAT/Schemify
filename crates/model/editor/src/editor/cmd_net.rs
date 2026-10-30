@@ -11,12 +11,14 @@ use crate::geometry::Xform;
 use crate::{edit, spines};
 
 use super::Editor;
-use super::apply::push_req;
+use super::apply;
 use super::chooser::ChooseFor;
 use super::dialog::Dialog;
-use super::highlight::{duplicate_names, overlapped};
-use super::symbol::{PITCH, pins_from_ports};
-use super::text::{expand_bus, help_text};
+use super::highlight;
+use super::symbol;
+use super::symbol::PITCH;
+use super::text;
+use super::text::{NetlistOf, Stream};
 use super::tool::{Placement, Tool};
 
 impl Editor {
@@ -36,7 +38,8 @@ impl Editor {
             Cmd::Highlight | Cmd::Unhighlight | Cmd::UnhighlightSelected => {
                 self.highlight_cmd(h, cmd);
             }
-            Cmd::Netlist | Cmd::NetlistTop => self.netlist(cmd == Cmd::Netlist),
+            Cmd::Netlist => self.netlist(NetlistOf::Top),
+            Cmd::NetlistTop => self.netlist(NetlistOf::Level),
             Cmd::SetDialect => {
                 let word = if arg.is_empty() {
                     node.rsplit('.').next().unwrap_or("")
@@ -52,7 +55,8 @@ impl Editor {
                 }
             }
             Cmd::ShowNetlist => self.show_netlist = !self.show_netlist,
-            Cmd::Simulate | Cmd::Optimize => self.simulate(h, cmd == Cmd::Optimize, arg),
+            Cmd::Simulate => self.simulate(h, None),
+            Cmd::Optimize => self.simulate(h, Some(arg.trim())),
             Cmd::SimCancel => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -96,7 +100,7 @@ impl Editor {
                 } else {
                     Edit::Reject(id)
                 };
-                push_req(reqs, h, edit);
+                apply::push_req(reqs, h, edit);
             }
             Cmd::ShowStaged => {
                 let n = self.session.project.stages(h).len().max(1);
@@ -124,7 +128,7 @@ impl Editor {
                 self.commit(reqs, h, "attach labels", ops);
             }
             Cmd::PinsFromPorts => {
-                let ops = self.with_doc(h, pins_from_ports);
+                let ops = self.with_doc(h, symbol::pins_from_ports);
                 if ops.is_empty() {
                     self.session.say("select schematic ports without a pin");
                 }
@@ -134,7 +138,7 @@ impl Editor {
                 let mut body = String::from("Highlighted nets\n\n");
                 for k in &self.highlight {
                     if cmd == Cmd::ListNetsBuses {
-                        for bit in expand_bus(k) {
+                        for bit in text::expand_bus(k) {
                             body.push_str(&bit);
                             body.push('\n');
                         }
@@ -170,6 +174,7 @@ impl Editor {
                         )
                     })
                     .collect();
+                assert_eq!(recs.len(), names.len(), "one record per net");
                 self.tool = Tool::Place {
                     what: Placement::Paste(recs),
                     at: ptr,
@@ -186,13 +191,13 @@ impl Editor {
             },
             Cmd::CompareSwap => self.compare_swap(h),
             Cmd::DupNames => {
-                let keys = self.with_doc(h, |d, _| duplicate_names(d).0);
+                let keys = self.with_doc(h, |d, _| highlight::duplicate_names(d).keys);
                 self.session
                     .say(format!("{} instance(s) with a duplicate name", keys.len()));
                 self.set_selection(keys);
             }
             Cmd::RenameDups => {
-                let ops = self.with_doc(h, |d, _| duplicate_names(d).1);
+                let ops = self.with_doc(h, |d, _| highlight::duplicate_names(d).ops);
                 if ops.is_empty() {
                     self.session.say("no duplicate instance names");
                 }
@@ -204,7 +209,7 @@ impl Editor {
                 self.set_selection(keys);
             }
             Cmd::SelectOverlapped => {
-                let keys = self.with_doc(h, |d, _| overlapped(d));
+                let keys = self.with_doc(h, |d, _| highlight::overlapped(d));
                 self.session
                     .say(format!("{} overlapped instance(s)", keys.len()));
                 self.set_selection(keys);
@@ -213,12 +218,13 @@ impl Editor {
             Cmd::EditNetlist => {
                 let show = self.show_netlist;
                 self.show_netlist = true;
-                self.netlist(true);
+                self.netlist(NetlistOf::Top);
                 self.show_netlist = show;
             }
             Cmd::ListProcesses => self.list_processes(),
             Cmd::PackageStatus => self.package_status(),
-            Cmd::JobData | Cmd::JobErrors => self.job_log(cmd == Cmd::JobErrors),
+            Cmd::JobData => self.job_log(Stream::Out),
+            Cmd::JobErrors => self.job_log(Stream::Err),
             Cmd::WavesClear => {
                 self.waves = None;
                 self.shell.invalidate();
@@ -239,7 +245,7 @@ impl Editor {
                     env!("CARGO_PKG_VERSION")
                 ),
             ),
-            Cmd::Help => self.text_tab("Help", "help", help_text()),
+            Cmd::Help => self.text_tab("Help", "help", text::help_text()),
             _ => unreachable!("{cmd:?}: not a net command"),
         }
         true

@@ -38,13 +38,14 @@ use std::path::PathBuf;
 use schemify_canvas::CanvasPrims;
 use schemify_doc::DocHandle;
 use schemify_elab::{Annotations, CellState, Dialect};
+use schemify_ui::Sym;
 
 use crate::checks::Members;
 use crate::commands::Commands;
 use crate::docs::Page;
 use crate::plugins::Host;
 use crate::scene::{ObjKey, Scene};
-use crate::session::{Session, View};
+use crate::session::{Session, TextView, View};
 use crate::shell::Shell;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sim::Sim;
@@ -121,7 +122,11 @@ impl Editor {
     }
     /// Shows `view` in a read-only text tab (the request a netlist or report command makes;
     /// a tab already showing the same file is replaced). Drawn from the next frame.
-    pub fn open_text_tab(&mut self, view: crate::session::TextView) {
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that at most one tab opened.
+    pub fn open_text_tab(&mut self, view: TextView) {
         let tabs = self.session.tabs().len();
         self.session.open_text_tab(view);
         self.ui_stale = true;
@@ -129,7 +134,11 @@ impl Editor {
     }
     /// Sets the scroll offset of the UI node named `id` (as a wheel or scrollbar drag
     /// would), clamped to `[0, max]`; layout reads it on the next frame.
-    pub fn set_scroll(&mut self, id: schemify_ui::Sym, offset: f32, max: f32) {
+    ///
+    /// # Panics
+    ///
+    /// If `offset` or `max` is NaN.
+    pub fn set_scroll(&mut self, id: Sym, offset: f32, max: f32) {
         assert!(
             !offset.is_nan() && !max.is_nan(),
             "scroll offsets are numbers"
@@ -166,7 +175,8 @@ impl Editor {
     /// button. A journal then names its file's hash, so a restart offers its edits against
     /// the file. Cost: O(open files' bytes).
     pub fn settle(&mut self) {
-        for d in self.session.project.handles().collect::<Vec<_>>() {
+        let docs: Vec<DocHandle> = self.session.project.handles().collect();
+        for d in docs {
             self.session.project.settle_journal(d);
             self.session.flush_journal(d);
         }

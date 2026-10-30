@@ -2,6 +2,7 @@
 //!
 //! Contents:
 //! - `pub(super) const DOCK_SPLIT`
+//! - `pub(super) struct Split`
 //! - `Editor::split_input`
 //! - `Editor::open_waves`
 //! - `Editor::send_to_viewer`
@@ -10,7 +11,8 @@
 use std::path::PathBuf;
 
 use schemify_doc::DocHandle;
-use schemify_ui::{Button, InputEvent, InputEvents, Mods};
+use schemify_elab::Name;
+use schemify_ui::{Button, Chord, InputEvent, InputEvents, Key, Mods};
 
 use crate::geometry::Pt;
 use crate::waves::WavesView;
@@ -21,6 +23,18 @@ use super::highlight::PIN_PX;
 
 /// Share of the window height the editor keeps when the waves dock opens.
 pub(super) const DOCK_SPLIT: f32 = 0.6;
+
+/// One input batch split between the editor and the waves dock ([`Editor::split_input`]).
+pub(super) struct Split {
+    /// The editor's events.
+    pub(super) mine: InputEvents,
+    /// The dock's events, in its own coordinates.
+    pub(super) dock: InputEvents,
+    /// The editor's viewport (above the dock).
+    pub(super) view: (f32, f32),
+    /// The dock's viewport.
+    pub(super) dock_view: (f32, f32),
+}
 
 /// Range the dock divider can be dragged in, as shares of the window height.
 const DOCK_SPLIT_RANGE: (f32, f32) = (0.15, 0.85);
@@ -33,12 +47,11 @@ impl Editor {
     /// (below, in its own coordinates): pointer events by position, keys and text to the
     /// side the pointer was last over, `Ctrl+W` always to the dock (it closes it). A left
     /// press within [`DOCK_GRAB_PX`] of the divider drags it (neither side sees the drag).
-    /// Returns (editor events, dock events, editor viewport, dock viewport).
-    pub(super) fn split_input(
-        &mut self,
-        events: &InputEvents,
-        viewport: (f32, f32),
-    ) -> (InputEvents, InputEvents, (f32, f32), (f32, f32)) {
+    pub(super) fn split_input(&mut self, events: &InputEvents, viewport: (f32, f32)) -> Split {
+        assert!(
+            (DOCK_SPLIT_RANGE.0..=DOCK_SPLIT_RANGE.1).contains(&self.dock_split),
+            "a divider in range"
+        );
         let split = (viewport.1 * self.dock_split).floor();
         let mut mine = InputEvents {
             events: Vec::new(),
@@ -48,7 +61,7 @@ impl Editor {
             events: Vec::new(),
             text: events.text.clone(),
         };
-        let close = schemify_ui::Chord::new(Mods(Mods::CTRL), schemify_ui::Key('w' as u32));
+        let close = Chord::new(Mods(Mods::CTRL), Key('w' as u32));
         for &e in &events.events {
             match e {
                 InputEvent::PointerDown {
@@ -118,13 +131,15 @@ impl Editor {
         }
         // A drag in this batch moves the divider now: both sides lay out at the new split.
         let split = (viewport.1 * self.dock_split).floor();
-        assert!(split >= 0.0 && split <= viewport.1);
-        (
+        assert!(split >= 0.0, "the divider is below the top");
+        assert!(split <= viewport.1, "the divider is above the bottom");
+        assert!(mine.events.len() + dock.events.len() <= 2 * events.events.len());
+        Split {
             mine,
             dock,
-            (viewport.0, split),
-            (viewport.0, viewport.1 - split),
-        )
+            view: (viewport.0, split),
+            dock_view: (viewport.0, viewport.1 - split),
+        }
     }
     /// Opens the waves dock on `path`, or points an open dock at it keeping its traces and panes
     /// (spec waves §9).
@@ -197,7 +212,7 @@ impl Editor {
                     // `k` counts the ordinary (not inherited) pins, as `pins_of` does.
                     let pin = f.and_then(|f| {
                         (0..f.pin_name.len())
-                            .filter(|&p| f.pin_inherit[p] == schemify_elab::Name::NONE)
+                            .filter(|&p| f.pin_inherit[p] == Name::NONE)
                             .nth(k as usize)
                             .map(|p| cell.names.get(f.pin_name[p]).to_owned())
                     });

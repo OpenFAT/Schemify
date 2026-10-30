@@ -1,12 +1,14 @@
 //! The UI step: plugin sets and images in, `ui::compose` + layout as a projection of the tables.
 //!
 //! Contents:
+//! - `pub(super) struct UiInputs`
 //! - `Editor::ui_step`
 //! - `Editor::ui_inputs`
 //! - `Editor::compose_ui`
 //! - `Editor::state_contribution`
 
 use schemify_doc::Document;
+use schemify_ui::Prop;
 
 use crate::commands::Target;
 use crate::docs::quote as q;
@@ -15,9 +17,17 @@ use crate::{cell, docs};
 
 use super::chooser::ChooseFor;
 use super::dialog::Dialog;
-use super::dispatch::kind_refusal;
-use super::tool::{Form, Tool};
-use super::{Editor, has_view};
+use super::tool::{Carry, Form, Tool};
+use super::{Editor, dispatch};
+
+/// What [`Editor::ui_inputs`] made current.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct UiInputs {
+    /// An image loaded: the page needs a new layout.
+    pub(super) loaded: bool,
+    /// The plugin composition changed: the palette needs a refresh.
+    pub(super) restyle: bool,
+}
 
 impl Editor {
     /// The UI step of the frame spine: [`Editor::ui_inputs`], the pure [`Editor::compose_ui`],
@@ -27,7 +37,7 @@ impl Editor {
     /// the frame, where the last frame's composition is otherwise current. Returns whether the
     /// layout changed.
     pub(super) fn ui_step(&mut self, relayout: bool, always: bool) -> bool {
-        let (loaded, restyle) = self.ui_inputs();
+        let UiInputs { loaded, restyle } = self.ui_inputs();
         if !(always || relayout || loaded || restyle || self.ui_stale) {
             return false;
         }
@@ -40,9 +50,8 @@ impl Editor {
     /// Makes current what `ui::compose` reads: the plugin ui and keymap sets (when their
     /// composition changed; the command rows follow), the docs page following the active
     /// document, and the page's prose images (file I/O, once per path; a failure goes to the
-    /// status line here, where it is decided). Returns (an image loaded, so the page needs a
-    /// new layout; the plugin composition changed, so the palette needs a refresh).
-    pub(super) fn ui_inputs(&mut self) -> (bool, bool) {
+    /// status line here, where it is decided).
+    pub(super) fn ui_inputs(&mut self) -> UiInputs {
         let restyle = match self.host.ui_sets() {
             Some(sets) => {
                 self.shell.set_plugins(&sets);
@@ -73,7 +82,7 @@ impl Editor {
             }
         }
         assert!(self.page.images_failed.len() <= docs::IMAGES_FAILED_MAX);
-        (loaded, restyle)
+        UiInputs { loaded, restyle }
     }
     /// `ui::compose` + `ui::layout` as a projection: the state contribution of the tables
     /// (tabs, status line, dialogs, docs page) replaces the shell's, then the shell recomposes
@@ -155,7 +164,9 @@ impl Editor {
                 form: Form::Circle, ..
             } => "DRAW CIRCLE! ",
             Tool::UnselectArmed => "UNSELECT AREA! ",
-            Tool::Move { copy: true, .. } => "COPY! ",
+            Tool::Move {
+                carry: Carry::Copy, ..
+            } => "COPY! ",
             Tool::Move { .. } => "MOVE! ",
             Tool::Place { .. } => "PLACE! ",
             Tool::ZoomArmed | Tool::Zoom { .. } => "ZOOM BOX! ",
@@ -226,7 +237,7 @@ impl Editor {
                     ("switch.schematic", View::Schematic),
                     ("switch.symbol", View::Symbol),
                 ] {
-                    let has = kind.is_some_and(|k| has_view(k, v));
+                    let has = kind.is_some_and(|k| super::has_view(k, v));
                     let style = match (has, view == v) {
                         (false, _) => "viewsw-off",
                         (true, true) => "viewsw-on",
@@ -256,7 +267,7 @@ impl Editor {
             .map(Document::kind)
         {
             let nodes = &self.shell.tables.nodes;
-            let commands = nodes.prop(schemify_ui::Prop::Command);
+            let commands = nodes.prop(Prop::Command);
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -279,7 +290,11 @@ impl Editor {
                         let id = self.shell.strings.get(nodes.id()[i]);
                         let b = &mut block.1;
                         let _ = writeln!(b, "set {id} disabled 1");
-                        let _ = writeln!(b, "set {id} tooltip {}", q(&kind_refusal(cmd, kind)));
+                        let _ = writeln!(
+                            b,
+                            "set {id} tooltip {}",
+                            q(&dispatch::kind_refusal(cmd, kind))
+                        );
                     }
                 }
                 block.0 = Some(key);
@@ -303,12 +318,12 @@ impl Editor {
         }
         match &self.dialog {
             Dialog::None => {}
-            Dialog::Text(_, title, typed) => {
+            Dialog::Text { title, typed, .. } => {
                 let _ = writeln!(t, "set dialog.enter_text.title label {}", q(title));
                 let _ = writeln!(t, "set dialog.enter_text.input value {}", q(typed));
                 let _ = writeln!(t, "set dialog.enter_text.input input field.typed");
             }
-            Dialog::Ctx(_) | Dialog::Layers | Dialog::File(_) | Dialog::Recover(..) => {}
+            Dialog::Ctx { .. } | Dialog::Layers | Dialog::File(_) | Dialog::Recover { .. } => {}
             Dialog::Choose(c) => {
                 let title = match c.purpose {
                     ChooseFor::Insert => "Insert symbol (type to filter, click to place)".into(),
@@ -361,6 +376,7 @@ impl Editor {
         }
         self.contribute_integration(&mut t);
         self.contribute_parity(&mut t);
+        debug_assert!(t.ends_with('\n'), "the contribution is whole record lines");
         (t, graphs)
     }
 }

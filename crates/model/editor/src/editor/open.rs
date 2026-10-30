@@ -6,27 +6,26 @@
 //! - `Editor::new`
 
 use schemify_canvas::{CanvasPrims, Marks, Palette};
-use schemify_elab::Annotations;
+use schemify_elab::{Annotations, Dialect};
 use schemify_format::{FileKind, IdRng};
 use schemify_plugin::abi::Event;
 use schemify_ui::Routed;
 
-use crate::checks::Members;
+use crate::checks::{Diff, Markers, Members};
 use crate::commands::Commands;
 use crate::docs::Page;
-use crate::platform;
 use crate::plugins::{self, Host};
 use crate::scene::{self, Scene, Symbols};
 use crate::session::{Session, View};
 use crate::shell::Shell;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::sim::Sim;
-use crate::spines;
+use crate::{platform, spines};
 
 use super::dialog::Dialog;
-use super::files::{default_view, project_root};
+use super::files;
+use super::opts;
 use super::opts::EditOpts;
-use super::opts::user_layer_colors;
 use super::probe::DOCK_SPLIT;
 use super::tool::Tool;
 use super::{Editor, Options, Panel};
@@ -39,11 +38,15 @@ impl Editor {
     /// # Errors
     ///
     /// The project manifest does not parse, or the file given cannot be opened.
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check the one tab shown and the config's positive steps.
     pub fn new(opts: Options) -> Result<Editor, String> {
         let path = opts.path.clone();
         let root = match &path {
             Some(p) if platform::is_dir(p) => p.clone(),
-            Some(p) => project_root(p),
+            Some(p) => files::project_root(p),
             None => std::env::current_dir().map_err(|e| e.to_string())?,
         };
         let first = path.as_deref().filter(|p| !platform::is_dir(p));
@@ -59,11 +62,11 @@ impl Editor {
             width_tenths: user.opts.line_width_tenths,
             ..EditOpts::default()
         };
-        let layer_colors = user_layer_colors(&user.opts);
+        let layer_colors = opts::user_layer_colors(&user.opts);
         // The PDK's pin, else the config's simulator, else detection (run spec §5).
         let (dialect, pin_err) = match spines::sim_dialect(None, &session.project, user) {
             Ok(d) => (d, None),
-            Err(e) => (schemify_elab::Dialect::Espice, Some(e)),
+            Err(e) => (Dialect::Espice, Some(e)),
         };
         // The user config's simulator and compilers (`sim` rows), the simulator overridable.
         #[cfg(not(target_arch = "wasm32"))]
@@ -136,7 +139,7 @@ impl Editor {
             decor: CanvasPrims::default(),
             decor_key: None,
             op_gen: 0,
-            markers: crate::checks::Markers::default(),
+            markers: Markers::default(),
             marker_targets: None,
             hier: None,
             panel: Panel::None,
@@ -152,7 +155,7 @@ impl Editor {
             graphs: Vec::new(),
             env: spines::env_pairs(),
             now: 0,
-            diff: crate::checks::Diff::default(),
+            diff: Diff::default(),
             stage_pick: 0,
             diff_key: None,
             dock_focus: false,
@@ -190,7 +193,7 @@ impl Editor {
         };
         match opened {
             Some(h) => {
-                let view = default_view(ed.session.project.doc(h));
+                let view = files::default_view(ed.session.project.doc(h));
                 ed.session.open_tab(h, view);
                 let id = plugins::doc_id(h);
                 let _ = ed.host.push(None, &Event::DocOpened { doc: id });
@@ -204,6 +207,9 @@ impl Editor {
         if !status.is_empty() {
             ed.session.say(status);
         }
+        assert_eq!(ed.session.tabs().len(), 1, "a new editor shows one tab");
+        assert!(ed.opts.snap > 0, "the config's snap is positive");
+        assert!(ed.opts.grid > 0, "the config's grid is positive");
         Ok(ed)
     }
 }

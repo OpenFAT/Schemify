@@ -34,9 +34,10 @@ use schemify_canvas::Camera;
 use schemify_doc::{DocHandle, Project};
 
 use crate::geometry::Pt;
+use crate::libs;
 pub use crate::libs::cell_relpath;
-use crate::libs::{self, absolute};
 use crate::scene::ObjKey;
+use crate::spines::Cells;
 
 pub use tabs::{STATUS_MAX, TabView};
 
@@ -153,6 +154,7 @@ struct Docs {
 /// `cell` is the cell's path in its library with or without its extension (`inv`,
 /// `inv.shcomp`, `sub/amp`). `None` when no indexed cell matches. Cost: one pass over the
 /// cell index.
+#[must_use]
 pub fn find_cell(p: &Project, name: &str) -> Option<usize> {
     let (lib, rest) = name.split_once(':').unwrap_or(("", name));
     let cells = p.cells();
@@ -175,9 +177,18 @@ impl Session {
     /// # Errors
     ///
     /// The manifest or lockfile does not parse.
+    ///
+    /// # Panics
+    ///
+    /// Never: the load gives one directory per library row.
     pub fn load(root: &Path, seed: u64, open: Option<&Path>) -> Result<Session, String> {
-        let open = open.map(absolute);
+        let open = open.map(libs::absolute);
         let loaded = libs::load(root, seed, open.as_deref())?;
+        assert_eq!(
+            loaded.lib_dir.len(),
+            loaded.project.libs().name.len(),
+            "one directory per library row"
+        );
         Ok(Session {
             root: root.to_path_buf(),
             project: loaded.project,
@@ -199,6 +210,10 @@ impl Session {
     /// # Errors
     ///
     /// A file does not parse or an open document's library is gone; nothing changed then.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one directory per library row.
     pub fn reload(&mut self) -> Result<(), String> {
         let (lib_dir, notes) = libs::reload(&mut self.project, &self.root)?;
         self.kept = None; // the new index may have read other bytes
@@ -209,12 +224,19 @@ impl Session {
     }
 
     /// Returns the directory of library row `lib`, if it is local.
+    #[must_use]
     pub fn lib_dir(&self, lib: u8) -> Option<&Path> {
+        debug_assert_eq!(self.lib_dir.len(), self.project.libs().name.len());
         self.lib_dir.get(usize::from(lib))?.as_deref()
     }
 
     /// The directory of every library row, the project root standing in for libraries
     /// that are not local (a runner's `lib_dirs`: sources are compiled from them).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one directory per library row.
+    #[must_use]
     pub fn lib_dirs(&self) -> Vec<PathBuf> {
         let dirs: Vec<PathBuf> = self
             .lib_dir
@@ -228,22 +250,41 @@ impl Session {
 
 impl Session {
     fn row(&self, h: DocHandle) -> Option<usize> {
-        self.docs.handle.iter().position(|&d| d == h)
+        let n = self.docs.len();
+        let i = self.docs.handle.iter().position(|&d| d == h);
+        assert!(i.is_none_or(|i| i < n));
+        debug_assert!(
+            i.is_none_or(|i| !self.docs.handle[i + 1..].contains(&h)),
+            "one row per open document"
+        );
+        i
     }
 
     /// The open document read from `path`, if any.
+    ///
+    /// # Panics
+    ///
+    /// Never: the document table's columns stay in step.
+    #[must_use]
     pub fn handle_of(&self, path: &Path) -> Option<DocHandle> {
         let i = self.docs.path.iter().position(|p| p == path)?;
+        assert!(i < self.docs.len(), "document columns in step");
+        debug_assert!(
+            !self.docs.path[i + 1..].iter().any(|p| p == path),
+            "one row per file"
+        );
         let h = self.docs.handle[i];
         self.project.doc(h).map(|_| h)
     }
 
     /// File path of an open document; `None` once `h` is closed.
+    #[must_use]
     pub fn path(&self, h: DocHandle) -> Option<&Path> {
         self.row(h).map(|i| self.docs.path[i].as_path())
     }
 
     /// Display name of an open document (file name).
+    #[must_use]
     pub fn name(&self, h: DocHandle) -> String {
         self.path(h)
             .and_then(|p| p.file_name())
@@ -252,6 +293,7 @@ impl Session {
 
     /// Edit epoch of an open document: changes on every commit, undo, redo or reload, so
     /// derived data (scene, symbol cache) knows when to rebuild.
+    #[must_use]
     pub fn epoch(&self, h: DocHandle) -> u32 {
         self.row(h).map_or(0, |i| self.docs.epoch[i])
     }
@@ -265,12 +307,25 @@ impl Session {
     }
 }
 
-impl crate::spines::Cells for Session {
+impl Cells for Session {
     fn project(&self) -> &Project {
         &self.project
     }
 
     fn open_row(&mut self, row: u32) -> Result<(), String> {
         self.open_cell(row as usize).map(|_| ())
+    }
+}
+
+// ---- private ----
+
+impl Docs {
+    /// Open documents; the four columns stay in step.
+    fn len(&self) -> usize {
+        let n = self.handle.len();
+        assert_eq!(self.path.len(), n, "document columns in step");
+        assert_eq!(self.journal.len(), n, "document columns in step");
+        assert_eq!(self.epoch.len(), n, "document columns in step");
+        n
     }
 }

@@ -8,7 +8,7 @@
 //! - `pub fn set_ops`
 //! - `pub(super) fn set_field`
 //! - `pub fn impl_ports`
-//! - `pub fn sync_ops`
+//! - `pub struct SyncOps`, `pub fn sync_ops`
 //! - `pub fn add_param_ops`
 //! - `pub fn add_impl_ops`
 //! - `pub fn delete_param_ops`
@@ -18,13 +18,21 @@
 use schemify_doc::{Document, Loc, Op, PinDir, RecordBuf, RecordKind, TableId, Target};
 use schemify_format::FileKind;
 
+use crate::edit::Toward;
 use crate::scene::UNIT;
 
-use super::bench::bench_ops;
 use super::{
-    ADD_LANGS, DIALECTS, Field, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, SyncPlan, attr_of,
-    body_row, body_text, names, record,
+    ADD_LANGS, DIALECTS, Field, PARAM_ATTRS, PARAM_KINDS, PIN_DIRS, PIN_DOMAINS, SyncPlan, bench,
 };
+
+/// What [`sync_ops`] found: the diff to show and the ops that apply it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SyncOps {
+    /// The changes, for the panel's review rows.
+    pub plan: SyncPlan,
+    /// One transaction applying them; empty exactly when `plan` is.
+    pub ops: Vec<Op>,
+}
 
 /// Set `key` to `value` on `target` (`values` split for multi-value attributes); an empty
 /// value removes the line when present. No op when nothing changes.
@@ -35,6 +43,10 @@ pub(super) fn attr_ops(
     value: &str,
     values: Vec<String>,
 ) -> Vec<Op> {
+    assert!(!key.is_empty());
+    if !value.is_empty() {
+        assert!(!values.is_empty(), "a set line carries its values");
+    }
     match (current, value.is_empty()) {
         (Some(c), _) if c == value => Vec::new(),
         (None, true) => Vec::new(),
@@ -52,6 +64,10 @@ pub(super) fn attr_ops(
 }
 
 pub(super) fn one_of(value: &str, allowed: &[&str], what: &str) -> Result<(), String> {
+    assert!(
+        !allowed.is_empty(),
+        "{what}: an empty choice list admits nothing"
+    );
     if allowed.contains(&value) {
         Ok(())
     } else {
@@ -68,7 +84,16 @@ pub(super) fn word(value: &str, what: &str) -> Result<(), String> {
 }
 
 /// Ops setting `field` of `doc` to `value` (trimmed, except a body). `Ok(empty)` when
-/// nothing changes; `Err` names what is wrong with the value (the document is untouched).
+/// nothing changes.
+///
+/// # Errors
+///
+/// Names what is wrong with the value or the field (a stale row, an unknown attribute, a
+/// value outside its choices); the document is untouched.
+///
+/// # Panics
+///
+/// Never: the assert checks that one field sets at most one line.
 pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>, String> {
     let v = if matches!(field, Field::Body(_)) {
         value.trim_end()
@@ -84,7 +109,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
             };
             one_of(key, allowed, "header attribute")?;
             if key == "default" && !v.is_empty() {
-                let impls = names(doc, TableId::Impls, doc.impls().kind.len());
+                let impls = super::names(doc, TableId::Impls, doc.impls().kind.len());
                 if !impls.iter().any(|n| n == v) {
                     return Err(format!("no impl named {v}"));
                 }
@@ -101,7 +126,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
             )
         }
         Field::Pin(row, a) => {
-            let rec = record(doc, TableId::Pins, row).ok_or("no such pin")?;
+            let rec = super::record(doc, TableId::Pins, row).ok_or("no such pin")?;
             let target = Target::new(RecordKind::Pin, &rec.fields[0]);
             match a {
                 "name" => {
@@ -118,7 +143,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
                     let v = if v == "analog" { "" } else { v };
                     attr_ops(
                         target,
-                        attr_of(&rec, "domain"),
+                        super::attr_of(&rec, "domain"),
                         "domain",
                         v,
                         vec![v.to_owned()],
@@ -128,7 +153,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
             }
         }
         Field::Param(row, a) => {
-            let rec = record(doc, TableId::Params, row).ok_or("no such parameter")?;
+            let rec = super::record(doc, TableId::Params, row).ok_or("no such parameter")?;
             let target = Target::new(RecordKind::Param, &rec.fields[0]);
             match a {
                 "name" => {
@@ -144,27 +169,33 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
                 "kind" => {
                     one_of(v, &PARAM_KINDS, "kind")?;
                     let v = if v == "number" { "" } else { v };
-                    attr_ops(target, attr_of(&rec, "kind"), "kind", v, vec![v.to_owned()])
+                    attr_ops(
+                        target,
+                        super::attr_of(&rec, "kind"),
+                        "kind",
+                        v,
+                        vec![v.to_owned()],
+                    )
                 }
                 "choices" => {
                     let cur = rec.find_attr("choices").map(|at| at.values.join(" "));
-                    let vals = v.split_whitespace().map(str::to_owned).collect();
+                    let vals: Vec<String> = v.split_whitespace().map(str::to_owned).collect();
                     attr_ops(target, cur.as_deref(), "choices", v, vals)
                 }
                 a if PARAM_ATTRS.contains(&a) => {
-                    attr_ops(target, attr_of(&rec, a), a, v, vec![v.to_owned()])
+                    attr_ops(target, super::attr_of(&rec, a), a, v, vec![v.to_owned()])
                 }
                 _ => return Err(format!("parameter has no field {a}")),
             }
         }
         Field::Impl(row, a) => {
-            let rec = record(doc, TableId::Impls, row).ok_or("no such impl")?;
+            let rec = super::record(doc, TableId::Impls, row).ok_or("no such impl")?;
             one_of(a, &["model", "file"], "impl field")?;
             let target = Target::new(RecordKind::Impl, &rec.fields[0]);
-            attr_ops(target, attr_of(&rec, a), a, v, vec![v.to_owned()])
+            attr_ops(target, super::attr_of(&rec, a), a, v, vec![v.to_owned()])
         }
         Field::Format(row, d) => {
-            let rec = record(doc, TableId::Impls, row).ok_or("no such impl")?;
+            let rec = super::record(doc, TableId::Impls, row).ok_or("no such impl")?;
             one_of(d, &DIALECTS, "dialect")?;
             let target = Target::new(RecordKind::Impl, &rec.fields[0]);
             let cur = rec
@@ -189,7 +220,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
             }
         }
         Field::Body(row) => {
-            let rec = record(doc, TableId::Impls, row).ok_or("no such impl")?;
+            let rec = super::record(doc, TableId::Impls, row).ok_or("no such impl")?;
             let name = &rec.fields[0];
             if rec.fields.get(1).is_some_and(|l| l == "schematic") {
                 return Err("a schematic impl has no body".into());
@@ -197,15 +228,20 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
             body_ops(doc, name, v)
         }
         Field::Bench(b, row, a) => {
-            let rec = record(doc, b.table(), row).ok_or_else(|| format!("no such {}", b.word()))?;
-            return bench_ops(b, &rec, a, v);
+            let rec = super::record(doc, b.table(), row)
+                .ok_or_else(|| format!("no such {}", b.word()))?;
+            return bench::bench_ops(b, &rec, a, v);
         }
     };
-    debug_assert!(ops.len() <= 2);
+    assert!(ops.len() <= 1, "one field sets at most one line");
     Ok(ops)
 }
 
 pub(super) fn set_field(target: Target, rec: &RecordBuf, index: u32, v: &str) -> Vec<Op> {
+    assert!(
+        index <= 1,
+        "the panel edits a record's name or its first value"
+    );
     if rec.fields.get(index as usize).is_some_and(|f| f == v) {
         return Vec::new();
     }
@@ -216,21 +252,28 @@ pub(super) fn set_field(target: Target, rec: &RecordBuf, index: u32, v: &str) ->
     }]
 }
 
-/// The ports impl `row`'s body declares (`schemify_elab::impl_ports`). `Err` in words when
-/// the row is no impl, the impl is a schematic or has no body, or the body does not parse
-/// (with its line).
+/// The ports impl `row`'s body declares (`schemify_elab::impl_ports`).
+///
+/// # Errors
+///
+/// In words: the row is no impl, the impl is a schematic or has no body, or the body does
+/// not parse (with its line).
+///
+/// # Panics
+///
+/// Never: `schemify_elab::impl_ports` returns at most `PORTS_MAX` ports.
 pub fn impl_ports(doc: &Document, row: u32) -> Result<Vec<(String, PinDir)>, String> {
-    let rec = record(doc, TableId::Impls, row).ok_or("no such impl")?;
+    let rec = super::record(doc, TableId::Impls, row).ok_or("no such impl")?;
     let (name, lang) = (&rec.fields[0], rec.fields.get(1).map_or("", String::as_str));
     if lang == "schematic" {
         return Err("a schematic impl's ports are its schematic's".into());
     }
-    if body_row(doc, name).is_none() {
+    if super::body_row(doc, name).is_none() {
         return Err(format!("impl {name} has no body to read ports from"));
     }
-    let ports = schemify_elab::impl_ports(lang, &body_text(doc, name))
+    let ports = schemify_elab::impl_ports(lang, &super::body_text(doc, name))
         .map_err(|e| format!("impl {name} body {e}"))?;
-    debug_assert!(ports.len() <= schemify_elab::PORTS_MAX);
+    assert!(ports.len() <= schemify_elab::PORTS_MAX);
     Ok(ports)
 }
 
@@ -239,8 +282,19 @@ pub fn impl_ports(doc: &Document, row: u32) -> Result<Vec<(String, PinDir)>, Str
 /// port, reorder to port order. Existing pins keep their coordinates and attributes; new
 /// pins stack below the lowest pin on the 10-unit grid, inputs in the leftmost pin column,
 /// the rest in the rightmost. No ops when the pins already match.
-pub fn sync_ops(doc: &Document, ports: &[(String, PinDir)]) -> (SyncPlan, Vec<Op>) {
+///
+/// # Panics
+///
+/// More than `schemify_elab::PORTS_MAX` ports, or a port name given twice.
+#[must_use]
+pub fn sync_ops(doc: &Document, ports: &[(String, PinDir)]) -> SyncOps {
     assert!(ports.len() <= schemify_elab::PORTS_MAX);
+    for (k, (name, _)) in ports.iter().enumerate() {
+        assert!(
+            !ports[..k].iter().any(|p| p.0 == *name),
+            "port {name} given twice"
+        );
+    }
     let (s, pins) = (doc.strings(), doc.pins());
     let have: Vec<&str> = pins.name.iter().map(|&n| s.get(n)).collect();
     let mut plan = SyncPlan::default();
@@ -277,9 +331,11 @@ pub fn sync_ops(doc: &Document, ports: &[(String, PinDir)]) -> (SyncPlan, Vec<Op
         _ => (-2 * grid, 2 * grid, 0),
     };
     let c = crate::geometry::coord;
+    assert!(left <= right, "inputs go in the leftmost column");
     for (k, (name, dir)) in plan.add.iter().enumerate() {
         let x = if *dir == PinDir::In { left } else { right };
-        let y = bottom + (k as i32 + 1) * grid;
+        let below = i32::try_from(k + 1).expect("ports ≤ PORTS_MAX fit an i32");
+        let y = bottom + below * grid;
         let rec = RecordBuf::new(RecordKind::Pin)
             .field(name)
             .field(dir.as_str())
@@ -307,37 +363,51 @@ pub fn sync_ops(doc: &Document, ports: &[(String, PinDir)]) -> (SyncPlan, Vec<Op
             plan.reorder = true;
             ops.push(Op::Reorder {
                 target: Target::new(RecordKind::Pin, name),
-                to: k as u32,
+                to: super::row_u32(k),
             });
         }
     }
     debug_assert!(order.iter().zip(ports).all(|(o, p)| *o == p.0));
-    debug_assert_eq!(plan.is_empty(), ops.is_empty());
-    (plan, ops)
+    assert_eq!(plan.is_empty(), ops.is_empty());
+    SyncOps { plan, ops }
 }
 
 /// Ops adding a parameter `p<k>` (the first free `k`) with default `0`.
+///
+/// # Panics
+///
+/// Never: `n` names leave one of `p1..=p(n + 1)` free.
+#[must_use]
 pub fn add_param_ops(doc: &Document) -> Vec<Op> {
-    let names = names(doc, TableId::Params, doc.params().kind.len());
+    let names = super::names(doc, TableId::Params, doc.params().kind.len());
     let name = (1..=names.len() + 1)
         .map(|k| format!("p{k}"))
         .find(|n| !names.contains(n))
-        .expect("one of n + 1 names is free");
+        .expect("n names leave one of p1..=p(n + 1) free");
+    assert!(!names.contains(&name));
     let rec = RecordBuf::new(RecordKind::Param).field(&name).field("0");
     vec![Op::Insert { rec, at: None }]
 }
 
 /// Ops adding an impl of `lang` (named per [`ADD_LANGS`], uniquified). A second impl also
 /// sets the header `default` to the first (E025: more than one impl needs a default). `Err`
-/// when the file kind does not allow it: a `.shprim` has no schematic impl, a `.shcomp`
-/// exactly one, a `.shbench` none.
+/// when the file kind does not allow it.
+///
+/// # Errors
+///
+/// `lang` is not one of [`ADD_LANGS`], or the file kind forbids the impl: a `.shprim` has no
+/// schematic impl, a `.shcomp` exactly one, a `.shbench` none.
+///
+/// # Panics
+///
+/// Never: `n` impl names leave one of `n + 1` candidates free.
 pub fn add_impl_ops(doc: &Document, lang: &str) -> Result<Vec<Op>, String> {
     let (_, base) = ADD_LANGS
         .iter()
         .find(|(l, _)| *l == lang)
         .ok_or_else(|| format!("unknown impl language {lang}"))?;
     let n = doc.impls().kind.len();
-    let langs: Vec<String> = (0..n as u32)
+    let langs: Vec<String> = (0..super::row_u32(n))
         .map(|row| {
             let r = doc.record(Loc {
                 table: TableId::Impls,
@@ -355,11 +425,12 @@ pub fn add_impl_ops(doc: &Document, lang: &str) -> Result<Vec<Op>, String> {
         (FileKind::Shprim | FileKind::Shcomp, _) => {}
         _ => return Err("this file kind has no impls".into()),
     }
-    let names = names(doc, TableId::Impls, n);
+    let names = super::names(doc, TableId::Impls, n);
     let name = std::iter::once(base.to_string())
         .chain((2..=n + 2).map(|k| format!("{base}{k}")))
         .find(|c| !names.contains(c))
-        .expect("one of n + 2 names is free");
+        .expect("n names leave one of n + 1 candidates free");
+    assert!(!names.contains(&name));
     let mut ops = vec![Op::Insert {
         rec: RecordBuf::new(RecordKind::Impl).field(&name).field(lang),
         at: None,
@@ -371,31 +442,47 @@ pub fn add_impl_ops(doc: &Document, lang: &str) -> Result<Vec<Op>, String> {
             values: vec![names[0].clone()],
         });
     }
+    assert!(ops.len() <= 2, "the impl, then at most the header default");
     Ok(ops)
 }
 
-/// Ops deleting param `row`.
+/// Ops deleting param `row`; none for a stale row.
+///
+/// # Panics
+///
+/// Never: the assert checks that only a stale `row` gives no ops.
 pub fn delete_param_ops(doc: &Document, row: u32) -> Vec<Op> {
-    record(doc, TableId::Params, row).map_or_else(Vec::new, |rec| {
+    let ops = super::record(doc, TableId::Params, row).map_or_else(Vec::new, |rec| {
         vec![Op::Delete(Target::new(RecordKind::Param, &rec.fields[0]))]
-    })
+    });
+    assert_eq!(ops.is_empty(), (row as usize) >= doc.params().kind.len());
+    ops
 }
 
 /// Ops deleting impl `row` with its body; a header `default` naming it moves to the first
-/// remaining impl, or goes when at most one impl remains.
+/// remaining impl, or goes when at most one impl remains. None for a stale row.
+///
+/// # Panics
+///
+/// Never: the asserts check the ops (the impl, its body, the header default).
+#[must_use]
 pub fn delete_impl_ops(doc: &Document, row: u32) -> Vec<Op> {
-    let Some(rec) = record(doc, TableId::Impls, row) else {
+    let Some(rec) = super::record(doc, TableId::Impls, row) else {
         return Vec::new();
     };
     let name = rec.fields[0].clone();
     let mut ops = vec![Op::Delete(Target::new(RecordKind::Impl, &name))];
-    if body_row(doc, &name).is_some() {
+    if super::body_row(doc, &name).is_some() {
         ops.push(Op::Delete(Target::new(RecordKind::Body, &name)));
     }
-    let rest: Vec<String> = names(doc, TableId::Impls, doc.impls().kind.len())
+    let rest: Vec<String> = super::names(doc, TableId::Impls, doc.impls().kind.len())
         .into_iter()
         .filter(|n| *n != name)
         .collect();
+    assert!(
+        rest.len() < doc.impls().kind.len(),
+        "the deleted impl was in the list"
+    );
     let default = doc.header_value("default");
     if default.is_some() && (rest.len() <= 1 || default == Some(name.as_str())) {
         if rest.len() > 1 {
@@ -412,21 +499,29 @@ pub fn delete_impl_ops(doc: &Document, row: u32) -> Vec<Op> {
             });
         }
     }
+    assert!(ops.len() <= 3, "impl, body, header default");
     ops
 }
 
-/// Ops moving pin `row` one place earlier (`up`) or later in port order; none at an end.
-pub fn move_pin_ops(doc: &Document, row: u32, up: bool) -> Vec<Op> {
-    let n = doc.pins().name.len() as u32;
-    let to = match (up, row) {
-        (true, 0) => return Vec::new(),
-        (true, r) => r - 1,
-        (false, r) if r + 1 >= n => return Vec::new(),
-        (false, r) => r + 1,
+/// Ops moving pin `row` one place in port order; none at an end or for a stale row.
+///
+/// # Panics
+///
+/// Never: the asserts check that the target slot is another pin row.
+#[must_use]
+pub fn move_pin_ops(doc: &Document, row: u32, toward: Toward) -> Vec<Op> {
+    let n = super::row_u32(doc.pins().name.len());
+    let to = match (toward, row) {
+        (Toward::Earlier, 0) => return Vec::new(),
+        (Toward::Earlier, r) => r - 1,
+        (Toward::Later, r) if r + 1 >= n => return Vec::new(),
+        (Toward::Later, r) => r + 1,
     };
-    let Some(rec) = record(doc, TableId::Pins, row) else {
+    let Some(rec) = super::record(doc, TableId::Pins, row) else {
         return Vec::new();
     };
+    assert!(to < n, "the target slot is a pin row");
+    assert_ne!(to, row);
     vec![Op::Reorder {
         target: Target::new(RecordKind::Pin, &rec.fields[0]),
         to,
@@ -437,8 +532,9 @@ pub fn move_pin_ops(doc: &Document, row: u32, up: bool) -> Vec<Op> {
 
 /// Ops replacing impl `name`'s body with `text` (blank deletes the body record).
 fn body_ops(doc: &Document, name: &str, text: &str) -> Vec<Op> {
-    let row = body_row(doc, name);
-    if row.is_some_and(|_| body_text(doc, name) == text)
+    assert!(!name.is_empty(), "a body belongs to a named impl");
+    let row = super::body_row(doc, name);
+    if row.is_some_and(|_| super::body_text(doc, name) == text)
         || (row.is_none() && text.trim().is_empty())
     {
         return Vec::new();

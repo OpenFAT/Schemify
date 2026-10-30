@@ -13,7 +13,7 @@ use crate::spines;
 use super::canvas::USER_LAYERS;
 use super::dialog::{Dialog, TextFor};
 use super::tool::{Tool, ZOOM_STEP};
-use super::{Editor, Panel, has_view};
+use super::{Editor, Panel};
 
 impl Editor {
     /// View, Options and Layers commands: camera, toggles, settings, panels. Returns whether anything visible changed.
@@ -127,7 +127,7 @@ impl Editor {
                     View::Schematic
                 };
                 let kind = self.session.project.doc(h).map(Document::kind);
-                if !kind.is_some_and(|k| has_view(k, want)) {
+                if !kind.is_some_and(|k| super::has_view(k, want)) {
                     self.session.say(match want {
                         View::Schematic => "a primitive has no schematic".to_owned(),
                         View::Symbol => "a testbench has no symbol".to_owned(),
@@ -209,6 +209,7 @@ impl Editor {
                     let l = self.opts.layer;
                     self.layer_colors.retain(|c| c.0 != l);
                     self.layer_colors.push((l, rgb));
+                    assert_eq!(self.layer_colors.iter().filter(|c| c.0 == l).count(), 1);
                 } else {
                     self.session.say(format!("{arg:?}: not an rrggbb color"));
                 }
@@ -257,6 +258,18 @@ impl Editor {
             Cmd::SymbolsCycle => self.opts.show_symbols = (self.opts.show_symbols + 1) % 3,
             _ => unreachable!("{cmd:?}: not a view command"),
         }
+        // The options every view command keeps in range.
+        assert!(self.opts.snap > 0, "a positive snap");
+        assert!(self.opts.grid > 0, "a positive grid");
+        assert!(
+            self.opts.show_symbols < 3,
+            "details, boxes for subcircuits, or boxes"
+        );
+        assert!(self.opts.layer < USER_LAYERS, "a user layer");
+        assert!(
+            (1..=100).contains(&self.opts.width_tenths),
+            "a line width in range"
+        );
         true
     }
 }

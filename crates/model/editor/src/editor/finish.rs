@@ -2,7 +2,8 @@
 //!
 //! Contents:
 //! - `pub(super) fn dist`
-//! - `pub(super) fn arc_3`
+//! - `pub(super) enum Outline`
+//! - `pub(super) struct ArcFit`, `pub(super) fn arc_3`
 //! - `Editor::manhattan_points`
 //! - `Editor::finish_wire`
 //! - `Editor::finish_move`
@@ -16,14 +17,36 @@ use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
 use schemify_format::{FileKind, Orient, RecordKind};
 
 use crate::commands::Cmd;
-use crate::edit::Ids;
+use crate::edit::{FreshId, Ids};
 use crate::geometry::{Pt, Xform};
 use crate::scene::ObjKey;
 use crate::session::View;
 use crate::{edit, wiring};
 
 use super::Editor;
-use super::tool::{Form, Placement, Tool};
+use super::tool::{Carry, Form, Placement, Tool};
+
+/// Whether a drawn polygon closes on its first point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Outline {
+    /// An open polyline (every other shape too).
+    Open,
+    /// A polygon whose last point joins the first.
+    Closed,
+}
+
+/// An arc through three points, as an `arc` record holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ArcFit {
+    /// Center (milli-units).
+    pub(super) center: Pt,
+    /// Radius (milli-units).
+    pub(super) r: i32,
+    /// Start in milli-degrees, clockwise on screen, in `[0, 360000)`.
+    pub(super) start: i32,
+    /// Sweep in milli-degrees, in `(0, 360000)`.
+    pub(super) sweep: i32,
+}
 
 pub(super) fn dist(a: Pt, b: Pt) -> i32 {
     let (dx, dy) = (
@@ -33,10 +56,9 @@ pub(super) fn dist(a: Pt, b: Pt) -> i32 {
     (dx.hypot(dy).round() as i64).clamp(0, i64::from(i32::MAX)) as i32
 }
 
-/// The arc from `a` to `b` through `c` (xschem's 3-point arc): center, radius (milli-units)
-/// and start/sweep in milli-degrees, clockwise on screen, sweep in `(0, 360000)`. `None` for
-/// collinear or repeated points.
-pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<(i32, i32, i32, i32, i32)> {
+/// The arc from `a` to `b` through `c` (xschem's 3-point arc). `None` for collinear or
+/// repeated points.
+pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<ArcFit> {
     let (ax, ay) = (f64::from(a.0), f64::from(a.1));
     let (bx, by) = (f64::from(b.0), f64::from(b.1));
     let (cx, cy) = (f64::from(c.0), f64::from(c.1));
@@ -62,17 +84,20 @@ pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<(i32, i32, i32, i32, i32)> {
     if !(fits(ux) && fits(uy) && fits(r)) || sweep <= 0.0 {
         return None;
     }
-    Some((
-        ux.round() as i32,
-        uy.round() as i32,
-        r.round() as i32,
-        start.rem_euclid(360_000.0) as i32,
-        sweep as i32,
-    ))
+    let fit = ArcFit {
+        center: (ux.round() as i32, uy.round() as i32),
+        r: r.round() as i32,
+        start: start.rem_euclid(360_000.0) as i32,
+        sweep: sweep as i32,
+    };
+    assert!((0..360_000).contains(&fit.start), "start {}", fit.start);
+    assert!(0 < fit.sweep && fit.sweep < 360_000, "sweep {}", fit.sweep);
+    Some(fit)
 }
 
 impl Editor {
     pub(super) fn manhattan_points(&self, from: Pt, to: Pt) -> Vec<Pt> {
+        assert!(self.opts.manhattan <= 2, "a Manhattan mode");
         let mode = if self.opts.orthogonal {
             if (to.0 - from.0).abs() >= (to.1 - from.1).abs() {
                 1
@@ -82,11 +107,14 @@ impl Editor {
         } else {
             self.opts.manhattan
         };
-        match mode {
+        let pts = match mode {
             1 => vec![from, (to.0, from.1), to],
             2 => vec![from, (from.0, to.1), to],
             _ => vec![from, to],
-        }
+        };
+        assert_eq!(pts.first(), Some(&from));
+        assert_eq!(pts.last(), Some(&to));
+        pts
     }
     pub(super) fn finish_wire(
         &mut self,
@@ -96,12 +124,12 @@ impl Editor {
         to: Pt,
     ) {
         let pts = self.manhattan_points(from, to);
-        let (ops, _) = {
+        let ops = {
             let Some(doc) = self.session.project.doc(h) else {
                 return;
             };
             let mut ids = Ids::new(&mut self.rng);
-            edit::wires(doc, &pts, &mut ids)
+            edit::wires(doc, &pts, &mut ids).ops
         };
         self.opts.constrain = 0;
         self.commit(reqs, h, "draw wire", ops);
@@ -117,7 +145,6 @@ impl Editor {
             };
         }
     }
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_move(
         &mut self,
         reqs: &mut Vec<EditRequest>,
@@ -125,23 +152,23 @@ impl Editor {
         from: Pt,
         to: Pt,
         lin: Xform,
-        copy: bool,
-        stretch: u8,
+        carry: Carry,
     ) {
         let x = lin.then(Xform::translate(to.0 - from.0, to.1 - from.1));
         self.opts.constrain = 0;
+        let copy = carry == Carry::Copy;
         if x == Xform::IDENTITY && !copy {
             return;
         }
-        if !copy && (stretch > 0 || !self.partial_ends().is_empty()) {
-            self.finish_stretch(reqs, h, x, stretch);
+        if !copy && (carry != Carry::Plain || !self.partial_ends().is_empty()) {
+            self.finish_stretch(reqs, h, x, carry);
             if self.opts.auto_trim {
                 self.trim_after = Some(h);
             }
             return;
         }
         if copy {
-            let (ops, keys) = {
+            let edit::Inserted { ops, keys } = {
                 let Some(doc) = self.session.project.doc(h) else {
                     return;
                 };
@@ -174,7 +201,7 @@ impl Editor {
             let schematic = view == View::Schematic && doc.kind() != FileKind::Shprim;
             let mut ids = Ids::new(&mut self.rng);
             let mut one = |kind: RecordKind, table: TableId, o: Orient, text: &str| {
-                let (id, raw) = ids.draw(doc);
+                let FreshId { text: id, key: raw } = ids.draw(doc);
                 let rec = edit::placed(kind, at, o, text, &id);
                 (
                     vec![Op::Insert { rec, at: None }],
@@ -190,7 +217,7 @@ impl Editor {
                         .and_then(|i| i.header_value("prefix").map(str::to_owned))
                         .unwrap_or_else(|| "X".to_owned());
                     let name = edit::unique_name(doc, &prefix, &mut Default::default());
-                    let (id, raw) = ids.draw(doc);
+                    let FreshId { text: id, key: raw } = ids.draw(doc);
                     let rec = edit::instance(&cellref, at, lin.orient(Orient::R0), &name, &id);
                     let key = ObjKey {
                         table: TableId::Instances,
@@ -211,8 +238,8 @@ impl Editor {
                     );
                     ("place label", o, k)
                 }
-                Placement::Port(t, out) if schematic => {
-                    let base = if out { Orient::R180 } else { Orient::R0 };
+                Placement::Port { name: t, output } if schematic => {
+                    let base = if output { Orient::R180 } else { Orient::R0 };
                     let (o, k) = one(RecordKind::Port, TableId::Ports, lin.orient(base), &t);
                     ("place port", o, k)
                 }
@@ -226,8 +253,8 @@ impl Editor {
                 }
                 Placement::Paste(recs) => {
                     let x = lin.then(Xform::translate(at.0, at.1));
-                    let (o, k) = edit::insert_copies(doc, recs, x, &mut ids);
-                    ("paste", o, k)
+                    let copies = edit::insert_copies(doc, recs, x, &mut ids);
+                    ("paste", copies.ops, copies.keys)
                 }
                 _ => {
                     err = Some("that object does not belong in this view");
@@ -239,6 +266,10 @@ impl Editor {
             self.session.say(e);
             return;
         }
+        assert!(
+            keys.len() <= ops.len(),
+            "one selected key per inserted record at most"
+        );
         self.commit(reqs, h, label, ops);
         if !keys.is_empty() {
             self.set_selection(keys);
@@ -259,11 +290,11 @@ impl Editor {
         assert!(!pts.is_empty(), "a shape tool starts with its first point");
         if form == Form::Poly {
             if pts.len() >= 3 && p == pts[0] {
-                self.finish_shape(reqs, h, view, form, &pts, true);
+                self.finish_shape(reqs, h, view, form, &pts, Outline::Closed);
                 return;
             }
             if pts.len() >= 2 && Some(&p) == pts.last() {
-                self.finish_shape(reqs, h, view, form, &pts, false);
+                self.finish_shape(reqs, h, view, form, &pts, Outline::Open);
                 return;
             }
         }
@@ -271,7 +302,7 @@ impl Editor {
             pts.push(p);
         }
         if form.points() == Some(pts.len()) {
-            self.finish_shape(reqs, h, view, form, &pts, false);
+            self.finish_shape(reqs, h, view, form, &pts, Outline::Open);
             if form == Form::Line && self.opts.persistent {
                 self.tool = Tool::Shape {
                     form,
@@ -293,8 +324,13 @@ impl Editor {
         view: View,
         form: Form,
         pts: &[Pt],
-        closed: bool,
+        outline: Outline,
     ) {
+        assert!(!pts.is_empty(), "a shape has its first point");
+        assert!(
+            outline == Outline::Open || form == Form::Poly,
+            "only a polygon closes"
+        );
         self.tool = Tool::Idle;
         let schematic = view == View::Schematic;
         let Some(doc) = self.session.project.doc(h) else {
@@ -307,12 +343,12 @@ impl Editor {
         }
         let mut ids = Ids::new(&mut self.rng);
         let (id, raw) = if schematic {
-            let (t, r) = ids.draw(doc);
+            let FreshId { text: t, key: r } = ids.draw(doc);
             (Some(t), Some(r))
         } else {
             (None, None)
         };
-        let Some(rec) = shape_record(form, pts, closed, self.opts.layer, id.as_deref()) else {
+        let Some(rec) = shape_record(form, pts, outline, self.opts.layer, id.as_deref()) else {
             self.session.say("that shape has no extent");
             return;
         };
@@ -331,10 +367,20 @@ impl Editor {
             }]);
         }
     }
-    /// Ends a move: a plain move, or a stretch (`stretch` 1) / kissing (2) move whose
-    /// attached wires follow (translations only; a move rotated in flight is plain). The
-    /// selected ends of partially selected wires (Ctrl+drag box) move with any translation.
-    fn finish_stretch(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, x: Xform, stretch: u8) {
+    /// Ends a move: a plain move, or a stretch / kissing move whose attached wires follow
+    /// (translations only; a move rotated in flight is plain). The selected ends of partially
+    /// selected wires (Ctrl+drag box) move with any translation.
+    fn finish_stretch(
+        &mut self,
+        reqs: &mut Vec<EditRequest>,
+        h: DocHandle,
+        x: Xform,
+        carry: Carry,
+    ) {
+        assert!(
+            carry != Carry::Copy,
+            "a copy leaves attached wires where they are"
+        );
         let sel = self.selection().to_vec();
         let ends: Vec<(ObjKey, Pt)> = self
             .partial_ends()
@@ -342,7 +388,7 @@ impl Editor {
             .copied()
             .filter(|e| sel.binary_search(&e.0).is_err())
             .collect();
-        if !x.is_translation() || (stretch == 0 && ends.is_empty()) {
+        if !x.is_translation() || (carry == Carry::Plain && ends.is_empty()) {
             let ops = self.with_doc(h, |doc, sel| edit::transform(doc, sel, x));
             self.commit(reqs, h, "move", ops);
             return;
@@ -356,18 +402,18 @@ impl Editor {
                 wiring::Moved {
                     sel: &sel,
                     ends: &ends,
-                    follow: stretch > 0,
-                    kiss: stretch == 2,
+                    follow: carry != Carry::Plain,
+                    kiss: carry == Carry::Kiss,
                 },
                 x,
                 manhattan,
                 &mut ids,
             )
         };
-        let label = match stretch {
-            2 => "kissing move",
-            1 => "stretch move",
-            _ => "move",
+        let label = match carry {
+            Carry::Kiss => "kissing move",
+            Carry::Stretch => "stretch move",
+            Carry::Plain | Carry::Copy => "move",
         };
         // The selection, whole and partial, stays what was moved (xschem's default: partially
         // selected wires stay selected after a stretch move); partial ends follow their move.
@@ -401,6 +447,10 @@ impl Editor {
             self.session.say("no wire under the pointer");
             return;
         };
+        assert!(
+            (o as usize) < self.scene.objs.len(),
+            "a hit names a scene object"
+        );
         let key = self.scene.objs.key[o as usize];
         if key.table != TableId::Wires {
             self.session.say("no wire under the pointer");
@@ -426,7 +476,7 @@ impl Editor {
                 return;
             };
             let mut ids = Ids::new(&mut self.rng);
-            wiring::break_at(doc, &[p], &mut ids).0
+            wiring::break_at(doc, &[p], &mut ids)
         };
         if ops.is_empty() {
             self.session.say("the cut point is not inside the wire");
@@ -443,10 +493,11 @@ impl Editor {
 fn shape_record(
     form: Form,
     pts: &[Pt],
-    closed: bool,
+    outline: Outline,
     layer: u8,
     id: Option<&str>,
 ) -> Option<RecordBuf> {
+    let closed = outline == Outline::Closed;
     let c = crate::geometry::coord;
     let (word, values): (&str, Vec<i32>) = match form {
         Form::Line | Form::Rect => {
@@ -466,8 +517,8 @@ fn shape_record(
             ("circle", vec![m.0, m.1, r])
         }
         Form::Arc => {
-            let (cx, cy, r, start, sweep) = arc_3(*pts.first()?, *pts.get(1)?, *pts.get(2)?)?;
-            ("arc", vec![cx, cy, r, start, sweep])
+            let a = arc_3(*pts.first()?, *pts.get(1)?, *pts.get(2)?)?;
+            ("arc", vec![a.center.0, a.center.1, a.r, a.start, a.sweep])
         }
         Form::Poly => {
             if pts.len() < 2 || (closed && pts.len() < 3) {
@@ -497,6 +548,7 @@ fn shape_record(
     if form == Form::Poly && closed {
         rec = rec.attr("closed", &["true"]);
     }
+    assert!(rec.fields.len() >= values.len(), "every value is a field");
     Some(rec)
 }
 
@@ -507,22 +559,31 @@ mod tests {
     #[test]
     fn three_point_arcs_pass_through_their_points() {
         // A quarter circle of radius 10 around the origin, clockwise on screen from +x to +y.
-        let (cx, cy, r, start, sweep) = arc_3((10_000, 0), (0, 10_000), (6_000, 8_000)).unwrap();
-        assert_eq!((cx, cy, r), (0, 0, 10_000));
-        assert_eq!((start, sweep), (0, 90_000));
+        let a = arc_3((10_000, 0), (0, 10_000), (6_000, 8_000)).unwrap();
+        assert_eq!((a.center, a.r), ((0, 0), 10_000));
+        assert_eq!((a.start, a.sweep), (0, 90_000));
         // The same points with the middle one on the other side: the long way round.
-        let (_, _, _, s2, w2) = arc_3((10_000, 0), (0, 10_000), (-10_000, 0)).unwrap();
-        assert_eq!((s2, w2), (90_000, 270_000));
+        let b = arc_3((10_000, 0), (0, 10_000), (-10_000, 0)).unwrap();
+        assert_eq!((b.start, b.sweep), (90_000, 270_000));
         assert!(arc_3((0, 0), (1, 1), (2, 2)).is_none(), "collinear");
     }
 
     #[test]
     fn shapes_need_extent() {
-        assert!(shape_record(Form::Rect, &[(0, 0), (0, 10)], false, 4, Some("abcdef")).is_none());
+        assert!(
+            shape_record(
+                Form::Rect,
+                &[(0, 0), (0, 10)],
+                Outline::Open,
+                4,
+                Some("abcdef")
+            )
+            .is_none()
+        );
         let r = shape_record(
             Form::Poly,
             &[(0, 0), (10, 0), (10, 10)],
-            true,
+            Outline::Closed,
             7,
             Some("abcdef"),
         )
@@ -533,7 +594,14 @@ mod tests {
         );
         assert_eq!(r.find_attr("layer").unwrap().values, ["7"]);
         assert!(r.find_attr("closed").is_some());
-        let sym = shape_record(Form::Circle, &[(0, 0), (3_000, 4_000)], false, 4, None).unwrap();
+        let sym = shape_record(
+            Form::Circle,
+            &[(0, 0), (3_000, 4_000)],
+            Outline::Open,
+            4,
+            None,
+        )
+        .unwrap();
         assert_eq!(sym.kind, RecordKind::Circle);
         assert_eq!(sym.fields, ["0", "0", "5"]);
     }

@@ -7,8 +7,8 @@
 //! - `Editor::props_ok`
 //! - `Editor::field_typed`
 
-use schemify_doc::{DocHandle, EditRequest, Op};
-use schemify_format::RecordKind;
+use schemify_doc::{DocHandle, EditRequest, Instances, Op, Target};
+use schemify_format::{KeyRule, RecordKind};
 
 use crate::edit;
 
@@ -85,7 +85,7 @@ impl Editor {
                 // Overrides the schema does not know (kept, editable).
                 for a in &rec.attrs {
                     let known = fields.iter().any(|f| f.key == a.key);
-                    if !known && schemify_doc::Instances::is_override(&a.key) {
+                    if !known && Instances::is_override(&a.key) {
                         let v = a.values.join(" ");
                         fields.push(field(
                             &a.key,
@@ -125,6 +125,8 @@ impl Editor {
                 return;
             }
         }
+        assert!(!fields.is_empty(), "an editable kind shows a field");
+        assert!(!title.is_empty());
         self.tool = Tool::Idle;
         let first = fields.iter().position(|f| f.editable);
         self.dialog = Dialog::Props(Props {
@@ -155,6 +157,7 @@ impl Editor {
             return;
         };
         self.close_dialog();
+        assert!(matches!(self.dialog, Dialog::None), "OK closes the dialog");
         let key = match p.of {
             PropsFor::Object(key) => key,
             PropsFor::Header => return self.header_ok(h, &p.fields, reqs),
@@ -168,16 +171,16 @@ impl Editor {
         };
         let rec = doc.record(loc);
         let tkey = match rec.kind.key() {
-            schemify_format::KeyRule::Position => loc.row.to_string(),
+            KeyRule::Position => loc.row.to_string(),
             _ => rec.fields[0].clone(),
         };
-        let target = schemify_doc::Target::new(rec.kind, &tkey);
+        let target = Target::new(rec.kind, &tkey);
         let mut ops = Vec::new();
-        for f in p
+        let changed = p
             .fields
             .iter()
-            .filter(|f| f.editable && f.value != f.original)
-        {
+            .filter(|f| f.editable && f.value != f.original);
+        for f in changed {
             let op = match (rec.kind, f.key.as_str()) {
                 (RecordKind::Label | RecordKind::Port | RecordKind::Text, _) => Op::SetField {
                     target: target.clone(),
@@ -207,6 +210,7 @@ impl Editor {
             };
             ops.push(op);
         }
+        assert!(ops.len() <= p.fields.len(), "one op per changed field");
         self.commit(reqs, h, "edit properties", ops);
     }
     /// `field.typed` (a dialog field's `input` command, sent as the field's text changes): the
@@ -229,7 +233,7 @@ impl Editor {
                 self.refill_chooser();
                 true
             }
-            Dialog::Text(_, _, typed) if node == "dialog.enter_text.input" => {
+            Dialog::Text { typed, .. } if node == "dialog.enter_text.input" => {
                 text.clone_into(typed);
                 false
             }

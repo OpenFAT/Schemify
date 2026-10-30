@@ -26,6 +26,8 @@
 //! - `Session::pop_level`
 //! - `pub(super) fn cut`
 
+use std::mem;
+
 use schemify_canvas::Camera;
 use schemify_doc::{DocHandle, TableId};
 use schemify_format::FileKind;
@@ -39,18 +41,23 @@ use super::{DEPTH_MAX, Level, Session, TABS_MAX, Tab, TextView, View};
 pub const STATUS_MAX: usize = 1 << 14;
 
 /// The active tab's view toggles, lent by [`Session::tab_view_mut`].
-pub struct TabView<'a> {
+pub struct TabView<'tab> {
     /// The docs page is shown beside (or instead of) the canvas.
-    pub docs: &'a mut bool,
+    pub docs: &'tab mut bool,
     /// The docs page shows its source text.
-    pub docs_source: &'a mut bool,
+    pub docs_source: &'tab mut bool,
     /// The cell settings panel is shown.
-    pub cell: &'a mut bool,
+    pub cell: &'tab mut bool,
 }
 
 impl Session {
     /// Opens a new tab showing `doc` (or switches to the tab already showing it at top).
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check the tab count against [`TABS_MAX`].
     pub fn open_tab(&mut self, doc: DocHandle, view: View) {
+        assert!(self.tabs.len() <= TABS_MAX);
         if let Some(i) = self
             .tabs
             .iter()
@@ -63,6 +70,7 @@ impl Session {
             self.status = format!("at most {TABS_MAX} tabs");
             return;
         }
+        let tabs = self.tabs.len();
         let docs = self
             .project
             .doc(doc)
@@ -82,12 +90,22 @@ impl Session {
             text: None,
         });
         self.active = self.tabs.len() - 1;
-        assert!(!self.tabs[self.active].stack.is_empty());
+        assert_eq!(self.tabs.len(), tabs + 1, "one tab opened");
+        assert!(self.tabs.len() <= TABS_MAX);
+        debug_assert!(
+            self.tabs[self.active].stack[0].doc == doc,
+            "the new tab is active"
+        );
     }
 
     /// Shows `view` in a read-only text tab made from the active level (a tab already
     /// showing the same file is replaced and activated).
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check the tab count against [`TABS_MAX`].
     pub fn open_text_tab(&mut self, view: TextView) {
+        assert!(self.tabs.len() <= TABS_MAX);
         let Some(level) = self.level().cloned() else {
             return;
         };
@@ -112,16 +130,22 @@ impl Session {
             text: Some(view),
         });
         self.active = self.tabs.len() - 1;
-        assert!(self.tabs[self.active].text.is_some());
+        assert!(self.tabs.len() <= TABS_MAX);
+        assert!(self.text_view().is_some(), "the text tab is active");
     }
 
     /// The status line: the message the last step left (last wins).
+    #[must_use]
     pub fn status(&self) -> &str {
         &self.status
     }
 
     /// Sets the status line; the newest message wins. A message past [`STATUS_MAX`] bytes is
     /// cut at a character boundary (a plugin's error text is untrusted in length).
+    ///
+    /// # Panics
+    ///
+    /// Never: the message is cut to [`STATUS_MAX`] bytes.
     pub fn say(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
         cut(&mut self.status);
@@ -131,28 +155,38 @@ impl Session {
     /// Takes the status line and leaves it empty: a step that runs a command on a clean
     /// line and puts the old message back when the command says nothing.
     pub fn take_status(&mut self) -> String {
-        let s = std::mem::take(&mut self.status);
-        assert!(self.status.is_empty());
-        s
+        mem::take(&mut self.status)
     }
 
     /// The text view of the active tab, if it is one.
+    #[must_use]
     pub fn text_view(&self) -> Option<&TextView> {
         self.tabs.get(self.active).and_then(|t| t.text.as_ref())
     }
 
     /// The open tabs, in tab-bar order.
+    #[must_use]
     pub fn tabs(&self) -> &[Tab] {
+        debug_assert!(self.tabs.len() <= TABS_MAX);
         &self.tabs
     }
 
     /// The active tab's index (`< tabs().len()` once a tab is open).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the index names an open tab when one is open.
+    #[must_use]
     pub fn active(&self) -> usize {
         assert!(self.tabs.is_empty() || self.active < self.tabs.len());
         self.active
     }
 
     /// Makes tab `i` the active one.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not an open tab.
     pub fn switch_tab(&mut self, i: usize) {
         assert!(i < self.tabs.len(), "tab {i} of {}", self.tabs.len());
         self.active = i;
@@ -164,16 +198,28 @@ impl Session {
     /// # Errors
     ///
     /// The new schematic cannot be created (the tab is closed regardless).
+    ///
+    /// # Panics
+    ///
+    /// If no tab is open.
     pub fn close_active_tab(&mut self) -> Result<(), String> {
         assert!(self.active < self.tabs.len(), "an active tab to close");
         self.tabs.remove(self.active);
-        let made = match self.tabs.is_empty() {
-            true => self
-                .create(FileKind::Shcomp)
-                .map(|d| self.open_tab(d, View::Schematic)),
-            false => Ok(()),
+        let made = if self.tabs.is_empty() {
+            self.create(FileKind::Shcomp)
+                .map(|d| self.open_tab(d, View::Schematic))
+        } else {
+            Ok(())
         };
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        assert!(
+            self.tabs.is_empty() || self.active < self.tabs.len(),
+            "the active index names an open tab"
+        );
+        assert!(
+            made.is_err() || !self.tabs.is_empty(),
+            "the last tab is replaced"
+        );
         made
     }
 
@@ -192,8 +238,16 @@ impl Session {
     }
 
     /// Sets the active level's camera.
+    ///
+    /// # Panics
+    ///
+    /// If `cam.scale` is not positive or its center is not finite.
     pub fn set_camera(&mut self, cam: Camera) {
         assert!(cam.scale > 0.0, "a positive zoom");
+        assert!(
+            cam.cx.is_finite() && cam.cy.is_finite(),
+            "a finite camera center"
+        );
         if let Some(l) = self.level_mut() {
             l.cam = Some(cam);
         }
@@ -227,6 +281,7 @@ impl Session {
     /// Shows `doc` in `view` at the active level: the selection and the partial ends are
     /// dropped (they name another document's rows), and with `refit` the camera too (the
     /// first build fits it). Returns whether a selection was dropped.
+    ///
     pub fn show(&mut self, doc: DocHandle, view: View, refit: bool) -> bool {
         let Some(l) = self.level_mut() else {
             return false;
@@ -239,13 +294,20 @@ impl Session {
         let had = !l.sel.is_empty();
         l.sel.clear();
         l.ends.clear();
-        assert!(l.sel.is_empty() && l.ends.is_empty());
         had
     }
 
     /// The level shown in the active tab.
+    #[must_use]
     pub fn level(&self) -> Option<&Level> {
-        self.tabs.get(self.active).and_then(|t| t.stack.last())
+        let tab = self.tabs.get(self.active);
+        let level = tab.and_then(|t| t.stack.last());
+        debug_assert_eq!(
+            tab.is_some(),
+            level.is_some(),
+            "a tab's level stack is never empty"
+        );
+        level
     }
 
     /// The level shown in the active tab, mutably: only `Session`'s own transforms write a
@@ -257,6 +319,7 @@ impl Session {
     }
 
     /// Hierarchy path of the active tab, xschem style (`.x1.x2.`).
+    #[must_use]
     pub fn hier_path(&self) -> String {
         let mut s = String::from(".");
         if let Some(t) = self.tabs.get(self.active) {
@@ -265,6 +328,7 @@ impl Session {
                 s.push('.');
             }
         }
+        debug_assert!(s.starts_with('.') && s.ends_with('.'), "xschem path `{s}`");
         s
     }
 
@@ -273,6 +337,10 @@ impl Session {
     /// # Errors
     ///
     /// The tab is already [`DEPTH_MAX`] deep.
+    ///
+    /// # Panics
+    ///
+    /// Never: the depth is checked against [`DEPTH_MAX`] first.
     pub fn push_level(&mut self, doc: DocHandle, view: View, inst: &str) -> Result<(), String> {
         let tab = self.tabs.get_mut(self.active).ok_or("no tab")?;
         if tab.stack.len() >= DEPTH_MAX {
@@ -286,14 +354,24 @@ impl Session {
             sel: Vec::new(),
             ends: Vec::new(),
         });
+        assert!(tab.stack.len() <= DEPTH_MAX);
+        assert!(
+            tab.stack.len() >= 2,
+            "a pushed level sits above the top one"
+        );
         Ok(())
     }
 
     /// Pops the active tab's level (return to parent); false at the top.
+    ///
+    /// # Panics
+    ///
+    /// Never: only a level above the top one is popped.
     pub fn pop_level(&mut self) -> bool {
         match self.tabs.get_mut(self.active) {
             Some(t) if t.stack.len() > 1 => {
                 t.stack.pop();
+                assert!(!t.stack.is_empty(), "the top level stays");
                 true
             }
             _ => false,
@@ -309,5 +387,7 @@ pub(super) fn cut(s: &mut String) {
             at -= 1;
         }
         s.truncate(at);
+        assert!(at + 4 > STATUS_MAX, "a char is at most four bytes");
     }
+    assert!(s.len() <= STATUS_MAX);
 }

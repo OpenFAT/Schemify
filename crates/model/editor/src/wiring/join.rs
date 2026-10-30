@@ -12,14 +12,13 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use schemify_doc::{DocHandle, Op, Project, TableId, Target};
+use schemify_doc::{DocHandle, Loc, Op, Project, TableId, Target};
 use schemify_format::RecordKind;
 
 use crate::edit::Ids;
 use crate::geometry::Pt;
 
-use super::stretch::fixed_points;
-use super::wire_rec;
+use super::stretch;
 
 /// A wire's line: its reduced direction `(dx, dy)` (coprime, `dx > 0`, or `dx == 0` and
 /// `dy > 0`) and the offset `dx·y − dy·x`, which is the same for every point of the line.
@@ -30,11 +29,14 @@ pub(super) type Line = (i64, i64, i64);
 type AttrKey = Vec<(String, Vec<String>)>;
 
 pub(super) fn gcd(mut a: i64, mut b: i64) -> i64 {
+    let (a0, b0) = (a, b);
     (a, b) = (a.abs(), b.abs());
     // Bounded: Euclid's algorithm takes O(log min(a, b)) steps.
     while b != 0 {
         (a, b) = (b, a % b);
     }
+    assert!(a >= 0);
+    debug_assert!(a == 0 || (a0 % a == 0 && b0 % a == 0), "a common divisor");
     a
 }
 
@@ -54,6 +56,7 @@ pub(super) fn line_of(a: Pt, b: Pt) -> Line {
     if dx < 0 || (dx == 0 && dy < 0) {
         (dx, dy) = (-dx, -dy);
     }
+    assert!(dx > 0 || (dx == 0 && dy > 0), "the canonical direction");
     (dx, dy, offset((dx, dy), a))
 }
 
@@ -69,6 +72,10 @@ pub(super) fn along(d: (i64, i64), p: Pt) -> i64 {
 
 /// Whether position `t` lies in one of the sorted, disjoint closed intervals `iv`.
 pub(super) fn covered(iv: &[(i64, i64)], t: i64) -> bool {
+    debug_assert!(
+        iv.windows(2).all(|w| w[0].1 < w[1].0),
+        "sorted, disjoint intervals"
+    );
     let i = iv.partition_point(|x| x.0 <= t);
     i > 0 && iv[i - 1].1 >= t
 }
@@ -83,17 +90,22 @@ pub(super) fn covered(iv: &[(i64, i64)], t: i64) -> bool {
 /// of the first wire of its group (by row).
 ///
 /// Cost: O(W log W + E·D) with E the wire ends and D the distinct wire directions.
+///
+/// # Panics
+///
+/// Never: a point between two wire ends fits in `i32`.
 pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> {
     let Some(doc) = project.doc(h) else {
         return Vec::new();
     };
     // Pins, ports and noconns (labels excluded: they never cut).
-    let mut anchors: Vec<Pt> = fixed_points(project, h, doc, &HashSet::new());
+    let mut anchors: Vec<Pt> = stretch::fixed_points(project, h, doc, &HashSet::new());
     let labels: Vec<Pt> = (0..doc.labels().id.len())
         .map(|i| (doc.labels().x[i], doc.labels().y[i]))
         .collect();
     anchors.retain(|p| !labels.contains(p));
     let w = doc.wires();
+    assert!(super::wires_in_step(w), "wire columns in step");
     let s = doc.strings();
     let ends = |r: usize| [(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])];
     // Groups: (line, attributes) → rows, ordered (BTreeMap) so ids are drawn deterministically.
@@ -137,6 +149,14 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
                     _ => m.push((lo, hi)),
                 }
             }
+            assert!(
+                !m.is_empty() && m.len() <= rows.len(),
+                "one interval per wire at most"
+            );
+            debug_assert!(
+                m.windows(2).all(|w| w[0].1 < w[1].0),
+                "sorted, disjoint intervals"
+            );
             m
         })
         .collect();
@@ -201,6 +221,8 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
             }
             want.push((start, hi));
         }
+        assert!(want.len() >= merged[g].len(), "cuts only split intervals");
+        debug_assert!(want.is_sorted());
         let span = |r: usize| {
             let [a, b] = ends(r);
             let (ta, tb) = (along(d, a), along(d, b));
@@ -227,7 +249,7 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
             (c(p0.0, d.0), c(p0.1, d.1))
         };
         let attrs = doc
-            .record(schemify_doc::Loc {
+            .record(Loc {
                 table: TableId::Wires,
                 row: rows[0] as u32,
             })
@@ -242,9 +264,9 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
         }
         for sp in &want {
             if !kept.contains(sp) {
-                let (id, _) = ids.draw(doc);
+                let id = ids.draw(doc).text;
                 ops.push(Op::Insert {
-                    rec: wire_rec(&id, pt(sp.0), pt(sp.1), &attrs),
+                    rec: super::wire_rec(&id, pt(sp.0), pt(sp.1), &attrs),
                     at: None,
                 });
             }

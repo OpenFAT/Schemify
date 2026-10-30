@@ -9,7 +9,7 @@
 //! - `pub(super) fn symbol_from_ports_ops`
 //! - `pub(super) fn pins_from_ports`
 
-use schemify_doc::{DocHandle, Op, RecordBuf, TableId, Target as DocTarget};
+use schemify_doc::{DocHandle, Document, Op, PinDir, RecordBuf, TableId, Target as DocTarget};
 use schemify_format::{FileKind, Orient, RecordKind};
 
 use crate::geometry::Pt;
@@ -68,7 +68,7 @@ impl Editor {
                 continue;
             }
             let o = match pins.dir[i] {
-                schemify_doc::PinDir::Out => Orient::R180,
+                PinDir::Out => Orient::R180,
                 _ => Orient::R0,
             };
             let rec = edit::placed(
@@ -81,6 +81,7 @@ impl Editor {
             ops.push(Op::Insert { rec, at: None });
             k += 1;
         }
+        assert!(ops.len() <= pins.name.len(), "one port per pin at most");
         ops
     }
     /// Symbol → Attach net labels: a label named after the pin on every pin of the selected
@@ -109,6 +110,10 @@ impl Editor {
                 continue;
             };
             let pts = wiring::inst_pins(p, h, doc, row);
+            assert!(
+                pts.len() <= iface.pins().name.len(),
+                "a point per interface pin"
+            );
             for (i, q) in pts.into_iter().enumerate() {
                 // The pin itself is one connection point; anything else touching it is another.
                 if count(q) > 1 {
@@ -189,17 +194,27 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
     for (k, name) in left.iter().enumerate() {
         let y = top + (k as i32 + 1) * PITCH;
         pins.push(pin(name, "in", -half_w, y));
-        graphics.push(edit::shape(false, (-half_w, y), (-half_w + lead, y)));
+        graphics.push(edit::shape(
+            RecordKind::Line,
+            (-half_w, y),
+            (-half_w + lead, y),
+        ));
         graphics.push(label(name, -half_w + lead + 2 * UNIT, y));
     }
     for (k, (name, dir)) in right.iter().enumerate() {
         let y = top + (k as i32 + 1) * PITCH;
         pins.push(pin(name, dir, half_w, y));
-        graphics.push(edit::shape(false, (half_w - lead, y), (half_w, y)));
+        graphics.push(edit::shape(
+            RecordKind::Line,
+            (half_w - lead, y),
+            (half_w, y),
+        ));
         let w = (name.chars().count() as i32) * 6 * UNIT;
         graphics.push(label(name, half_w - lead - 2 * UNIT - w, y));
     }
     assert_eq!(pins.len(), left.len() + right.len());
+    // The box and the name, then a lead and a label per pin.
+    assert_eq!(graphics.len(), 2 + 2 * pins.len());
     pins.extend(graphics);
     pins
 }
@@ -209,11 +224,18 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
 /// written in port order, replacing `doc`'s pins and symbol graphics. Any cell kind with a
 /// symbol. Empty when `ports` is.
 pub(super) fn symbol_from_ports_ops(
-    doc: &schemify_doc::Document,
-    ports: &[(String, schemify_doc::PinDir)],
+    doc: &Document,
+    ports: &[(String, PinDir)],
     width: i32,
 ) -> Vec<Op> {
     use schemify_doc::PinDir;
+    debug_assert!(
+        ports
+            .iter()
+            .enumerate()
+            .all(|(k, p)| !ports[..k].iter().any(|q| q.0 == p.0)),
+        "unique port names"
+    );
     // Positions only order each side top to bottom: port order.
     let placed: Vec<(String, Orient, Pt)> = ports
         .iter()
@@ -240,7 +262,7 @@ pub(super) fn symbol_from_ports_ops(
 
 /// Symbol → Create symbol pins from selected schematic ports: one pin per selected port
 /// whose name has no pin yet, at the port's position (R180/MR0 ports are outputs).
-pub(super) fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> Vec<Op> {
+pub(super) fn pins_from_ports(doc: &Document, sel: &[ObjKey]) -> Vec<Op> {
     if doc.kind() != FileKind::Shcomp {
         return Vec::new();
     }
@@ -269,6 +291,7 @@ pub(super) fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> V
         ops.push(Op::Insert { rec, at: None });
         made.push(name);
     }
+    assert!(ops.len() <= sel.len(), "one pin per selected port at most");
     ops
 }
 
@@ -276,7 +299,7 @@ pub(super) fn pins_from_ports(doc: &schemify_doc::Document, sel: &[ObjKey]) -> V
 
 /// Ops replacing every pin and symbol graphic of `doc` with `recs` (pins and graphics, as
 /// [`symbol_records`] makes them).
-fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec<Op> {
+fn replace_symbol_ops(doc: &Document, recs: Vec<RecordBuf>) -> Vec<Op> {
     assert!(!recs.is_empty());
     let (s, pins) = (doc.strings(), doc.pins());
     let mut ops: Vec<Op> = pins
@@ -288,6 +311,9 @@ fn replace_symbol_ops(doc: &schemify_doc::Document, recs: Vec<RecordBuf>) -> Vec
     for &kind in &doc.graphics().shape {
         ops.push(Op::Delete(DocTarget::new(kind, "0")));
     }
+    let deletes = ops.len();
+    assert_eq!(deletes, pins.name.len() + doc.graphics().shape.len());
     ops.extend(recs.into_iter().map(|rec| Op::Insert { rec, at: None }));
+    assert!(ops.len() > deletes, "the new symbol is inserted");
     ops
 }

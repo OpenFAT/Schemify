@@ -9,14 +9,12 @@
 
 use std::collections::HashSet;
 
-use schemify_doc::{DocHandle, Document, Op, Project, TableId, Target};
+use schemify_doc::{DocHandle, Document, Loc, Op, Project, TableId, Target};
 use schemify_format::RecordKind;
 
-use crate::edit::{self, Ids};
+use crate::edit::{self, FreshId, Ids};
 use crate::geometry::{Pt, Xform};
 use crate::scene::ObjKey;
-
-use super::{inst_pins, on_interior, points_of, route, wire_rec};
 
 /// The result of a stretch or kissing move.
 #[derive(Debug, Default)]
@@ -29,12 +27,12 @@ pub struct Stretched {
 
 /// What a move carries: objects moved whole and the moving ends of partially selected wires.
 #[derive(Clone, Copy, Debug)]
-pub struct Moved<'a> {
+pub struct Moved<'sel> {
     /// Objects moved whole.
-    pub sel: &'a [ObjKey],
+    pub sel: &'sel [ObjKey],
     /// Selected ends of partially selected wires (xschem's Ctrl+drag box): (wire, end
     /// position). A row whose position is not an end of its wire is ignored.
-    pub ends: &'a [(ObjKey, Pt)],
+    pub ends: &'sel [(ObjKey, Pt)],
     /// Unselected wires with an end on a moved connection point follow it (xschem
     /// "stretch"); without it only the partial ends move.
     pub follow: bool,
@@ -57,15 +55,17 @@ pub(super) fn fixed_points(
     let mut out = Vec::new();
     let unselected = |table: TableId, id: u32| !sel.contains(&ObjKey { table, key: id });
     let inst = doc.instances();
+    assert!(super::instances_in_step(inst), "instance columns in step");
     for i in 0..inst.id.len() {
         if unselected(TableId::Instances, inst.id[i].0) {
-            out.extend(inst_pins(project, h, doc, i));
+            out.extend(super::inst_pins(project, h, doc, i));
         }
     }
     for (table, t) in [
         (TableId::Labels, doc.labels()),
         (TableId::Ports, doc.ports()),
     ] {
+        assert!(super::placed_in_step(t), "{table:?} columns in step");
         for i in 0..t.id.len() {
             if unselected(table, t.id[i].0) {
                 out.push((t.x[i], t.y[i]));
@@ -118,7 +118,7 @@ pub fn stretch(
     let selset: HashSet<ObjKey> = sel.iter().copied().collect();
     let mut moved: Vec<Pt> = if m.follow {
         sel.iter()
-            .flat_map(|&k| points_of(project, h, doc, k))
+            .flat_map(|&k| super::points_of(project, h, doc, k))
             .collect()
     } else {
         Vec::new()
@@ -137,6 +137,7 @@ pub fn stretch(
     moved.dedup();
     let is_moved = |p: Pt| moved.binary_search(&p).is_ok();
     let w = doc.wires();
+    assert!(super::wires_in_step(w), "wire columns in step");
     let s = doc.strings();
     let budget = ADDED_PER_OBJECT * (sel.len() + m.ends.len()).max(1);
     let mut added = 0usize;
@@ -154,7 +155,7 @@ pub fn stretch(
             continue;
         }
         let target = Target::new(RecordKind::Wire, &w.id[r].text(s));
-        let rec = doc.record(schemify_doc::Loc {
+        let rec = doc.record(Loc {
             table: TableId::Wires,
             row: r as u32,
         });
@@ -170,7 +171,7 @@ pub fn stretch(
             continue;
         }
         let (fixed, end) = if ma { (b, x.point(a)) } else { (a, x.point(b)) };
-        let legs = route(fixed, end, manhattan);
+        let legs = super::route(fixed, end, manhattan);
         if legs.len() < 2 {
             out.ops.push(Op::Delete(target));
             continue;
@@ -178,13 +179,16 @@ pub fn stretch(
         let id = rec.fields[0].clone();
         out.ops.push(Op::Put {
             target,
-            rec: wire_rec(&id, legs[0], legs[1], &rec.attrs),
+            rec: super::wire_rec(&id, legs[0], legs[1], &rec.attrs),
         });
         for leg in legs[1..].windows(2) {
             if added < budget {
-                let (nid, raw) = ids.draw(doc);
+                let FreshId {
+                    text: nid,
+                    key: raw,
+                } = ids.draw(doc);
                 out.ops.push(Op::Insert {
-                    rec: wire_rec(&nid, leg[0], leg[1], &rec.attrs),
+                    rec: super::wire_rec(&nid, leg[0], leg[1], &rec.attrs),
                     at: None,
                 });
                 out.wires.push(ObjKey {
@@ -212,14 +216,19 @@ pub fn stretch(
                 continue;
             }
             let touches = fixed.binary_search(&m).is_ok()
-                || unselected_wires.iter().any(|&(a, b)| on_interior(m, a, b));
+                || unselected_wires
+                    .iter()
+                    .any(|&(a, b)| super::on_interior(m, a, b));
             if !touches {
                 continue;
             }
-            for leg in route(m, to, manhattan).windows(2) {
-                let (nid, raw) = ids.draw(doc);
+            for leg in super::route(m, to, manhattan).windows(2) {
+                let FreshId {
+                    text: nid,
+                    key: raw,
+                } = ids.draw(doc);
                 out.ops.push(Op::Insert {
-                    rec: wire_rec(&nid, leg[0], leg[1], &[]),
+                    rec: super::wire_rec(&nid, leg[0], leg[1], &[]),
                     at: None,
                 });
                 out.wires.push(ObjKey {

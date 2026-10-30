@@ -40,7 +40,8 @@ use std::fmt::Write as _;
 
 use schemify_doc::{DocHandle, Document, Loc, RecordKind, TableId};
 use schemify_elab::{CellState, Val};
-use schemify_ui::prose::{Segment, split_plots};
+use schemify_ui::prose;
+use schemify_ui::prose::Segment;
 
 pub use cache::{cache_ops, drop_stale_caches, param_value};
 pub use edits::{add_prose, add_var, delete_block, insert_row, move_block, prose_ops, var_ops};
@@ -74,6 +75,10 @@ pub const IMAGE_SIDE_MAX: u32 = 4096;
 
 impl Page {
     /// Resets the state when the shown document changes.
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check the state just reset.
     pub fn follow(&mut self, doc: DocHandle) {
         if self.doc != Some(doc) {
             *self = Page {
@@ -81,46 +86,72 @@ impl Page {
                 ..Page::default()
             };
         }
-        debug_assert_eq!(self.doc, Some(doc));
+        assert_eq!(self.doc, Some(doc));
+        assert!(self.images_failed.len() <= IMAGES_FAILED_MAX);
     }
 }
 
 /// Block row named by a page node id (`docs.b.<row>…`).
+#[must_use]
 pub fn row_of(node: &str) -> Option<u32> {
     let rest = node.strip_prefix("docs.b.")?;
-    rest.split('.').next()?.parse().ok()
+    rest.split('.').next()?.parse::<u32>().ok()
 }
 
 /// Node id of the prose editor of block `row`.
+#[must_use]
 pub fn editor_id(row: u32) -> String {
-    format!("docs.b.{row}.edit")
+    let id = format!("docs.b.{row}.edit");
+    debug_assert_eq!(
+        row_of(&id),
+        Some(row),
+        "page ids round-trip through `row_of`"
+    );
+    id
 }
 
 /// The verbatim text of prose block `row` (lines joined by `\n`).
+///
+/// # Panics
+///
+/// `row` is not a prose block of `doc`.
+#[must_use]
 pub fn prose_text(doc: &Document, row: u32) -> String {
+    assert_eq!(
+        kind_of(doc, row),
+        Some(RecordKind::Prose),
+        "block {row} is not a prose block"
+    );
     let rec = doc.record(Loc {
         table: TableId::DocBlocks,
         row,
     });
-    debug_assert_eq!(rec.kind, RecordKind::Prose);
+    assert_eq!(rec.kind, RecordKind::Prose);
     rec.verbatim.join("\n")
 }
 
 /// Kind of block `row`, if it exists.
+#[must_use]
 pub fn kind_of(doc: &Document, row: u32) -> Option<RecordKind> {
     doc.doc_blocks().kind.get(row as usize).copied()
 }
 
 /// The calculator expressions of every ```` ```plot ```` fence of `doc`'s prose blocks, in
 /// page order (the slots the run fills, `docs-page.md` §5).
+///
+/// # Panics
+///
+/// Never: a document holds fewer than 2^12 blocks.
+#[must_use]
 pub fn plot_exprs(doc: &Document) -> Vec<String> {
     let b = doc.doc_blocks();
     let mut out = Vec::new();
-    for r in 0..b.kind.len() as u32 {
+    let rows = u32::try_from(b.kind.len()).expect("doc blocks < 2^12");
+    for r in 0..rows {
         if b.kind[r as usize] != RecordKind::Prose {
             continue;
         }
-        for part in split_plots(&prose_text(doc, r)) {
+        for part in prose::split_plots(&prose_text(doc, r)) {
             if let Segment::Plot(e) = part {
                 out.push(e.trim().to_owned());
             }
@@ -132,8 +163,10 @@ pub fn plot_exprs(doc: &Document) -> Vec<String> {
 // ---------------------------------------------------------------------- projection
 
 /// Value and D20 flag of own var `v` (`name` guards against a stale state).
+#[must_use]
 pub fn var_value<'c>(cell: &'c CellState, name: &str, v: usize) -> Option<(&'c Val, bool)> {
     let g = &cell.graph;
+    debug_assert_eq!(g.vals.len(), g.unverified.len(), "value columns in step");
     let n = *g.var_name.get(v)?;
     if cell.names.get(n) != name {
         return None;
@@ -143,6 +176,7 @@ pub fn var_value<'c>(cell: &'c CellState, name: &str, v: usize) -> Option<(&'c V
 }
 
 /// Engineering text with the unit glued on (`5.2µm`, `20µA`, `15`).
+#[must_use]
 pub fn value_text(val: &Val, unit: &str) -> String {
     match val.as_f64() {
         Some(x) if matches!(val, Val::Num(_)) => {
@@ -162,18 +196,36 @@ pub fn value_text(val: &Val, unit: &str) -> String {
 
 /// Writes a `node` record header: `id` of `kind` under `parent`.
 pub(crate) fn node(t: &mut String, id: &str, kind: &str, parent: &str) {
+    assert!(!id.is_empty());
+    assert!(
+        !id.contains(char::is_whitespace),
+        "a node id is one word: `{id}`"
+    );
+    assert!(!kind.is_empty());
+    assert!(!parent.is_empty(), "node {id} has a parent");
     let _ = writeln!(t, "node {id} {kind}");
     let _ = writeln!(t, "  parent {parent}");
 }
 
 /// Writes one quoted attribute line of the current node.
 pub(crate) fn attr(t: &mut String, key: &str, value: &str) {
+    assert!(!key.is_empty());
+    assert!(
+        !key.contains(char::is_whitespace),
+        "an attribute key is one word: `{key}`"
+    );
+    assert!(t.ends_with('\n'), "an attribute follows its node line");
     let _ = writeln!(t, "  {key} {}", quote(value));
 }
 
 /// Quotes a record value in the format §2 writer's canonical form, so any text
 /// (multi-line prose, a status message with a newline) reads back unchanged.
 /// The one quoting helper for doc pages, UI records and plugin arguments.
+///
+/// # Panics
+///
+/// Never: the assert checks that quoting only grows the text.
+#[must_use]
 pub fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -191,12 +243,9 @@ pub fn quote(s: &str) -> String {
         }
     }
     out.push('"');
+    assert!(out.len() >= s.len() + 2, "escapes only grow the text");
     out
 }
-
-// ---------------------------------------------------------------------- edits
-
-// ---------------------------------------------------------------------- D20 cache
 
 #[cfg(test)]
 mod tests {

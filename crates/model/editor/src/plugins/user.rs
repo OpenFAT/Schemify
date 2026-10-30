@@ -14,23 +14,25 @@
 //! - `Host::call_fn`
 //! - `Host::fn_hash`
 
-use schemify_config::{Config, Request};
+use schemify_config::{Config, Keymaps, Request, Table};
 use schemify_elab::Val;
 use schemify_expr::{Code as XCode, Error as XError, Span, Value};
 use schemify_plugin::PluginId;
 use schemify_plugin::abi::Event;
 
-use super::deliver::fn_result;
-use super::load::{content_hash, load_installed};
+use super::deliver;
+use super::load;
 use super::{Host, NOTES_MAX, Note};
 
 impl Host {
     /// The user-config table (options, keymaps, sims, packages, hooks).
-    pub fn user(&self) -> &schemify_config::Table {
+    #[must_use]
+    pub fn user(&self) -> &Table {
         self.user.table()
     }
 
     /// The user config itself: its root locates the package lockfile (`pack::Paths::of`).
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.user
     }
@@ -38,6 +40,10 @@ impl Host {
     /// Runs a command nobody in the command table owns, if the user config or a lazy package
     /// does: a Lua keymap function (`user.lua.<id>`) runs now; a lazy package listing `name`
     /// loads and gets the command as `Event::Command`. Returns whether it was handled.
+    ///
+    /// # Panics
+    ///
+    /// Never: the lazy list loses exactly the package it loads.
     pub fn user_command(&mut self, name: &str, args: &str) -> bool {
         if let Some(f) = schemify_config::fn_of_command(name) {
             let keys = self.user.table().keymaps.clone();
@@ -52,9 +58,10 @@ impl Host {
         else {
             return false;
         };
+        let lazy = self.lazy.len();
         let p = self.lazy.remove(i);
         let mut notes = Vec::new();
-        match load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p) {
+        match load::load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p) {
             Some(id) => {
                 let ev = Event::Command { name, args };
                 if let Err(e) = self.push(Some(id), &ev) {
@@ -64,13 +71,13 @@ impl Host {
             None => notes.push(format!("{name}: its package did not load")),
         }
         self.user_logs.extend(notes);
-        assert!(self.lazy.len() < schemify_config::PACKS_MAX);
+        assert_eq!(self.lazy.len() + 1, lazy, "one lazy package woke");
         true
     }
 
     /// Queues the requests of a user-config call; recomposes the UI when the call changed the
     /// keymaps (`keys` is the table before it; a function may call `schemify.keymap.set`).
-    pub(super) fn absorb(&mut self, out: Vec<Request>, keys: &schemify_config::Keymaps) {
+    pub(super) fn absorb(&mut self, out: Vec<Request>, keys: &Keymaps) {
         for r in out {
             match r {
                 Request::Command { name, args } => self.user_cmds.push((name, args)),
@@ -84,7 +91,7 @@ impl Host {
 
     /// The editor events recorded after sequence number `seq` (a value [`Host::notes_seq`]
     /// returned), oldest first, as plugin-abi §6 wire text without the line end; only the
-    /// last [`NOTES_MAX`] are kept.
+    /// last [`NOTES_MAX`] are kept. A `seq` past [`Host::notes_seq`] yields nothing.
     pub fn notes_since(&self, seq: u64) -> impl Iterator<Item = &Note> {
         let new = self
             .notes_seq
@@ -94,6 +101,7 @@ impl Host {
     }
 
     /// The sequence number of the newest recorded editor event (0 before the first).
+    #[must_use]
     pub fn notes_seq(&self) -> u64 {
         self.notes_seq
     }
@@ -131,7 +139,11 @@ impl Host {
         }
         self.notes.push_back(note);
         self.notes_seq += 1;
-        debug_assert!(self.notes.len() <= NOTES_MAX);
+        assert!(self.notes.len() <= NOTES_MAX);
+        assert!(
+            self.notes_seq >= self.notes.len() as u64,
+            "every kept note was counted"
+        );
         self.wake_lazy(event);
         if self.user.table().hooks.iter().any(|h| h.0 == event) {
             let keys = self.user.table().keymaps.clone();
@@ -151,12 +163,17 @@ impl Host {
             }
             let p = self.lazy.remove(i);
             let mut notes = Vec::new();
-            load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p);
+            load::load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p);
             self.user_logs.extend(notes);
         }
+        assert!(
+            !self.lazy.iter().any(|p| p.lazy_event.contains(&event)),
+            "every package waiting for the event woke"
+        );
     }
 
     /// Whether a user package is still waiting to load (tests, status).
+    #[must_use]
     pub fn is_lazy(&self, name: &str) -> bool {
         self.lazy.iter().any(|p| p.name == name)
     }
@@ -167,12 +184,17 @@ impl Host {
     /// record's `cached` value, unverified, until the next recompute).
     ///
     /// Args travel as line-record values (strings quoted, numbers canonical); a number,
-    /// `true`/`false` or a quoted string comes back ([`fn_result`]). Failures map to
+    /// `true`/`false` or a quoted string comes back ([`fn_result`](super::deliver::fn_result)). Failures map to
     /// expression errors: wrong arity `X008`, a complex argument or a result that is none of
     /// those `X003`, a plugin error code `X010`.
     pub fn call_fn(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<Val, XError>> {
         let f = &self.plugins.composed().functions;
         let row = f.find(name)?;
+        debug_assert!(row < f.plugin.len(), "function row {row}");
+        debug_assert!(
+            f.fn_id.len() == f.plugin.len() && f.arity.len() == f.plugin.len(),
+            "function columns in step"
+        );
         let (plugin, fn_id, arity) = (f.plugin[row], f.fn_id[row], f.arity[row]);
         if self.plugins.busy(plugin) {
             // Its event runs on a worker: the record's `cached` value stands in (D20).
@@ -203,11 +225,15 @@ impl Host {
                 }
             }
         }
+        debug_assert!(
+            args.is_empty() || !self.args.is_empty(),
+            "every argument wrote text"
+        );
         match self
             .plugins
             .call(plugin, fn_id, &self.args, &mut self.result)
         {
-            Ok(()) => Some(fn_result(self.result.trim()).ok_or_else(|| {
+            Ok(()) => Some(deliver::fn_result(self.result.trim()).ok_or_else(|| {
                 let t = self.result.trim();
                 XError::new(
                     XCode::X003,
@@ -222,7 +248,16 @@ impl Host {
     /// D20 cache hash of an expression calling `fns` (sorted, distinct `ns.f` names): the
     /// content hash of the one plugin serving them, or of their hashes joined when several
     /// do. `None` when any function is not loaded.
+    ///
+    /// # Panics
+    ///
+    /// If `fns` is not sorted and distinct.
+    #[must_use]
     pub fn fn_hash(&self, fns: &[String]) -> Option<String> {
+        assert!(
+            fns.windows(2).all(|w| w[0] < w[1]),
+            "function names sorted and distinct"
+        );
         let f = &self.plugins.composed().functions;
         let mut owners: Vec<PluginId> = Vec::with_capacity(fns.len());
         for name in fns {
@@ -230,6 +265,7 @@ impl Host {
         }
         owners.sort_unstable();
         owners.dedup();
+        assert!(owners.len() <= fns.len(), "one owner per function at most");
         let hashes: Vec<&str> = owners
             .iter()
             .filter_map(|id| self.hashes.iter().find(|(h, _)| h == id))
@@ -238,7 +274,7 @@ impl Host {
         match hashes.as_slice() {
             [] => None,
             [one] => Some((*one).to_owned()),
-            many => Some(content_hash(many.join("").as_bytes())),
+            many => Some(load::content_hash(many.join("").as_bytes())),
         }
     }
 }

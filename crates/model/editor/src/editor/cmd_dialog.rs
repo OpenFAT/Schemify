@@ -3,7 +3,7 @@
 //! Contents:
 //! - `Editor::run_dialog`
 
-use schemify_doc::EditRequest;
+use schemify_doc::{Document, EditRequest};
 
 use crate::commands::Cmd;
 
@@ -37,7 +37,7 @@ impl Editor {
                     .session
                     .project
                     .doc(h)
-                    .map(schemify_doc::Document::canonical)
+                    .map(Document::canonical)
                     .unwrap_or_default();
                 self.tool = Tool::Idle;
                 self.dialog = Dialog::File(text);
@@ -59,7 +59,7 @@ impl Editor {
             Cmd::EditHeader => self.open_header(h),
             Cmd::ContextMenu => self.context_menu(self.pointer),
             Cmd::Recover | Cmd::DiscardRecovery => {
-                let Dialog::Recover(d, _) = std::mem::take(&mut self.dialog) else {
+                let Dialog::Recover { doc: d, .. } = std::mem::take(&mut self.dialog) else {
                     return false;
                 };
                 self.close_dialog();

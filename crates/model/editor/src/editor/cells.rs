@@ -10,11 +10,12 @@
 use std::path::PathBuf;
 
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, Target as DocTarget};
-use schemify_format::RecordKind;
+use schemify_format::{ChangeKind, Document, RecordKind};
+use schemify_plugin::abi::Event;
 
-use crate::geometry::{Pt, Xform, snap};
+use crate::geometry::{Pt, Xform};
 use crate::session::View;
-use crate::{edit, platform};
+use crate::{edit, geometry, platform};
 
 use super::Editor;
 use super::chooser::ChooseFor;
@@ -26,6 +27,7 @@ impl Editor {
     /// new file in place of the old one. Unsaved edits of the old file move to the new one:
     /// the old document is closed and its journal dropped, so it is not offered for recovery.
     pub(super) fn save_as(&mut self, h: DocHandle, rel: &str, symbol: bool) {
+        assert!(!rel.trim().is_empty(), "a file name to save as");
         let Some(doc) = self.session.project.doc(h) else {
             return;
         };
@@ -78,6 +80,7 @@ impl Editor {
                 return;
             }
         };
+        assert_ne!(new, h, "a file that did not exist opens as a new document");
         let view = if symbol {
             View::Symbol
         } else {
@@ -111,7 +114,7 @@ impl Editor {
         self.remember(new);
         let _ = self.host.push(
             None,
-            &schemify_plugin::abi::Event::DocOpened {
+            &Event::DocOpened {
                 doc: crate::plugins::doc_id(new),
             },
         );
@@ -141,11 +144,15 @@ impl Editor {
             return;
         }
         let anchors: Vec<Pt> = recs.iter().filter_map(crate::geometry::anchor).collect();
+        assert!(anchors.len() <= recs.len(), "one anchor per record at most");
         let n = anchors.len().max(1) as f64;
         let c = anchors.iter().fold((0.0, 0.0), |a, p| {
             (a.0 + f64::from(p.0) / n, a.1 + f64::from(p.1) / n)
         });
-        let base = (snap(c.0, self.opts.snap), snap(c.1, self.opts.snap));
+        let base = (
+            geometry::snap(c.0, self.opts.snap),
+            geometry::snap(c.1, self.opts.snap),
+        );
         let back = Xform::translate(-base.0, -base.1);
         let recs: Vec<RecordBuf> = recs
             .into_iter()
@@ -164,6 +171,7 @@ impl Editor {
     pub(super) fn delete_cell(&mut self, row: usize) {
         let p = &self.session.project;
         let cells = p.cells();
+        assert!(row < cells.lib.len(), "cell row {row}");
         let lib = cells.lib[row];
         let Some(dir) = self.session.lib_dir(lib) else {
             self.session.say("the bundled core library is read-only");
@@ -234,7 +242,7 @@ impl Editor {
         let old = schemify_format::parse(current.as_bytes()).expect("canonical text parses");
         let d = schemify_format::diff(&old, &new);
         let mut ops = Vec::new();
-        let target = |f: &schemify_format::Document<'_>, r: u32| -> DocTarget {
+        let target = |f: &Document<'_>, r: u32| -> DocTarget {
             let kind = f.record_kind(r);
             match kind {
                 RecordKind::Header => DocTarget::header(),
@@ -254,12 +262,12 @@ impl Editor {
                 continue;
             }
             match c.kind {
-                schemify_format::ChangeKind::Removed => ops.push(Op::Delete(target(&old, c.a))),
-                schemify_format::ChangeKind::Added => ops.push(Op::Insert {
+                ChangeKind::Removed => ops.push(Op::Delete(target(&old, c.a))),
+                ChangeKind::Added => ops.push(Op::Insert {
                     rec: RecordBuf::from_format(&new, c.b),
                     at: None,
                 }),
-                schemify_format::ChangeKind::Changed => ops.push(Op::Put {
+                ChangeKind::Changed => ops.push(Op::Put {
                     target: target(&old, c.a),
                     rec: RecordBuf::from_format(&new, c.b),
                 }),
@@ -279,6 +287,10 @@ impl Editor {
                 }
             }
         }
+        assert!(
+            graphics || ops.len() <= d.changes.len(),
+            "one op per change"
+        );
         if ops.is_empty() {
             self.session.say("edit file: no change");
         }

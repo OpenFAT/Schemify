@@ -1,6 +1,8 @@
 //! Read-only text tabs: netlists, find, changelog, packages, processes, job logs, help.
 //!
 //! Contents:
+//! - `pub(super) enum NetlistOf`
+//! - `pub(super) enum Stream`
 //! - `pub(super) const CHANGELOG_ROWS`
 //! - `Editor::find_in_text`
 //! - `Editor::netlist`
@@ -12,15 +14,34 @@
 //! - `pub(super) fn expand_bus`
 //! - `pub(super) fn help_text`
 
+use std::fmt::Write as _;
+
 use schemify_doc::DocHandle;
-use schemify_elab::{Request, Severity};
+use schemify_elab::{Dialect, Request, Severity};
 use schemify_expr::Value;
 
 use crate::session::TextView;
 use crate::{platform, spines};
 
-use super::highlight::env_refs;
-use super::{Editor, Panel};
+use super::{Editor, Panel, highlight};
+
+/// Which cell of the active tab a netlist is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NetlistOf {
+    /// The tab's top cell (`n`).
+    Top,
+    /// The cell shown at this level (`Shift+N`).
+    Level,
+}
+
+/// Which output stream of a job a log tab shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stream {
+    /// `stdout.log`: the job's data.
+    Out,
+    /// `stderr.log`: the job's errors.
+    Err,
+}
 
 /// Rows of hierarchy the changelog lists at most.
 pub(super) const CHANGELOG_ROWS: usize = 1 << 12;
@@ -37,7 +58,6 @@ impl Editor {
     /// case-insensitively, numbered, at most a tab's worth shown; an empty query shows the
     /// text again.
     pub(super) fn find_in_text(&mut self, query: &str) {
-        use std::fmt::Write as _;
         let q = query.trim().to_owned();
         let Some(v) = self.session.text_view_mut() else {
             self.session.say("find: no text tab");
@@ -62,6 +82,11 @@ impl Editor {
                 }
             }
         }
+        assert!(
+            lines.lines().count() <= TEXT_TAB_LINES,
+            "a tab's worth of lines"
+        );
+        assert!(lines.lines().count() <= count as usize);
         v.found = Some((count, lines));
         self.session.say(format!("find {q:?}: {count} line(s)"));
     }
@@ -69,14 +94,13 @@ impl Editor {
     /// gate on errors (D13: the blocking lines go to the checks panel), emit in the selected
     /// dialect, write `.schemify/netlist/<cell>.<ext>`, and show it in a text tab when "show
     /// netlist" is on.
-    pub(super) fn netlist(&mut self, whole: bool) {
+    pub(super) fn netlist(&mut self, of: NetlistOf) {
         let Some(tab) = self.session.tabs().get(self.session.active()) else {
             return;
         };
-        let h = if whole {
-            tab.stack[0].doc
-        } else {
-            tab.stack.last().expect("tabs are never empty").doc
+        let h = match of {
+            NetlistOf::Top => tab.stack[0].doc,
+            NetlistOf::Level => tab.stack.last().expect("tabs are never empty").doc,
         };
         let Some(stem) = self
             .session
@@ -87,7 +111,7 @@ impl Editor {
             return;
         };
         let dialect = self.dialect;
-        let env = env_refs(&self.env);
+        let env = highlight::env_refs(&self.env);
         let req = Request {
             config: None,
             corner: None,
@@ -121,12 +145,7 @@ impl Editor {
         }
         self.blocked.clear();
         // Options → Flat netlist: the hierarchy expanded (SPICE dialects only).
-        let spice = matches!(
-            dialect,
-            schemify_elab::Dialect::Ngspice
-                | schemify_elab::Dialect::Xyce
-                | schemify_elab::Dialect::Cdl
-        );
+        let spice = matches!(dialect, Dialect::Ngspice | Dialect::Xyce | Dialect::Cdl);
         let text = if self.opts.flat && spice {
             schemify_netlist::emit_flat(&e, dialect)
         } else {
@@ -156,11 +175,14 @@ impl Editor {
                 }
                 body.truncate(cut);
             }
+            assert!(body.len() <= TEXT_TAB_BYTES);
+            assert!(body.lines().count() <= TEXT_TAB_LINES);
             if body.len() < text.len().saturating_sub(1) {
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     "\n… (truncated; the whole netlist is in {})",
                     path.display()
-                ));
+                );
             }
             let title = path
                 .file_name()
@@ -178,6 +200,11 @@ impl Editor {
     /// Shows `body` in a read-only text tab titled `title` (`key` identifies it, so asking
     /// again refreshes the same tab).
     pub(super) fn text_tab(&mut self, title: &str, key: &str, body: String) {
+        assert!(!title.is_empty(), "a text tab has a title");
+        assert!(
+            !key.is_empty() && !key.contains(['/', '\\']),
+            "a key names one file: {key}"
+        );
         self.session.open_text_tab(TextView {
             title: title.to_owned(),
             path: self.session.root.join(".schemify").join("text").join(key),
@@ -199,7 +226,7 @@ impl Editor {
             } else {
                 ""
             };
-            body.push_str(&format!("{t:>12}  {}{dirty}\n", p.display()));
+            let _ = writeln!(body, "{t:>12}  {}{dirty}", p.display());
         }
         self.text_tab("changelog", "changelog", body);
     }
@@ -219,10 +246,11 @@ impl Editor {
                 let mut b = report.lines.join("\n");
                 b.push('\n');
                 if report.failed > 0 {
-                    b.push_str(&format!(
-                        "\n{} package(s) missing or broken: run `schemify pack sync`\n",
+                    let _ = writeln!(
+                        b,
+                        "\n{} package(s) missing or broken: run `schemify pack sync`",
                         report.failed
-                    ));
+                    );
                 }
                 b
             }
@@ -237,7 +265,7 @@ impl Editor {
             match self.sim.tables() {
                 Some((_, jobs, _)) => {
                     for j in 0..jobs.len() {
-                        body.push_str(&format!("job {j}: {:?}\n", jobs.state(j)));
+                        let _ = writeln!(body, "job {j}: {:?}", jobs.state(j));
                     }
                     body.push('\n');
                     body.push_str(&self.sim.progress());
@@ -250,27 +278,25 @@ impl Editor {
     }
     /// Simulation → View last job data / errors: the selected job's `stdout.log` /
     /// `stderr.log`.
-    pub(super) fn job_log(&mut self, errors: bool) {
+    pub(super) fn job_log(&mut self, stream: Stream) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(dir) = self.sim.dir() else {
                 self.session.say("no run in this session");
                 return;
             };
-            let name = if errors {
-                schemify_run::STDERR
-            } else {
-                schemify_run::STDOUT
+            let (name, title) = match stream {
+                Stream::Out => (schemify_run::STDOUT, "job output"),
+                Stream::Err => (schemify_run::STDERR, "job errors"),
             };
             let path = dir.join(self.sim.selected.to_string()).join(name);
             let body = platform::read(&path)
                 .map(|b| String::from_utf8_lossy(&b).into_owned())
                 .unwrap_or_else(|e| e);
-            let title = if errors { "job errors" } else { "job output" };
             self.text_tab(title, title, body);
         }
         #[cfg(target_arch = "wasm32")]
-        let _ = errors;
+        let _ = stream;
     }
 }
 
@@ -293,6 +319,7 @@ pub(super) fn expand_bus(key: &str) -> Vec<String> {
                 }
                 i += step;
             }
+            assert_eq!(out.len() as i64, (hi - lo).abs() + 1, "one key per bit");
             out
         }
         _ => vec![key.to_owned()],

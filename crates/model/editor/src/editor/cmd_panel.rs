@@ -9,8 +9,8 @@ use schemify_format::RecordKind;
 use crate::commands::Cmd;
 use crate::{cell, docs};
 
-use super::Editor;
-use super::symbol::symbol_from_ports_ops;
+use super::{Editor, symbol};
+use crate::edit::Toward;
 
 impl Editor {
     /// Cell panel and docs page commands (one undo each). Returns whether anything visible changed.
@@ -88,12 +88,15 @@ impl Editor {
             }
             Cmd::CellPinUp | Cmd::CellPinDown => {
                 let node = if node.is_empty() { arg } else { node };
-                let up = cmd == Cmd::CellPinUp;
-                let action = if up { "up" } else { "down" };
+                let (toward, action) = if cmd == Cmd::CellPinUp {
+                    (Toward::Earlier, "up")
+                } else {
+                    (Toward::Later, "down")
+                };
                 let Some(r) = cell::button_row(node, "pin", action) else {
                     return false;
                 };
-                let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, up));
+                let ops = self.with_doc(h, |d, _| cell::move_pin_ops(d, r, toward));
                 self.commit(reqs, h, "reorder pins", ops);
             }
             Cmd::CellSyncPorts | Cmd::CellSymbolFromPorts => {
@@ -120,7 +123,7 @@ impl Editor {
                         .say("sync pins: review the changes, then Apply");
                 } else {
                     let w = self.opts.symbol_width;
-                    let ops = self.with_doc(h, |d, _| symbol_from_ports_ops(d, &ports, w));
+                    let ops = self.with_doc(h, |d, _| symbol::symbol_from_ports_ops(d, &ports, w));
                     if ops.is_empty() {
                         self.session
                             .say("symbol from ports: the body declares no ports");
@@ -138,16 +141,18 @@ impl Editor {
                     self.session.say("sync pins: nothing pending");
                     return true;
                 };
-                let ops = self.with_doc(h, |d, _| cell::sync_ops(d, &p.ports).1);
+                let ops = self.with_doc(h, |d, _| cell::sync_ops(d, &p.ports).ops);
                 if ops.is_empty() {
                     self.session.say("pins already match the ports");
                 }
                 self.commit(reqs, h, "sync pins from ports", ops);
             }
             Cmd::CellSyncCancel => self.port_sync = None,
-            Cmd::DocsSelect => self.page.sel = docs::row_of(node).or_else(|| arg.parse().ok()),
+            Cmd::DocsSelect => {
+                self.page.sel = docs::row_of(node).or_else(|| arg.parse::<u32>().ok())
+            }
             Cmd::DocsEdit => {
-                let Some(row) = docs::row_of(node).or_else(|| arg.parse().ok()) else {
+                let Some(row) = docs::row_of(node).or_else(|| arg.parse::<u32>().ok()) else {
                     return false;
                 };
                 self.page.sel = Some(row);
@@ -206,10 +211,21 @@ impl Editor {
                     self.session.say("select a docs block first");
                     return true;
                 };
-                let up = cmd == Cmd::DocsUp;
-                let ops = self.with_doc(h, |d, _| docs::move_block(d, row, up));
+                let toward = if cmd == Cmd::DocsUp {
+                    Toward::Earlier
+                } else {
+                    Toward::Later
+                };
+                let ops = self.with_doc(h, |d, _| docs::move_block(d, row, toward));
                 if !ops.is_empty() {
-                    self.page.sel = Some(if up { row - 1 } else { row + 1 });
+                    assert!(
+                        toward == Toward::Later || row > 0,
+                        "the first block has none above"
+                    );
+                    self.page.sel = Some(match toward {
+                        Toward::Earlier => row - 1,
+                        Toward::Later => row + 1,
+                    });
                 }
                 self.commit_docs(reqs, h, "move block", ops);
             }

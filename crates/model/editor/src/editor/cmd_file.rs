@@ -88,6 +88,10 @@ impl Editor {
                     self.settle();
                     self.quit = true;
                 }
+                assert!(
+                    self.quit || self.confirm == Some(Cmd::Quit),
+                    "quit or ask first"
+                );
             }
             Cmd::TabSelect => {
                 let i = node
@@ -100,6 +104,7 @@ impl Editor {
             }
             Cmd::TabNext | Cmd::TabPrev => {
                 let n = self.session.tabs().len();
+                assert!(n > 0, "an active document has a tab");
                 let i = if cmd == Cmd::TabNext {
                     (self.session.active() + 1) % n
                 } else {
@@ -116,8 +121,8 @@ impl Editor {
                         .and_then(|p| crate::libs::rel_path(&self.session.root, p))
                         .unwrap_or_default();
                     let title = if symbol { "Save symbol as" } else { "Save as" };
-                    self.open_text(TextFor::SaveAs(symbol), title);
-                    if let Dialog::Text(_, _, typed) = &mut self.dialog {
+                    self.open_text(TextFor::SaveAs { symbol }, title);
+                    if let Dialog::Text { typed, .. } = &mut self.dialog {
                         *typed = current;
                     }
                 } else {

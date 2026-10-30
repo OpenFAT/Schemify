@@ -6,17 +6,18 @@
 //! - `pub fn svg`
 //! - `pub fn svg_counts`
 
-use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
-use schemify_format::format_coord;
+use std::fmt::Write as _;
 
-use super::{Look, arc_point};
+use schemify_canvas::{CanvasPrims, LAYERS, LineStyle};
+
+use super::Look;
 
 pub(super) fn units(m: i64) -> String {
     let mut s = String::new();
-    format_coord(
-        m.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        &mut s,
-    );
+    let clamped = i32::try_from(m.clamp(i64::from(i32::MIN), i64::from(i32::MAX)))
+        .expect("clamped to the i32 range");
+    schemify_format::format_coord(clamped, &mut s);
+    assert!(!s.is_empty(), "every coordinate prints a digit");
     s
 }
 
@@ -26,10 +27,16 @@ pub(super) fn units(m: i64) -> String {
 ///
 /// # Panics
 ///
-/// Panics if `b` is inverted.
+/// Panics if `b` is inverted, or the text columns of `prims` are out of step.
+#[must_use]
 pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
-    use std::fmt::Write;
-    assert!(b[0] <= b[2] && b[1] <= b[3], "inverted bounds");
+    assert!(b[0] <= b[2], "inverted bounds: x0 {} > x1 {}", b[0], b[2]);
+    assert!(b[1] <= b[3], "inverted bounds: y0 {} > y1 {}", b[1], b[3]);
+    assert_eq!(
+        prims.texts.end.len(),
+        prims.texts.x.len(),
+        "text columns in step"
+    );
     let (w, h) = (
         i64::from(b[2]) - i64::from(b[0]),
         i64::from(b[3]) - i64::from(b[1]),
@@ -55,7 +62,7 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         }
         if st.dash() > 0 {
             let d = 2.0 * f32::from(st.dash()) * w;
-            a.push_str(&format!(" stroke-dasharray=\"{d} {d}\""));
+            let _ = write!(a, " stroke-dasharray=\"{d} {d}\"");
         }
         a
     };
@@ -78,10 +85,10 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         let _ = writeln!(
             s,
             "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#{c:06x}\" {}/>",
-            units(l.x0[i].into()),
-            units(l.y0[i].into()),
-            units(l.x1[i].into()),
-            units(l.y1[i].into()),
+            units(i64::from(l.x0[i])),
+            units(i64::from(l.y0[i])),
+            units(i64::from(l.x1[i])),
+            units(i64::from(l.y1[i])),
             stroke(l.layer[i], l.style[i])
         );
     }
@@ -100,8 +107,8 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         let _ = writeln!(
             s,
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
-            units(x0.into()),
-            units(y0.into()),
+            units(i64::from(x0)),
+            units(i64::from(y0)),
             units(i64::from(x1) - i64::from(x0)),
             units(i64::from(y1) - i64::from(y0)),
             stroke(r.layer[i], r.style[i])
@@ -122,17 +129,17 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
             let _ = writeln!(
                 s,
                 "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\" stroke=\"#{c:06x}\" {}/>",
-                units(a.cx[i].into()),
-                units(a.cy[i].into()),
-                units(a.r[i].into()),
+                units(i64::from(a.cx[i])),
+                units(i64::from(a.cy[i])),
+                units(i64::from(a.r[i])),
                 stroke(a.layer[i], a.style[i])
             );
             continue;
         }
         let start = i64::from(a.start[i]);
         let end = start + i64::from(a.sweep[i]);
-        let p0 = arc_point(a.cx[i], a.cy[i], a.r[i], start);
-        let p1 = arc_point(a.cx[i], a.cy[i], a.r[i], end);
+        let p0 = super::arc_point(a.cx[i], a.cy[i], a.r[i], start);
+        let p1 = super::arc_point(a.cx[i], a.cy[i], a.r[i], end);
         let large = u8::from(a.sweep[i].unsigned_abs() > 180_000);
         let dir = u8::from(a.sweep[i] > 0);
         let _ = writeln!(
@@ -140,8 +147,8 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
             "<path d=\"M {} {} A {} {} 0 {large} {dir} {} {}\" fill=\"none\" stroke=\"#{c:06x}\" {}/>",
             units(p0.0),
             units(p0.1),
-            units(a.r[i].into()),
-            units(a.r[i].into()),
+            units(i64::from(a.r[i])),
+            units(i64::from(a.r[i])),
             units(p1.0),
             units(p1.1),
             stroke(a.layer[i], a.style[i])
@@ -161,8 +168,8 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
                 let _ = write!(
                     pts,
                     "{},{} ",
-                    units(polys.x[j].into()),
-                    units(polys.y[j].into())
+                    units(i64::from(polys.x[j])),
+                    units(i64::from(polys.y[j]))
                 );
             }
             let fill = if closed && (look.filled(layer) || polys.style[k].fills()) {
@@ -191,7 +198,7 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         };
         let mut esc = String::new();
         xml_escape(text, &mut esc);
-        let (x, y) = (units(t.x[i].into()), units(t.y[i].into()));
+        let (x, y) = (units(i64::from(t.x[i])), units(i64::from(t.y[i])));
         let rot = t.rot.get(i).copied().unwrap_or(0);
         let turn = if rot == 0 {
             String::new()
@@ -201,16 +208,18 @@ pub fn svg(prims: &CanvasPrims, b: [i32; 4], look: &Look) -> String {
         let _ = writeln!(
             s,
             "<text x=\"{x}\" y=\"{y}\" font-size=\"{}\" font-family=\"sans-serif\" dominant-baseline=\"hanging\" fill=\"#{c:06x}\"{turn}>{esc}</text>",
-            units(t.size[i].into())
+            units(i64::from(t.size[i]))
         );
     }
     s.push_str("</svg>\n");
+    assert!(s.starts_with("<svg "));
     s
 }
 
 /// Primitive count per SVG element kind written by [`svg`]: `(lines, rects, circles + arc
 /// paths, polylines + polygons, texts)` — the oracle of an SVG export test parses the file
 /// back with this.
+#[must_use]
 pub fn svg_counts(svg: &str) -> [usize; 5] {
     let count = |tag: &str| svg.matches(tag).count();
     [
@@ -226,6 +235,7 @@ pub fn svg_counts(svg: &str) -> [usize; 5] {
 // ---- private ----
 
 fn xml_escape(s: &str, out: &mut String) {
+    let before = out.len();
     for c in s.chars() {
         match c {
             '&' => out.push_str("&amp;"),
@@ -236,4 +246,9 @@ fn xml_escape(s: &str, out: &mut String) {
             c => out.push(c),
         }
     }
+    let escaped = &out[before..];
+    assert!(
+        !escaped.contains(['<', '>', '"']),
+        "markup characters are escaped"
+    );
 }

@@ -15,14 +15,15 @@
 //! - `Sim::refresh_table`
 //! - `pub(super) fn plot`
 
+use std::cmp::Ordering;
 use std::fmt::Write as _;
+use std::ops::Range;
 use std::path::Path;
 
 use schemify_elab::{AnnotationRequest, Mark, Severity};
 use schemify_netlist::NameMap;
 use schemify_run::{Jobs, Pass, Results, State};
-use schemify_wave::calc::op_dataset;
-use schemify_wave::{RawPlot, Request as WaveRequest, Waves, format_si, group_datasets, parse_raw};
+use schemify_wave::{Applied, RawPlot, Request as WaveRequest, Waves, calc};
 
 use crate::checks::SOURCE_OP;
 use crate::platform;
@@ -30,6 +31,7 @@ use crate::platform;
 use super::{
     Col, JobLog, Kind, LOG_LINES, LOG_TAIL_BYTES, OP_PARAMS, OVERLAY_JOBS, PLOTS_MAX, Plot, Sim,
 };
+use crate::plugins::ResultRows;
 
 /// The last [`LOG_LINES`] lines of `path` (at most [`LOG_TAIL_BYTES`] read); empty when
 /// the file is missing.
@@ -65,12 +67,16 @@ impl Sim {
         if !fresh {
             let parsed = match self.job_raw(j) {
                 Some(p) => platform::read(&p)
-                    .and_then(|b| parse_raw(&b).map_err(|e| e.to_string()))
-                    .map(group_datasets),
+                    .and_then(|b| schemify_wave::parse_raw(&b).map_err(|e| e.to_string()))
+                    .map(schemify_wave::group_datasets),
                 None => Err(format!("job {j} has no raw file")),
             };
             self.raw = Some((j, parsed));
         }
+        assert!(
+            matches!(&self.raw, Some((k, _)) if *k == j),
+            "the raw cache is the selected job's"
+        );
         match &self.raw {
             Some((_, Ok(d))) => Some(d),
             _ => None,
@@ -78,11 +84,16 @@ impl Sim {
     }
 
     /// Selects job `j` for the waves, plots and OP annotation.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the log follows the selection.
     pub fn select(&mut self, j: u32) {
         if self.tables().is_some_and(|t| j < t.1.len()) {
             self.selected = j;
             self.plots.clear();
             self.refresh_log();
+            assert_eq!(self.log.job, j, "the log follows the selection");
         }
     }
 
@@ -98,6 +109,8 @@ impl Sim {
             out: tail(&dir.join(schemify_run::STDOUT)),
             err: tail(&dir.join(schemify_run::STDERR)),
         };
+        assert!(self.log.out.len() <= LOG_LINES);
+        assert!(self.log.err.len() <= LOG_LINES);
     }
 
     /// Rebuilds the plot slots for `exprs` (the shown page's `plot` fences): each a one-pane
@@ -107,6 +120,10 @@ impl Sim {
     /// expression, autoscaled. Kept when the expressions and the selection did not change.
     ///
     /// Cost: reads and parses the overlaid jobs' raw files (the selected one is cached).
+    ///
+    /// # Panics
+    ///
+    /// Never: the overlay is cut to [`OVERLAY_JOBS`] jobs and the plots to [`PLOTS_MAX`].
     pub fn refresh_plots(&mut self, exprs: &[String]) {
         let same = self.plots.len() == exprs.len()
             && self.plots.iter().zip(exprs).all(|(p, e)| p.expr == *e);
@@ -128,8 +145,8 @@ impl Sim {
         };
         for j in others {
             let parsed = self.job_raw(j).and_then(|p| platform::read(&p).ok());
-            if let Some(d) = parsed.and_then(|b| parse_raw(&b).ok()) {
-                jobs.push(group_datasets(d));
+            if let Some(d) = parsed.and_then(|b| schemify_wave::parse_raw(&b).ok()) {
+                jobs.push(schemify_wave::group_datasets(d));
             }
         }
         assert!(jobs.len() <= OVERLAY_JOBS);
@@ -155,9 +172,13 @@ impl Sim {
     /// quantities mark instances through `map` ([`OP_PARAMS`] of `@<dev>[<param>]`, a
     /// branch current `<dev>#branch`, Xyce lead currents `i(<dev>)`, `id(<dev>)`, …). Empty
     /// when the job has no operating point.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one mark per vector at most.
     pub fn op_marks(&mut self, map: &NameMap) -> AnnotationRequest {
         let mut marks = Vec::new();
-        if let Some(op) = self.datasets().and_then(op_dataset) {
+        if let Some(op) = self.datasets().and_then(calc::op_dataset) {
             // An OP dataset has one point and no real scale: column 0 is a vector too.
             for (k, v) in op.vars().iter().enumerate() {
                 let Some(&x) = op.col(k).first() else {
@@ -167,6 +188,10 @@ impl Sim {
                     marks.push(m);
                 }
             }
+            assert!(
+                marks.len() <= op.vars().len(),
+                "one mark per vector at most"
+            );
         }
         AnnotationRequest {
             source: SOURCE_OP.to_owned(),
@@ -177,7 +202,12 @@ impl Sim {
     /// Rows plugins read as the `Results` snapshot: one per finished job and output of the
     /// run that last finished a plugin's job (else the shown run); `pass` is the verdict of
     /// the output's spec (1 pass, 2 fail, 0 unknown or no spec; a spec names one output).
-    pub fn result_rows(&self) -> crate::plugins::ResultRows {
+    ///
+    /// # Panics
+    ///
+    /// Never: the asserts check one row per finished job and output.
+    #[must_use]
+    pub fn result_rows(&self) -> ResultRows {
         let run = self
             .snapshot
             .and_then(|b| self.index_of(b))
@@ -193,6 +223,7 @@ impl Sim {
                 Some(s as u16)
             })
             .collect();
+        assert_eq!(spec_of.len(), res.outputs().len());
         let mut rows = Vec::new();
         for j in 0..jobs.len() {
             if !jobs.state(j).finished() {
@@ -212,11 +243,16 @@ impl Sim {
                 rows.push((j, name.clone(), value, pass));
             }
         }
+        assert!(rows.len() <= jobs.len() as usize * res.outputs().len());
         rows
     }
 
     /// Sorts the table by `col`; the same column again reverses the order. A column the
     /// shown results lack is ignored.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks the new sort column.
     pub fn sort_by(&mut self, col: Col) {
         let valid = self.tables().is_some_and(|(_, _, res)| match col {
             Col::Output(o) => (o as usize) < res.outputs().len(),
@@ -233,15 +269,21 @@ impl Sim {
             self.table.desc = false;
         }
         self.table.dirty = true;
+        assert_eq!(self.table.sort, col);
     }
 
     /// Filters the table to the rows whose text holds every word of `filter`.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks the stored filter.
     pub fn set_filter(&mut self, filter: &str) {
         let f = filter.trim();
         if f != self.table.filter {
             self.table.filter = f.to_owned();
             self.table.dirty = true;
         }
+        assert_eq!(self.table.filter, f);
     }
 
     /// Rebuilds [`TableView::rows`](super::TableView::rows) when stale: the shown run's jobs whose text matches the
@@ -249,6 +291,10 @@ impl Sim {
     ///
     /// Cost: O(jobs · (outputs + specs)) text building plus an O(rows log rows) sort, only
     /// after a change.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that the sort order is total.
     pub fn refresh_table(&mut self) {
         if !self.table.dirty {
             return;
@@ -301,14 +347,16 @@ impl Sim {
                     Col::State => (jobs.state(ja) as u8).cmp(&(jobs.state(jb) as u8)),
                     Col::Output(o) => match (res.value(ja, o), res.value(jb, o)) {
                         (Some(x), Some(y)) => x.total_cmp(&y),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
+                        (Some(_), None) => Ordering::Less,
+                        (None, Some(_)) => Ordering::Greater,
+                        (None, None) => Ordering::Equal,
                     },
                     Col::Spec(s) => rank(res.pass(ja, s)).cmp(&rank(res.pass(jb, s))),
                 };
                 primary.then(ja.cmp(&jb))
             });
+            assert_eq!(order.len(), rows.len());
+            assert!(rows.len() <= jobs.len() as usize, "a row per job at most");
             let mut sorted: Vec<u32> = order.iter().map(|&k| rows[k]).collect();
             if self.table.desc {
                 sorted.reverse();
@@ -324,8 +372,9 @@ impl Sim {
 /// first the selected job's) showing `expr` once per job, on the last dataset of that job
 /// that evaluates it. A scalar answer of the first job explains an empty slot instead.
 pub(super) fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
+    assert!(!jobs.is_empty(), "a plot overlays one job at least");
     let mut data: Vec<RawPlot> = Vec::new();
-    let mut ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(jobs.len());
+    let mut ranges: Vec<Range<usize>> = Vec::with_capacity(jobs.len());
     for job in jobs {
         // The viewer's cap (its dataset indices are u8).
         if data.len() + job.len() > schemify_wave::MAX_DATASETS {
@@ -334,6 +383,8 @@ pub(super) fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
         ranges.push(data.len()..data.len() + job.len());
         data.extend(job.iter().cloned());
     }
+    assert!(data.len() <= schemify_wave::MAX_DATASETS);
+    assert!(ranges.len() <= jobs.len());
     let mut last = String::from("no dataset");
     // A refused request changes nothing, so one viewer serves every attempt.
     let mut w = Waves::new(data);
@@ -346,15 +397,15 @@ pub(super) fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
                 pane: 0,
             };
             match w.apply(&req) {
-                Ok(schemify_wave::Applied::Trace(_)) => {
+                Ok(Applied::Trace(_)) => {
                     traces += 1;
                     break;
                 }
-                Ok(schemify_wave::Applied::Value(v)) if k == 0 => {
+                Ok(Applied::Value(v)) if k == 0 => {
                     return Err(format!("{expr} = {v}"));
                 }
-                Ok(schemify_wave::Applied::Value(_)) => break,
-                Ok(schemify_wave::Applied::Done) => {}
+                Ok(Applied::Value(_)) => break,
+                Ok(Applied::Done) => {}
                 Err(e) => last = e.to_string(),
             }
         }
@@ -372,6 +423,7 @@ pub(super) fn plot(jobs: &[Vec<RawPlot>], expr: &str) -> Result<Waves, String> {
 /// The text the table filter matches for job `j`: index, key line, state and verdicts,
 /// lowercase.
 fn row_text(jobs: &Jobs, res: &Results, j: u32, out: &mut String) {
+    assert!(j < jobs.len(), "job {j}");
     let _ = write!(out, "{j} ");
     jobs.write_key(j, out);
     out.push(' ');
@@ -406,7 +458,7 @@ fn op_mark(map: &NameMap, name: &str, x: f64) -> Option<Mark> {
         Some(Mark {
             target: inst_path(map, dev)?,
             severity: Severity::Info,
-            text: format!("{param}={}", format_si(x, 4)),
+            text: format!("{param}={}", schemify_wave::format_si(x, 4)),
         })
     };
     if let Some(dev) = lower.strip_prefix('@') {
@@ -436,7 +488,7 @@ fn op_mark(map: &NameMap, name: &str, x: f64) -> Option<Mark> {
     Some(Mark {
         target: net.to_owned(),
         severity: Severity::Info,
-        text: format!("{}V", format_si(x, 4)),
+        text: format!("{}V", schemify_wave::format_si(x, 4)),
     })
 }
 

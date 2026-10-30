@@ -8,18 +8,23 @@
 //! - `pub fn preview_records_on`
 
 use schemify_canvas::CanvasPrims;
+use schemify_doc::RecordBuf;
 use schemify_format::{Orient, RecordKind};
 
-use crate::geometry::{Pt, Xform, place};
+use crate::geometry;
+use crate::geometry::{Pt, Xform};
 
-use super::draw::arc_placed;
 use super::symbols::Symbols;
-use super::{LAYER_SEL, PIN_HALF, Scene, UNIT};
+use super::{LAYER_SEL, PIN_HALF, Scene, UNIT, draw};
 
 /// Copies the primitives of selected objects through `x` into `out` on [`LAYER_SEL`]
 /// (move and copy previews; texts included, so a moving label shows its name), in table then
 /// row order, from the selection's rows ([`selected_prims`](super::selected_prims) of `sc`). Cost: O(selected
 /// primitives).
+///
+/// # Panics
+///
+/// Never: the assert checks that primitives are only appended.
 pub fn push_moved(sc: &Scene, rows: &[(u8, u32)], x: Xform, out: &mut CanvasPrims) {
     let p = &sc.prims;
     let before = out.len();
@@ -88,7 +93,7 @@ pub fn stamp(symbols: &Symbols, row: usize, o: Orient, at: Pt, out: &mut CanvasP
     let Some(p) = symbols.get(row) else {
         return false;
     };
-    let x = |q: Pt| place(o, at, q);
+    let x = |q: Pt| geometry::place(o, at, q);
     for (l, ..) in &p.lines {
         let (a, b) = (x((l[0], l[1])), x((l[2], l[3])));
         out.line(a.0, a.1, b.0, b.1, LAYER_SEL);
@@ -99,7 +104,7 @@ pub fn stamp(symbols: &Symbols, row: usize, o: Orient, at: Pt, out: &mut CanvasP
     }
     for (a, ..) in &p.arcs {
         let c = x((a[0], a[1]));
-        let (s, w) = arc_placed(o, a[3], a[4]);
+        let (s, w) = draw::arc_placed(o, a[3], a[4]);
         out.arc(c.0, c.1, a[2], s, w, LAYER_SEL);
     }
     for (pts, closed, ..) in &p.polys {
@@ -121,17 +126,12 @@ pub fn stamp(symbols: &Symbols, row: usize, o: Orient, at: Pt, out: &mut CanvasP
 
 /// Outlines clipboard records through `x` (paste preview): wires and graphics as drawn,
 /// everything else as a small box at its anchor plus its text.
-pub fn preview_records(recs: &[schemify_doc::RecordBuf], x: Xform, out: &mut CanvasPrims) {
+pub fn preview_records(recs: &[RecordBuf], x: Xform, out: &mut CanvasPrims) {
     preview_records_on(recs, x, LAYER_SEL, out);
 }
 
 /// [`preview_records`] on `layer` (the staged-edit diff draws inserted records on its own).
-pub fn preview_records_on(
-    recs: &[schemify_doc::RecordBuf],
-    x: Xform,
-    layer: u8,
-    out: &mut CanvasPrims,
-) {
+pub fn preview_records_on(recs: &[RecordBuf], x: Xform, layer: u8, out: &mut CanvasPrims) {
     for r in recs {
         let mut r = r.clone();
         if crate::geometry::transform_record(&mut r, x).is_none() {

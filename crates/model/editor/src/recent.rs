@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
 
 use crate::platform;
 
@@ -24,16 +24,18 @@ use crate::platform;
 pub const RECENT_MAX: usize = 10;
 
 /// The list file inside the state directory.
+#[must_use]
 pub fn file(dir: &Path) -> PathBuf {
     dir.join("recent")
 }
 
 /// Reads the list; a missing or unreadable file is an empty list (state is optional).
+#[must_use]
 pub fn load(dir: &Path) -> Vec<PathBuf> {
     let Ok(bytes) = platform::read(&file(dir)) else {
         return Vec::new();
     };
-    let Ok(d) = parse(&bytes) else {
+    let Ok(d) = schemify_format::parse(&bytes) else {
         return Vec::new();
     };
     let mut out: Vec<(usize, PathBuf)> = (1..d.record_count())
@@ -54,22 +56,37 @@ pub fn load(dir: &Path) -> Vec<PathBuf> {
 
 /// Moves `path` to the front of `list` (dropping an older copy and the oldest beyond
 /// [`RECENT_MAX`]).
+///
+/// # Panics
+///
+/// If `list` holds more than [`RECENT_MAX`] entries.
 pub fn push(list: &mut Vec<PathBuf>, path: PathBuf) {
+    assert!(
+        list.len() <= RECENT_MAX,
+        "a recent list of {} entries",
+        list.len()
+    );
     list.retain(|p| *p != path);
     list.insert(0, path);
     list.truncate(RECENT_MAX);
     assert!(list.len() <= RECENT_MAX);
+    assert_eq!(
+        list.iter().filter(|p| **p == list[0]).count(),
+        1,
+        "one copy, in front"
+    );
 }
 
 /// The list as file text.
+#[must_use]
 pub fn text(list: &[PathBuf]) -> String {
     let mut d = FormatDoc::new(FileKind::Config);
-    for (i, p) in list.iter().take(RECENT_MAX).enumerate() {
+    for (i, p) in list[..list.len().min(RECENT_MAX)].iter().enumerate() {
         d.begin_record(RecordKind::Set);
         d.push_field(&format!("recent.{i}"));
         d.push_field(&p.to_string_lossy());
     }
-    write(&d)
+    schemify_format::write(&d)
 }
 
 /// Writes the list.
@@ -98,7 +115,7 @@ mod tests {
         assert_eq!(l.iter().filter(|p| p.ends_with("5.shcomp")).count(), 1);
         let t = text(&l);
         assert!(t.starts_with("schemify 1 config\n"), "{t}");
-        let d = parse(t.as_bytes()).unwrap();
+        let d = schemify_format::parse(t.as_bytes()).unwrap();
         assert_eq!(d.field(1, 1), Some("/p/5.shcomp"));
     }
 }

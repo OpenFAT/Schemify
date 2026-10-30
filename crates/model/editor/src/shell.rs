@@ -20,10 +20,12 @@
 //!   `Shell::refresh`, `Shell::invalidate`, `Shell::sym`, `Shell::canvas_rect`,
 //!   `Shell::palette`
 
+use std::fmt;
+
 use schemify_canvas::{LAYERS, Palette};
 use schemify_ui::{
-    Contribution, Edit, Kind, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState, UiTables,
-    compose, layout, patch_last, records,
+    Contribution, Edit, Kind, Rect, Strings, StyleProp, Sym, TextSystem, UiLayout, UiState,
+    UiTables, records,
 };
 
 use crate::checks::{LAYER_ANNOT, LAYER_DIFF, LAYER_ERROR, LAYER_HILITE, LAYER_INFO, LAYER_WARN};
@@ -95,8 +97,8 @@ pub struct Shell {
     laid_out: Option<(f32, f32)>,
 }
 
-impl std::fmt::Debug for Shell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Shell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Shell")
             .field("nodes", &self.tables.nodes.len())
             .field("plugins", &self.plugins.len())
@@ -142,6 +144,11 @@ impl Shell {
     }
 
     /// A shell with the core base only.
+    ///
+    /// # Panics
+    ///
+    /// Never: the built-in UI parses (a test pins it).
+    #[must_use]
     pub fn new() -> Shell {
         let mut strings = Strings::new();
         let (base, rejects) = records::parse(CORE_UI, &mut strings);
@@ -167,6 +174,10 @@ impl Shell {
 
     /// Replaces the plugin contributions: `(plugin name, ui set + keymap set text)` in load
     /// order. Rejected lines are counted, never fatal (plugin-abi §8).
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks one contribution per plugin.
     pub fn set_plugins(&mut self, sets: &[(String, String)]) {
         self.rejects = 0;
         self.plugins.clear();
@@ -190,6 +201,15 @@ impl Shell {
             .iter()
             .any(|(_, c)| c.edits.iter().any(is_window));
         self.composed = false;
+        debug_assert!(
+            self.rejects <= sets.iter().map(|(_, t)| t.lines().count()).sum::<usize>(),
+            "a reject is a line"
+        );
+        assert_eq!(
+            self.plugins.len(),
+            sets.len(),
+            "one contribution per plugin"
+        );
     }
 
     /// Replaces the state contribution when its text changed. Its free text (labels, values)
@@ -197,6 +217,10 @@ impl Shell {
     /// that changes every frame does not grow it. When only `set` values changed (the pointer
     /// coordinates, a title) the composed tables are patched in place (`ui::patch_last`: the
     /// state goes last) and the next [`Shell::refresh`] only lays out; otherwise it recomposes.
+    ///
+    /// # Panics
+    ///
+    /// Never: the assert checks that a new state recomposes or lays out again.
     pub fn set_state(&mut self, text: &str) {
         if text == self.state_text {
             return;
@@ -206,7 +230,7 @@ impl Shell {
             rejects.is_empty(),
             "state contribution rejects: {rejects:?}\n{text}"
         );
-        if self.composed && patch_last(&mut self.tables, &self.state, &c) {
+        if self.composed && schemify_ui::patch_last(&mut self.tables, &self.state, &c) {
             self.laid_out = None;
         } else {
             self.composed = false;
@@ -222,7 +246,13 @@ impl Shell {
 
     /// Composes (if any contribution changed) and lays out (if anything changed) for
     /// `viewport`. Returns whether the layout was rebuilt.
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
     pub fn refresh(&mut self, viewport: (f32, f32), relayout: bool) -> bool {
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         let recompose = !self.composed;
         if recompose {
             let mut all: Vec<(Sym, &Contribution)> =
@@ -234,12 +264,12 @@ impl Shell {
             } else {
                 &self.base
             };
-            self.tables = compose(&self.strings, base, &all);
+            self.tables = schemify_ui::compose(&self.strings, base, &all);
             self.composed = true;
         }
         let stale = recompose || relayout || self.laid_out != Some(viewport);
         if stale && viewport.0 > 0.0 && viewport.1 > 0.0 {
-            self.layout = layout(
+            self.layout = schemify_ui::layout(
                 &self.tables,
                 &self.strings,
                 &mut self.text,
@@ -248,6 +278,11 @@ impl Shell {
             );
             self.laid_out = Some(viewport);
         }
+        assert!(self.composed);
+        assert!(
+            !stale || viewport.0 == 0.0 || viewport.1 == 0.0 || self.laid_out == Some(viewport),
+            "a stale layout is rebuilt for a visible viewport"
+        );
         stale
     }
 
@@ -263,24 +298,36 @@ impl Shell {
 
     /// Screen rectangle of the canvas node (logical px), or the whole viewport when no
     /// canvas is laid out.
-    pub fn canvas_rect(&self, viewport: (f32, f32)) -> schemify_ui::Rect {
+    ///
+    /// # Panics
+    ///
+    /// If a `viewport` dimension is negative.
+    pub fn canvas_rect(&self, viewport: (f32, f32)) -> Rect {
+        assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
+        assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
         let n = &self.tables.nodes;
         let canvas = (0..n.len()).find(|&i| n.kind()[i] == Kind::Canvas);
-        canvas
+        let r = canvas
             .and_then(|i| self.layout.row_of(i as u16))
             .map(|r| self.layout.rect()[r])
             .filter(|r| r.w > 0.0 && r.h > 0.0)
-            .unwrap_or(schemify_ui::Rect {
+            .unwrap_or(Rect {
                 x: 0.0,
                 y: 0.0,
                 w: viewport.0,
                 h: viewport.1,
-            })
+            });
+        assert!(r.w >= 0.0 && r.h >= 0.0, "a canvas of non-negative size");
+        r
     }
 
     /// The canvas palette for `light` or dark from the `canvas.<theme>.<n>` / `.grid` /
     /// `.sel` selectors (`fg`); layers without a selector keep the built-in xschem dark
     /// colors. Returns the palette and the selection color.
+    ///
+    /// # Panics
+    ///
+    /// Never: the selection layer is one of the palette's layers.
     pub fn palette(&self, light: bool) -> (Palette, u32) {
         let theme = if light { "light" } else { "dark" };
         let mut p = Palette::xschem_dark();
@@ -291,7 +338,8 @@ impl Shell {
             (row != schemify_ui::NO_STYLE)
                 .then(|| self.tables.styles.get(row, Kind::Canvas, StyleProp::Fg))
         };
-        for (layer, slot) in p.color.iter_mut().enumerate().take(22) {
+        let numbered = p.color.iter_mut().enumerate().take(22);
+        for (layer, slot) in numbered {
             if let Some(c) = color(&layer.to_string()) {
                 *slot = c;
             }
@@ -323,7 +371,7 @@ impl Shell {
         }
         p.width[usize::from(LAYER_BUS)] = 3.0;
         p.fill = (1 << 5) | (1 << LAYER_JUNCTION);
-        assert!(LAYERS > usize::from(LAYER_SEL));
+        const { assert!(LAYERS > LAYER_SEL as usize) };
         (p, sel)
     }
 }

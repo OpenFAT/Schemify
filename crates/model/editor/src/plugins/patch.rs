@@ -6,14 +6,20 @@
 //! - `pub(super) fn patch_doc_groups`
 //! - `pub(super) fn sync_cell_groups`
 
-use schemify_elab::CellState;
+use std::borrow::Cow;
+use std::ops::Range;
+
+use schemify_doc::{Change, Document};
+use schemify_elab::{CellState, Violation};
 use schemify_plugin::Snapshots;
 use schemify_plugin::abi::{Table, col};
 
-use super::snapshot::{Filled, fill_nets, fill_violations};
+use super::snapshot;
+use super::snapshot::{Filled, NetShadow};
 
 /// Rows of a table changed by more than this share are refilled instead of patched.
 const PATCH_SHARE: usize = 8;
+const _: () = assert!(PATCH_SHARE > 0);
 
 /// The rows `0..n` for which `differs` holds, or `None` once they pass `n / PATCH_SHARE`
 /// (the caller refills instead): the scan stops there, so a refill costs no index list.
@@ -39,9 +45,9 @@ pub(super) fn differing(n: usize, differs: impl Fn(usize) -> bool) -> Option<Vec
 /// Cost: O(changed rows · columns) plus the moves of the string columns' tails.
 pub(super) fn patch_doc_groups(
     s: &mut Snapshots,
-    doc: &schemify_doc::Document,
+    doc: &Document,
     id: u32,
-    changes: &[schemify_doc::Change],
+    changes: &[Change],
     f: &mut Filled,
 ) {
     use schemify_doc::TableId as T;
@@ -66,9 +72,11 @@ pub(super) fn patch_doc_groups(
         if rows.len() * PATCH_SHARE > kept.max(64) {
             fill_doc_table(s, doc, id, snap, 0..old, 0..new);
         } else {
-            for &r in rows.iter().filter(|&&r| (r as usize) < kept) {
+            for &r in &rows {
                 let r = r as usize;
-                fill_doc_table(s, doc, id, snap, r..r + 1, r..r + 1);
+                if r < kept {
+                    fill_doc_table(s, doc, id, snap, r..r + 1, r..r + 1);
+                }
             }
             fill_doc_table(s, doc, id, snap, kept..old, kept..new);
         }
@@ -84,7 +92,7 @@ pub(super) fn patch_doc_groups(
             v.truncate(kept);
             v.extend_from_slice(&pad);
         }
-        debug_assert_eq!(s.rows(snap) as usize, new);
+        assert_eq!(s.rows(snap) as usize, new, "the table follows the document");
     }
 }
 
@@ -114,7 +122,6 @@ pub(super) fn sync_cell_groups(
             _ => Cow::Owned(vec![u32::MAX; n]),
         }
     }
-    use std::borrow::Cow;
     let want = nets_of(cell, cell.map_or(&[][..], |c| &c.nets.wire_net), nw);
     sync_net_column(s, Table::Wires, col::wires::NET, &mut f.wire_net, &want);
     let want = nets_of(cell, cell.map_or(&[][..], |c| &c.nets.label_net), nl);
@@ -128,7 +135,14 @@ pub(super) fn sync_cell_groups(
     let continues = cell.is_some_and(|c| c.prev_pass != 0 && f.pass == Some((id, c.prev_pass)));
     f.pass = Some(key);
     let n = &c.nets;
-    let (name, width, global, pins) = &f.nets;
+    let NetShadow {
+        name,
+        width,
+        global,
+        pins,
+    } = &f.nets;
+    assert_eq!(name.len(), width.len(), "shadow columns in step");
+    assert_eq!(name.len(), pins.len(), "shadow columns in step");
     let same = continues
         && *name == n.net_name
         && *width == n.net_width
@@ -148,33 +162,33 @@ pub(super) fn sync_cell_groups(
             match differ {
                 Some(differ) => {
                     for &i in &differ {
-                        fill_nets(s, c, i..i + 1, i..i + 1);
+                        snapshot::fill_nets(s, c, i..i + 1, i..i + 1);
                     }
-                    fill_nets(s, c, kept..name.len(), kept..n.net_name.len());
+                    snapshot::fill_nets(s, c, kept..name.len(), kept..n.net_name.len());
                 }
-                None => fill_nets(s, c, 0..name.len(), 0..n.net_name.len()),
+                None => snapshot::fill_nets(s, c, 0..name.len(), 0..n.net_name.len()),
             }
         }
         false => {
             let rows = s.rows(Table::Nets) as usize;
-            fill_nets(s, c, 0..rows, 0..n.net_name.len());
+            snapshot::fill_nets(s, c, 0..rows, 0..n.net_name.len());
         }
     }
     if !same {
         // In place: the shadow keeps its allocation from pass to pass.
-        f.nets.0.clone_from(&n.net_name);
-        f.nets.1.clone_from(&n.net_width);
-        f.nets.2.clone_from(&n.net_global);
-        f.nets.3.clone_from(&n.net_pins);
+        f.nets.name.clone_from(&n.net_name);
+        f.nets.width.clone_from(&n.net_width);
+        f.nets.global.clone_from(&n.net_global);
+        f.nets.pins.clone_from(&n.net_pins);
     }
     // Violations: the pass's own delta from the previous pass (`changes`), placed by key.
     let nv = s.rows(Table::Violations) as usize;
     let (gone, added) = &c.changes;
     if !continues || gone.len() + added.len() > 64 {
-        fill_violations(s, c, 0..nv, 0..c.violations.rows.len());
+        snapshot::fill_violations(s, c, 0..nv, 0..c.violations.rows.len());
     } else {
         let rows = &c.violations.rows;
-        let rank = |list: &[schemify_elab::Violation], v: &schemify_elab::Violation| {
+        let rank = |list: &[Violation], v: &Violation| {
             list.partition_point(|x| x.key_cmp(v, &c.names).is_lt())
         };
         // Where each gone row was: the rows before it in the old order are the kept rows
@@ -185,16 +199,24 @@ pub(super) fn sync_cell_groups(
             .collect();
         at.sort_unstable_by(|a, b| b.cmp(a));
         for &i in &at {
-            fill_violations(s, c, i..i + 1, 0..0);
+            snapshot::fill_violations(s, c, i..i + 1, 0..0);
         }
         let mut to: Vec<usize> = added.iter().map(|a| rank(rows, a)).collect();
         to.sort_unstable();
         for &j in &to {
-            fill_violations(s, c, j..j, j..j + 1);
+            snapshot::fill_violations(s, c, j..j, j..j + 1);
         }
     }
-    debug_assert_eq!(s.rows(Table::Nets) as usize, c.nets.net_name.len());
-    debug_assert_eq!(s.rows(Table::Violations) as usize, c.violations.rows.len());
+    assert_eq!(
+        s.rows(Table::Nets) as usize,
+        c.nets.net_name.len(),
+        "Nets follow the cell"
+    );
+    assert_eq!(
+        s.rows(Table::Violations) as usize,
+        c.violations.rows.len(),
+        "Violations follow the cell"
+    );
 }
 
 // ---- private ----
@@ -203,15 +225,16 @@ pub(super) fn sync_cell_groups(
 /// `at`.
 fn fill_doc_table(
     s: &mut Snapshots,
-    doc: &schemify_doc::Document,
+    doc: &Document,
     id: u32,
     snap: Table,
-    at: std::ops::Range<usize>,
-    rows: std::ops::Range<usize>,
+    at: Range<usize>,
+    rows: Range<usize>,
 ) {
     if at.is_empty() && rows.is_empty() {
         return;
     }
+    assert!(at.end <= s.rows(snap) as usize, "rows {at:?} of {snap:?}");
     let st = doc.strings();
     let n = rows.len();
     match snap {
@@ -264,6 +287,10 @@ fn sync_net_column(
     want: &[u32],
 ) {
     assert_eq!(s.rows(table) as usize, want.len(), "the column is in step");
+    assert!(
+        matches!(table, Table::Wires | Table::Labels),
+        "a net column's table"
+    );
     match shadow.as_mut().filter(|v| v.len() == want.len()) {
         Some(old) if old[..] == *want => {}
         Some(old) => {
@@ -288,4 +315,8 @@ fn sync_net_column(
             }
         }
     }
+    assert!(
+        shadow.as_ref().is_some_and(|v| v[..] == *want),
+        "the shadow holds the column"
+    );
 }

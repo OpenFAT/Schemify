@@ -15,6 +15,7 @@
 //! - `pub(super) fn placed`
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use schemify_canvas::LineStyle;
 use schemify_doc::{DocHandle, Document, Project, Sym, TableId};
@@ -22,13 +23,14 @@ use schemify_elab::CellState;
 use schemify_expr::{Scratch, Value};
 use schemify_format::{Orient, RecordKind};
 
-use crate::geometry::{Pt, place};
+use crate::geometry;
+use crate::geometry::Pt;
 
-use super::refresh::{Build, stamped};
-use super::symbols::{
-    SymText, Symbols, attr, layer_attr, size_of, style_attr, sym_text_at, text_size, text_start,
-};
-use super::{LAYER_BUS, LAYER_MISSING, ObjKey, PIN_HALF, Scene, UNIT};
+use super::refresh;
+use super::refresh::Build;
+use super::symbols;
+use super::symbols::{SymText, Symbols};
+use super::{Hit, LAYER_BUS, LAYER_MISSING, ObjKey, PIN_HALF, Scene, UNIT};
 
 /// Reusable buffers of instance stamping (resolved cells, template inputs, text).
 #[derive(Default)]
@@ -41,7 +43,10 @@ pub(super) struct Stamp<'d> {
 
 /// Stamps instance row `i`: the resolved cell's symbol through the placement transform, or
 /// a red placeholder with the cell reference when it does not resolve.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the build, the document and its resolver, the derived values and the stamp cache one instance reads"
+)]
 pub(super) fn instance<'d>(
     b: &mut Build<'_>,
     project: &'d Project,
@@ -54,6 +59,8 @@ pub(super) fn instance<'d>(
 ) {
     let s = doc.strings();
     let inst = doc.instances();
+    assert!(i < inst.id.len(), "instance row {i}");
+    let objects = b.sc.objs.len();
     let key = ObjKey {
         table: TableId::Instances,
         key: inst.id[i].0,
@@ -68,7 +75,7 @@ pub(super) fn instance<'d>(
         let u = 10 * UNIT;
         let obj =
             b.sc.objs
-                .push(key, [at.0 - u, at.1 - u, at.0 + u, at.1 + u], false);
+                .push(key, [at.0 - u, at.1 - u, at.0 + u, at.1 + u], Hit::Box);
         b.rect(
             (at.0 - u, at.1 - u),
             (at.0 + u, at.1 + u),
@@ -83,11 +90,12 @@ pub(super) fn instance<'d>(
             cellref,
             obj,
         );
+        assert_eq!(b.sc.objs.len(), objects + 1, "one object per instance");
         return;
     };
-    let x = |q: Pt| place(o, at, q);
+    let x = |q: Pt| geometry::place(o, at, q);
     let (c0, c1) = (x((p.bbox[0], p.bbox[1])), x((p.bbox[2], p.bbox[3])));
-    let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], false);
+    let obj = b.sc.objs.push(key, [c0.0, c0.1, c1.0, c1.1], Hit::Box);
     for &(l, layer, st) in &p.lines {
         b.line(x((l[0], l[1])), x((l[2], l[3])), layer, st, obj);
     }
@@ -118,6 +126,7 @@ pub(super) fn instance<'d>(
         let (q, rot) = inst_text(t, (o, at), (doc, i, iface, cellref), values, st);
         b.text_rot(q, t.size, t.layer, &st.text, rot, obj);
     }
+    assert_eq!(b.sc.objs.len(), objects + 1, "one object per instance");
 }
 
 /// Re-renders the texts of instance row `i`, drawn as object `o` whose only change is its
@@ -127,7 +136,10 @@ pub(super) fn instance<'d>(
 /// instance is re-stamped whole.
 ///
 /// Cost: O(the instance's texts), no row added or killed.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same inputs as `instance`, which it re-stamps in part"
+)]
 pub(super) fn revalue_texts<'d>(
     sc: &mut Scene,
     project: &'d Project,
@@ -139,6 +151,8 @@ pub(super) fn revalue_texts<'d>(
     st: &mut Stamp<'d>,
 ) -> bool {
     let inst = doc.instances();
+    assert!(i < inst.id.len(), "instance row {i}");
+    assert!((o as usize) < sc.objs.len(), "object {o}");
     let (orient, at) = (inst.orient[i], (inst.x[i], inst.y[i]));
     let cellref = doc.strings().get(inst.cell[i]);
     let row = *st
@@ -149,11 +163,11 @@ pub(super) fn revalue_texts<'d>(
         return false; // the placeholder has no value texts
     };
     let iface = row.and_then(|r| project.interface(r));
-    let rows = stamped(&sc.stamps.texts, sc.objs.stamp[o as usize]);
+    let rows = refresh::stamped(&sc.stamps.texts, sc.objs.stamp[o as usize]);
     let mut next = rows.start;
     for t in &p.texts {
         let (q, rot) = inst_text(t, (orient, at), (doc, i, iface, cellref), values, st);
-        let Some((from, drawn)) = text_start(q, t.size, &st.text, rot) else {
+        let Some((from, drawn)) = symbols::text_start(q, t.size, &st.text, rot) else {
             continue; // drew no row before either, or the count check below fails
         };
         if next == rows.end {
@@ -177,19 +191,21 @@ pub(super) fn revalue_texts<'d>(
             }
         }
     }
+    debug_assert!(next <= rows.end);
     next == rows.end
 }
 
 /// Draws wire row `i` (its connection points included; dots are [`redot`]'s).
 pub(super) fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
     let w = doc.wires();
+    assert!(i < w.id.len(), "wire row {i}");
     let (a, c) = ((w.x1[i], w.y1[i]), (w.x2[i], w.y2[i]));
     let key = ObjKey {
         table: TableId::Wires,
         key: w.id[i].0,
     };
-    let bus = attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
-    let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], true);
+    let bus = symbols::attr(doc, w.attrs[i], "bus").is_some_and(|v| v == "true");
+    let obj = b.sc.objs.push(key, [a.0, a.1, c.0, c.1], Hit::Segment);
     b.line(a, c, if bus { LAYER_BUS } else { 1 }, LineStyle::PLAIN, obj);
     b.conn_at(a, obj);
     b.conn_at(c, obj);
@@ -197,7 +213,8 @@ pub(super) fn wire(b: &mut Build<'_>, doc: &Document, i: usize) {
 
 /// Labels, ports, noconns, texts and shapes of rows `rows` (clamped to each table) in that
 /// order.
-pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::Range<usize>) {
+pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: Range<usize>) {
+    assert!(rows.start <= rows.end, "an ordered row range");
     for table in [
         TableId::Labels,
         TableId::Ports,
@@ -221,6 +238,7 @@ pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: std::ops::R
 /// Draws row `i` of a label, port, noconn, text or shape table.
 pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: usize) {
     let s = doc.strings();
+    let objects = b.sc.objs.len();
     match table {
         TableId::Labels | TableId::Ports => {
             // Labels: a pin square at the anchor and the net name beside it, in wire color;
@@ -252,7 +270,7 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
             };
             let (x, y) = (n.x[i], n.y[i]);
             let r = 4 * UNIT;
-            let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], false);
+            let obj = b.sc.objs.push(key, [x - r, y - r, x + r, y + r], Hit::Box);
             b.line((x - r, y - r), (x + r, y + r), 4, LineStyle::PLAIN, obj);
             b.line((x - r, y + r), (x + r, y - r), 4, LineStyle::PLAIN, obj);
             b.conn_at((x, y), obj);
@@ -263,10 +281,10 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
                 table,
                 key: t.id[i].0,
             };
-            let size = size_of(attr(doc, t.attrs[i], "size"), 0.4);
-            let layer = layer_attr(doc, t.attrs[i], 3);
+            let size = symbols::size_of(symbols::attr(doc, t.attrs[i], "size"), 0.4);
+            let layer = symbols::layer_attr(doc, t.attrs[i], 3);
             let at = (t.x[i], t.y[i]);
-            let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
+            let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], Hit::Box);
             // Rotated texts (format spec §3 orientation): turned about the anchor; a mirror
             // keeps the text readable.
             let rot = t.orient[i].quarter_turns();
@@ -276,6 +294,9 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
         TableId::Shapes => shape(b, doc, i),
         _ => unreachable!("{table:?} has no canvas objects"),
     }
+    // A malformed shape draws nothing; every other row draws one object.
+    assert!(b.sc.objs.len() <= objects + 1, "one object per row");
+    assert!(table == TableId::Shapes || b.sc.objs.len() == objects + 1);
 }
 
 /// Draws row `i` of the schematic graphics (`shape` records, format spec §4 rank 3): one
@@ -288,15 +309,16 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
         key: sh.id[i].0,
     };
     let c = &doc.pool().coords[sh.coords[i].range()];
-    let layer = layer_attr(doc, sh.attrs[i], 4);
-    let st = style_attr(doc, sh.attrs[i]);
+    assert!(i < sh.id.len(), "shape row {i}");
+    let layer = symbols::layer_attr(doc, sh.attrs[i], 4);
+    let st = symbols::style_attr(doc, sh.attrs[i]);
     match sh.form[i] {
         RecordKind::Line if c.len() == 4 => {
-            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], true);
+            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], Hit::Segment);
             b.line((c[0], c[1]), (c[2], c[3]), layer, st, obj);
         }
         RecordKind::Rect if c.len() == 4 => {
-            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], false);
+            let obj = b.sc.objs.push(key, [c[0], c[1], c[2], c[3]], Hit::Box);
             b.rect((c[0], c[1]), (c[2], c[3]), layer, st, obj);
         }
         RecordKind::Arc | RecordKind::Circle if c.len() >= 3 => {
@@ -307,15 +329,15 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
             let r = c[2].max(0);
             let obj =
                 b.sc.objs
-                    .push(key, [c[0] - r, c[1] - r, c[0] + r, c[1] + r], false);
+                    .push(key, [c[0] - r, c[1] - r, c[0] + r, c[1] + r], Hit::Box);
             b.arc((c[0], c[1]), r, start, sweep, layer, st, obj);
         }
         RecordKind::Poly if c.len() >= 4 => {
             let pts: Vec<Pt> = c.chunks_exact(2).map(|q| (q[0], q[1])).collect();
-            let closed = attr(doc, sh.attrs[i], "closed") == Some("true");
+            let closed = symbols::attr(doc, sh.attrs[i], "closed") == Some("true");
             let obj =
                 b.sc.objs
-                    .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], false);
+                    .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], Hit::Box);
             b.poly(&pts, closed, layer, st, obj);
         }
         _ => {}
@@ -345,10 +367,10 @@ pub(super) fn arc_placed(o: Orient, start: i32, sweep: i32) -> (i32, i32) {
 /// A label (`port = false`) or port: pin square or arrow at the anchor and the name beside
 /// it, on the side the orientation points to.
 pub(super) fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &str, port: bool) {
-    let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], false);
-    let dir = place(o, (0, 0), (1, 0));
+    let obj = b.sc.objs.push(key, [at.0, at.1, at.0, at.1], Hit::Box);
+    let dir = geometry::place(o, (0, 0), (1, 0));
     let size = 16 * UNIT;
-    let (w, h) = text_size(size, name);
+    let (w, h) = symbols::text_size(size, name);
     let mut bx = [
         at.0 - PIN_HALF,
         at.1 - PIN_HALF,
@@ -400,6 +422,8 @@ pub(super) fn placed(b: &mut Build<'_>, key: ObjKey, at: Pt, o: Orient, name: &s
         bx[2].max(tb[2]),
         bx[3].max(tb[3]),
     ];
+    assert!(bx[0] <= at.0 && at.0 <= bx[2], "the box covers the anchor");
+    assert!(bx[1] <= at.1 && at.1 <= bx[3], "the box covers the anchor");
     b.sc.objs.geom[obj as usize] = bx;
     b.conn_at(at, obj);
 }
@@ -435,10 +459,17 @@ fn inst_text<'d>(
         text.clear();
         text.push_str(&t.raw);
     }
-    let turned = crate::geometry::compose(o, t.orient);
+    let turned = geometry::compose(o, t.orient);
     let rot = turned.quarter_turns();
+    debug_assert!(rot < 4, "a quarter-turn count");
     (
-        sym_text_at(place(o, at, t.at), t, text, rot, turned.mirrored()),
+        symbols::sym_text_at(
+            geometry::place(o, at, t.at),
+            t,
+            text,
+            rot,
+            turned.mirrored(),
+        ),
         rot,
     )
 }
@@ -456,6 +487,7 @@ fn bind_ident<'d>(
 ) -> Option<Value<'d>> {
     let s = doc.strings();
     let inst = doc.instances();
+    assert!(i < inst.id.len(), "instance row {i}");
     let text = match name {
         "name" => s.get(inst.name[i]),
         "cell" => cellref.rsplit([':', '/']).next().unwrap_or(cellref),

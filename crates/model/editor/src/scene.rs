@@ -39,6 +39,7 @@ mod symbols;
 mod symview;
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{Cursor, DocHandle, TableId};
@@ -166,23 +167,35 @@ const DOT_R: i32 = 3_700;
 
 /// Object key → object index ([`Scene::find`]); keys packed into a `u64`, hashed with one
 /// multiply (never iterated, so the order is never seen).
-type KeyMap = HashMap<u64, u32, std::hash::BuildHasherDefault<KeyHasher>>;
+type KeyMap = HashMap<u64, u32, BuildHasherDefault<KeyHasher>>;
 
 /// One multiply per key: object ids are random 30-bit values, so their bits spread already.
 #[derive(Default)]
 struct KeyHasher(u64);
 
+/// How a click hits an object: by distance to a segment or inside a box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hit {
+    /// Wires and symbol lines: `geom` is the segment's end points.
+    Segment,
+    /// Everything else: `geom` is the bounding box.
+    Box,
+}
+
 impl Objects {
-    fn push(&mut self, key: ObjKey, geom: [i32; 4], seg: bool) -> u32 {
+    fn push(&mut self, key: ObjKey, geom: [i32; 4], hit: Hit) -> u32 {
         assert!(
             self.key.len() < CanvasPrims::CAPACITY,
             "scene object capacity"
         );
         self.key.push(key);
         self.geom.push(geom);
-        self.seg.push(seg);
+        self.seg.push(hit == Hit::Segment);
         let s = self.fresh_stamp();
         self.stamp.push(s);
+        assert_eq!(self.geom.len(), self.key.len(), "object columns in step");
+        assert_eq!(self.seg.len(), self.key.len(), "object columns in step");
+        assert_eq!(self.stamp.len(), self.key.len(), "object columns in step");
         (self.key.len() - 1) as u32
     }
 
@@ -195,27 +208,38 @@ impl Objects {
 
     /// Removes object `o`; the last object takes its index (returned when there was one).
     fn swap_remove(&mut self, o: usize) -> Option<usize> {
+        assert!(o < self.key.len(), "object {o} of {}", self.key.len());
         let last = self.key.len() - 1;
         self.key.swap_remove(o);
         self.geom.swap_remove(o);
         self.seg.swap_remove(o);
         self.stamp.swap_remove(o);
-        assert_eq!(self.key.len(), self.stamp.len());
+        assert_eq!(self.key.len(), self.stamp.len(), "object columns in step");
+        assert_eq!(self.key.len(), self.geom.len(), "object columns in step");
         (o != last).then_some(o)
     }
 
     /// Number of objects.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.geom.len(), self.key.len(), "object columns in step");
         self.key.len()
     }
 
     /// True when the scene has no objects.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.key.is_empty()
     }
 
     /// Normalized bounding box of object `i`.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not an object row.
+    #[must_use]
     pub fn bbox(&self, i: usize) -> [i32; 4] {
+        assert!(i < self.geom.len(), "object {i} of {}", self.geom.len());
         let g = self.geom[i];
         [
             g[0].min(g[2]),
@@ -226,7 +250,7 @@ impl Objects {
     }
 }
 
-impl std::hash::Hasher for KeyHasher {
+impl Hasher for KeyHasher {
     fn finish(&self) -> u64 {
         self.0
     }
@@ -242,6 +266,7 @@ impl std::hash::Hasher for KeyHasher {
 
 impl Scene {
     /// Object index of `key`, if drawn.
+    #[must_use]
     pub fn find(&self, key: ObjKey) -> Option<u32> {
         let o = self.index.get(&pack(key)).copied();
         debug_assert!(o.is_none_or(|o| self.objs.key[o as usize] == key));
@@ -253,6 +278,7 @@ impl Scene {
     /// appended since, every change of `prims` in that time (a canvas diffs them as
     /// `TableChange::Rows`). `None` when a [`build`] made
     /// the tables anew in that time.
+    #[must_use]
     pub fn edits(&self) -> Option<&[Vec<u32>; 6]> {
         self.killed.as_ref()
     }
@@ -261,13 +287,14 @@ impl Scene {
     pub fn clear_edits(&mut self) {
         let k = self.killed.get_or_insert_with(Default::default);
         k.iter_mut().for_each(Vec::clear);
-        assert!(self.edits().is_some_and(|k| k.iter().all(Vec::is_empty)));
     }
 
     /// The objects the last [`update`] removed or stamped (sorted, a key may no longer be
     /// drawn), or `None` when the last change was a [`build`]: what a derived table keyed by
     /// object follows when [`Scene::generation`] moved by exactly one.
+    #[must_use]
     pub fn touched(&self) -> Option<&[ObjKey]> {
+        debug_assert!(self.touched.as_ref().is_none_or(|t| t.is_sorted()));
         self.touched.as_deref()
     }
 
@@ -352,7 +379,7 @@ mod tests {
                 table: TableId::Wires,
                 key: i as u32,
             };
-            objs.push(key, g, i % 3 == 0);
+            objs.push(key, g, if i % 3 == 0 { Hit::Segment } else { Hit::Box });
         }
         objs
     }
@@ -431,7 +458,8 @@ mod tests {
                 table: TableId::Wires,
                 key: k,
             };
-            objs.push(key, [x, y, x + w, y + h], k % 3 == 0);
+            let hit = if k % 3 == 0 { Hit::Segment } else { Hit::Box };
+            objs.push(key, [x, y, x + w, y + h], hit);
         }
         let full = |p: (f64, f64), tol: f64| {
             let (mut s, mut b) = (None, None);

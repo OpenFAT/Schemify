@@ -7,8 +7,10 @@
 //! - `pub fn load_image`
 //! - `pub(super) fn png_size`
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use png::{ColorType, Decoder, Transformations};
 use schemify_doc::{Document, Loc, RecordKind, TableId};
 use schemify_ui::{Image, TextSystem};
 
@@ -22,21 +24,27 @@ use super::{IMAGE_BYTES_MAX, IMAGE_SIDE_MAX, IMAGES_FAILED_MAX};
 /// alt text). Returns whether one loaded (the page needs a new layout) and the last failure.
 ///
 /// Cost: one pass over the prose lines; file reads only for new paths.
+///
+/// # Panics
+///
+/// `failed` holds more than [`IMAGES_FAILED_MAX`] paths (it only grows here, capped).
 pub fn load_images(
     doc: &Document,
     root: &Path,
     text: &mut TextSystem,
     failed: &mut Vec<String>,
 ) -> (bool, Option<String>) {
+    assert!(failed.len() <= IMAGES_FAILED_MAX);
     let b = doc.doc_blocks();
     let (mut loaded, mut err) = (false, None);
-    for r in 0..b.kind.len() {
-        if b.kind[r] != RecordKind::Prose {
+    let rows = u32::try_from(b.kind.len()).expect("doc blocks < 2^12");
+    for row in 0..rows {
+        if b.kind[row as usize] != RecordKind::Prose {
             continue;
         }
         let rec = doc.record(Loc {
             table: TableId::DocBlocks,
-            row: r as u32,
+            row,
         });
         for line in &rec.verbatim {
             let Some((_, path)) = schemify_ui::prose::image_line(line.trim()) else {
@@ -47,8 +55,14 @@ pub fn load_images(
             }
             match load_image(root, path) {
                 Ok(img) => {
-                    loaded |= text.set_image(img);
-                    if text.image_id(path).is_none() {
+                    let registered = text.set_image(img);
+                    assert_eq!(
+                        registered,
+                        text.image_id(path).is_some(),
+                        "set_image's result"
+                    );
+                    loaded |= registered;
+                    if !registered {
                         err = Some(format!("{path}: too many images on the page"));
                     }
                 }
@@ -62,7 +76,7 @@ pub fn load_images(
             }
         }
     }
-    debug_assert!(failed.len() <= IMAGES_FAILED_MAX);
+    assert!(failed.len() <= IMAGES_FAILED_MAX);
     (loaded, err)
 }
 
@@ -73,6 +87,10 @@ pub fn load_images(
 /// # Errors
 ///
 /// Any other path, with the reason.
+///
+/// # Panics
+///
+/// Never: the assert checks that the checked path stays under `root`.
 pub fn image_path(root: &Path, path: &str) -> Result<PathBuf, String> {
     let inside = path.len() <= 4096
         && !path.contains(['\\', ':', '\0'])
@@ -83,7 +101,10 @@ pub fn image_path(root: &Path, path: &str) -> Result<PathBuf, String> {
         return Err(format!("{path}: images must be inside the project"));
     }
     let file = root.join(path);
-    debug_assert!(file.starts_with(root));
+    assert!(
+        file.starts_with(root),
+        "a relative path without `..` stays under the root"
+    );
     Ok(file)
 }
 
@@ -126,10 +147,11 @@ pub(super) fn png_size(b: &[u8]) -> Option<(u32, u32)> {
 /// widened), then each channel multiplied by alpha, truncated (as the renderer's own PNG decoder does,
 /// so a page image draws the same pixels it did when render decoded it).
 fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.set_transformations(
-        png::Transformations::normalize_to_color8() | png::Transformations::ALPHA,
-    );
+    // `load_image` checked the header, so the pixel count fits a u32 and the buffers.
+    assert!((1..=IMAGE_SIDE_MAX).contains(&w), "width {w}");
+    assert!((1..=IMAGE_SIDE_MAX).contains(&h), "height {h}");
+    let mut decoder = Decoder::new(Cursor::new(bytes));
+    decoder.set_transformations(Transformations::normalize_to_color8() | Transformations::ALPHA);
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
     let mut buf = vec![0; reader.output_buffer_size().ok_or("image too large")?];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
@@ -142,15 +164,15 @@ fn decode_png(bytes: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     let px = (w * h) as usize;
     let mut rgba = Vec::with_capacity(px * 4);
     match info.color_type {
-        png::ColorType::Rgba => rgba.extend_from_slice(&buf[..px * 4]),
-        png::ColorType::GrayscaleAlpha => {
+        ColorType::Rgba => rgba.extend_from_slice(&buf[..px * 4]),
+        ColorType::GrayscaleAlpha => {
             for ga in buf[..px * 2].chunks_exact(2) {
                 rgba.extend_from_slice(&[ga[0], ga[0], ga[0], ga[1]]);
             }
         }
         // `ALPHA` adds an alpha channel to every color type, and `normalize_to_color8`
         // expands palettes: these cannot come out of the decoder.
-        png::ColorType::Rgb | png::ColorType::Grayscale | png::ColorType::Indexed => {
+        ColorType::Rgb | ColorType::Grayscale | ColorType::Indexed => {
             return Err(format!(
                 "unexpected decoded color type {:?}",
                 info.color_type

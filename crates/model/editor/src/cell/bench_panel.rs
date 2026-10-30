@@ -6,22 +6,26 @@
 
 use schemify_doc::{Document, Loc, TableId};
 
-use crate::docs::{attr, node};
+use crate::docs;
 
-use super::panel::{block, button, dropdown, input, note, section};
-use super::{ALGOS, Bench, attr_of, joined, record_count};
+use super::{ALGOS, Bench, panel};
 
 /// The Outputs, Specs and Optimizers sections of a `.shbench`.
 pub(super) fn bench_sections(t: &mut String, doc: &Document) {
-    let rows = |b: Bench| record_count(doc, b.table());
-    section(t, "cell.s.output", "Outputs (one number per job)");
+    assert!(
+        !t.is_empty(),
+        "the bench sections follow the panel's header"
+    );
+    let start = t.len();
+    let rows = |b: Bench| super::record_count(doc, b.table());
+    panel::section(t, "cell.s.output", "Outputs (one number per job)");
     for r in 0..rows(Bench::Output) {
         let rec = doc.record(Loc {
             table: TableId::Outputs,
-            row: r as u32,
+            row: super::row_u32(r),
         });
-        let blk = block(t, &format!("cell.output.{r}"));
-        input(
+        let blk = panel::block(t, &format!("cell.output.{r}"));
+        panel::input(
             t,
             &format!("cell.output.{r}.name"),
             "name",
@@ -29,15 +33,15 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
             &blk,
         );
         let expr = rec.fields.get(1).map_or("", String::as_str);
-        input(t, &format!("cell.output.{r}.expr"), "expr", expr, &blk);
-        input(
+        panel::input(t, &format!("cell.output.{r}.expr"), "expr", expr, &blk);
+        panel::input(
             t,
             &format!("cell.output.{r}.unit"),
             "unit",
-            attr_of(&rec, "unit").unwrap_or(""),
+            super::attr_of(&rec, "unit").unwrap_or(""),
             &blk,
         );
-        button(
+        panel::button(
             t,
             &format!("cell.output.{r}.del"),
             "Delete output",
@@ -46,7 +50,7 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
             &blk,
         );
     }
-    button(
+    panel::button(
         t,
         "cell.add.output",
         "+ Output",
@@ -55,26 +59,26 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
         "cell.page",
     );
 
-    section(t, "cell.s.spec", "Specs");
+    panel::section(t, "cell.s.spec", "Specs");
     for r in 0..rows(Bench::Spec) {
         let rec = doc.record(Loc {
             table: TableId::Specs,
-            row: r as u32,
+            row: super::row_u32(r),
         });
-        let blk = block(t, &format!("cell.spec.{r}"));
-        node(t, &format!("cell.spec.{r}.title"), "label", &blk);
-        attr(t, "label", &rec.fields[0]);
-        attr(t, "style", "cell-title");
+        let blk = panel::block(t, &format!("cell.spec.{r}"));
+        docs::node(t, &format!("cell.spec.{r}.title"), "label", &blk);
+        docs::attr(t, "label", &rec.fields[0]);
+        docs::attr(t, "style", "cell-title");
         for a in ["min", "max"] {
-            input(
+            panel::input(
                 t,
                 &format!("cell.spec.{r}.{a}"),
                 a,
-                attr_of(&rec, a).unwrap_or(""),
+                super::attr_of(&rec, a).unwrap_or(""),
                 &blk,
             );
         }
-        button(
+        panel::button(
             t,
             &format!("cell.spec.{r}.del"),
             "Delete spec",
@@ -83,7 +87,7 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
             &blk,
         );
     }
-    button(
+    panel::button(
         t,
         "cell.add.spec",
         "+ Spec",
@@ -92,56 +96,56 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
         "cell.page",
     );
 
-    section(t, "cell.s.opt", "Optimizers");
+    panel::section(t, "cell.s.opt", "Optimizers");
     for r in 0..rows(Bench::Optimize) {
         let rec = doc.record(Loc {
             table: TableId::Optimizes,
-            row: r as u32,
+            row: super::row_u32(r),
         });
-        let blk = block(t, &format!("cell.opt.{r}"));
-        node(t, &format!("cell.opt.{r}.title"), "label", &blk);
-        attr(t, "label", &format!("optimize {}", rec.fields[0]));
-        attr(t, "style", "cell-title");
-        let algo = attr_of(&rec, "algo").unwrap_or("nelder-mead");
-        dropdown(t, &format!("cell.opt.{r}.algo"), "algo", algo, &ALGOS, &blk);
-        let goals = joined(&rec, "goal", "; ");
-        input(t, &format!("cell.opt.{r}.goals"), "goals", &goals, &blk);
-        input(
+        let blk = panel::block(t, &format!("cell.opt.{r}"));
+        docs::node(t, &format!("cell.opt.{r}.title"), "label", &blk);
+        docs::attr(t, "label", &format!("optimize {}", rec.fields[0]));
+        docs::attr(t, "style", "cell-title");
+        let algo = super::attr_of(&rec, "algo").unwrap_or("nelder-mead");
+        panel::dropdown(t, &format!("cell.opt.{r}.algo"), "algo", algo, &ALGOS, &blk);
+        let goals = super::joined(&rec, "goal", "; ");
+        panel::input(t, &format!("cell.opt.{r}.goals"), "goals", &goals, &blk);
+        panel::input(
             t,
             &format!("cell.opt.{r}.vary"),
             "vary",
-            &joined(&rec, "vary", " "),
+            &super::joined(&rec, "vary", " "),
             &blk,
         );
-        input(
+        panel::input(
             t,
             &format!("cell.opt.{r}.corners"),
             "corners",
-            &joined(&rec, "corner", " "),
+            &super::joined(&rec, "corner", " "),
             &blk,
         );
-        input(
+        panel::input(
             t,
             &format!("cell.opt.{r}.configs"),
             "configs",
-            &joined(&rec, "config", " "),
+            &super::joined(&rec, "config", " "),
             &blk,
         );
         for a in ["budget", "seed"] {
-            input(
+            panel::input(
                 t,
                 &format!("cell.opt.{r}.{a}"),
                 a,
-                attr_of(&rec, a).unwrap_or(""),
+                super::attr_of(&rec, a).unwrap_or(""),
                 &blk,
             );
         }
-        note(
+        panel::note(
             t,
             &format!("cell.opt.{r}.hint"),
             "goals: `<output> min|max|target <expr> [weight <w>]`, separated by `;`. vary: docs variables (their bounds apply).",
         );
-        button(
+        panel::button(
             t,
             &format!("cell.opt.{r}.del"),
             "Delete optimizer",
@@ -150,12 +154,16 @@ pub(super) fn bench_sections(t: &mut String, doc: &Document) {
             &blk,
         );
     }
-    button(
+    panel::button(
         t,
         "cell.add.opt",
         "+ Optimizer",
         "cell.add_bench",
         "Add an optimizer setup",
         "cell.page",
+    );
+    assert!(
+        t.len() > start,
+        "three sections and their add buttons were written"
     );
 }

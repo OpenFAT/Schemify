@@ -21,7 +21,7 @@
 
 use schemify_canvas::CanvasPrims;
 use schemify_doc::{DocHandle, EditRequest, Op, RecordBuf, TableId};
-use schemify_format::{RecordKind, format_coord, parse_coord};
+use schemify_format::RecordKind;
 
 use crate::edit;
 use crate::geometry::{Pt, Xform};
@@ -58,6 +58,11 @@ impl Editor {
         keep: bool,
         unselect: bool,
     ) {
+        assert!(
+            from.0.is_finite() && from.1.is_finite(),
+            "a finite box corner"
+        );
+        assert!(to.0.is_finite() && to.1.is_finite(), "a finite box corner");
         let (x0, y0, x1, y1) = (
             from.0.min(to.0),
             from.1.min(to.1),
@@ -128,7 +133,10 @@ impl Editor {
             from: at,
             to: at,
         };
-        assert!(index < pts.len());
+        assert!(
+            pts.len() >= 2,
+            "an editable shape has two vertices at least"
+        );
         true
     }
 
@@ -246,16 +254,18 @@ fn vertices(rec: &RecordBuf) -> Vec<Pt> {
         .get(first..)
         .unwrap_or(&[])
         .iter()
-        .map(|t| parse_coord(t).ok())
+        .map(|t| schemify_format::parse_coord(t).ok())
         .collect();
     let Some(n) = nums.filter(|n| n.len() >= 4 && n.len().is_multiple_of(2)) else {
         return Vec::new();
     };
-    match form {
+    let v: Vec<Pt> = match form {
         "rect" => vec![(n[0], n[1]), (n[2], n[1]), (n[2], n[3]), (n[0], n[3])],
         "line" => vec![(n[0], n[1]), (n[2], n[3])],
         _ => n.chunks_exact(2).map(|c| (c[0], c[1])).collect(),
-    }
+    };
+    assert!(v.len() >= 2, "two vertices at least");
+    v
 }
 
 /// `rec` with vertex `i` (see [`vertices`]) moved to `p`: a rectangle corner moves its two
@@ -272,13 +282,14 @@ fn with_vertex(rec: &RecordBuf, i: usize, p: Pt) -> Option<RecordBuf> {
     let mut set = |k: usize, val: i32| {
         let slot = &mut out.fields[first + k];
         slot.clear();
-        format_coord(val, slot);
+        schemify_format::format_coord(val, slot);
     };
     if form == "rect" {
         // Corner i owns x1 (corners 0, 3) or x2 (1, 2), and y1 (0, 1) or y2 (2, 3).
         set(if i == 0 || i == 3 { 0 } else { 2 }, p.0);
         set(if i <= 1 { 1 } else { 3 }, p.1);
         let q = vertices(&out);
+        assert_eq!(q.len(), 4, "a rectangle has four corners");
         return (q[0].0 != q[2].0 && q[0].1 != q[2].1).then_some(out);
     }
     let last = v.len() - 1;
@@ -292,6 +303,7 @@ fn with_vertex(rec: &RecordBuf, i: usize, p: Pt) -> Option<RecordBuf> {
         set(2 * k + 1, p.1);
         v[k] = p;
     }
+    assert_eq!(out.fields.len(), rec.fields.len(), "vertices move in place");
     (!v.windows(2).any(|w| w[0] == w[1])).then_some(out)
 }
 
