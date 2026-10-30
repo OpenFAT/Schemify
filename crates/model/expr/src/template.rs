@@ -7,12 +7,12 @@
 //!   `Template::program(&self) -> &Program`, `Template::segments(&self)`,
 //!   `Template::render(&self, inputs, scratch, out) -> Result<(), Error>`,
 //!   `Template::render_with(&self, inputs, plugins, scratch, out) -> Result<(), Error>`
-//! - `pub enum Segment<'t>`
+//! - `pub enum Segment<'template>`
 
 use crate::compile::Compiler;
-use crate::eval::{self, PluginValue, Scratch, V, str_at};
+use crate::eval::{self, PluginValue, Scalar, Scratch};
 use crate::program::{Mode, Program};
-use crate::text::{write_int, write_num};
+use crate::text;
 use crate::{Code, Error, Span, Value};
 
 /// A parsed template, rendered per instance.
@@ -21,14 +21,14 @@ pub struct Template {
     program: Program,
     /// Literal text with escapes resolved.
     text: String,
-    segs: Vec<Seg>,
+    segments: Vec<StoredSegment>,
 }
 
 /// One piece of a parsed template, in source order (see [`Template::segments`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Segment<'t> {
+pub enum Segment<'template> {
     /// Literal text with `{{`/`}}` resolved to one brace; never empty.
-    Lit(&'t str),
+    Lit(&'template str),
     /// A hole.
     Hole {
         /// `Some(k)` when the hole is spelled as one bare identifier (`{ W }`,
@@ -40,16 +40,21 @@ pub enum Segment<'t> {
 /// A [`Segment`] as stored: literal ranges index `text`, so one template is
 /// two allocations plus its program.
 #[derive(Clone, Copy, Debug)]
-enum Seg {
-    /// Byte range of `text`.
-    Lit(u32, u32),
-    /// Root index in `program`, the hole's span for errors, and the index in
-    /// `program.idents` of the identifier the hole is spelled as (`NOT_IDENT`
-    /// for any other expression).
-    Hole(u32, Span, u32),
+enum StoredSegment {
+    /// Byte range `[start, end)` of `text`.
+    Literal { start: u32, end: u32 },
+    Hole {
+        /// Root index in `program`.
+        root: u32,
+        /// The hole with its braces, for errors.
+        span: Span,
+        /// Index in `program.idents` of the identifier the hole is spelled
+        /// as; [`NOT_IDENT`] for any other expression.
+        ident: u32,
+    },
 }
 
-/// `Seg::Hole`'s identifier index when the hole is not one bare identifier.
+/// `StoredSegment::Hole`'s identifier index when the hole is not one bare identifier.
 const NOT_IDENT: u32 = u32::MAX;
 
 impl Template {
@@ -58,19 +63,33 @@ impl Template {
     /// # Errors
     /// `X009` for an unclosed `{`, an empty hole, or a lone `}` (write `}}`);
     /// any compile error of a hole, spanned in `src`.
+    ///
+    /// # Panics
+    /// If `src` is 4 GiB or longer (spans are u32).
     pub fn parse(src: &str) -> Result<Template, Error> {
-        let mut c = Compiler::new(Mode::Scalar);
-        let (mut text, mut segs) = (String::new(), Vec::new());
+        assert!(
+            src.len() <= u32::MAX as usize,
+            "template source longer than 4 GiB"
+        );
+        let mut compiler = Compiler::new(Mode::Scalar);
+        let (mut text, mut segments) = (String::new(), Vec::new());
         let b = src.as_bytes();
         let mut lit_start = 0;
         let mut i = 0;
-        let flush = |text: &str, segs: &mut Vec<Seg>, lit_start: &mut usize| {
+        let flush = |text: &str, segments: &mut Vec<StoredSegment>, lit_start: &mut usize| {
             if text.len() > *lit_start {
-                segs.push(Seg::Lit(*lit_start as u32, text.len() as u32));
+                segments.push(StoredSegment::Literal {
+                    start: *lit_start as u32,
+                    end: text.len() as u32,
+                });
             }
             *lit_start = text.len();
         };
         while i < b.len() {
+            debug_assert!(
+                src.is_char_boundary(i),
+                "the scan steps over whole characters"
+            );
             match (b[i], b.get(i + 1)) {
                 (b'{', Some(b'{')) | (b'}', Some(b'}')) => {
                     text.push(b[i] as char);
@@ -85,10 +104,14 @@ impl Template {
                             "empty template hole",
                         ));
                     }
-                    flush(&text, &mut segs, &mut lit_start);
-                    let root = c.roots_len();
-                    c.add_root(src, i + 1, end)?;
-                    segs.push(Seg::Hole(root, Span::new(i, end + 1), NOT_IDENT));
+                    flush(&text, &mut segments, &mut lit_start);
+                    let root = compiler.roots_len();
+                    compiler.add_root(src, i + 1, end)?;
+                    segments.push(StoredSegment::Hole {
+                        root,
+                        span: Span::new(i, end + 1),
+                        ident: NOT_IDENT,
+                    });
                     i = end + 1;
                 }
                 (b'}', _) => {
@@ -105,26 +128,35 @@ impl Template {
                 }
             }
         }
-        flush(&text, &mut segs, &mut lit_start);
-        let program = c.finish();
-        assert_eq!(
-            program.roots.len(),
-            segs.iter().filter(|s| matches!(s, Seg::Hole(..))).count()
-        );
+        flush(&text, &mut segments, &mut lit_start);
+        debug_assert_eq!(lit_start, text.len(), "every literal byte is in a segment");
+        let program = compiler.finish();
+        let holes = segments
+            .iter()
+            .filter(|segment| matches!(segment, StoredSegment::Hole { .. }))
+            .count();
+        assert_eq!(program.roots.len(), holes, "one root per hole");
         // A hole whose trimmed text equals an input identifier is that identifier
         // alone: any other expression using it is longer than its name.
-        for seg in &mut segs {
-            if let Seg::Hole(_, span, ident) = seg {
+        for segment in &mut segments {
+            if let StoredSegment::Hole { span, ident, .. } = segment {
                 let hole = src[span.start as usize + 1..span.end as usize - 1].trim();
                 if let Some(k) = program.idents().position(|id| id == hole) {
                     *ident = k as u32;
                 }
             }
         }
+        debug_assert!(
+            segments.iter().all(
+                |segment| !matches!(segment, StoredSegment::Hole { ident, .. }
+                    if *ident != NOT_IDENT && *ident as usize >= program.idents.len())
+            ),
+            "a hole's identifier indexes the program's identifiers"
+        );
         Ok(Template {
             program,
             text,
-            segs,
+            segments,
         })
     }
 
@@ -132,6 +164,7 @@ impl Template {
     /// build the inputs for [`Template::render`]. In netlist context `name`,
     /// `cell`, `model`, `pins`, pin names, `params` and `file` (spec §6) are
     /// ordinary identifiers the caller binds.
+    #[must_use]
     pub fn program(&self) -> &Program {
         &self.program
     }
@@ -140,10 +173,13 @@ impl Template {
     /// that already holds the text of every bare-identifier hole (the
     /// netlister's params and nets) copy it without evaluating.
     pub fn segments(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
-        self.segs.iter().map(|seg| match *seg {
-            Seg::Lit(a, b) => Segment::Lit(&self.text[a as usize..b as usize]),
-            Seg::Hole(_, _, k) => Segment::Hole {
-                ident: (k != NOT_IDENT).then_some(k),
+        self.segments.iter().map(|segment| match *segment {
+            StoredSegment::Literal { start, end } => {
+                debug_assert!(start < end, "literal segments are never empty");
+                Segment::Lit(&self.text[start as usize..end as usize])
+            }
+            StoredSegment::Hole { ident, .. } => Segment::Hole {
+                ident: (ident != NOT_IDENT).then_some(ident),
             },
         })
     }
@@ -170,6 +206,9 @@ impl Template {
     ///
     /// # Errors
     /// As [`Template::render`], plus whatever `plugins` returns.
+    ///
+    /// # Panics
+    /// As [`Template::render`].
     pub fn render_with<P, R>(
         &self,
         inputs: &[Value<'_>],
@@ -186,12 +225,19 @@ impl Template {
             self.program.idents.len(),
             "one input per identifier"
         );
-        let len0 = out.len();
-        let r = self.render_inner(inputs, plugins, scratch, out);
-        if r.is_err() {
-            out.truncate(len0);
+        let start_len = out.len();
+        let rendered = self.render_inner(inputs, plugins, scratch, out);
+        if rendered.is_err() {
+            out.truncate(start_len);
+            debug_assert_eq!(
+                out.len(),
+                start_len,
+                "a failed render leaves `out` as it was"
+            );
+        } else {
+            debug_assert!(out.len() >= start_len, "rendering only appends");
         }
-        r
+        rendered
     }
 }
 
@@ -211,17 +257,21 @@ impl Template {
         P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
         R: PluginValue,
     {
-        for seg in &self.segs {
-            match *seg {
-                Seg::Lit(a, b) => out.push_str(&self.text[a as usize..b as usize]),
-                Seg::Hole(root, span, _) => {
-                    let (start, end) = self.program.roots[root as usize];
-                    match eval::run(&self.program, start, end, inputs, plugins, scratch)? {
-                        V::Int(x) => write_int(out, x),
-                        V::Num(x) => write_num(out, x),
-                        V::Bool(b) => out.push_str(if b { "true" } else { "false" }),
-                        V::Str(s, len) => out.push_str(str_at(&scratch.strs, s, len)),
-                        V::Cnum(..) => {
+        for segment in &self.segments {
+            match *segment {
+                StoredSegment::Literal { start, end } => {
+                    out.push_str(&self.text[start as usize..end as usize]);
+                }
+                StoredSegment::Hole { root, span, .. } => {
+                    let code = self.program.roots[root as usize];
+                    match eval::run(&self.program, code, inputs, plugins, scratch)? {
+                        Scalar::Int(x) => text::write_int(out, x),
+                        Scalar::Num(x) => text::write_num(out, x),
+                        Scalar::Bool(b) => out.push_str(if b { "true" } else { "false" }),
+                        Scalar::Str(s, len) => {
+                            out.push_str(eval::str_at(&scratch.strings, s, len));
+                        }
+                        Scalar::Cnum(..) => {
                             return Err(Error::new(
                                 Code::X003,
                                 span,
@@ -246,7 +296,10 @@ fn hole_end(src: &str, open: usize) -> Result<usize, Error> {
         match b[i] {
             b'\\' if in_str => i += 1,
             b'"' => in_str = !in_str,
-            b'}' if !in_str => return Ok(i),
+            b'}' if !in_str => {
+                debug_assert!(i > open, "a hole closes after it opens");
+                return Ok(i);
+            }
             _ => {}
         }
         i += 1;

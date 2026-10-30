@@ -5,7 +5,8 @@
 //!
 //! Contents:
 //! - `pub enum Mode`, `pub enum SignalKind`, `pub struct Program`
-//! - `pub(crate) enum OpKind`, `pub(crate) struct Op`, `pub(crate) struct Name`
+//! - `pub(crate) enum OpKind`, `pub(crate) struct Op`, `pub(crate) struct Name`,
+//!   `pub(crate) struct Signal`, `pub(crate) struct PluginFn`, `pub(crate) struct CodeRange`
 //! - `pub fn op_parts(name: &str) -> (&str, &str)`
 //! - `Program::compile(src: &str, mode: Mode) -> Result<Program, Error>`,
 //!   `Program::idents(&self)`, `Program::signals(&self)`,
@@ -14,7 +15,7 @@
 //!   `Program::name(&self, n: Name) -> &str`, `Program::plugin_name(&self, slot: u32) -> String`
 
 use crate::compile::Compiler;
-use crate::eval::V;
+use crate::eval::Scalar;
 use crate::{Code, Error, Span, Value};
 
 /// Evaluation mode an expression is compiled for (spec §1).
@@ -45,20 +46,20 @@ pub struct Program {
     pub(crate) ops: Vec<Op>,
     /// Parallel to `ops`; read only when an error is raised.
     pub(crate) spans: Vec<Span>,
-    /// Folded constants and literals. `V::Str` ranges point into `pool`.
-    pub(crate) consts: Vec<V>,
+    /// Folded constants and literals. `Scalar::Str` ranges point into `pool`.
+    pub(crate) consts: Vec<Scalar>,
     /// Names and string constants, back to back.
     pub(crate) pool: String,
     pub(crate) idents: Vec<Name>,
     /// Parallel to `idents`: the first occurrence of each.
     pub(crate) ident_spans: Vec<Span>,
-    pub(crate) signals: Vec<(SignalKind, Name)>,
+    pub(crate) signals: Vec<Signal>,
     /// Parallel to `signals`: the call that first names each one.
     pub(crate) signal_spans: Vec<Span>,
-    /// `(namespace, function)` per plugin slot.
-    pub(crate) plugins: Vec<(Name, Name)>,
+    /// One per plugin slot.
+    pub(crate) plugins: Vec<PluginFn>,
     /// Code range per root: one for an expression, one per template hole.
-    pub(crate) roots: Vec<(u32, u32)>,
+    pub(crate) roots: Vec<CodeRange>,
     pub(crate) mode: Mode,
 }
 
@@ -122,6 +123,27 @@ pub(crate) struct Name {
     pub len: u32,
 }
 
+/// One signal slot: `v(name)`, `i(name)` or `op(…)` with its `<inst>[<param>]` name.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Signal {
+    pub kind: SignalKind,
+    pub name: Name,
+}
+
+/// One plugin slot: `namespace.function(…)`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PluginFn {
+    pub namespace: Name,
+    pub function: Name,
+}
+
+/// The ops `[start, end)` of one root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CodeRange {
+    pub start: u32,
+    pub end: u32,
+}
+
 // The evaluator's hot loop reads one 8-byte op per step (data design 3).
 const _: () = assert!(size_of::<Op>() == 8);
 
@@ -130,6 +152,7 @@ const _: () = assert!(size_of::<Op>() == 8);
 ///
 /// # Panics
 /// If `name` is not shaped so; the compiler only makes such names.
+#[must_use]
 pub fn op_parts(name: &str) -> (&str, &str) {
     let (inst, rest) = name.rsplit_once('[').expect("an op signal name");
     let param = rest.strip_suffix(']').expect("an op signal name");
@@ -146,25 +169,36 @@ impl Program {
     /// or calculator-only function in [`Mode::Scalar`] (`X006`), wrong arity
     /// (`X008`), unknown `phys.*` constant (`X004`), and any error raised by a
     /// constant subexpression that is always evaluated (`X003`, `X010`, …).
+    ///
+    /// # Panics
+    /// If `src` is 4 GiB or longer (spans are u32).
     pub fn compile(src: &str, mode: Mode) -> Result<Program, Error> {
-        let mut c = Compiler::new(mode);
-        c.add_root(src, 0, src.len())?;
-        let p = c.finish();
-        assert_eq!(p.roots.len(), 1);
-        Ok(p)
+        assert!(
+            src.len() <= u32::MAX as usize,
+            "expression source longer than 4 GiB"
+        );
+        let mut compiler = Compiler::new(mode);
+        compiler.add_root(src, 0, src.len())?;
+        let program = compiler.finish();
+        assert_eq!(program.roots.len(), 1, "an expression is one root");
+        Ok(program)
     }
 
     /// Identifier names in input-slot order: the order [`Program::eval`]
     /// expects its inputs in. Each name appears once. `phys.*` constants are
     /// not identifiers; other namespaced names (`a.b`) are, verbatim.
+    #[must_use]
     pub fn idents(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
         self.idents.iter().map(|n| self.name(*n))
     }
 
     /// Signals referenced by `v(…)`/`i(…)`/`op(…)`, in the slot order
     /// [`Plot::signals`](crate::Plot::signals) must follow. Empty in scalar mode.
+    #[must_use]
     pub fn signals(&self) -> impl ExactSizeIterator<Item = (SignalKind, &str)> + '_ {
-        self.signals.iter().map(|&(k, n)| (k, self.name(n)))
+        self.signals
+            .iter()
+            .map(|signal| (signal.kind, self.name(signal.name)))
     }
 
     /// The source span of the call that first names signal `k` (`v(out)`,
@@ -172,17 +206,25 @@ impl Program {
     ///
     /// # Panics
     /// If `k >= signals().len()`.
+    #[must_use]
     pub fn signal_span(&self, k: usize) -> Span {
+        assert!(
+            k < self.signal_spans.len(),
+            "signal {k} of {}",
+            self.signal_spans.len()
+        );
+        debug_assert_eq!(self.signal_spans.len(), self.signals.len());
         self.signal_spans[k]
     }
 
     /// Plugin functions `(namespace, name)` in slot order: the slot number a
     /// plugin callback receives indexes this list. Non-empty means the value
     /// depends on plugins, so callers caching values per D20 key on it.
+    #[must_use]
     pub fn plugin_fns(&self) -> impl ExactSizeIterator<Item = (&str, &str)> + '_ {
         self.plugins
             .iter()
-            .map(|&(ns, f)| (self.name(ns), self.name(f)))
+            .map(|plugin| (self.name(plugin.namespace), self.name(plugin.function)))
     }
 
     /// Resolves every identifier through `lookup` into `out` (cleared first),
@@ -192,11 +234,12 @@ impl Program {
     /// # Errors
     /// `X004` naming the first identifier `lookup` does not know, spanned at
     /// its first occurrence; `out` then holds the inputs before it.
-    pub fn bind<'a>(
+    pub fn bind<'input>(
         &self,
-        out: &mut Vec<Value<'a>>,
-        mut lookup: impl FnMut(&str) -> Option<Value<'a>>,
+        out: &mut Vec<Value<'input>>,
+        mut lookup: impl FnMut(&str) -> Option<Value<'input>>,
     ) -> Result<(), Error> {
+        debug_assert_eq!(self.idents.len(), self.ident_spans.len());
         out.clear();
         for (i, name) in self.idents().enumerate() {
             let v = lookup(name).ok_or_else(|| {
@@ -208,20 +251,31 @@ impl Program {
             })?;
             out.push(v);
         }
-        assert_eq!(out.len(), self.idents.len());
+        debug_assert_eq!(out.len(), self.idents.len(), "one input per identifier");
         Ok(())
     }
 
     /// The pool text `n` names.
     pub(crate) fn name(&self, n: Name) -> &str {
         let (start, len) = (n.start as usize, n.len as usize);
-        debug_assert!(start + len <= self.pool.len());
+        debug_assert!(start + len <= self.pool.len(), "name past the pool");
         &self.pool[start..start + len]
     }
 
-    /// `ns.f` of plugin slot `slot`, for error messages.
+    /// `namespace.function` of plugin slot `slot`, for error messages.
     pub(crate) fn plugin_name(&self, slot: u32) -> String {
-        let (ns, f) = self.plugins[slot as usize];
-        format!("{}.{}", self.name(ns), self.name(f))
+        assert!(
+            (slot as usize) < self.plugins.len(),
+            "plugin slot {slot} of {}",
+            self.plugins.len()
+        );
+        let plugin = self.plugins[slot as usize];
+        let name = format!(
+            "{}.{}",
+            self.name(plugin.namespace),
+            self.name(plugin.function)
+        );
+        debug_assert!(name.len() >= 3, "both parts are identifiers");
+        name
     }
 }

@@ -4,15 +4,18 @@
 //! caller's pool.
 //!
 //! Contents:
-//! - `pub(crate) enum Tok`, `pub(crate) struct Token`
+//! - `pub(crate) enum TokenKind`, `pub(crate) struct Token`,
+//!   `pub(crate) struct NumberLiteral`, `pub(crate) struct NumberError`
 //! - `pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Token, Error>`
-//! - `pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'static str)>`
+//! - `pub(crate) fn number(src: &str, start: usize) -> Result<NumberLiteral, NumberError>`
+
+use core::str::CharIndices;
 
 use crate::{Code, Error, MAX_STR_BYTES, Span};
 
 /// Token kind; literals carry their value (`Str` is a byte range in the caller's pool).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Tok {
+pub(crate) enum TokenKind {
     Int(i64),
     Num(f64),
     Str {
@@ -50,8 +53,23 @@ pub(crate) enum Tok {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Token {
-    pub kind: Tok,
+    pub kind: TokenKind,
     pub span: Span,
+}
+
+/// A lexed number literal: [`TokenKind::Int`] or [`TokenKind::Num`], and the
+/// offset one past its last byte.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NumberLiteral {
+    pub kind: TokenKind,
+    pub end: usize,
+}
+
+/// A malformed number literal: the offset one past the offending text, and why.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NumberError {
+    pub end: usize,
+    pub reason: &'static str,
 }
 
 /// SI suffix scale: a power of ten, or `mil` (25.4e-6, not a power of ten).
@@ -86,19 +104,23 @@ pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Tok
         "lexer position {pos} past end {}",
         src.len()
     );
+    debug_assert!(
+        src.is_char_boundary(pos),
+        "lexer position {pos} inside a char"
+    );
     let b = src.as_bytes();
     let mut i = pos;
     while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\r' | b'\n') {
         i += 1;
     }
-    let simple = |kind: Tok, len: usize| {
+    let simple = |kind: TokenKind, len: usize| {
         Ok(Token {
             kind,
             span: Span::new(i, i + len),
         })
     };
     let Some(&c) = b.get(i) else {
-        return simple(Tok::Eof, 0);
+        return simple(TokenKind::Eof, 0);
     };
     let next = b.get(i + 1).copied().unwrap_or(0);
     let tok = match c {
@@ -106,26 +128,26 @@ pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Tok
         b'.' if next.is_ascii_digit() => number_token(src, i)?,
         b'"' => string(src, i, pool)?,
         b'A'..=b'Z' | b'a'..=b'z' | b'_' => ident(src, i),
-        b'+' => return simple(Tok::Plus, 1),
-        b'-' => return simple(Tok::Minus, 1),
-        b'*' => return simple(Tok::Star, 1),
-        b'/' => return simple(Tok::Slash, 1),
-        b'%' => return simple(Tok::Percent, 1),
-        b'^' => return simple(Tok::Caret, 1),
-        b'?' => return simple(Tok::Question, 1),
-        b':' => return simple(Tok::Colon, 1),
-        b'(' => return simple(Tok::LParen, 1),
-        b')' => return simple(Tok::RParen, 1),
-        b',' => return simple(Tok::Comma, 1),
-        b'=' if next == b'=' => return simple(Tok::EqEq, 2),
-        b'!' if next == b'=' => return simple(Tok::NotEq, 2),
-        b'!' => return simple(Tok::Bang, 1),
-        b'<' if next == b'=' => return simple(Tok::Le, 2),
-        b'<' => return simple(Tok::Lt, 1),
-        b'>' if next == b'=' => return simple(Tok::Ge, 2),
-        b'>' => return simple(Tok::Gt, 1),
-        b'&' if next == b'&' => return simple(Tok::AndAnd, 2),
-        b'|' if next == b'|' => return simple(Tok::OrOr, 2),
+        b'+' => return simple(TokenKind::Plus, 1),
+        b'-' => return simple(TokenKind::Minus, 1),
+        b'*' => return simple(TokenKind::Star, 1),
+        b'/' => return simple(TokenKind::Slash, 1),
+        b'%' => return simple(TokenKind::Percent, 1),
+        b'^' => return simple(TokenKind::Caret, 1),
+        b'?' => return simple(TokenKind::Question, 1),
+        b':' => return simple(TokenKind::Colon, 1),
+        b'(' => return simple(TokenKind::LParen, 1),
+        b')' => return simple(TokenKind::RParen, 1),
+        b',' => return simple(TokenKind::Comma, 1),
+        b'=' if next == b'=' => return simple(TokenKind::EqEq, 2),
+        b'!' if next == b'=' => return simple(TokenKind::NotEq, 2),
+        b'!' => return simple(TokenKind::Bang, 1),
+        b'<' if next == b'=' => return simple(TokenKind::Le, 2),
+        b'<' => return simple(TokenKind::Lt, 1),
+        b'>' if next == b'=' => return simple(TokenKind::Ge, 2),
+        b'>' => return simple(TokenKind::Gt, 1),
+        b'&' if next == b'&' => return simple(TokenKind::AndAnd, 2),
+        b'|' if next == b'|' => return simple(TokenKind::OrOr, 2),
         _ => {
             let ch = src[i..]
                 .chars()
@@ -144,7 +166,11 @@ pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Tok
             ));
         }
     };
-    debug_assert!(tok.span.start as usize == i && tok.span.end > tok.span.start);
+    debug_assert_eq!(tok.span.start as usize, i, "token starts after the blanks");
+    debug_assert!(
+        tok.span.end > tok.span.start,
+        "a non-end token is never empty"
+    );
     Ok(tok)
 }
 
@@ -153,9 +179,10 @@ pub(crate) fn next_token(src: &str, pos: usize, pool: &mut String) -> Result<Tok
 /// i64 range, is an `Int`; everything else is a `Num`. Any identifier
 /// character after the literal (after the suffix, if any) is an error.
 ///
-/// Returns the literal (`Tok::Int` or `Tok::Num`) and the end offset, or the
-/// end of the offending text and the reason.
-pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'static str)> {
+/// # Errors
+/// A [`NumberError`] for a missing digit, a bad SI suffix, or a value out of
+/// f64 range. `start` need not be on a digit: anything else is "digit expected".
+pub(crate) fn number(src: &str, start: usize) -> Result<NumberLiteral, NumberError> {
     let b = src.as_bytes();
     assert!(start < b.len(), "number lexing starts past the end");
     let digits = |mut i: usize| {
@@ -170,12 +197,18 @@ pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'
         let frac = i + 1;
         i = digits(frac);
         if i == frac {
-            return Err((i, "digit expected after `.`"));
+            return Err(NumberError {
+                end: i,
+                reason: "digit expected after `.`",
+            });
         }
         plain = false;
     }
     if i == start {
-        return Err((i + 1, "digit expected"));
+        return Err(NumberError {
+            end: i + 1,
+            reason: "digit expected",
+        });
     }
     let mant_end = i;
     let mut exp: i64 = 0;
@@ -213,7 +246,12 @@ pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'
     } else {
         match SUFFIXES.iter().find(|(s, _)| s.eq_ignore_ascii_case(tail)) {
             Some(&(_, scale)) => scale,
-            None => return Err((i, "bad SI suffix (trailing letters are not accepted)")),
+            None => {
+                return Err(NumberError {
+                    end: i,
+                    reason: "bad SI suffix (trailing letters are not accepted)",
+                });
+            }
         }
     };
     let mant = &src[start..mant_end];
@@ -221,17 +259,28 @@ pub(crate) fn number(src: &str, start: usize) -> Result<(Tok, usize), (usize, &'
         && tail.is_empty()
         && let Ok(v) = mant.parse::<i64>()
     {
-        return Ok((Tok::Int(v), i));
+        debug_assert!(v >= 0, "literals are unsigned");
+        return Ok(NumberLiteral {
+            kind: TokenKind::Int(v),
+            end: i,
+        });
     }
     let v = match scale {
         Scale::Pow10(p) => decimal(mant, exp + i64::from(p)),
         Scale::Mil => decimal(mant, exp) * 25.4e-6,
     };
     if !v.is_finite() {
-        return Err((i, "number out of range"));
+        return Err(NumberError {
+            end: i,
+            reason: "number out of range",
+        });
     }
     debug_assert!(v >= 0.0, "literals are unsigned");
-    Ok((Tok::Num(v), i))
+    debug_assert!(i > start, "a literal spans at least one byte");
+    Ok(NumberLiteral {
+        kind: TokenKind::Num(v),
+        end: i,
+    })
 }
 
 // ---- private ----
@@ -250,18 +299,18 @@ fn ident(src: &str, start: usize) -> Token {
         .get(end + 1)
         .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_');
     if b.get(end) == Some(&b'.') && ns_name {
-        let end2 = word_end(end + 2);
+        let name_end = word_end(end + 2);
         return Token {
-            kind: Tok::NsIdent,
-            span: Span::new(start, end2),
+            kind: TokenKind::NsIdent,
+            span: Span::new(start, name_end),
         };
     }
     debug_assert!(end > start);
     let kind = match &src[start..end] {
-        "true" => Tok::True,
-        "false" => Tok::False,
-        "pi" => Tok::Pi,
-        _ => Tok::Ident,
+        "true" => TokenKind::True,
+        "false" => TokenKind::False,
+        "pi" => TokenKind::Pi,
+        _ => TokenKind::Ident,
     };
     Token {
         kind,
@@ -270,25 +319,30 @@ fn ident(src: &str, start: usize) -> Token {
 }
 
 fn number_token(src: &str, start: usize) -> Result<Token, Error> {
-    let (kind, end) = number(src, start).map_err(|(end, why)| {
-        let end = end.max(start + 1);
+    let literal = number(src, start).map_err(|error| {
+        let end = error.end.max(start + 1);
         Error::new(
             Code::X001,
             Span::new(start, end),
-            format!("{why}: `{}`", &src[start..end]),
+            format!("{}: `{}`", error.reason, &src[start..end]),
         )
     })?;
-    debug_assert!(matches!(kind, Tok::Int(_) | Tok::Num(_)));
+    debug_assert!(matches!(
+        literal.kind,
+        TokenKind::Int(_) | TokenKind::Num(_)
+    ));
+    debug_assert!(literal.end > start, "a literal spans at least one byte");
     Ok(Token {
-        kind,
-        span: Span::new(start, end),
+        kind: literal.kind,
+        span: Span::new(start, literal.end),
     })
 }
 
 /// Correctly rounded `mant × 10^exp` (a power-of-ten suffix is folded into
 /// the decimal exponent, so `2.5p` is exactly the f64 nearest 2.5e-12).
 fn decimal(mant: &str, exp: i64) -> f64 {
-    debug_assert!(!mant.is_empty() && mant.bytes().all(|c| c.is_ascii_digit() || c == b'.'));
+    debug_assert!(!mant.is_empty(), "a mantissa has a digit");
+    debug_assert!(mant.bytes().all(|c| c.is_ascii_digit() || c == b'.'));
     let text = format!("{mant}e{exp}");
     text.parse::<f64>()
         .expect("digits and exponent always parse")
@@ -329,21 +383,21 @@ fn string(src: &str, start: usize, pool: &mut String) -> Result<Token, Error> {
             ));
         }
     };
+    let len = pool.len() - pool_start;
+    debug_assert!(len <= MAX_STR_BYTES, "checked per character above");
+    // Escapes only shrink: the unescaped text is never longer than the quoted one.
+    debug_assert!(len <= end - start - 2);
     Ok(Token {
-        kind: Tok::Str {
+        kind: TokenKind::Str {
             start: pool_start as u32,
-            len: (pool.len() - pool_start) as u32,
+            len: len as u32,
         },
         span: Span::new(start, end),
     })
 }
 
 /// `\u{X…}` after the `u`: 1–6 hex digits naming a Unicode scalar value.
-fn unicode_escape(
-    src: &str,
-    at: usize,
-    chars: &mut core::str::CharIndices<'_>,
-) -> Result<char, Error> {
+fn unicode_escape(src: &str, at: usize, chars: &mut CharIndices<'_>) -> Result<char, Error> {
     let bad = |len: usize| {
         Error::new(
             Code::X009,

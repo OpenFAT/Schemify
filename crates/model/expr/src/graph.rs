@@ -5,7 +5,7 @@
 //! Determinism: results depend only on node and edge order, never on hashing.
 //!
 //! Contents:
-//! - `pub struct Deps<'a>`, `Deps::len(&self) -> usize`, `Deps::is_empty(&self) -> bool`,
+//! - `pub struct Deps<'table>`, `Deps::len(&self) -> usize`, `Deps::is_empty(&self) -> bool`,
 //!   `Deps::edges(&self, i: u32) -> &[u32]`
 //! - `pub struct Cycle`, `Cycle::error(&self, name) -> Error`
 //! - `pub fn topo_order(deps: Deps<'_>, order: &mut Vec<u32>) -> Result<(), Cycle>`
@@ -19,11 +19,11 @@ use crate::{Code, Error, Span};
 /// `targets[offsets[i]..offsets[i + 1]]`. `offsets.len()` is the node count
 /// plus one.
 #[derive(Clone, Copy, Debug)]
-pub struct Deps<'a> {
+pub struct Deps<'table> {
     /// Non-decreasing, starts at 0, ends at `targets.len()`.
-    pub offsets: &'a [u32],
+    pub offsets: &'table [u32],
     /// Node indices, each `< offsets.len() - 1`.
-    pub targets: &'a [u32],
+    pub targets: &'table [u32],
 }
 
 /// A dependency cycle: `nodes[0]` depends on `nodes[1]`, …, and the last
@@ -37,14 +37,22 @@ pub struct Cycle {
 /// Marker for "no index yet" / "no parent" in [`topo_order_all`].
 const NONE: u32 = u32::MAX;
 
+/// One node on an iterative depth-first path and the offset in `targets` of
+/// the next edge to follow from it.
+#[derive(Clone, Copy, Debug)]
+struct PathEntry {
+    node: u32,
+    next_edge: u32,
+}
+
 /// Tarjan's strongly connected components, iterative: discovery index ([`NONE`] =
-/// unseen), low link, the component stack and the DFS path of (node, next edge offset).
+/// unseen), low link, the component stack and the DFS path.
 struct Tarjan {
     index: Vec<u32>,
     low: Vec<u32>,
     on_stack: Vec<bool>,
     stack: Vec<u32>,
-    path: Vec<(u32, u32)>,
+    path: Vec<PathEntry>,
     next: u32,
 }
 
@@ -73,36 +81,42 @@ pub fn topo_order(deps: Deps<'_>, order: &mut Vec<u32>) -> Result<(), Cycle> {
     order.clear();
     // 0 unvisited, 1 on the DFS path, 2 emitted.
     let mut state = vec![0u8; n];
-    let mut path: Vec<(u32, u32)> = Vec::new();
+    let mut path: Vec<PathEntry> = Vec::new();
     for root in 0..n as u32 {
         if state[root as usize] != 0 {
             continue;
         }
         state[root as usize] = 1;
-        path.push((root, deps.offsets[root as usize]));
+        path.push(PathEntry {
+            node: root,
+            next_edge: deps.offsets[root as usize],
+        });
         while let Some(top) = path.last_mut() {
-            let (v, next) = *top;
-            if next == deps.offsets[v as usize + 1] {
+            let PathEntry { node: v, next_edge } = *top;
+            if next_edge == deps.offsets[v as usize + 1] {
                 state[v as usize] = 2;
                 order.push(v);
                 path.pop();
                 continue;
             }
-            top.1 += 1;
-            let w = deps.targets[next as usize];
+            top.next_edge += 1;
+            let w = deps.targets[next_edge as usize];
             match state[w as usize] {
                 0 => {
                     state[w as usize] = 1;
-                    path.push((w, deps.offsets[w as usize]));
+                    path.push(PathEntry {
+                        node: w,
+                        next_edge: deps.offsets[w as usize],
+                    });
                 }
                 1 => {
                     let at = path
                         .iter()
-                        .position(|&(u, _)| u == w)
-                        .expect("a node on the path");
-                    return Err(Cycle {
-                        nodes: path[at..].iter().map(|&(u, _)| u).collect(),
-                    });
+                        .position(|entry| entry.node == w)
+                        .expect("a node in state 1 is on the path");
+                    let nodes: Vec<u32> = path[at..].iter().map(|entry| entry.node).collect();
+                    debug_assert_eq!(nodes[0], w, "the cycle starts where it closes");
+                    return Err(Cycle { nodes });
                 }
                 _ => {}
             }
@@ -110,6 +124,7 @@ pub fn topo_order(deps: Deps<'_>, order: &mut Vec<u32>) -> Result<(), Cycle> {
         }
     }
     assert_eq!(order.len(), n, "every node emitted exactly once");
+    debug_assert!(state.iter().all(|&s| s == 2), "every node emitted");
     Ok(())
 }
 
@@ -150,10 +165,11 @@ pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cyc
             continue;
         }
         t.visit(deps, root);
-        while let Some(&(v, next)) = t.path.last() {
-            if next < deps.offsets[v as usize + 1] {
-                t.path.last_mut().expect("non-empty").1 += 1;
-                let w = deps.targets[next as usize];
+        while let Some(top) = t.path.last_mut() {
+            let PathEntry { node: v, next_edge } = *top;
+            if next_edge < deps.offsets[v as usize + 1] {
+                top.next_edge += 1;
+                let w = deps.targets[next_edge as usize];
                 if t.index[w as usize] == NONE {
                     t.visit(deps, w);
                 } else if t.on_stack[w as usize] {
@@ -162,8 +178,9 @@ pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cyc
                 continue;
             }
             t.path.pop();
-            if let Some(&(u, _)) = t.path.last() {
-                t.low[u as usize] = t.low[u as usize].min(t.low[v as usize]);
+            if let Some(parent) = t.path.last() {
+                let u = parent.node as usize;
+                t.low[u] = t.low[u].min(t.low[v as usize]);
             }
             if t.low[v as usize] == t.index[v as usize] {
                 let start = order.len();
@@ -174,8 +191,10 @@ pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cyc
                     if w == v {
                         break;
                     }
+                    debug_assert!(order.len() - start <= n, "a component fits in the graph");
                 }
                 let component = &order[start..];
+                debug_assert!(!component.is_empty(), "a component holds its root");
                 if component.len() > 1 || deps.edges(v).contains(&v) {
                     cover.component(deps, component, cycles);
                 }
@@ -183,7 +202,8 @@ pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cyc
         }
     }
     assert_eq!(order.len(), n, "every node emitted exactly once");
-    assert!(t.stack.is_empty() && t.path.is_empty());
+    assert!(t.stack.is_empty(), "every component popped");
+    assert!(t.path.is_empty(), "every DFS path unwound");
 }
 
 /// Builds the reverse table (dependents) of `deps` into `offsets`/`targets`
@@ -212,6 +232,8 @@ pub fn reverse(deps: Deps<'_>, offsets: &mut Vec<u32>, targets: &mut Vec<u32>) {
         }
     }
     assert_eq!(offsets[n] as usize, targets.len());
+    // Each node's dependents filled its slot range exactly.
+    debug_assert_eq!(fill[..], offsets[1..]);
 }
 
 /// Incremental recompute set: writes into `out` (cleared first) the `dirty`
@@ -251,15 +273,28 @@ pub fn affected(dependents: Deps<'_>, rank: &[u32], dirty: &[u32], out: &mut Vec
     }
     out.sort_unstable_by_key(|&v| rank[v as usize]);
     debug_assert!(out.len() <= n);
+    debug_assert!(out.len() >= dirty.len().min(1), "a dirty node is affected");
 }
 
 impl Deps<'_> {
     /// Number of nodes.
+    ///
+    /// # Panics
+    /// If `offsets` is empty (not a CSR table).
+    #[must_use]
     pub fn len(&self) -> usize {
+        assert!(
+            !self.offsets.is_empty(),
+            "CSR offsets hold at least the 0 start"
+        );
         self.offsets.len() - 1
     }
 
     /// True when there are no nodes.
+    ///
+    /// # Panics
+    /// As [`Deps::len`].
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -268,19 +303,28 @@ impl Deps<'_> {
     ///
     /// # Panics
     /// If `i >= self.len()`.
+    #[must_use]
     pub fn edges(&self, i: u32) -> &[u32] {
-        &self.targets[self.offsets[i as usize] as usize..self.offsets[i as usize + 1] as usize]
+        let i = i as usize;
+        assert!(i < self.len(), "node {i} of {}", self.len());
+        let (start, end) = (self.offsets[i] as usize, self.offsets[i + 1] as usize);
+        debug_assert!(start <= end, "CSR offsets must not decrease");
+        &self.targets[start..end]
     }
 }
 
 impl Cycle {
     /// `X005` naming the cycle as `a -> b -> a`.
-    pub fn error<'n>(&self, name: impl Fn(u32) -> &'n str) -> Error {
+    ///
+    /// # Panics
+    /// If `nodes` is empty.
+    pub fn error<'name>(&self, name: impl Fn(u32) -> &'name str) -> Error {
+        use core::fmt::Write;
+
         assert!(!self.nodes.is_empty(), "a cycle has at least one node");
         let mut msg = String::from("dependency cycle: ");
         for &n in &self.nodes {
-            msg.push_str(name(n));
-            msg.push_str(" -> ");
+            write!(msg, "{} -> ", name(n)).expect("writing to a String cannot fail");
         }
         msg.push_str(name(self.nodes[0]));
         Error::new(Code::X005, Span::default(), msg)
@@ -293,15 +337,16 @@ impl Deps<'_> {
     /// Asserts the CSR invariants of [`Deps`].
     fn check(&self) {
         assert!(
-            !self.offsets.is_empty() && self.offsets[0] == 0,
-            "CSR offsets must start with 0"
+            !self.offsets.is_empty(),
+            "CSR offsets must hold the 0 start"
         );
+        assert_eq!(self.offsets[0], 0, "CSR offsets must start with 0");
         assert!(
             self.offsets.windows(2).all(|w| w[0] <= w[1]),
             "CSR offsets must not decrease"
         );
         assert_eq!(
-            *self.offsets.last().expect("non-empty") as usize,
+            self.offsets[self.offsets.len() - 1] as usize,
             self.targets.len(),
             "CSR offsets must end at targets.len()"
         );
@@ -321,7 +366,10 @@ impl Tarjan {
         self.next += 1;
         self.stack.push(v);
         self.on_stack[v as usize] = true;
-        self.path.push((v, deps.offsets[v as usize]));
+        self.path.push(PathEntry {
+            node: v,
+            next_edge: deps.offsets[v as usize],
+        });
         assert!(
             self.path.len() <= self.index.len(),
             "DFS path within the node count"
@@ -331,6 +379,7 @@ impl Tarjan {
 
 impl Cover {
     fn new(n: usize) -> Cover {
+        assert!(n < NONE as usize, "node indices stay below the NONE marker");
         Cover {
             in_component: vec![false; n],
             covered: vec![false; n],
@@ -342,7 +391,7 @@ impl Cover {
     /// Appends cycles to `cycles` until every node of the strongly connected
     /// `component` is on one.
     fn component(&mut self, deps: Deps<'_>, component: &[u32], cycles: &mut Vec<Cycle>) {
-        assert!(!component.is_empty());
+        assert!(!component.is_empty(), "a component holds its root");
         let mut members = component.to_vec();
         members.sort_unstable();
         for &v in &members {
@@ -354,6 +403,10 @@ impl Cover {
             }
             let cycle = self.shortest_cycle(deps, v);
             for &u in &cycle {
+                debug_assert!(
+                    self.in_component[u as usize],
+                    "cycles stay in the component"
+                );
                 self.covered[u as usize] = true;
             }
             cycles.push(Cycle { nodes: cycle });
@@ -370,6 +423,10 @@ impl Cover {
     /// Returns the shortest cycle through `v` inside the marked component, starting at
     /// `v`. One exists: the component is strongly connected and cyclic.
     fn shortest_cycle(&mut self, deps: Deps<'_>, v: u32) -> Vec<u32> {
+        debug_assert!(
+            self.in_component[v as usize],
+            "start inside the marked component"
+        );
         self.queue.clear();
         self.queue.push(v);
         let mut head = 0;
@@ -395,9 +452,10 @@ impl Cover {
         let mut cycle = vec![last];
         while *cycle.last().expect("non-empty") != v {
             let p = self.parent[*cycle.last().expect("non-empty") as usize];
+            assert_ne!(p, NONE, "parents lead back to v");
             assert!(
-                p != NONE && cycle.len() <= self.queue.len(),
-                "parents lead back to v"
+                cycle.len() <= self.queue.len(),
+                "the parent walk is bounded"
             );
             cycle.push(p);
         }

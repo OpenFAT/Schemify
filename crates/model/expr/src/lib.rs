@@ -95,6 +95,7 @@ mod program;
 mod spectre;
 mod template;
 mod text;
+mod waveform;
 
 use core::fmt;
 
@@ -111,7 +112,7 @@ pub use text::{parse_num, write_int, write_num};
 /// the [`Scratch`] they were evaluated in (copy them out before the next
 /// evaluation reuses it). NaN and infinities are never valid values (`X010`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Value<'a> {
+pub enum Value<'text> {
     /// `int`: i64; promotes to `num` on overflow and on `/`.
     Int(i64),
     /// `num`: a finite f64.
@@ -126,7 +127,7 @@ pub enum Value<'a> {
         im: f64,
     },
     /// `str`: UTF-8, at most 1 MiB (spec §1).
-    Str(&'a str),
+    Str(&'text str),
 }
 
 /// Expression error codes (spec §8). Only [`Code::X007`] is a warning.
@@ -195,6 +196,7 @@ const _: () = assert!(MAX_PLUGIN_ARGS <= u8::MAX as usize);
 
 impl Code {
     /// Returns the code as written in reports (`"X004"`).
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Code::X001 => "X001",
@@ -212,6 +214,7 @@ impl Code {
     }
 
     /// Returns true for codes that are reported but do not block (`X007`).
+    #[must_use]
     pub const fn is_warning(self) -> bool {
         matches!(self, Code::X007)
     }
@@ -233,19 +236,33 @@ impl Span {
 
     /// The smallest span covering both.
     pub(crate) fn join(self, other: Span) -> Span {
-        let s = Span {
+        debug_assert!(self.start <= self.end, "left span reversed: {self:?}");
+        debug_assert!(other.start <= other.end, "right span reversed: {other:?}");
+        let joined = Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end),
         };
-        debug_assert!(s.start <= s.end);
-        s
+        debug_assert!(joined.start <= self.start);
+        debug_assert!(joined.start <= other.start);
+        debug_assert!(joined.end >= self.end);
+        debug_assert!(joined.end >= other.end);
+        joined
     }
 }
 
 impl Error {
     /// Builds an error; plugin callbacks use this to report their own failures
     /// (a missing plugin is [`Code::X006`]).
+    ///
+    /// # Panics
+    /// If `span.start > span.end`.
     pub fn new(code: Code, span: Span, msg: impl Into<String>) -> Error {
+        assert!(
+            span.start <= span.end,
+            "error span {}..{} is reversed",
+            span.start,
+            span.end
+        );
         Error {
             code,
             span,
@@ -261,6 +278,7 @@ impl Error {
 
     /// Replaces an empty span (errors raised away from the source) with `span`.
     pub(crate) fn at(mut self, span: Span) -> Error {
+        debug_assert!(span.start <= span.end, "op span reversed: {span:?}");
         if self.span == Span::default() {
             self.span = span;
         }

@@ -4,97 +4,131 @@
 //! Transcendentals go through `dmath`/`libm` (D32).
 //!
 //! Contents:
-//! - `pub(crate) fn unary(op: OpKind, a: V) -> Result<V, Error>`
-//! - `pub(crate) fn binary(op: OpKind, a: V, b: V, strs: &mut String) -> Result<V, Error>`
-//! - `pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error>`
-//! - `pub(crate) fn fin(x: f64, what: &str) -> Result<V, Error>`,
-//!   `pub(crate) fn cfin(z: Complex, what: &str) -> Result<V, Error>`
-//! - `pub(crate) fn type_name(v: V) -> &'static str`, `pub(crate) fn op_str(op: OpKind) -> &'static str`,
-//!   `pub(crate) fn not_bool(what: &str, v: V) -> Error`
+//! - `pub(crate) fn unary(op: OpKind, a: Scalar) -> Result<Scalar, Error>`
+//! - `pub(crate) fn binary(op: OpKind, a: Scalar, b: Scalar, strings: &mut String) -> Result<Scalar, Error>`
+//! - `pub(crate) fn call(builtin: Builtin, args: &[Scalar], strings: &mut String) -> Result<Scalar, Error>`
+//! - `pub(crate) fn finite(x: f64, what: &str) -> Result<Scalar, Error>`,
+//!   `pub(crate) fn complex_finite(z: Complex, what: &str) -> Result<Scalar, Error>`
+//! - `pub(crate) fn type_name(v: Scalar) -> &'static str`, `pub(crate) fn op_str(op: OpKind) -> &'static str`,
+//!   `pub(crate) fn not_bool(what: &str, v: Scalar) -> Error`
 
 use core::cmp::Ordering;
 
 use crate::builtin::Builtin;
 use crate::dmath::{self, Complex};
-use crate::eval::{V, check_str_len, str_at};
+use crate::eval::{self, Scalar};
 use crate::program::OpKind;
-use crate::text::{parse_num, write_eng, write_int, write_num};
+use crate::spectre;
+use crate::text;
 use crate::{Code, Error};
 
 /// `-x` and `!b`.
-pub(crate) fn unary(op: OpKind, a: V) -> Result<V, Error> {
+pub(crate) fn unary(op: OpKind, a: Scalar) -> Result<Scalar, Error> {
     debug_assert!(matches!(op, OpKind::Neg | OpKind::Not));
-    match (op, a) {
-        (OpKind::Neg, V::Int(x)) => Ok(x.checked_neg().map_or(V::Num(-(x as f64)), V::Int)),
-        (OpKind::Neg, V::Num(x)) => Ok(V::Num(-x)),
-        (OpKind::Neg, V::Cnum(re, im)) => Ok(V::Cnum(-re, -im)),
-        (OpKind::Not, V::Bool(b)) => Ok(V::Bool(!b)),
+    let r = match (op, a) {
+        (OpKind::Neg, Scalar::Int(x)) => Ok(x
+            .checked_neg()
+            .map_or(Scalar::Num(-(x as f64)), Scalar::Int)),
+        (OpKind::Neg, Scalar::Num(x)) => Ok(Scalar::Num(-x)),
+        (OpKind::Neg, Scalar::Cnum(re, im)) => Ok(Scalar::Cnum(-re, -im)),
+        (OpKind::Not, Scalar::Bool(b)) => Ok(Scalar::Bool(!b)),
         _ => Err(Error::bare(
             Code::X003,
             format!("`{}` cannot take {}", op_str(op), type_name(a)),
         )),
+    };
+    // `!` maps bool to bool; `-` never makes a bool.
+    if let Ok(v) = r {
+        debug_assert_eq!(matches!(v, Scalar::Bool(_)), op == OpKind::Not);
     }
+    r
 }
 
 /// Binary operators (spec §4): int stays int for `+ - * %` unless it
 /// overflows; `/` and `^` are num; cnum absorbs int/num; `str + str`
 /// concatenates; comparisons of int/num compare as num.
-pub(crate) fn binary(op: OpKind, a: V, b: V, strs: &mut String) -> Result<V, Error> {
+pub(crate) fn binary(
+    op: OpKind,
+    a: Scalar,
+    b: Scalar,
+    strings: &mut String,
+) -> Result<Scalar, Error> {
     debug_assert!(!matches!(
         op,
         OpKind::Neg | OpKind::Not | OpKind::Const | OpKind::Call
     ));
     let eq_op = matches!(op, OpKind::Eq | OpKind::Ne);
-    match (a, b) {
-        (V::Int(x), V::Int(y)) => int_binary(op, x, y),
-        (V::Int(_) | V::Num(_), V::Int(_) | V::Num(_)) => num_binary(op, real(a), real(b)),
-        (V::Cnum(ar, ai), V::Cnum(br, bi)) if eq_op => {
-            Ok(V::Bool(((ar, ai) == (br, bi)) == (op == OpKind::Eq)))
+    let r = match (a, b) {
+        (Scalar::Int(x), Scalar::Int(y)) => int_binary(op, x, y),
+        (Scalar::Int(_) | Scalar::Num(_), Scalar::Int(_) | Scalar::Num(_)) => {
+            num_binary(op, real(a), real(b))
         }
-        (V::Cnum(..), V::Int(_) | V::Num(_) | V::Cnum(..))
-        | (V::Int(_) | V::Num(_), V::Cnum(..)) => {
+        (Scalar::Cnum(ar, ai), Scalar::Cnum(br, bi)) if eq_op => {
+            Ok(Scalar::Bool(((ar, ai) == (br, bi)) == (op == OpKind::Eq)))
+        }
+        (Scalar::Cnum(..), Scalar::Int(_) | Scalar::Num(_) | Scalar::Cnum(..))
+        | (Scalar::Int(_) | Scalar::Num(_), Scalar::Cnum(..)) => {
             cnum_binary(op, complex(a), complex(b)).ok_or_else(|| type_err(op_str(op), a, b))?
         }
-        (V::Str(..), V::Str(..)) => str_binary(op, a, b, strs),
-        (V::Bool(x), V::Bool(y)) if eq_op => Ok(V::Bool((x == y) == (op == OpKind::Eq))),
+        (Scalar::Str(..), Scalar::Str(..)) => str_binary(op, a, b, strings),
+        (Scalar::Bool(x), Scalar::Bool(y)) if eq_op => {
+            Ok(Scalar::Bool((x == y) == (op == OpKind::Eq)))
+        }
         _ => Err(type_err(op_str(op), a, b)),
+    };
+    // A comparison answers bool; arithmetic never does.
+    if let Ok(v) = r {
+        let comparison = matches!(
+            op,
+            OpKind::Eq | OpKind::Ne | OpKind::Lt | OpKind::Le | OpKind::Gt | OpKind::Ge
+        );
+        debug_assert_eq!(matches!(v, Scalar::Bool(_)), comparison, "`{}`", op_str(op));
     }
+    r
 }
 
 /// Scalar builtins (spec §5). Calculator-only builtins reached with scalar
 /// arguments are `X003` (they need a column).
 ///
 /// # Panics
-/// If `args` is empty or `b` compiles to a dedicated op (`if v i x op`).
-pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error> {
+/// If `args` is empty or `builtin` compiles to a dedicated op (`if v i x op`).
+pub(crate) fn call(
+    builtin: Builtin,
+    args: &[Scalar],
+    strings: &mut String,
+) -> Result<Scalar, Error> {
     assert!(!args.is_empty(), "every scalar builtin takes arguments");
-    let name = b.name();
-    let num = |v: V| match v {
-        V::Int(x) => Ok(x as f64),
-        V::Num(x) => Ok(x),
+    let name = builtin.name();
+    let num = |v: Scalar| match v {
+        Scalar::Int(x) => Ok(x as f64),
+        Scalar::Num(x) => Ok(x),
         _ => Err(Error::bare(
             Code::X003,
             format!("`{name}` needs a number, got {}", type_name(v)),
         )),
     };
-    let bad = |v: V| Error::bare(Code::X003, format!("`{name}` cannot take {}", type_name(v)));
+    let bad = |v: Scalar| Error::bare(Code::X003, format!("`{name}` cannot take {}", type_name(v)));
     let a0 = args[0];
-    let r = match b {
+    let r = match builtin {
         Builtin::Abs => match a0 {
-            V::Int(x) => Ok(x.checked_abs().map_or(V::Num((x as f64).abs()), V::Int)),
-            V::Cnum(re, im) => fin(libm::hypot(re, im), name),
-            v => Ok(V::Num(num(v)?.abs())),
+            Scalar::Int(x) => Ok(x
+                .checked_abs()
+                .map_or(Scalar::Num((x as f64).abs()), Scalar::Int)),
+            Scalar::Cnum(re, im) => finite(libm::hypot(re, im), name),
+            v => Ok(Scalar::Num(num(v)?.abs())),
         },
-        _ if b.elementary() => match a0 {
-            V::Cnum(re, im) => cfin(dmath::complex(b, Complex::new(re, im)), name),
-            v => fin(dmath::real(b, num(v)?), name),
+        _ if builtin.elementary() => match a0 {
+            Scalar::Cnum(re, im) => {
+                complex_finite(dmath::complex(builtin, Complex::new(re, im)), name)
+            }
+            v => finite(dmath::real(builtin, num(v)?), name),
         },
-        Builtin::Atan2 => fin(libm::atan2(num(a0)?, num(args[1])?), name),
+        Builtin::Atan2 => finite(libm::atan2(num(a0)?, num(args[1])?), name),
         Builtin::Floor | Builtin::Ceil | Builtin::Round => match a0 {
-            V::Int(x) => Ok(V::Int(x)),
+            Scalar::Int(x) => Ok(Scalar::Int(x)),
             v => {
                 let x = num(v)?;
-                Ok(V::Num(match b {
+                Ok(Scalar::Num(match builtin {
                     Builtin::Floor => x.floor(),
                     Builtin::Ceil => x.ceil(),
                     _ => x.round(),
@@ -102,12 +136,12 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
             }
         },
         Builtin::Int => match a0 {
-            V::Int(x) => Ok(V::Int(x)),
+            Scalar::Int(x) => Ok(Scalar::Int(x)),
             v => {
                 let t = num(v)?.trunc();
                 // i64 range is [-2^63, 2^63); both bounds are exact in f64.
                 if (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&t) {
-                    Ok(V::Int(t as i64))
+                    Ok(Scalar::Int(t as i64))
                 } else {
                     Err(Error::bare(
                         Code::X010,
@@ -117,10 +151,12 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
             }
         },
         Builtin::Min | Builtin::Max => {
-            let max = b == Builtin::Max;
-            if args.iter().all(|v| matches!(v, V::Int(_))) {
-                let ints = args.iter().map(|v| if let V::Int(x) = v { *x } else { 0 });
-                Ok(V::Int(
+            let max = builtin == Builtin::Max;
+            if args.iter().all(|v| matches!(v, Scalar::Int(_))) {
+                let ints = args
+                    .iter()
+                    .map(|v| if let Scalar::Int(x) = v { *x } else { 0 });
+                Ok(Scalar::Int(
                     if max { ints.max() } else { ints.min() }.expect("at least two args"),
                 ))
             } else {
@@ -129,19 +165,21 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
                     let x = num(*v)?;
                     m = if max { m.max(x) } else { m.min(x) };
                 }
-                Ok(V::Num(m))
+                Ok(Scalar::Num(m))
             }
         }
         Builtin::Steps => steps(args, num, bad),
         Builtin::Clamp => match (a0, args[1], args[2]) {
-            (V::Int(x), V::Int(lo), V::Int(hi)) => Ok(V::Int(x.max(lo).min(hi))),
-            (x, lo, hi) => Ok(V::Num(num(x)?.max(num(lo)?).min(num(hi)?))),
+            (Scalar::Int(x), Scalar::Int(lo), Scalar::Int(hi)) => {
+                Ok(Scalar::Int(x.max(lo).min(hi)))
+            }
+            (x, lo, hi) => Ok(Scalar::Num(num(x)?.max(num(lo)?).min(num(hi)?))),
         },
         Builtin::Sign => match a0 {
-            V::Int(x) => Ok(V::Int(x.signum())),
+            Scalar::Int(x) => Ok(Scalar::Int(x.signum())),
             v => {
                 let x = num(v)?;
-                Ok(V::Num(if x > 0.0 {
+                Ok(Scalar::Num(if x > 0.0 {
                     1.0
                 } else if x < 0.0 {
                     -1.0
@@ -150,16 +188,16 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
                 }))
             }
         },
-        Builtin::Pow => binary(OpKind::Pow, a0, args[1], strs),
+        Builtin::Pow => binary(OpKind::Pow, a0, args[1], strings),
         Builtin::Snap => {
             let (x, g) = (num(a0)?, num(args[1])?);
-            fin((x / g).round() * g, name)
+            finite((x / g).round() * g, name)
         }
         Builtin::Eng => {
             let x = num(a0)?;
             let digits = match args.get(1) {
                 None => 3,
-                Some(V::Int(d)) if (1..=17).contains(d) => *d as u32,
+                Some(Scalar::Int(d)) if (1..=17).contains(d) => *d as u32,
                 Some(_) => {
                     return Err(Error::bare(
                         Code::X003,
@@ -167,49 +205,51 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
                     ));
                 }
             };
-            write_str(strs, |w| write_eng(w, x, digits))
+            write_str(strings, |w| text::write_eng(w, x, digits))
         }
         Builtin::Str => match a0 {
-            V::Str(..) => Ok(a0),
-            V::Int(x) => write_str(strs, |w| write_int(w, x)),
-            V::Num(x) => write_str(strs, |w| write_num(w, x)),
-            V::Bool(v) => write_str(strs, |w| w.push_str(if v { "true" } else { "false" })),
-            V::Cnum(..) => Err(Error::bare(Code::X003, "`str` of cnum: use re/im/mag/ph")),
+            Scalar::Str(..) => Ok(a0),
+            Scalar::Int(x) => write_str(strings, |w| text::write_int(w, x)),
+            Scalar::Num(x) => write_str(strings, |w| text::write_num(w, x)),
+            Scalar::Bool(v) => write_str(strings, |w| w.push_str(if v { "true" } else { "false" })),
+            Scalar::Cnum(..) => Err(Error::bare(Code::X003, "`str` of cnum: use re/im/mag/ph")),
         },
         Builtin::Num => match a0 {
-            V::Str(s, len) => Ok(V::Num(parse_num(str_at(strs, s, len))?)),
-            v => Ok(V::Num(num(v)?)),
+            Scalar::Str(s, len) => Ok(Scalar::Num(text::parse_num(eval::str_at(strings, s, len))?)),
+            v => Ok(Scalar::Num(num(v)?)),
         },
         Builtin::Len => match a0 {
             // Unicode scalar values.
-            V::Str(s, len) => Ok(V::Int(str_at(strs, s, len).chars().count() as i64)),
+            Scalar::Str(s, len) => Ok(Scalar::Int(
+                eval::str_at(strings, s, len).chars().count() as i64
+            )),
             v => Err(bad(v)),
         },
         Builtin::Re | Builtin::Im | Builtin::Mag | Builtin::Ph | Builtin::Db | Builtin::Conj => {
             let z = match a0 {
-                V::Cnum(re, im) => Complex::new(re, im),
+                Scalar::Cnum(re, im) => Complex::new(re, im),
                 v => Complex::new(num(v)?, 0.0),
             };
-            match b {
-                Builtin::Re => Ok(V::Num(z.re)),
-                Builtin::Im => Ok(V::Num(z.im)),
-                Builtin::Mag => fin(dmath::norm(z), name),
+            match builtin {
+                Builtin::Re => Ok(Scalar::Num(z.re)),
+                Builtin::Im => Ok(Scalar::Num(z.im)),
+                Builtin::Mag => finite(dmath::norm(z), name),
                 // Zero has no phase; define it as 0 so the sign of a zero
                 // (`-0.0`) cannot flip the answer to 180.
-                Builtin::Ph if z.re == 0.0 && z.im == 0.0 => Ok(V::Num(0.0)),
-                Builtin::Ph => Ok(V::Num(libm::atan2(z.im, z.re).to_degrees())),
-                Builtin::Db => fin(20.0 * libm::log10(dmath::norm(z)), name),
-                _ if matches!(a0, V::Cnum(..)) => Ok(V::Cnum(z.re, -z.im)),
+                Builtin::Ph if z.re == 0.0 && z.im == 0.0 => Ok(Scalar::Num(0.0)),
+                Builtin::Ph => Ok(Scalar::Num(libm::atan2(z.im, z.re).to_degrees())),
+                Builtin::Db => finite(20.0 * libm::log10(dmath::norm(z)), name),
+                _ if matches!(a0, Scalar::Cnum(..)) => Ok(Scalar::Cnum(z.re, -z.im)),
                 _ => Ok(a0),
             }
         }
-        Builtin::Cplx => Ok(V::Cnum(num(a0)?, num(args[1])?)),
+        Builtin::Cplx => Ok(Scalar::Cnum(num(a0)?, num(args[1])?)),
         Builtin::SpectreSource => match a0 {
-            V::Str(s, len) => {
-                let spec = str_at(strs, s, len).to_owned();
+            Scalar::Str(s, len) => {
+                let spec = eval::str_at(strings, s, len).to_owned();
                 let mut out = String::with_capacity(spec.len() + 16);
-                crate::spectre::source(&spec, &mut out)?;
-                write_str(strs, |w| w.push_str(&out))
+                spectre::source(&spec, &mut out)?;
+                write_str(strings, |w| w.push_str(&out))
             }
             v => Err(bad(v)),
         },
@@ -217,7 +257,7 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
             unreachable!("`{name}` compiles to dedicated ops")
         }
         _ => {
-            debug_assert!(b.calc_only());
+            debug_assert!(builtin.calc_only());
             Err(Error::bare(
                 Code::X003,
                 format!("`{name}` needs a column argument"),
@@ -225,25 +265,27 @@ pub(crate) fn call(b: Builtin, args: &[V], strs: &mut String) -> Result<V, Error
         }
     };
     debug_assert!(
-        !matches!(r, Ok(V::Num(x)) if !x.is_finite()),
+        !matches!(r, Ok(Scalar::Num(x)) if !x.is_finite()),
         "`{name}` leaked a non-finite value"
     );
     r
 }
 
 /// `Num(x)` if finite, else `X010` naming what produced it.
-pub(crate) fn fin(x: f64, what: &str) -> Result<V, Error> {
+pub(crate) fn finite(x: f64, what: &str) -> Result<Scalar, Error> {
+    debug_assert!(!what.is_empty(), "the error names its source");
     if x.is_finite() {
-        return Ok(V::Num(x));
+        return Ok(Scalar::Num(x));
     }
     let kind = if x.is_nan() { "NaN" } else { "infinity" };
     Err(Error::bare(Code::X010, format!("`{what}` produced {kind}")))
 }
 
 /// `Cnum(z)` if both parts are finite, else `X010` naming what produced it.
-pub(crate) fn cfin(z: Complex, what: &str) -> Result<V, Error> {
+pub(crate) fn complex_finite(z: Complex, what: &str) -> Result<Scalar, Error> {
+    debug_assert!(!what.is_empty(), "the error names its source");
     if z.re.is_finite() && z.im.is_finite() {
-        return Ok(V::Cnum(z.re, z.im));
+        return Ok(Scalar::Cnum(z.re, z.im));
     }
     Err(Error::bare(
         Code::X010,
@@ -252,13 +294,13 @@ pub(crate) fn cfin(z: Complex, what: &str) -> Result<V, Error> {
 }
 
 /// The spec §1 name of `v`'s type, for messages.
-pub(crate) fn type_name(v: V) -> &'static str {
+pub(crate) fn type_name(v: Scalar) -> &'static str {
     match v {
-        V::Int(_) => "int",
-        V::Num(_) => "num",
-        V::Bool(_) => "bool",
-        V::Cnum(..) => "cnum",
-        V::Str(..) => "str",
+        Scalar::Int(_) => "int",
+        Scalar::Num(_) => "num",
+        Scalar::Bool(_) => "bool",
+        Scalar::Cnum(..) => "cnum",
+        Scalar::Str(..) => "str",
     }
 }
 
@@ -291,8 +333,8 @@ pub(crate) fn op_str(op: OpKind) -> &'static str {
 }
 
 /// `X003`: `what` (a condition or logical operator) got a non-bool.
-pub(crate) fn not_bool(what: &str, v: V) -> Error {
-    debug_assert!(!matches!(v, V::Bool(_)));
+pub(crate) fn not_bool(what: &str, v: Scalar) -> Error {
+    debug_assert!(!matches!(v, Scalar::Bool(_)));
     Error::bare(
         Code::X003,
         format!("`{what}` needs bool, got {}", type_name(v)),
@@ -301,42 +343,61 @@ pub(crate) fn not_bool(what: &str, v: V) -> Error {
 
 // ---- private ----
 
-fn type_err(what: &str, a: V, b: V) -> Error {
+fn type_err(what: &str, a: Scalar, b: Scalar) -> Error {
+    debug_assert!(!what.is_empty(), "the error names its operator");
     Error::bare(
         Code::X003,
         format!("`{what}` cannot take {} and {}", type_name(a), type_name(b)),
     )
 }
 
-fn real(v: V) -> f64 {
+fn real(v: Scalar) -> f64 {
     match v {
-        V::Int(x) => x as f64,
-        V::Num(x) => x,
+        Scalar::Int(x) => x as f64,
+        Scalar::Num(x) => x,
         _ => unreachable!("real() of {}", type_name(v)),
     }
 }
 
-fn complex(v: V) -> Complex {
+fn complex(v: Scalar) -> Complex {
     match v {
-        V::Cnum(re, im) => Complex::new(re, im),
+        Scalar::Cnum(re, im) => Complex::new(re, im),
         v => Complex::new(real(v), 0.0),
     }
 }
 
-fn int_binary(op: OpKind, x: i64, y: i64) -> Result<V, Error> {
+fn int_binary(op: OpKind, x: i64, y: i64) -> Result<Scalar, Error> {
+    debug_assert!(
+        !matches!(op, OpKind::And | OpKind::Or),
+        "lazy operators compile to jumps"
+    );
     let r = match op {
         OpKind::Add => x.checked_add(y),
         OpKind::Sub => x.checked_sub(y),
         OpKind::Mul => x.checked_mul(y),
         OpKind::Rem => x.checked_rem(y),
         OpKind::Div | OpKind::Pow => None,
-        _ => return Ok(V::Bool(cmp(op, x.cmp(&y)))),
+        _ => return Ok(Scalar::Bool(cmp(op, x.cmp(&y)))),
     };
+    // Only `+ - * %` can stay int; `/` and `^` always promote.
+    if r.is_some() {
+        debug_assert!(
+            matches!(op, OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Rem),
+            "`{}` kept an int",
+            op_str(op)
+        );
+    }
     // Overflow (or `/`, `^`, `% 0`) promotes to num.
-    r.map_or_else(|| num_binary(op, x as f64, y as f64), |v| Ok(V::Int(v)))
+    r.map_or_else(
+        || num_binary(op, x as f64, y as f64),
+        |v| Ok(Scalar::Int(v)),
+    )
 }
 
-fn num_binary(op: OpKind, x: f64, y: f64) -> Result<V, Error> {
+fn num_binary(op: OpKind, x: f64, y: f64) -> Result<Scalar, Error> {
+    // Values are never NaN, so every comparison below is total.
+    debug_assert!(!x.is_nan(), "left operand is NaN");
+    debug_assert!(!y.is_nan(), "right operand is NaN");
     let r = match op {
         OpKind::Add => x + y,
         OpKind::Sub => x - y,
@@ -346,14 +407,16 @@ fn num_binary(op: OpKind, x: f64, y: f64) -> Result<V, Error> {
         OpKind::Pow => libm::pow(x, y),
         _ => {
             let ord = x.partial_cmp(&y).expect("values are never NaN");
-            return Ok(V::Bool(cmp(op, ord)));
+            return Ok(Scalar::Bool(cmp(op, ord)));
         }
     };
-    fin(r, op_str(op))
+    finite(r, op_str(op))
 }
 
 /// Complex arithmetic; `None` for operators complex numbers lack.
-fn cnum_binary(op: OpKind, a: Complex, b: Complex) -> Option<Result<V, Error>> {
+fn cnum_binary(op: OpKind, a: Complex, b: Complex) -> Option<Result<Scalar, Error>> {
+    debug_assert!(!a.re.is_nan(), "operands are finite");
+    debug_assert!(!b.re.is_nan(), "operands are finite");
     let r = match op {
         OpKind::Add => a + b,
         OpKind::Sub => a - b,
@@ -362,23 +425,26 @@ fn cnum_binary(op: OpKind, a: Complex, b: Complex) -> Option<Result<V, Error>> {
         OpKind::Pow => dmath::cpow(a, b),
         _ => return None,
     };
-    Some(cfin(r, op_str(op)))
+    Some(complex_finite(r, op_str(op)))
 }
 
-fn str_binary(op: OpKind, a: V, b: V, strs: &mut String) -> Result<V, Error> {
-    let (V::Str(sa, la), V::Str(sb, lb)) = (a, b) else {
+fn str_binary(op: OpKind, a: Scalar, b: Scalar, strings: &mut String) -> Result<Scalar, Error> {
+    let (Scalar::Str(sa, la), Scalar::Str(sb, lb)) = (a, b) else {
         unreachable!("str_binary of non-strings")
     };
     let (ra, rb) = (
         sa as usize..(sa + la) as usize,
         sb as usize..(sb + lb) as usize,
     );
+    debug_assert!(ra.end <= strings.len(), "left operand past the buffer");
+    debug_assert!(rb.end <= strings.len(), "right operand past the buffer");
     if op == OpKind::Add {
-        check_str_len(strs, (la + lb) as usize)?;
-        let start = strs.len();
-        strs.extend_from_within(ra);
-        strs.extend_from_within(rb);
-        return Ok(V::Str(start as u32, la + lb));
+        eval::check_str_len(strings, (la + lb) as usize)?;
+        let start = strings.len();
+        strings.extend_from_within(ra);
+        strings.extend_from_within(rb);
+        debug_assert_eq!(strings.len(), start + (la + lb) as usize);
+        return Ok(Scalar::Str(start as u32, la + lb));
     }
     if matches!(
         op,
@@ -386,7 +452,7 @@ fn str_binary(op: OpKind, a: V, b: V, strs: &mut String) -> Result<V, Error> {
     ) {
         return Err(type_err(op_str(op), a, b));
     }
-    Ok(V::Bool(cmp(op, strs[ra].cmp(&strs[rb]))))
+    Ok(Scalar::Bool(cmp(op, strings[ra].cmp(&strings[rb]))))
 }
 
 fn cmp(op: OpKind, ord: Ordering) -> bool {
@@ -406,10 +472,10 @@ fn cmp(op: OpKind, ord: Ordering) -> bool {
 /// else, so a point outside what was measured is never extrapolated. Breakpoints
 /// compare with a relative tolerance of 1e-9 (a length computed from other params).
 fn steps(
-    args: &[V],
-    num: impl Fn(V) -> Result<f64, Error>,
-    bad: impl Fn(V) -> Error,
-) -> Result<V, Error> {
+    args: &[Scalar],
+    num: impl Fn(Scalar) -> Result<f64, Error>,
+    bad: impl Fn(Scalar) -> Error,
+) -> Result<Scalar, Error> {
     debug_assert!(args.len() >= 4, "arity checked at compile time");
     if !args.len().is_multiple_of(2) {
         return Err(Error::bare(
@@ -444,18 +510,23 @@ fn steps(
             ),
         ));
     };
+    debug_assert!(
+        k + 1 < bounds.len(),
+        "step {k} lies between two breakpoints"
+    );
     debug_assert!(2 + 2 * k < args.len() - 1);
     match args[2 + 2 * k] {
-        y @ (V::Int(_) | V::Num(_)) => Ok(y),
+        y @ (Scalar::Int(_) | Scalar::Num(_)) => Ok(y),
         v => Err(bad(v)),
     }
 }
 
-/// Appends what `f` writes to `strs` as a new string.
-fn write_str(strs: &mut String, f: impl FnOnce(&mut String)) -> Result<V, Error> {
-    let start = strs.len();
-    f(strs);
-    let len = strs.len() - start;
-    check_str_len(&strs[..start], len)?;
-    Ok(V::Str(start as u32, len as u32))
+/// Appends what `f` writes to `strings` as a new string.
+fn write_str(strings: &mut String, f: impl FnOnce(&mut String)) -> Result<Scalar, Error> {
+    let start = strings.len();
+    f(strings);
+    assert!(strings.len() >= start, "writers only append");
+    let len = strings.len() - start;
+    eval::check_str_len(&strings[..start], len)?;
+    Ok(Scalar::Str(start as u32, len as u32))
 }

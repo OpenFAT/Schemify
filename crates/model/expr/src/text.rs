@@ -10,9 +10,9 @@
 //! - `pub fn parse_num(s: &str) -> Result<f64, Error>`
 //! - `pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32)`
 
-use core::fmt::Write;
+use core::iter;
 
-use crate::lex::{self, Tok};
+use crate::lex::{self, TokenKind};
 use crate::{Code, Error, Span};
 
 /// Appends the canonical text of `x` (spec §7): an integer when `x` is
@@ -23,21 +23,31 @@ use crate::{Code, Error, Span};
 /// # Panics
 /// If `x` is NaN or infinite; those are never values (`X010`).
 pub fn write_num(out: &mut String, x: f64) {
-    assert!(x.is_finite(), "canonical text of a non-finite number");
-    let a = x.abs();
-    let r = if x.fract() == 0.0 && a < 1e15 {
+    use core::fmt::Write;
+
+    assert!(x.is_finite(), "canonical text of a non-finite number {x}");
+    let start = out.len();
+    let magnitude = x.abs();
+    let written = if x.fract() == 0.0 && magnitude < 1e15 {
         write!(out, "{}", x as i64)
-    } else if (1e-4..1e15).contains(&a) {
+    } else if (1e-4..1e15).contains(&magnitude) {
         write!(out, "{x}")
     } else {
         write!(out, "{x:e}")
     };
-    r.expect("writing to a String cannot fail");
+    written.expect("writing to a String cannot fail");
+    debug_assert!(out.len() > start, "a number has text");
+    // `-0` is `0`: a minus sign always precedes a non-zero digit.
+    debug_assert!(x != 0.0 || &out[start..] == "0", "zero writes as `0`");
 }
 
 /// Appends an `int` as plain decimal (spec §7).
 pub fn write_int(out: &mut String, x: i64) {
+    use core::fmt::Write;
+
+    let start = out.len();
     write!(out, "{x}").expect("writing to a String cannot fail");
+    debug_assert!(out.len() > start, "an int has text");
 }
 
 /// Parses a number with an optional sign and SI suffix (the `num()` builtin):
@@ -58,16 +68,17 @@ pub fn parse_num(s: &str) -> Result<f64, Error> {
     if body.is_empty() {
         return Err(bad("empty"));
     }
-    let (tok, end) = lex::number(body, 0).map_err(|(_, why)| bad(why))?;
-    if end != body.len() {
+    let literal = lex::number(body, 0).map_err(|error| bad(error.reason))?;
+    if literal.end != body.len() {
         return Err(bad("trailing text"));
     }
-    let v = match tok {
-        Tok::Int(i) => i as f64,
-        Tok::Num(v) => v,
+    let v = match literal.kind {
+        TokenKind::Int(i) => i as f64,
+        TokenKind::Num(v) => v,
         _ => unreachable!("number() returns numeric literals"),
     };
-    debug_assert!(v.is_finite());
+    debug_assert!(v.is_finite(), "number() rejects out-of-range literals");
+    debug_assert!(v >= 0.0, "the sign was stripped above");
     Ok(if s.starts_with('-') { -v } else { v })
 }
 
@@ -90,16 +101,21 @@ pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32) {
         .expect("LowerExp always has an exponent");
     let exp: i32 = exp.parse().expect("LowerExp exponent is an integer");
     let sig: String = mant.chars().filter(char::is_ascii_digit).collect();
+    debug_assert_eq!(
+        sig.len(),
+        digits as usize,
+        "LowerExp keeps `digits` significant digits"
+    );
     let e3 = (exp.div_euclid(3) * 3).clamp(-15, 12);
     let int_len = 1 + exp - e3;
     let mut num = String::new();
     if int_len <= 0 {
         num.push_str("0.");
-        num.extend(core::iter::repeat_n('0', (-int_len) as usize));
+        num.extend(iter::repeat_n('0', (-int_len) as usize));
         num.push_str(&sig);
     } else if int_len as usize >= sig.len() {
         num.push_str(&sig);
-        num.extend(core::iter::repeat_n('0', int_len as usize - sig.len()));
+        num.extend(iter::repeat_n('0', int_len as usize - sig.len()));
     } else {
         num.push_str(&sig[..int_len as usize]);
         num.push('.');
@@ -125,4 +141,5 @@ pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32) {
     }
     out.push_str(&num);
     out.push_str(suffix);
+    debug_assert!(!num.is_empty(), "a mantissa has digits");
 }

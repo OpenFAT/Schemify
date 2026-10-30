@@ -13,7 +13,7 @@
 //! Contents:
 //! - `pub struct Plot`, `pub struct Column`, `pub enum CalcResult`, `pub enum ColKind`,
 //!   `pub struct ColOut`, `pub struct AxisOut`
-//! - `pub(crate) struct CalcScratch`, `pub(crate) struct Col`, `pub(crate) enum CV`,
+//! - `pub(crate) struct CalcScratch`, `pub(crate) struct ColumnValue`, `pub(crate) enum CalcValue`,
 //!   `pub(crate) enum AxisKind`, `pub(crate) struct Axis`
 //! - `Program::eval_calc(&self, inputs, plot, plugins, scratch) -> Result<CalcResult, Error>`,
 //!   `Program::eval_calc_plain(&self, inputs, plot, scratch) -> Result<CalcResult, Error>`
@@ -22,44 +22,42 @@
 use core::ops::Range;
 
 use crate::builtin::Builtin;
-use crate::column::{col_binary, cv_type, elementwise, scalars};
-use crate::eval::{
-    PluginValue, Scratch, V, call_plugin, load_const, load_value, no_plugins, to_value,
-};
-use crate::kernel::{binary, not_bool, op_str, unary};
-use crate::measure::call_cv;
-use crate::program::{Mode, OpKind, Program, SignalKind};
+use crate::column;
+use crate::eval::{self, PluginValue, Scalar, Scratch};
+use crate::kernel;
+use crate::measure;
+use crate::program::{CodeRange, Mode, OpKind, Program, SignalKind};
 use crate::{Code, Error, Value};
 
 /// One result set as seen by a calculator expression. Borrowed: the caller
 /// (`wave`/`run`) owns the columns.
 #[derive(Clone, Copy, Debug)]
-pub struct Plot<'a> {
+pub struct Plot<'results> {
     /// Sweep axis values (time, frequency, swept source), one per point.
-    pub x: &'a [f64],
+    pub x: &'results [f64],
     /// Sweep steps as contiguous ranges partitioning `0..x.len()`; empty
     /// means one step over all points.
-    pub steps: &'a [Range<u32>],
+    pub steps: &'results [Range<u32>],
     /// One column per [`Program::signals`] entry, in that order; an `op`
     /// signal is one finite real number.
-    pub signals: &'a [Column<'a>],
+    pub signals: &'results [Column<'results>],
 }
 
 /// A borrowed signal column.
 #[derive(Clone, Copy, Debug)]
-pub struct Column<'a> {
+pub struct Column<'results> {
     /// Real parts, one per point.
-    pub re: &'a [f64],
+    pub re: &'results [f64],
     /// Imaginary parts; empty for a real signal.
-    pub im: &'a [f64],
+    pub im: &'results [f64],
 }
 
 /// Result of a calculator evaluation.
 #[derive(Clone, Debug, PartialEq)]
-pub enum CalcResult<'s> {
+pub enum CalcResult<'scratch> {
     /// A constant or a value computed only from scalars; a string borrows
     /// the [`Scratch`] until its next evaluation.
-    Scalar(Value<'s>),
+    Scalar(Value<'scratch>),
     /// A column (owned; keep it as a trace).
     Column(ColOut),
 }
@@ -101,16 +99,16 @@ pub struct AxisOut {
 /// The calculator's part of [`Scratch`]: reused stacks and the axis table.
 #[derive(Debug, Default)]
 pub(crate) struct CalcScratch {
-    stack: Vec<CV>,
+    stack: Vec<CalcValue>,
     /// One per open `?:`/`&&`/`||`: the column condition when both arms run.
-    frames: Vec<Option<Col>>,
+    frames: Vec<Option<ColumnValue>>,
     /// `axes[0]` is the plot axis; derived axes are appended on first use.
     axes: Vec<Axis>,
 }
 
 /// An intermediate column; `im` is empty unless the kind is complex.
 #[derive(Clone, Debug)]
-pub(crate) struct Col {
+pub(crate) struct ColumnValue {
     pub kind: ColKind,
     pub re: Vec<f64>,
     pub im: Vec<f64>,
@@ -120,9 +118,9 @@ pub(crate) struct Col {
 
 /// A calculator stack value: a scalar or a column.
 #[derive(Clone, Debug)]
-pub(crate) enum CV {
-    S(V),
-    C(Col),
+pub(crate) enum CalcValue {
+    Scalar(Scalar),
+    Column(ColumnValue),
 }
 
 /// What an axis is: the plot's, one point per step of `parent`, or `fft` bins.
@@ -160,13 +158,13 @@ impl Program {
     /// # Panics
     /// If the program is not [`Mode::Calc`], `inputs.len() != idents().len()`
     /// or `plot.signals.len() != signals().len()`.
-    pub fn eval_calc<'s, P, R>(
+    pub fn eval_calc<'scratch, P, R>(
         &self,
         inputs: &[Value<'_>],
         plot: &Plot<'_>,
         plugins: &mut P,
-        scratch: &'s mut Scratch,
-    ) -> Result<CalcResult<'s>, Error>
+        scratch: &'scratch mut Scratch,
+    ) -> Result<CalcResult<'scratch>, Error>
     where
         P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
         R: PluginValue,
@@ -184,35 +182,40 @@ impl Program {
             "one column per signal"
         );
         let steps = check_plot(self, plot)?;
-        let cs = &mut scratch.calc;
-        cs.axes.clear();
-        cs.axes.push(Axis {
+        let calc = &mut scratch.calc;
+        calc.axes.clear();
+        calc.axes.push(Axis {
             x: plot.x.to_vec(),
             steps,
             parent: 0,
             kind: AxisKind::Plot,
         });
-        scratch.strs.clear();
-        let (start, end) = self.roots[0];
+        scratch.strings.clear();
         let v = run(
             self,
-            (start, end),
+            self.roots[0],
             inputs,
             plot,
             plugins,
-            &mut scratch.strs,
-            cs,
+            &mut scratch.strings,
+            calc,
         )?;
+        debug_assert_eq!(calc.axes[0].kind, AxisKind::Plot, "axis 0 stays the plot's");
         Ok(match v {
-            CV::S(v) => CalcResult::Scalar(to_value(v, &scratch.strs)),
-            CV::C(c) => {
+            CalcValue::Scalar(v) => CalcResult::Scalar(eval::to_value(v, &scratch.strings)),
+            CalcValue::Column(c) => {
                 let axis = (c.axis != 0).then(|| {
-                    let a = &cs.axes[c.axis as usize];
+                    let a = &calc.axes[c.axis as usize];
                     AxisOut {
                         x: a.x.clone(),
                         steps: a.steps.clone(),
                     }
                 });
+                debug_assert_eq!(
+                    c.re.len(),
+                    calc.axes[c.axis as usize].x.len(),
+                    "a result column covers its axis"
+                );
                 CalcResult::Column(ColOut {
                     kind: c.kind,
                     re: c.re,
@@ -230,42 +233,49 @@ impl Program {
     ///
     /// # Panics
     /// As [`Program::eval_calc`].
-    pub fn eval_calc_plain<'s>(
+    pub fn eval_calc_plain<'scratch>(
         &self,
         inputs: &[Value<'_>],
         plot: &Plot<'_>,
-        scratch: &'s mut Scratch,
-    ) -> Result<CalcResult<'s>, Error> {
-        self.eval_calc(inputs, plot, &mut no_plugins(self), scratch)
+        scratch: &'scratch mut Scratch,
+    ) -> Result<CalcResult<'scratch>, Error> {
+        self.eval_calc(inputs, plot, &mut eval::no_plugins(self), scratch)
     }
 }
 
 /// `X011` with `msg`, not yet spanned.
 pub(crate) fn x011(msg: String) -> Error {
+    debug_assert!(!msg.is_empty(), "an X011 names the mismatch");
     Error::bare(Code::X011, msg)
 }
 
 // ---- private ----
 
 /// Validates column lengths and the step partition; returns the steps.
-fn check_plot(prog: &Program, plot: &Plot<'_>) -> Result<Vec<Range<u32>>, Error> {
+fn check_plot(program: &Program, plot: &Plot<'_>) -> Result<Vec<Range<u32>>, Error> {
     let n = plot.x.len();
     assert!(n <= u32::MAX as usize, "plot longer than u32 points");
-    for (k, (sig, (kind, name))) in plot.signals.iter().zip(prog.signals()).enumerate() {
+    debug_assert_eq!(
+        plot.signals.len(),
+        program.signals.len(),
+        "checked by the caller"
+    );
+    let bound = plot.signals.iter().zip(program.signals());
+    for (k, (signal, (kind, name))) in bound.enumerate() {
         if kind == SignalKind::Op {
-            if sig.re.len() != 1 || !sig.im.is_empty() || !sig.re[0].is_finite() {
+            if signal.re.len() != 1 || !signal.im.is_empty() || !signal.re[0].is_finite() {
                 return Err(x011(format!(
                     "signal {k} `op({name})` must be one finite real number"
                 )));
             }
             continue;
         }
-        let im_ok = sig.im.is_empty() || sig.im.len() == n;
-        if sig.re.len() != n || !im_ok {
+        let im_ok = signal.im.is_empty() || signal.im.len() == n;
+        if signal.re.len() != n || !im_ok {
             let f = if kind == SignalKind::V { "v" } else { "i" };
             return Err(x011(format!(
                 "signal {k} `{f}({name})` has {} points, the axis has {n}",
-                sig.re.len()
+                signal.re.len()
             )));
         }
     }
@@ -287,6 +297,7 @@ fn check_plot(prog: &Program, plot: &Plot<'_>) -> Result<Vec<Range<u32>>, Error>
     if at as usize != n {
         return Err(x011(format!("sweep steps cover {at} of {n} points")));
     }
+    debug_assert!(!plot.steps.is_empty(), "the empty case returned above");
     Ok(plot.steps.to_vec())
 }
 
@@ -294,74 +305,88 @@ fn check_plot(prog: &Program, plot: &Plot<'_>) -> Result<Vec<Range<u32>>, Error>
 // copied in); fine for one trace per result set. Reuse operand buffers if
 // calculator evaluation ever shows up in a profile.
 fn run<P, R>(
-    prog: &Program,
-    (start, end): (u32, u32),
+    program: &Program,
+    code: CodeRange,
     inputs: &[Value<'_>],
     plot: &Plot<'_>,
     plugin: &mut P,
-    strs: &mut String,
-    cs: &mut CalcScratch,
-) -> Result<CV, Error>
+    strings: &mut String,
+    calc: &mut CalcScratch,
+) -> Result<CalcValue, Error>
 where
     P: FnMut(u32, &[Value<'_>]) -> Result<R, Error>,
     R: PluginValue,
 {
+    let CodeRange { start, end } = code;
     assert!(start < end, "empty code range");
     assert!(
-        end as usize <= prog.ops.len(),
+        end as usize <= program.ops.len(),
         "code range past the program"
     );
-    cs.stack.clear();
-    cs.frames.clear();
+    assert!(!calc.axes.is_empty(), "the plot axis is set up first");
+    calc.stack.clear();
+    calc.frames.clear();
     let mut pc = start;
     while pc < end {
-        let op = prog.ops[pc as usize];
-        let at = |e: Error| e.at(prog.spans[pc as usize]);
-        let stack = &mut cs.stack;
+        let op = program.ops[pc as usize];
+        let at = |e: Error| e.at(program.spans[pc as usize]);
+        let stack = &mut calc.stack;
         match op.kind {
-            OpKind::Const => stack.push(CV::S(load_const(prog, op.arg, strs).map_err(at)?)),
-            OpKind::Input => stack.push(CV::S(
-                load_value(&inputs[op.arg as usize], strs).map_err(at)?,
-            )),
-            OpKind::Signal if prog.signals[op.arg as usize].0 == SignalKind::Op => {
+            OpKind::Const => {
+                let v = eval::load_const(program, op.arg, strings).map_err(at)?;
+                stack.push(CalcValue::Scalar(v));
+            }
+            OpKind::Input => {
+                let v = eval::load_value(&inputs[op.arg as usize], strings).map_err(at)?;
+                stack.push(CalcValue::Scalar(v));
+            }
+            OpKind::Signal if program.signals[op.arg as usize].kind == SignalKind::Op => {
                 // One number from the operating point, never a column (check_plot).
-                stack.push(CV::S(V::Num(plot.signals[op.arg as usize].re[0])));
+                stack.push(CalcValue::Scalar(Scalar::Num(
+                    plot.signals[op.arg as usize].re[0],
+                )));
             }
             OpKind::Signal => {
-                let sig = plot.signals[op.arg as usize];
-                let kind = if sig.im.is_empty() {
+                let signal = plot.signals[op.arg as usize];
+                let kind = if signal.im.is_empty() {
                     ColKind::Real
                 } else {
                     ColKind::Complex
                 };
-                stack.push(CV::C(Col {
+                stack.push(CalcValue::Column(ColumnValue {
                     kind,
-                    re: sig.re.to_vec(),
-                    im: sig.im.to_vec(),
+                    re: signal.re.to_vec(),
+                    im: signal.im.to_vec(),
                     axis: 0,
                 }));
             }
-            OpKind::Axis => stack.push(CV::C(Col {
+            OpKind::Axis => stack.push(CalcValue::Column(ColumnValue {
                 kind: ColKind::Real,
-                re: cs.axes[0].x.clone(),
+                re: calc.axes[0].x.clone(),
                 im: Vec::new(),
                 axis: 0,
             })),
             OpKind::Neg | OpKind::Not => {
                 let a = pop(stack);
                 let r = match a {
-                    CV::S(v) => CV::S(unary(op.kind, v).map_err(at)?),
-                    CV::C(c) if op.kind == OpKind::Neg && c.kind != ColKind::Bool => CV::C(Col {
-                        re: c.re.iter().map(|x| -x).collect(),
-                        im: c.im.iter().map(|x| -x).collect(),
-                        ..c
-                    }),
-                    a => CV::C(
-                        elementwise(&[a], &cs.axes, strs, |v, _| unary(op.kind, v[0]))
-                            .map_err(at)?,
+                    CalcValue::Scalar(v) => {
+                        CalcValue::Scalar(kernel::unary(op.kind, v).map_err(at)?)
+                    }
+                    CalcValue::Column(c) if op.kind == OpKind::Neg && c.kind != ColKind::Bool => {
+                        CalcValue::Column(ColumnValue {
+                            re: c.re.iter().map(|x| -x).collect(),
+                            im: c.im.iter().map(|x| -x).collect(),
+                            ..c
+                        })
+                    }
+                    a => CalcValue::Column(
+                        column::elementwise(&[a], &calc.axes, strings, |v, _| {
+                            kernel::unary(op.kind, v[0])
+                        })
+                        .map_err(at)?,
                     ),
                 };
-                cs.stack.push(r);
+                calc.stack.push(r);
             }
             OpKind::Add
             | OpKind::Sub
@@ -378,104 +403,146 @@ where
                 let b = pop(stack);
                 let a = pop(stack);
                 let r = match (a, b) {
-                    (CV::S(x), CV::S(y)) => CV::S(binary(op.kind, x, y, strs).map_err(at)?),
-                    (a, b) => CV::C(col_binary(op.kind, a, b, &cs.axes, strs).map_err(at)?),
+                    (CalcValue::Scalar(x), CalcValue::Scalar(y)) => {
+                        CalcValue::Scalar(kernel::binary(op.kind, x, y, strings).map_err(at)?)
+                    }
+                    (a, b) => CalcValue::Column(
+                        column::column_binary(op.kind, a, b, &calc.axes, strings).map_err(at)?,
+                    ),
                 };
-                cs.stack.push(r);
+                calc.stack.push(r);
             }
             OpKind::Cond => match pop(stack) {
-                CV::S(V::Bool(t)) => {
-                    cs.frames.push(None);
+                CalcValue::Scalar(Scalar::Bool(t)) => {
+                    calc.frames.push(None);
                     if !t {
                         pc = op.arg;
                         continue;
                     }
                 }
-                CV::C(c) if c.kind == ColKind::Bool => cs.frames.push(Some(c)),
-                v => return Err(at(not_bool("condition", cv_type(&v)))),
+                CalcValue::Column(c) if c.kind == ColKind::Bool => calc.frames.push(Some(c)),
+                v => {
+                    return Err(at(kernel::not_bool(
+                        "condition",
+                        column::representative_scalar(&v),
+                    )));
+                }
             },
             OpKind::Else => {
                 // A column condition runs both arms; a scalar one jumps.
-                if !matches!(cs.frames.last(), Some(Some(_))) {
+                if !matches!(calc.frames.last(), Some(Some(_))) {
                     pc = op.arg;
                     continue;
                 }
             }
             OpKind::EndCond => {
-                if let Some(cond) = cs.frames.pop().expect("EndCond matches a Cond") {
+                if let Some(cond) = calc.frames.pop().expect("EndCond matches a Cond") {
                     let e = pop(stack);
                     let t = pop(stack);
-                    let r = elementwise(&[CV::C(cond), t, e], &cs.axes, strs, |v, _| {
-                        Ok(if v[0] == V::Bool(true) { v[1] } else { v[2] })
+                    let operands = [CalcValue::Column(cond), t, e];
+                    let r = column::elementwise(&operands, &calc.axes, strings, |v, _| {
+                        Ok(if v[0] == Scalar::Bool(true) {
+                            v[1]
+                        } else {
+                            v[2]
+                        })
                     });
-                    cs.stack.push(CV::C(r.map_err(at)?));
+                    calc.stack.push(CalcValue::Column(r.map_err(at)?));
                 }
             }
             OpKind::And | OpKind::Or => {
                 let short = op.kind == OpKind::Or;
                 match pop(stack) {
-                    CV::S(V::Bool(b)) if b == short => {
-                        stack.push(CV::S(V::Bool(b)));
+                    CalcValue::Scalar(Scalar::Bool(b)) if b == short => {
+                        stack.push(CalcValue::Scalar(Scalar::Bool(b)));
                         pc = op.arg;
                         continue;
                     }
-                    CV::S(V::Bool(_)) => cs.frames.push(None),
-                    CV::C(c) if c.kind == ColKind::Bool => cs.frames.push(Some(c)),
-                    v => return Err(at(not_bool(op_str(op.kind), cv_type(&v)))),
+                    CalcValue::Scalar(Scalar::Bool(_)) => calc.frames.push(None),
+                    CalcValue::Column(c) if c.kind == ColKind::Bool => calc.frames.push(Some(c)),
+                    v => {
+                        let what = kernel::op_str(op.kind);
+                        return Err(at(kernel::not_bool(
+                            what,
+                            column::representative_scalar(&v),
+                        )));
+                    }
                 }
             }
             OpKind::EndAnd | OpKind::EndOr => {
                 let is_and = op.kind == OpKind::EndAnd;
-                match cs.frames.pop().expect("EndAnd/EndOr matches an And/Or") {
+                match calc.frames.pop().expect("EndAnd/EndOr matches an And/Or") {
                     None => match stack.last().expect("operand on stack") {
-                        CV::S(V::Bool(_)) => {}
-                        CV::C(c) if c.kind == ColKind::Bool => {}
-                        v => return Err(at(not_bool(op_str(op.kind), cv_type(v)))),
+                        CalcValue::Scalar(Scalar::Bool(_)) => {}
+                        CalcValue::Column(c) if c.kind == ColKind::Bool => {}
+                        v => {
+                            let what = kernel::op_str(op.kind);
+                            return Err(at(kernel::not_bool(
+                                what,
+                                column::representative_scalar(v),
+                            )));
+                        }
                     },
                     Some(lhs) => {
                         let rhs = pop(stack);
-                        let r = elementwise(&[CV::C(lhs), rhs], &cs.axes, strs, |v, _| {
-                            match (v[0], v[1]) {
-                                (V::Bool(a), V::Bool(b)) => {
-                                    Ok(V::Bool(if is_and { a && b } else { a || b }))
+                        let operands = [CalcValue::Column(lhs), rhs];
+                        let r =
+                            column::elementwise(&operands, &calc.axes, strings, |v, _| {
+                                match (v[0], v[1]) {
+                                    (Scalar::Bool(a), Scalar::Bool(b)) => {
+                                        Ok(Scalar::Bool(if is_and { a && b } else { a || b }))
+                                    }
+                                    (_, b) => Err(kernel::not_bool(kernel::op_str(op.kind), b)),
                                 }
-                                (_, b) => Err(not_bool(op_str(op.kind), b)),
-                            }
-                        });
-                        cs.stack.push(CV::C(r.map_err(at)?));
+                            });
+                        calc.stack.push(CalcValue::Column(r.map_err(at)?));
                     }
                 }
             }
             OpKind::Call => {
+                debug_assert!(
+                    op.arg as usize <= stack.len(),
+                    "call arguments on the stack"
+                );
                 let base = stack.len() - op.arg as usize;
-                let args: Vec<CV> = stack.drain(base..).collect();
-                let r = call_cv(Builtin::from_id(op.sub), args, &mut cs.axes, strs).map_err(at)?;
-                cs.stack.push(r);
+                let args: Vec<CalcValue> = stack.drain(base..).collect();
+                let builtin = Builtin::from_id(op.sub);
+                let r = measure::call(builtin, args, &mut calc.axes, strings).map_err(at)?;
+                calc.stack.push(r);
             }
             OpKind::Plugin => {
+                debug_assert!(
+                    usize::from(op.sub) <= stack.len(),
+                    "plugin arguments on the stack"
+                );
                 let base = stack.len() - op.sub as usize;
-                let args: Vec<CV> = stack.drain(base..).collect();
+                let args: Vec<CalcValue> = stack.drain(base..).collect();
                 let slot = op.arg;
-                let r = if let Some(vs) = scalars(&args) {
-                    let r = call_plugin(plugin, slot, &vs, strs);
-                    CV::S(r.and_then(|r| load_value(&r.value(), strs)).map_err(at)?)
+                let r = if let Some(vs) = column::scalars(&args) {
+                    let r = eval::call_plugin(plugin, slot, &vs, strings);
+                    let v = r.and_then(|r| eval::load_value(&r.value(), strings));
+                    CalcValue::Scalar(v.map_err(at)?)
                 } else {
-                    let r = elementwise(&args, &cs.axes, strs, |v, strs| {
-                        let r = call_plugin(plugin, slot, v, strs)?;
-                        load_value(&r.value(), strs)
+                    let r = column::elementwise(&args, &calc.axes, strings, |v, strings| {
+                        let r = eval::call_plugin(plugin, slot, v, strings)?;
+                        eval::load_value(&r.value(), strings)
                     });
-                    CV::C(r.map_err(at)?)
+                    CalcValue::Column(r.map_err(at)?)
                 };
-                cs.stack.push(r);
+                calc.stack.push(r);
             }
         }
         pc += 1;
     }
-    assert_eq!(cs.stack.len(), 1, "program must leave exactly one value");
-    assert!(cs.frames.is_empty(), "condition frames unbalanced");
-    Ok(cs.stack.pop().expect("one value"))
+    assert_eq!(pc, end, "jumps land inside the root");
+    assert_eq!(calc.stack.len(), 1, "program must leave exactly one value");
+    assert!(calc.frames.is_empty(), "condition frames unbalanced");
+    let Some(result) = calc.stack.pop() else {
+        unreachable!("one value checked above")
+    };
+    Ok(result)
 }
 
-fn pop(stack: &mut Vec<CV>) -> CV {
+fn pop(stack: &mut Vec<CalcValue>) -> CalcValue {
     stack.pop().expect("compiled code keeps the stack balanced")
 }

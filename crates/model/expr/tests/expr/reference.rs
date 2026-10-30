@@ -91,10 +91,15 @@ pub fn print(e: &E, var: &dyn Fn(usize) -> String) -> String {
 pub fn lit_value(l: &NumLit) -> f64 {
     let e = l.exp.unwrap_or(0);
     match suffix_pow(l.suffix) {
-        Some(p) => format!("{}e{}", l.mant, e + p).parse().unwrap(),
+        Some(p) => format!("{}e{}", l.mant, e + p)
+            .parse::<f64>()
+            .expect("mantissa and exponent form a float"),
         None => {
             assert!(l.suffix.eq_ignore_ascii_case("mil"));
-            format!("{}e{}", l.mant, e).parse::<f64>().unwrap() * 25.4e-6
+            format!("{}e{}", l.mant, e)
+                .parse::<f64>()
+                .expect("mantissa and exponent form a float")
+                * 25.4e-6
         }
     }
 }
@@ -355,7 +360,7 @@ fn binop(op: Op, x: &RV, y: &RV) -> R {
         (RV::Int(_) | RV::Num(_), RV::Int(_) | RV::Num(_)) => {
             let (a, b) = (num(x)?, num(y)?);
             if is_cmp {
-                return cmp(a.partial_cmp(&b).unwrap());
+                return cmp(a.partial_cmp(&b).expect("finite operands are ordered"));
             }
             fin(match op {
                 Op::Add => a + b,
@@ -440,7 +445,8 @@ fn builtin(f: &str, v: &[RV]) -> R {
             if v.iter().all(|x| matches!(x, RV::Int(_))) {
                 let it = v.iter().map(|x| if let RV::Int(i) = x { *i } else { 0 });
                 return Ok(RV::Int(
-                    if f == "min" { it.min() } else { it.max() }.unwrap(),
+                    if f == "min" { it.min() } else { it.max() }
+                        .expect("min/max take at least one argument"),
                 ));
             }
             let mut m = n0()?;

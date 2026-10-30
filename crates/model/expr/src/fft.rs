@@ -10,36 +10,61 @@
 
 use core::f64::consts::PI;
 
-use crate::dmath::Complex as C;
+use crate::dmath::Complex;
+
+/// Which way [`radix2`] turns: the sign of the twiddle exponent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    /// `e^(−2πi·kn/N)`.
+    Forward,
+    /// `e^(+2πi·kn/N)`, unscaled.
+    Inverse,
+}
 
 /// Transforms `buf` in place: `X[k] = Σₙ x[n]·e^(−2πi·kn/N)`, unscaled.
 /// Cost O(N log N) for every N; any N that is not a power of two allocates two scratch
 /// buffers of the next power of two ≥ 2N − 1.
-pub(crate) fn forward(buf: &mut [C]) {
+pub(crate) fn forward(buf: &mut [Complex]) {
     let n = buf.len();
+    let energy_in = if cfg!(debug_assertions) {
+        energy(buf)
+    } else {
+        0.0
+    };
     if n.is_power_of_two() || n == 0 {
-        radix2(buf, -1.0);
+        radix2(buf, Direction::Forward);
     } else {
         bluestein(buf);
     }
-    assert_eq!(buf.len(), n);
+    // Parseval: the unscaled transform multiplies the energy by N.
+    let expected = energy_in * n as f64;
+    if cfg!(debug_assertions) && expected.is_finite() {
+        let got = energy(buf);
+        debug_assert!(
+            (got - expected).abs() <= 1e-6 * expected.max(f64::MIN_POSITIVE),
+            "Parseval violated for N = {n}: {got} vs {expected}"
+        );
+    }
 }
 
 // ---- private ----
 
 /// `e^(i·angle)` through `libm`.
-fn cis(angle: f64) -> C {
-    C::new(libm::cos(angle), libm::sin(angle))
+fn cis(angle: f64) -> Complex {
+    Complex::new(libm::cos(angle), libm::sin(angle))
 }
 
-/// In-place iterative Cooley–Tukey; `sign` −1 forward, +1 inverse (unscaled).
-fn radix2(buf: &mut [C], sign: f64) {
+/// In-place iterative Cooley–Tukey, unscaled in both directions.
+fn radix2(buf: &mut [Complex], direction: Direction) {
     let n = buf.len();
     assert!(
         n == 0 || n.is_power_of_two(),
-        "radix-2 needs a power-of-two length"
+        "radix-2 needs a power-of-two length, got {n}"
     );
-    assert!(sign == 1.0 || sign == -1.0);
+    let sign = match direction {
+        Direction::Forward => -1.0,
+        Direction::Inverse => 1.0,
+    };
     if n <= 1 {
         return;
     }
@@ -51,7 +76,7 @@ fn radix2(buf: &mut [C], sign: f64) {
         }
     }
     // One table for the last stage; stage `len` reads every (n / len)-th entry.
-    let twiddles: Vec<C> = (0..n / 2)
+    let twiddles: Vec<Complex> = (0..n / 2)
         .map(|k| cis(sign * 2.0 * PI * k as f64 / n as f64))
         .collect();
     let mut len = 2;
@@ -67,24 +92,26 @@ fn radix2(buf: &mut [C], sign: f64) {
         }
         len <<= 1;
     }
+    debug_assert_eq!(len, 2 * n, "every stage up to N ran");
 }
 
 /// Bluestein: `X[k] = w[k]·Σₙ (x[n]·w[n])·conj(w[k−n])` with `w[k] = e^(−iπk²/N)`, the sum a
 /// circular convolution done with three radix-2 transforms of length M ≥ 2N − 1.
-fn bluestein(buf: &mut [C]) {
+fn bluestein(buf: &mut [Complex]) {
     let n = buf.len();
-    assert!(n >= 3 && !n.is_power_of_two());
+    assert!(n >= 3, "Bluestein serves lengths 3 and up, got {n}");
+    assert!(!n.is_power_of_two(), "{n} takes the radix-2 path");
     let m = (2 * n - 1).next_power_of_two();
     // k² mod 2N keeps the chirp angle small, so it stays exact for long columns.
     let two_n = 2 * n as u128;
-    let chirp: Vec<C> = (0..n)
+    let chirp: Vec<Complex> = (0..n)
         .map(|k| {
             let k2 = (k as u128 * k as u128 % two_n) as f64;
             cis(-PI * k2 / n as f64)
         })
         .collect();
-    let mut a = vec![C::new(0.0, 0.0); m];
-    let mut b = vec![C::new(0.0, 0.0); m];
+    let mut a = vec![Complex::new(0.0, 0.0); m];
+    let mut b = vec![Complex::new(0.0, 0.0); m];
     for k in 0..n {
         a[k] = buf[k] * chirp[k];
         b[k] = chirp[k].conj();
@@ -92,17 +119,21 @@ fn bluestein(buf: &mut [C]) {
             b[m - k] = chirp[k].conj();
         }
     }
-    radix2(&mut a, -1.0);
-    radix2(&mut b, -1.0);
+    radix2(&mut a, Direction::Forward);
+    radix2(&mut b, Direction::Forward);
     for (x, y) in a.iter_mut().zip(&b) {
         *x *= *y;
     }
-    radix2(&mut a, 1.0);
+    radix2(&mut a, Direction::Inverse);
     let scale = 1.0 / m as f64;
     for k in 0..n {
         buf[k] = a[k] * scale * chirp[k];
     }
-    assert!(m >= 2 * n - 1);
+}
+
+/// `Σ |z|²`, for the Parseval check.
+fn energy(buf: &[Complex]) -> f64 {
+    buf.iter().map(|z| z.re * z.re + z.im * z.im).sum()
 }
 
 #[cfg(test)]
@@ -111,7 +142,7 @@ mod tests {
     use crate::dmath::norm;
 
     /// Deterministic inputs (an LCG), so failures replay.
-    fn signal(n: usize, seed: u64) -> Vec<C> {
+    fn signal(n: usize, seed: u64) -> Vec<Complex> {
         let mut s = seed
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
@@ -121,25 +152,26 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             (s >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
         };
-        (0..n).map(|_| C::new(next(), next())).collect()
+        (0..n).map(|_| Complex::new(next(), next())).collect()
     }
 
     /// The oracle: the O(N²) definition.
-    fn naive(x: &[C]) -> Vec<C> {
+    fn naive(x: &[Complex]) -> Vec<Complex> {
         let n = x.len();
         (0..n)
             .map(|k| {
                 (0..n)
                     .map(|j| x[j] * cis(-2.0 * PI * ((k * j) % n) as f64 / n as f64))
-                    .fold(C::default(), |acc, t| acc + t)
+                    .fold(Complex::default(), |acc, t| acc + t)
             })
             .collect()
     }
 
-    fn assert_close(ours: &[C], theirs: &[C], tol: f64) {
+    fn assert_close(ours: &[Complex], theirs: &[Complex], tol: f64) {
         assert_eq!(ours.len(), theirs.len());
         let scale = theirs.iter().map(|&z| norm(z)).fold(1.0, f64::max);
-        for (k, (&a, &b)) in ours.iter().zip(theirs).enumerate() {
+        let bins = ours.iter().zip(theirs).enumerate();
+        for (k, (&a, &b)) in bins {
             assert!(
                 norm(a - b) <= tol * scale,
                 "bin {k} of {}: {a:?} vs {b:?}",
@@ -170,7 +202,7 @@ mod tests {
                 .map(|z| rustfft::num_complex::Complex64::new(z.re, z.im))
                 .collect();
             planner.plan_fft_forward(n).process(&mut theirs);
-            let theirs: Vec<C> = theirs.iter().map(|z| C::new(z.re, z.im)).collect();
+            let theirs: Vec<Complex> = theirs.iter().map(|z| Complex::new(z.re, z.im)).collect();
             assert_close(&ours, &theirs, 1e-10);
         }
     }
@@ -178,22 +210,25 @@ mod tests {
     #[test]
     fn known_spectra_and_linearity() {
         // A unit impulse is flat; a constant is one DC bin.
-        let mut imp = vec![C::new(0.0, 0.0); 12];
-        imp[0] = C::new(1.0, 0.0);
+        let mut imp = vec![Complex::new(0.0, 0.0); 12];
+        imp[0] = Complex::new(1.0, 0.0);
         forward(&mut imp);
-        assert!(imp.iter().all(|&z| norm(z - C::new(1.0, 0.0)) < 1e-14));
-        let mut dc = vec![C::new(2.0, 0.0); 8];
+        assert!(
+            imp.iter()
+                .all(|&z| norm(z - Complex::new(1.0, 0.0)) < 1e-14)
+        );
+        let mut dc = vec![Complex::new(2.0, 0.0); 8];
         forward(&mut dc);
-        assert_eq!(dc[0], C::new(16.0, 0.0));
+        assert_eq!(dc[0], Complex::new(16.0, 0.0));
         assert!(dc[1..].iter().all(|&z| norm(z) < 1e-14));
         // F(a + b) = F(a) + F(b), on a Bluestein length.
         let (a, b) = (signal(45, 1), signal(45, 2));
-        let mut sum: Vec<C> = a.iter().zip(&b).map(|(&x, &y)| x + y).collect();
+        let mut sum: Vec<Complex> = a.iter().zip(&b).map(|(&x, &y)| x + y).collect();
         let (mut fa, mut fb) = (a, b);
         forward(&mut fa);
         forward(&mut fb);
         forward(&mut sum);
-        let both: Vec<C> = fa.iter().zip(&fb).map(|(&x, &y)| x + y).collect();
+        let both: Vec<Complex> = fa.iter().zip(&fb).map(|(&x, &y)| x + y).collect();
         assert_close(&sum, &both, 1e-12);
     }
 }

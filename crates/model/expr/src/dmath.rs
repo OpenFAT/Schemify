@@ -12,8 +12,8 @@
 //!   `Complex::conj(self) -> Complex`; `Add`, `Sub`, `Mul`, `Div`, `Neg`,
 //!   `MulAssign`, `Mul<f64>`, `Div<f64>`
 //! - `pub fn norm(z: Complex) -> f64`
-//! - `pub(crate) fn real(b: Builtin, x: f64) -> f64`
-//! - `pub(crate) fn complex(b: Builtin, z: Complex) -> Complex`
+//! - `pub(crate) fn real(builtin: Builtin, x: f64) -> f64`
+//! - `pub(crate) fn complex(builtin: Builtin, z: Complex) -> Complex`
 //! - `pub fn real_named(name: &str, x: f64) -> Option<f64>`
 //! - `pub fn complex_named(name: &str, z: Complex) -> Option<Complex>`
 //! - `pub fn cpow(a: Complex, b: Complex) -> Complex`
@@ -36,38 +36,38 @@ pub struct Complex {
     pub im: f64,
 }
 
-type C = Complex;
-
 impl Complex {
     /// `re + i·im`.
-    pub const fn new(re: f64, im: f64) -> C {
-        C { re, im }
+    #[must_use]
+    pub const fn new(re: f64, im: f64) -> Complex {
+        Complex { re, im }
     }
 
     /// The complex conjugate `re − i·im`.
-    pub fn conj(self) -> C {
-        C::new(self.re, -self.im)
+    #[must_use]
+    pub fn conj(self) -> Complex {
+        Complex::new(self.re, -self.im)
     }
 }
 
 impl Add for Complex {
-    type Output = C;
-    fn add(self, o: C) -> C {
-        C::new(self.re + o.re, self.im + o.im)
+    type Output = Complex;
+    fn add(self, o: Complex) -> Complex {
+        Complex::new(self.re + o.re, self.im + o.im)
     }
 }
 
 impl Sub for Complex {
-    type Output = C;
-    fn sub(self, o: C) -> C {
-        C::new(self.re - o.re, self.im - o.im)
+    type Output = Complex;
+    fn sub(self, o: Complex) -> Complex {
+        Complex::new(self.re - o.re, self.im - o.im)
     }
 }
 
 impl Mul for Complex {
-    type Output = C;
-    fn mul(self, o: C) -> C {
-        C::new(
+    type Output = Complex;
+    fn mul(self, o: Complex) -> Complex {
+        Complex::new(
             self.re * o.re - self.im * o.im,
             self.re * o.im + self.im * o.re,
         )
@@ -75,16 +75,16 @@ impl Mul for Complex {
 }
 
 impl MulAssign for Complex {
-    fn mul_assign(&mut self, o: C) {
+    fn mul_assign(&mut self, o: Complex) {
         *self = *self * o;
     }
 }
 
 impl Div for Complex {
-    type Output = C;
-    fn div(self, o: C) -> C {
+    type Output = Complex;
+    fn div(self, o: Complex) -> Complex {
         let d = o.re * o.re + o.im * o.im;
-        C::new(
+        Complex::new(
             (self.re * o.re + self.im * o.im) / d,
             (self.im * o.re - self.re * o.im) / d,
         )
@@ -92,37 +92,43 @@ impl Div for Complex {
 }
 
 impl Mul<f64> for Complex {
-    type Output = C;
-    fn mul(self, k: f64) -> C {
-        C::new(self.re * k, self.im * k)
+    type Output = Complex;
+    fn mul(self, k: f64) -> Complex {
+        Complex::new(self.re * k, self.im * k)
     }
 }
 
 impl Div<f64> for Complex {
-    type Output = C;
-    fn div(self, k: f64) -> C {
-        C::new(self.re / k, self.im / k)
+    type Output = Complex;
+    fn div(self, k: f64) -> Complex {
+        Complex::new(self.re / k, self.im / k)
     }
 }
 
 impl Neg for Complex {
-    type Output = C;
-    fn neg(self) -> C {
-        C::new(-self.re, -self.im)
+    type Output = Complex;
+    fn neg(self) -> Complex {
+        Complex::new(-self.re, -self.im)
     }
 }
 
 /// `|z|`, through `libm::hypot` (no overflow for large parts).
-pub fn norm(z: C) -> f64 {
-    libm::hypot(z.re, z.im)
+#[must_use]
+pub fn norm(z: Complex) -> f64 {
+    let magnitude = libm::hypot(z.re, z.im);
+    debug_assert!(
+        magnitude >= 0.0 || magnitude.is_nan(),
+        "|{z:?}| is negative"
+    );
+    magnitude
 }
 
-/// Real elementary function `b` at `x`.
+/// Real elementary function `builtin` at `x`.
 ///
 /// # Panics
-/// If `b` is not one of the elementary functions (a compiler bug).
-pub(crate) fn real(b: Builtin, x: f64) -> f64 {
-    match b {
+/// If `builtin` is not one of the elementary functions (a compiler bug).
+pub(crate) fn real(builtin: Builtin, x: f64) -> f64 {
+    match builtin {
         Builtin::Sqrt => x.sqrt(),
         Builtin::Exp => libm::exp(x),
         Builtin::Ln => libm::log(x),
@@ -140,45 +146,47 @@ pub(crate) fn real(b: Builtin, x: f64) -> f64 {
     }
 }
 
-/// Complex elementary function `b` at `z` (principal branches).
+/// Complex elementary function `builtin` at `z` (principal branches).
 ///
 /// # Panics
-/// If `b` is not one of the elementary functions (a compiler bug).
-pub(crate) fn complex(b: Builtin, z: C) -> C {
-    match b {
+/// If `builtin` is not one of the elementary functions (a compiler bug).
+pub(crate) fn complex(builtin: Builtin, z: Complex) -> Complex {
+    match builtin {
         Builtin::Sqrt => csqrt(z),
         Builtin::Exp => cexp(z),
         Builtin::Ln => cln(z),
         Builtin::Log10 => cln(z) / core::f64::consts::LN_10,
-        Builtin::Sin => C::new(
+        Builtin::Sin => Complex::new(
             libm::sin(z.re) * libm::cosh(z.im),
             libm::cos(z.re) * libm::sinh(z.im),
         ),
-        Builtin::Cos => C::new(
+        Builtin::Cos => Complex::new(
             libm::cos(z.re) * libm::cosh(z.im),
             -libm::sin(z.re) * libm::sinh(z.im),
         ),
         Builtin::Tan => complex(Builtin::Sin, z) / complex(Builtin::Cos, z),
-        Builtin::Sinh => C::new(
+        Builtin::Sinh => Complex::new(
             libm::sinh(z.re) * libm::cos(z.im),
             libm::cosh(z.re) * libm::sin(z.im),
         ),
-        Builtin::Cosh => C::new(
+        Builtin::Cosh => Complex::new(
             libm::cosh(z.re) * libm::cos(z.im),
             libm::sinh(z.re) * libm::sin(z.im),
         ),
         Builtin::Tanh => complex(Builtin::Sinh, z) / complex(Builtin::Cosh, z),
         // asin z = -i ln(iz + sqrt(1 - z²))
         Builtin::Asin => {
-            let i = C::new(0.0, 1.0);
-            -i * cln(i * z + csqrt(C::new(1.0, 0.0) - z * z))
+            let i = Complex::new(0.0, 1.0);
+            -i * cln(i * z + csqrt(Complex::new(1.0, 0.0) - z * z))
         }
         // acos z = π/2 - asin z
-        Builtin::Acos => C::new(core::f64::consts::FRAC_PI_2, 0.0) - complex(Builtin::Asin, z),
+        Builtin::Acos => {
+            Complex::new(core::f64::consts::FRAC_PI_2, 0.0) - complex(Builtin::Asin, z)
+        }
         // atan z = (i/2) (ln(1 - iz) - ln(1 + iz))
         Builtin::Atan => {
-            let i = C::new(0.0, 1.0);
-            let one = C::new(1.0, 0.0);
+            let i = Complex::new(0.0, 1.0);
+            let one = Complex::new(1.0, 0.0);
             (i * 0.5) * (cln(one - i * z) - cln(one + i * z))
         }
         _ => unreachable!("not an elementary function"),
@@ -187,22 +195,25 @@ pub(crate) fn complex(b: Builtin, z: C) -> C {
 
 /// Real elementary function by source name (`"sin"`, …); `None` if `name`
 /// is not one.
+#[must_use]
 pub fn real_named(name: &str, x: f64) -> Option<f64> {
-    by_name(name).map(|b| real(b, x))
+    by_name(name).map(|builtin| real(builtin, x))
 }
 
 /// Complex elementary function by source name; `None` if `name` is not one.
-pub fn complex_named(name: &str, z: C) -> Option<C> {
-    by_name(name).map(|b| complex(b, z))
+#[must_use]
+pub fn complex_named(name: &str, z: Complex) -> Option<Complex> {
+    by_name(name).map(|builtin| complex(builtin, z))
 }
 
 /// `a^b` for complex `a`, `b` (principal branch); `0^b` is 0 for `Re b > 0`.
-pub fn cpow(a: C, b: C) -> C {
+#[must_use]
+pub fn cpow(a: Complex, b: Complex) -> Complex {
     if a.re == 0.0 && a.im == 0.0 {
         return if b.re > 0.0 {
-            C::new(0.0, 0.0)
+            Complex::new(0.0, 0.0)
         } else {
-            C::new(f64::NAN, f64::NAN)
+            Complex::new(f64::NAN, f64::NAN)
         };
     }
     cexp(b * cln(a))
@@ -213,30 +224,42 @@ pub fn cpow(a: C, b: C) -> C {
 /// The elementary function spelled `name`, if it is one.
 fn by_name(name: &str) -> Option<Builtin> {
     Builtin::lookup(name)
-        .map(|(b, _, _)| b)
-        .filter(|b| b.elementary())
+        .map(|row| row.builtin)
+        .filter(|builtin| builtin.elementary())
 }
 
-fn cexp(z: C) -> C {
+fn cexp(z: Complex) -> Complex {
     let e = libm::exp(z.re);
-    C::new(e * libm::cos(z.im), e * libm::sin(z.im))
+    Complex::new(e * libm::cos(z.im), e * libm::sin(z.im))
 }
 
-fn cln(z: C) -> C {
-    C::new(libm::log(norm(z)), libm::atan2(z.im, z.re))
+fn cln(z: Complex) -> Complex {
+    let argument = libm::atan2(z.im, z.re);
+    // The principal branch: the argument lies in [-π, π] (NaN passes through).
+    debug_assert!(
+        argument.abs() <= core::f64::consts::PI || argument.is_nan(),
+        "arg({z:?}) = {argument} off the principal branch"
+    );
+    Complex::new(libm::log(norm(z)), argument)
 }
 
 /// Principal square root without cancellation (Kahan's formulation).
-fn csqrt(z: C) -> C {
+fn csqrt(z: Complex) -> Complex {
     if z.re == 0.0 && z.im == 0.0 {
-        return C::new(0.0, z.im);
+        return Complex::new(0.0, z.im);
     }
     let t = ((z.re.abs() + norm(z)) * 0.5).sqrt();
-    if z.re >= 0.0 {
-        C::new(t, z.im / (2.0 * t))
+    let root = if z.re >= 0.0 {
+        Complex::new(t, z.im / (2.0 * t))
     } else {
-        C::new(z.im.abs() / (2.0 * t), t.copysign(z.im))
-    }
+        Complex::new(z.im.abs() / (2.0 * t), t.copysign(z.im))
+    };
+    // The principal root lies in the right half-plane (NaN passes through).
+    debug_assert!(
+        root.re >= 0.0 || root.re.is_nan(),
+        "sqrt({z:?}) = {root:?} left of the axis"
+    );
+    root
 }
 
 #[cfg(test)]
@@ -245,11 +268,11 @@ mod tests {
     // The oracle: num-complex, reached through the rustfft dev-dependency.
     use rustfft::num_complex::Complex64 as N;
 
-    fn n(z: C) -> N {
+    fn n(z: Complex) -> N {
         N::new(z.re, z.im)
     }
 
-    fn close(a: C, b: N) -> bool {
+    fn close(a: Complex, b: N) -> bool {
         (n(a) - b).norm() <= 1e-12 * (1.0 + b.norm())
     }
 
@@ -265,32 +288,39 @@ mod tests {
             m * libm::pow(10.0, ((s & 0xff) as f64 - 128.0) / 8.0)
         };
         let same =
-            |a: C, b: N| a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits();
+            |a: Complex, b: N| a.re.to_bits() == b.re.to_bits() && a.im.to_bits() == b.im.to_bits();
         for _ in 0..10_000 {
-            let (a, b, k) = (C::new(next(), next()), C::new(next(), next()), next());
+            let (a, b, k) = (
+                Complex::new(next(), next()),
+                Complex::new(next(), next()),
+                next(),
+            );
             assert!(same(a + b, n(a) + n(b)), "{a:?} + {b:?}");
             assert!(same(a - b, n(a) - n(b)), "{a:?} - {b:?}");
             assert!(same(a * b, n(a) * n(b)), "{a:?} * {b:?}");
             assert!(same(a / b, n(a) / n(b)), "{a:?} / {b:?}");
-            assert!(same(a * k, n(a) * k) && same(a / k, n(a) / k), "{a:?}, {k}");
-            assert!(same(-a, -n(a)) && same(a.conj(), n(a).conj()));
+            assert!(same(a * k, n(a) * k), "{a:?} * {k}");
+            assert!(same(a / k, n(a) / k), "{a:?} / {k}");
+            assert!(same(-a, -n(a)), "-{a:?}");
+            assert!(same(a.conj(), n(a).conj()), "conj {a:?}");
             let mut m = a;
             m *= b;
             assert!(same(m, n(a) * n(b)));
         }
         // A zero divisor gives non-finite parts, never a panic.
-        let q = C::new(1.0, 1.0) / C::new(0.0, 0.0);
-        assert!(!q.re.is_finite() && !q.im.is_finite());
+        let q = Complex::new(1.0, 1.0) / Complex::new(0.0, 0.0);
+        assert!(!q.re.is_finite(), "real part of {q:?}");
+        assert!(!q.im.is_finite(), "imaginary part of {q:?}");
     }
 
     #[test]
     fn complex_matches_num_complex_within_tolerance() {
         let zs = [
-            C::new(0.3, -1.7),
-            C::new(-2.5, 0.4),
-            C::new(1.0, 0.0),
-            C::new(0.0, -3.0),
-            C::new(-0.7, -0.2),
+            Complex::new(0.3, -1.7),
+            Complex::new(-2.5, 0.4),
+            Complex::new(1.0, 0.0),
+            Complex::new(0.0, -3.0),
+            Complex::new(-0.7, -0.2),
         ];
         type Case = (Builtin, fn(N) -> N);
         let cases: [Case; 13] = [
@@ -318,10 +348,13 @@ mod tests {
             }
         }
         assert!(close(
-            cpow(C::new(-2.0, 0.5), C::new(0.5, 1.5)),
+            cpow(Complex::new(-2.0, 0.5), Complex::new(0.5, 1.5)),
             N::new(-2.0, 0.5).powc(N::new(0.5, 1.5))
         ));
-        assert_eq!(cpow(C::new(0.0, 0.0), C::new(2.0, 0.0)), C::new(0.0, 0.0));
+        assert_eq!(
+            cpow(Complex::new(0.0, 0.0), Complex::new(2.0, 0.0)),
+            Complex::new(0.0, 0.0)
+        );
     }
 
     #[test]

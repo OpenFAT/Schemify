@@ -5,20 +5,20 @@
 //! arithmetic, so results are bit-identical.
 //!
 //! Contents:
-//! - `pub(crate) fn elementwise(args, axes, strs, f) -> Result<Col, Error>`
-//! - `pub(crate) fn col_binary(op, a, b, axes, strs) -> Result<Col, Error>`
-//! - `pub(crate) fn scalars(args: &[CV]) -> Option<Vec<V>>`, `pub(crate) fn cv_type(v: &CV) -> V`
+//! - `pub(crate) fn elementwise(args, axes, strings, f) -> Result<ColumnValue, Error>`
+//! - `pub(crate) fn column_binary(op, a, b, axes, strings) -> Result<ColumnValue, Error>`
+//! - `pub(crate) fn scalars(args: &[CalcValue]) -> Option<Vec<Scalar>>`, `pub(crate) fn representative_scalar(v: &CalcValue) -> Scalar`
 //! - `pub(crate) fn check_finite(v: &[f64], name: &str) -> Result<(), Error>`,
 //!   `pub(crate) fn first_nonfinite(v: &[f64]) -> Option<usize>`
 
-use crate::calc::{Axis, AxisKind, CV, Col, ColKind, x011};
-use crate::eval::V;
-use crate::kernel::{binary, fin, op_str};
+use crate::calc::{self, Axis, AxisKind, CalcValue, ColKind, ColumnValue};
+use crate::eval::Scalar;
+use crate::kernel;
 use crate::program::OpKind;
 use crate::{Code, Error};
 
 /// Builds a column one element at a time, widening real to complex.
-struct ColBuilder {
+struct ColumnBuilder {
     kind: Option<ColKind>,
     re: Vec<f64>,
     im: Vec<f64>,
@@ -26,9 +26,9 @@ struct ColBuilder {
 
 /// A real operand of the arithmetic fast path.
 #[derive(Clone, Copy)]
-enum Real<'a> {
-    S(f64),
-    C(&'a [f64], u32),
+enum RealOperand<'column> {
+    Scalar(f64),
+    Column { values: &'column [f64], axis: u32 },
 }
 
 /// Lanes of the vectorizable non-finite scan.
@@ -45,16 +45,21 @@ const LANES: usize = 8;
 /// # Panics
 /// If no argument is a column.
 pub(crate) fn elementwise(
-    args: &[CV],
+    args: &[CalcValue],
     axes: &[Axis],
-    strs: &mut String,
-    mut f: impl FnMut(&[V], &mut String) -> Result<V, Error>,
-) -> Result<Col, Error> {
+    strings: &mut String,
+    mut f: impl FnMut(&[Scalar], &mut String) -> Result<Scalar, Error>,
+) -> Result<ColumnValue, Error> {
     let axis = common_axis(args, axes)?;
     let ax = &axes[axis as usize];
     let n = ax.x.len();
-    let mut vs: Vec<V> = vec![V::Bool(false); args.len()];
-    let mut out = ColBuilder {
+    debug_assert_eq!(
+        ax.steps.last().map_or(0, |step| step.end as usize),
+        n,
+        "an axis's steps cover its points"
+    );
+    let mut vs: Vec<Scalar> = vec![Scalar::Bool(false); args.len()];
+    let mut out = ColumnBuilder {
         kind: None,
         re: Vec::with_capacity(n),
         im: Vec::new(),
@@ -63,11 +68,11 @@ pub(crate) fn elementwise(
         for i in s.start as usize..s.end as usize {
             for (k, a) in args.iter().enumerate() {
                 vs[k] = match a {
-                    CV::S(v) => *v,
-                    CV::C(c) => elem(c, if c.axis == axis { i } else { si }),
+                    CalcValue::Scalar(v) => *v,
+                    CalcValue::Column(c) => element(c, if c.axis == axis { i } else { si }),
                 };
             }
-            let v = f(&vs, strs).map_err(|e| Error {
+            let v = f(&vs, strings).map_err(|e| Error {
                 msg: format!("{} (at point {i})", e.msg),
                 ..e
             })?;
@@ -83,30 +88,45 @@ pub(crate) fn elementwise(
 /// # Errors
 /// As [`elementwise`] with the operator's kernel; `X010` naming the first
 /// non-finite point.
-pub(crate) fn col_binary(
+pub(crate) fn column_binary(
     op: OpKind,
-    a: CV,
-    b: CV,
+    a: CalcValue,
+    b: CalcValue,
     axes: &[Axis],
-    strs: &mut String,
-) -> Result<Col, Error> {
-    debug_assert!(matches!(a, CV::C(_)) || matches!(b, CV::C(_)));
+    strings: &mut String,
+) -> Result<ColumnValue, Error> {
+    debug_assert!(
+        matches!(a, CalcValue::Column(_)) || matches!(b, CalcValue::Column(_)),
+        "two scalars take the scalar kernel"
+    );
     if matches!(op, OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div) {
         let fast = match (real(&a), real(&b)) {
-            (Some(x @ Real::C(_, ax)), Some(y @ Real::C(_, ay))) if ax == ay => Some((x, y, ax)),
-            (Some(x @ Real::C(_, ax)), Some(y @ Real::S(_))) => Some((x, y, ax)),
-            (Some(x @ Real::S(_)), Some(y @ Real::C(_, ay))) => Some((x, y, ay)),
+            (
+                Some(x @ RealOperand::Column { axis: ax, .. }),
+                Some(y @ RealOperand::Column { axis: ay, .. }),
+            ) if ax == ay => Some((x, y, ax)),
+            (Some(x @ RealOperand::Column { axis, .. }), Some(y @ RealOperand::Scalar(_))) => {
+                Some((x, y, axis))
+            }
+            (Some(x @ RealOperand::Scalar(_)), Some(y @ RealOperand::Column { axis, .. })) => {
+                Some((x, y, axis))
+            }
             _ => None,
         };
         if let Some((x, y, axis)) = fast {
             let re = arith(op, x, y);
+            debug_assert_eq!(
+                re.len(),
+                axes[axis as usize].x.len(),
+                "result covers the axis"
+            );
             if let Some(i) = first_nonfinite(&re) {
-                fin(re[i], op_str(op)).map_err(|e| Error {
+                kernel::finite(re[i], kernel::op_str(op)).map_err(|e| Error {
                     msg: format!("{} (at point {i})", e.msg),
                     ..e
                 })?;
             }
-            return Ok(Col {
+            return Ok(ColumnValue {
                 kind: ColKind::Real,
                 re,
                 im: Vec::new(),
@@ -114,29 +134,35 @@ pub(crate) fn col_binary(
             });
         }
     }
-    elementwise(&[a, b], axes, strs, |v, strs| binary(op, v[0], v[1], strs))
+    elementwise(&[a, b], axes, strings, |v, strings| {
+        kernel::binary(op, v[0], v[1], strings)
+    })
 }
 
 /// The arguments as scalars, or `None` when any is a column.
-pub(crate) fn scalars(args: &[CV]) -> Option<Vec<V>> {
-    args.iter()
+pub(crate) fn scalars(args: &[CalcValue]) -> Option<Vec<Scalar>> {
+    let scalars: Option<Vec<Scalar>> = args
+        .iter()
         .map(|a| match a {
-            CV::S(v) => Some(*v),
-            CV::C(_) => None,
+            CalcValue::Scalar(v) => Some(*v),
+            CalcValue::Column(_) => None,
         })
-        .collect()
+        .collect();
+    debug_assert!(scalars.as_ref().is_none_or(|vs| vs.len() == args.len()));
+    scalars
 }
 
 /// A representative scalar of `v`, for type-error messages.
-pub(crate) fn cv_type(v: &CV) -> V {
+pub(crate) fn representative_scalar(v: &CalcValue) -> Scalar {
     match v {
-        CV::S(v) => *v,
-        CV::C(c) => elem(c, 0),
+        CalcValue::Scalar(v) => *v,
+        CalcValue::Column(c) => element(c, 0),
     }
 }
 
 /// `X010` naming `name` and the first non-finite point of `v`.
 pub(crate) fn check_finite(v: &[f64], name: &str) -> Result<(), Error> {
+    debug_assert!(!name.is_empty(), "the error names its builtin");
     match first_nonfinite(v) {
         None => Ok(()),
         Some(i) => Err(Error::bare(
@@ -163,6 +189,7 @@ pub(crate) fn first_nonfinite(v: &[f64]) -> Option<usize> {
     } else {
         first_nonfinite_scalar(&v[tail..]).map(|i| i + tail)
     };
+    debug_assert!(r.is_none_or(|i| !v[i].is_finite()), "the hit is non-finite");
     debug_assert_eq!(
         r,
         first_nonfinite_scalar(v),
@@ -173,14 +200,18 @@ pub(crate) fn first_nonfinite(v: &[f64]) -> Option<usize> {
 
 // ---- private ----
 
-impl ColBuilder {
-    fn push(&mut self, v: V) -> Result<(), Error> {
+impl ColumnBuilder {
+    fn push(&mut self, v: Scalar) -> Result<(), Error> {
+        debug_assert!(
+            self.im.is_empty() || self.im.len() == self.re.len(),
+            "imaginary parts in step with real ones"
+        );
         let (kind, re, im) = match v {
-            V::Int(x) => (ColKind::Real, x as f64, 0.0),
-            V::Num(x) => (ColKind::Real, x, 0.0),
-            V::Cnum(re, im) => (ColKind::Complex, re, im),
-            V::Bool(b) => (ColKind::Bool, if b { 1.0 } else { 0.0 }, 0.0),
-            V::Str(..) => return Err(Error::bare(Code::X003, "string columns do not exist")),
+            Scalar::Int(x) => (ColKind::Real, x as f64, 0.0),
+            Scalar::Num(x) => (ColKind::Real, x, 0.0),
+            Scalar::Cnum(re, im) => (ColKind::Complex, re, im),
+            Scalar::Bool(b) => (ColKind::Bool, if b { 1.0 } else { 0.0 }, 0.0),
+            Scalar::Str(..) => return Err(Error::bare(Code::X003, "string columns do not exist")),
         };
         match (self.kind, kind) {
             (None, k) => self.kind = Some(k),
@@ -200,14 +231,22 @@ impl ColBuilder {
         self.re.push(re);
         if self.kind == Some(ColKind::Complex) {
             self.im.push(im);
+            debug_assert_eq!(self.im.len(), self.re.len());
         }
         Ok(())
     }
 
-    fn finish(self, axis: u32) -> Col {
+    fn finish(self, axis: u32) -> ColumnValue {
         let kind = self.kind.unwrap_or(ColKind::Real);
-        debug_assert!(kind != ColKind::Complex || self.im.len() == self.re.len());
-        Col {
+        if kind == ColKind::Complex {
+            debug_assert_eq!(self.im.len(), self.re.len(), "complex parts in step");
+        } else {
+            debug_assert!(
+                self.im.is_empty(),
+                "only complex columns have imaginary parts"
+            );
+        }
+        ColumnValue {
             kind,
             re: self.re,
             im: self.im,
@@ -217,54 +256,74 @@ impl ColBuilder {
 }
 
 /// The axis every column argument lives on (or broadcasts to).
-fn common_axis(args: &[CV], axes: &[Axis]) -> Result<u32, Error> {
+fn common_axis(args: &[CalcValue], axes: &[Axis]) -> Result<u32, Error> {
     let child_of =
         |c: u32, p: u32| axes[c as usize].kind == AxisKind::PerStep && axes[c as usize].parent == p;
     let mut target = None;
     for a in args {
-        let CV::C(c) = a else { continue };
+        let CalcValue::Column(c) = a else { continue };
         target = Some(match target {
             None => c.axis,
             Some(t) if t == c.axis || child_of(c.axis, t) => t,
             Some(t) if child_of(t, c.axis) => c.axis,
-            Some(_) => return Err(x011("columns are on different sweep axes".to_string())),
+            Some(_) => {
+                return Err(calc::x011(
+                    "columns are on different sweep axes".to_string(),
+                ));
+            }
         });
     }
-    let target = target.expect("elementwise needs a column argument");
+    let Some(target) = target else {
+        panic!("elementwise needs a column argument");
+    };
+    debug_assert!(
+        (target as usize) < axes.len(),
+        "axis {target} past the table"
+    );
     for a in args {
-        if let CV::C(c) = a
+        if let CalcValue::Column(c) = a
             && c.axis != target
             && !child_of(c.axis, target)
         {
-            return Err(x011("columns are on different sweep axes".to_string()));
+            return Err(calc::x011(
+                "columns are on different sweep axes".to_string(),
+            ));
         }
     }
     Ok(target)
 }
 
-fn elem(c: &Col, i: usize) -> V {
+fn element(c: &ColumnValue, i: usize) -> Scalar {
+    if c.kind == ColKind::Complex {
+        debug_assert_eq!(c.im.len(), c.re.len(), "complex parts in step");
+    } else {
+        debug_assert!(c.im.is_empty(), "only complex columns have imaginary parts");
+    }
     match c.kind {
-        ColKind::Real => V::Num(c.re.get(i).copied().unwrap_or(0.0)),
-        ColKind::Complex => V::Cnum(
+        ColKind::Real => Scalar::Num(c.re.get(i).copied().unwrap_or(0.0)),
+        ColKind::Complex => Scalar::Cnum(
             c.re.get(i).copied().unwrap_or(0.0),
             c.im.get(i).copied().unwrap_or(0.0),
         ),
-        ColKind::Bool => V::Bool(c.re.get(i).is_some_and(|x| *x != 0.0)),
+        ColKind::Bool => Scalar::Bool(c.re.get(i).is_some_and(|x| *x != 0.0)),
     }
 }
 
-fn real(v: &CV) -> Option<Real<'_>> {
+fn real(v: &CalcValue) -> Option<RealOperand<'_>> {
     match v {
-        CV::S(V::Int(x)) => Some(Real::S(*x as f64)),
-        CV::S(V::Num(x)) => Some(Real::S(*x)),
-        CV::C(c) if c.kind == ColKind::Real => Some(Real::C(&c.re, c.axis)),
+        CalcValue::Scalar(Scalar::Int(x)) => Some(RealOperand::Scalar(*x as f64)),
+        CalcValue::Scalar(Scalar::Num(x)) => Some(RealOperand::Scalar(*x)),
+        CalcValue::Column(c) if c.kind == ColKind::Real => Some(RealOperand::Column {
+            values: &c.re,
+            axis: c.axis,
+        }),
         _ => None,
     }
 }
 
 /// `x op y` over the column operand(s). One monomorphic loop per operator (a
 /// `fn` pointer per element would block vectorization).
-fn arith(op: OpKind, x: Real<'_>, y: Real<'_>) -> Vec<f64> {
+fn arith(op: OpKind, x: RealOperand<'_>, y: RealOperand<'_>) -> Vec<f64> {
     match op {
         OpKind::Add => lanes(x, y, |a, b| a + b),
         OpKind::Sub => lanes(x, y, |a, b| a - b),
@@ -276,15 +335,21 @@ fn arith(op: OpKind, x: Real<'_>, y: Real<'_>) -> Vec<f64> {
     }
 }
 
-fn lanes(x: Real<'_>, y: Real<'_>, f: impl Fn(f64, f64) -> f64) -> Vec<f64> {
+fn lanes(x: RealOperand<'_>, y: RealOperand<'_>, f: impl Fn(f64, f64) -> f64) -> Vec<f64> {
     match (x, y) {
-        (Real::C(x, _), Real::C(y, _)) => {
+        (RealOperand::Column { values: x, .. }, RealOperand::Column { values: y, .. }) => {
             assert_eq!(x.len(), y.len(), "same axis, same length");
             x.iter().zip(y).map(|(a, b)| f(*a, *b)).collect()
         }
-        (Real::C(x, _), Real::S(y)) => x.iter().map(|a| f(*a, y)).collect(),
-        (Real::S(x), Real::C(y, _)) => y.iter().map(|b| f(x, *b)).collect(),
-        (Real::S(_), Real::S(_)) => unreachable!("scalar operands take the scalar kernel"),
+        (RealOperand::Column { values: x, .. }, RealOperand::Scalar(y)) => {
+            x.iter().map(|a| f(*a, y)).collect()
+        }
+        (RealOperand::Scalar(x), RealOperand::Column { values: y, .. }) => {
+            y.iter().map(|b| f(x, *b)).collect()
+        }
+        (RealOperand::Scalar(_), RealOperand::Scalar(_)) => {
+            unreachable!("scalar operands take the scalar kernel")
+        }
     }
 }
 
