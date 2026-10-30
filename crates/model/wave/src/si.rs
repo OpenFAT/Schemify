@@ -6,7 +6,8 @@
 //! Contents:
 //! - `pub fn format_si(value: f64, digits: usize) -> String`
 
-/// Prefixes from the largest down; values under `p` fall through to `f` (femto).
+/// Prefixes from the largest down; values under `p` fall through to `f` (femto), where the
+/// mantissa grows (`0.001f`) as in `eng()` (spec expr §5).
 const PREFIXES: [(f64, &str); 9] = [
     (1e12, "T"),
     (1e9, "G"),
@@ -21,7 +22,8 @@ const PREFIXES: [(f64, &str); 9] = [
 
 /// Formats `value` with `digits` significant digits (clamped to 1..=17) and an engineering
 /// prefix: `3.3e-9` → `"3.3n"`, `1.2e4` → `"12k"`, `999.96e3` → `"1M"` (rounding carries into
-/// the next prefix). Zero (either sign) is `"0"`; NaN and infinities print as Rust does
+/// the next prefix). Below femto the mantissa grows and keeps its digits (`1e-20` →
+/// `"0.00001f"`). Zero (either sign) is `"0"`; NaN and infinities print as Rust does
 /// (`"NaN"`, `"inf"`).
 #[must_use]
 pub fn format_si(value: f64, digits: usize) -> String {
@@ -41,8 +43,9 @@ pub fn format_si(value: f64, digits: usize) -> String {
         debug_assert!(k <= PREFIXES.len(), "a prefix, or femto past the table");
         let (scale, prefix) = PREFIXES.get(k).copied().unwrap_or((1e-15, "f"));
         let scaled = value / scale;
-        let int_digits = (scaled.abs().log10().floor() as i32 + 1).max(1) as usize;
-        let decimals = digits.saturating_sub(int_digits);
+        // Below femto `scaled` is under 1: its leading zeros are decimals too (`0.00001f`).
+        let lead = scaled.abs().log10().floor() as i32;
+        let decimals = (digits as i32 - 1 - lead).max(0) as usize;
         let s = format!("{scaled:.decimals$}");
         let rounded: f64 = s.parse().unwrap_or(scaled);
         if rounded.abs() >= 1000.0 && k > 0 {
@@ -50,7 +53,10 @@ pub fn format_si(value: f64, digits: usize) -> String {
             continue;
         }
         let text = format!("{}{prefix}", trim_zeros(&s));
-        debug_assert!(!text.is_empty(), "a number keeps its leading digit");
+        debug_assert!(
+            text.bytes().any(|b| (b'1'..=b'9').contains(&b)),
+            "a nonzero value keeps a nonzero digit: {text}"
+        );
         return text;
     }
     unreachable!("a carry moves up one prefix, then fits")
@@ -86,5 +92,54 @@ mod tests {
         assert_eq!(format_si(f64::NAN, 3), "NaN");
         assert_eq!(format_si(f64::NEG_INFINITY, 3), "-inf");
         assert_eq!(format_si(1234.5, 0), "1k", "digits clamp to at least one");
+    }
+
+    /// Regression: below femto the mantissa grows and keeps its digits, as `eng()` does
+    /// (spec expr §5: `0.001f`); it once rounded to "0.000" and lost every digit ("0f").
+    #[test]
+    fn below_femto_keeps_its_digits() {
+        assert_eq!(format_si(1e-20, 4), "0.00001f");
+        assert_eq!(format_si(-1.234e-19, 4), "-0.0001234f");
+        assert_eq!(format_si(9.9996e-16, 4), "1f", "rounding carries to 1");
+        let tiny = format_si(f64::from_bits(1), 4);
+        assert!(
+            tiny.starts_with("0.000") && tiny.ends_with("4941f"),
+            "{tiny}"
+        );
+    }
+
+    /// Round trip over the whole normal range: the text reads back (mantissa times the SI
+    /// prefix's spec value) within half a unit of the last kept digit.
+    #[test]
+    fn every_finite_value_reads_back() {
+        let prefix = |c: char| match c {
+            'T' => 1e12,
+            'G' => 1e9,
+            'M' => 1e6,
+            'k' => 1e3,
+            'm' => 1e-3,
+            'µ' => 1e-6,
+            'n' => 1e-9,
+            'p' => 1e-12,
+            'f' => 1e-15,
+            _ => 1.0,
+        };
+        for e in -307..=18 {
+            for m in [1.0, 1.5, 4.7, 9.99949, 9.9996] {
+                for digits in 1..=6 {
+                    let v = m * 10f64.powi(e);
+                    let text = format_si(-v, digits);
+                    let last = text.chars().last().expect("never empty");
+                    let scale = prefix(last);
+                    let mantissa = text.trim_end_matches(|c: char| !c.is_ascii_digit());
+                    let back: f64 = mantissa.parse().expect("the mantissa is a number");
+                    let tol = 0.5001 * 10f64.powi(1 - digits as i32) * v;
+                    assert!(
+                        (back * scale + v).abs() <= tol,
+                        "{v:e} at {digits} digits: {text}"
+                    );
+                }
+            }
+        }
     }
 }
