@@ -25,10 +25,11 @@ use schemify_doc::ObjId;
 
 /// Netlist dialects (D22). Owned here because impl support (`E013`) and code-block
 /// selection depend on it; `netlist` matches on the same enum.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Dialect {
     /// ngspice.
+    #[default]
     Ngspice,
     /// Xyce.
     Xyce,
@@ -222,15 +223,22 @@ pub struct Elab {
 
 impl Dialect {
     /// Returns the dialect word (`ngspice`, …).
+    #[must_use]
     pub fn as_str(self) -> &'static str {
-        [
+        const WORDS: [&str; 8] = [
             "ngspice", "xyce", "cdl", "spectre", "verilog", "espice", "hspice", "ltspice",
-        ][self as usize]
+        ];
+        const _: () = assert!(
+            WORDS.len() == Dialect::Ltspice as usize + 1,
+            "one word per dialect"
+        );
+        WORDS[self as usize]
     }
 
     /// `format <dialect>` words an impl may use for this dialect, most specific first
     /// (format spec §4: `spice` serves every SPICE dialect; netlist spec §7.2a:
     /// `format espice` overrides it where ESPice needs another line, e.g. `mfactor=`).
+    #[must_use]
     pub fn format_words(self) -> &'static [&'static str] {
         match self {
             Dialect::Ngspice => &["spice"],
@@ -246,6 +254,7 @@ impl Dialect {
 
     /// Returns whether a bench `code` block of `lang` is emitted (spec §7: `spice` for
     /// the SPICE simulators, else the dialect's own word; CDL takes none).
+    #[must_use]
     pub fn takes_code(self, lang: &str) -> bool {
         match self {
             Dialect::Cdl => false,
@@ -265,19 +274,30 @@ impl Elab {
     ///
     /// # Panics
     ///
-    /// Panics if `d` is not a definition row (as do the accessors below for theirs).
+    /// Panics if `d` is not a definition row.
+    #[must_use]
     pub fn insts_of(&self, d: u32) -> std::ops::Range<usize> {
         assert!((d as usize) < self.defs.cell.len(), "a definition row");
         self.defs.inst_start[d as usize] as usize..self.defs.inst_start[d as usize + 1] as usize
     }
 
     /// Returns the connection names of instance row `r`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `r` is not an instance row.
+    #[must_use]
     pub fn conns(&self, r: usize) -> &[Name] {
         assert!(r < self.insts.name.len(), "an instance row");
         &self.insts.conn[self.insts.conn_start[r] as usize..self.insts.conn_start[r + 1] as usize]
     }
 
     /// Returns the port nets of definition `d`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `d` is not a definition row.
+    #[must_use]
     pub fn ports(&self, d: u32) -> &[Name] {
         let d = d as usize;
         assert!(d < self.defs.cell.len(), "a definition row");
@@ -285,6 +305,11 @@ impl Elab {
     }
 
     /// Returns the param entries of instance row `r` as a range into the param columns.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `r` is not an instance row.
+    #[must_use]
     pub fn params_of(&self, r: usize) -> std::ops::Range<usize> {
         assert!(r < self.insts.name.len(), "an instance row");
         self.insts.param_start[r] as usize..self.insts.param_start[r + 1] as usize
@@ -292,7 +317,13 @@ impl Elab {
 
     /// Counts leaf instances of the flattened hierarchy under definition `d` (ignored
     /// instances excluded). Cost: O(definitions + rows) with memoization.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `d` is not a definition row.
+    #[must_use]
     pub fn flat_leaves(&self, d: u32) -> u64 {
+        assert!((d as usize) < self.defs.cell.len(), "a definition row");
         let mut memo = vec![u64::MAX; self.defs.cell.len()];
         self.leaves(d, &mut memo)
     }
@@ -302,6 +333,11 @@ impl Elab {
 
 impl Elab {
     fn leaves(&self, d: u32, memo: &mut [u64]) -> u64 {
+        assert_eq!(
+            memo.len(),
+            self.defs.cell.len(),
+            "one memo slot per definition"
+        );
         if memo[d as usize] != u64::MAX {
             return memo[d as usize];
         }
@@ -319,6 +355,7 @@ impl Elab {
                 }
             };
         }
+        assert!(n != u64::MAX, "a count never reads as unvisited");
         memo[d as usize] = n;
         n
     }

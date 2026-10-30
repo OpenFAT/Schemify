@@ -73,11 +73,22 @@ impl Annotations {
     ///
     /// Cost: O(rows) to drop the source's old marks when it has some, plus O(new marks ·
     /// log rows).
+    ///
+    /// # Panics
+    ///
+    /// Panics only on a broken internal invariant: the source's count out of step with its
+    /// rows.
     pub fn replace(&mut self, req: AnnotationRequest) {
         self.remove_source(&req.source);
+        let wanted = req.marks.len();
         for m in req.marks {
             self.add(&req.source, m);
         }
+        assert!(
+            self.count_of(&req.source) <= wanted,
+            "a source holds only its own set"
+        );
+        assert!(self.len <= ANNOTATIONS_MAX);
     }
 
     /// Removes the marks `gone` of `source` and adds `new` ones: the incremental form of
@@ -85,6 +96,11 @@ impl Annotations {
     /// source has; a missing one is ignored). Marks past [`ANNOTATIONS_MAX`] are dropped.
     ///
     /// Cost: O(changes · log rows); the other rows are not touched.
+    ///
+    /// # Panics
+    ///
+    /// Panics only on a broken internal invariant: a row whose source has no count, or a
+    /// mark count outside `before - gone ..= before + new`.
     pub fn patch(&mut self, source: &str, gone: Vec<Mark>, new: Vec<Mark>) {
         let before = self.len;
         let (g, n) = (gone.len(), new.len());
@@ -113,7 +129,11 @@ impl Annotations {
         for m in new {
             self.add(source, m);
         }
-        assert!(self.len + g >= before && self.len <= before + n);
+        assert!(
+            self.len + g >= before,
+            "removed more marks than `gone` lists"
+        );
+        assert!(self.len <= before + n, "added more marks than `new` lists");
         assert!(self.len <= ANNOTATIONS_MAX);
     }
 
@@ -128,33 +148,42 @@ impl Annotations {
     ///
     /// Cost: O(log rows + marks on it).
     pub fn on<'a>(&'a self, target: &str) -> impl Iterator<Item = &'a Mark> + 'a {
-        self.range_of(target, "", false)
+        self.range_of(target, None)
     }
 
     /// The marks `source` has on `target`, in order.
     ///
     /// Cost: O(log rows + marks on the target).
     pub fn on_by<'a>(&'a self, target: &str, source: &str) -> impl Iterator<Item = &'a Mark> + 'a {
-        self.range_of(target, source, true)
+        self.range_of(target, Some(source))
     }
 
     /// Whether `source` has a mark.
+    #[must_use]
     pub fn has_source(&self, source: &str) -> bool {
-        self.sources.contains_key(source)
+        let count = self.sources.get(source);
+        debug_assert!(count.is_none_or(|&n| n > 0), "a counted source has a mark");
+        count.is_some()
     }
 
     /// How many marks `source` has.
+    #[must_use]
     pub fn count_of(&self, source: &str) -> usize {
-        self.sources.get(source).copied().unwrap_or(0)
+        let count = self.sources.get(source).copied().unwrap_or(0);
+        debug_assert!(count <= self.len, "a source's marks are among all marks");
+        count
     }
 
     /// Number of marks.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// Whether there is no mark.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.len == 0, self.rows.is_empty(), "rows hold every mark");
         self.len == 0
     }
 }
@@ -198,7 +227,7 @@ pub fn violation_marks(
                 text: format!("{} {}", r.code.as_str(), r.detail),
             }
         })
-        .collect();
+        .collect::<Vec<Mark>>();
     AnnotationRequest {
         source: "checks".to_owned(),
         marks,
@@ -217,14 +246,22 @@ impl Annotations {
             source: source.to_owned(),
         };
         *self.rows.entry(row).or_insert(0) += 1;
-        *self.sources.entry(source.to_owned()).or_insert(0) += 1;
+        let count = self.sources.entry(source.to_owned()).or_insert(0);
+        *count += 1;
+        assert!(
+            *count <= ANNOTATIONS_MAX,
+            "a source's marks are capped with the table"
+        );
         self.len += 1;
+        assert!(self.len <= ANNOTATIONS_MAX);
     }
 
     fn remove_source(&mut self, source: &str) {
         let Some(n) = self.sources.remove(source) else {
             return;
         };
+        assert!(n > 0, "a counted source has a mark");
+        assert!(n <= self.len, "a source's marks are among all marks");
         self.rows.retain(|r, _| r.source != source);
         self.len -= n;
         debug_assert_eq!(
@@ -233,12 +270,11 @@ impl Annotations {
         );
     }
 
-    /// The marks on `target` from the first row of `source` on (only `source`'s when `only`).
+    /// The marks on `target`: `source`'s only, or every source's for `None`.
     fn range_of<'a>(
         &'a self,
         target: &str,
-        source: &str,
-        only: bool,
+        source: Option<&str>,
     ) -> impl Iterator<Item = &'a Mark> + 'a {
         let from = Row {
             mark: Mark {
@@ -246,12 +282,15 @@ impl Annotations {
                 severity: Severity::Error, // the least severity: the range starts at the first
                 text: String::new(),
             },
-            source: source.to_owned(),
+            // "" sorts first: every source's rows on the target follow it.
+            source: source.unwrap_or("").to_owned(),
         };
-        let (t, src) = (target.to_owned(), source.to_owned());
+        let (t, src) = (target.to_owned(), source.map(str::to_owned));
         self.rows
             .range(from..)
-            .take_while(move |(r, _)| r.mark.target == t && (!only || r.source == src))
+            .take_while(move |(r, _)| {
+                r.mark.target == t && src.as_ref().is_none_or(|s| r.source == *s)
+            })
             .flat_map(|(r, &c)| std::iter::repeat_n(&r.mark, c as usize))
     }
 }

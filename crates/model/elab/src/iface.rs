@@ -12,6 +12,7 @@
 //!
 //! Contents:
 //! - `pub enum Domain`, `pub enum ParamKind` (`pub(crate) syntax`)
+//! - `pub(crate) enum Held`
 //! - `pub struct Iface`: `bits`, `param`, `schematic_impl`, `choices_of`,
 //!   `pub(crate)` `from_doc`, `bound_konst`
 //! - `pub(crate) const MIN`, `MAX`, `STEP`, `GRID`, `VALID`, `BOUNDS`
@@ -20,7 +21,7 @@
 
 use crate::names::{Name, Names};
 use crate::netexpr;
-use crate::nets::Ignore;
+use crate::nets::{self, Ignore};
 use crate::values::{NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, PinDir, Records, Strings, Sym};
 use schemify_format::RecordKind;
@@ -51,6 +52,15 @@ pub enum ParamKind {
     Str,
     /// `choice`: template, gated by `choices`.
     Choice,
+}
+
+/// How much of a cell's document [`Iface::from_doc`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Held {
+    /// The full document (schematic, vars, bodies) is open.
+    Open,
+    /// Only the indexed interface (ranks 0–1) is at hand.
+    Indexed,
 }
 
 /// One cell's interface digest. Pins keep file order (= port order).
@@ -171,7 +181,7 @@ impl ParamKind {
 
 impl Iface {
     /// Digests `doc`. `cell` is the display name; `stem` the subckt base name; `row` the
-    /// project cell row or `u32::MAX`; `open` whether the full document is at hand.
+    /// project cell row or `u32::MAX`; `held` how much of the document is at hand.
     ///
     /// Cost: one compile per param default, bound and var; O(pins + bits) otherwise.
     pub(crate) fn from_doc(
@@ -179,14 +189,15 @@ impl Iface {
         cell: &str,
         stem: &str,
         row: u32,
-        open: bool,
+        held: Held,
         names: &mut Names,
     ) -> Iface {
+        assert!(!cell.is_empty(), "a cell has a display name");
         let mut f = Iface {
             cell: names.intern(cell),
             stem: names.intern(stem),
             row,
-            open,
+            open: held == Held::Open,
             ..Iface::default()
         };
         // The interning order is part of the output (handles number in it): pins, params
@@ -211,21 +222,42 @@ impl Iface {
         assert_eq!(f.pin_bit_start.len(), f.pin_name.len() + 1);
         assert_eq!(f.param_prog.len(), f.param_name.len());
         assert_eq!(f.fmt_start.len(), f.impl_name.len() + 1);
+        assert!(
+            f.default_impl == NONE || (f.default_impl as usize) < f.impl_name.len(),
+            "the default impl is one of the cell's"
+        );
         f
     }
 
     /// Returns the bit names of pin `p`.
+    ///
+    /// # Panics
+    ///
+    /// If `p` is not a pin of the interface.
+    #[must_use]
     pub fn bits(&self, p: usize) -> &[Name] {
-        &self.pin_bits[self.pin_bit_start[p] as usize..self.pin_bit_start[p + 1] as usize]
+        nets::csr(&self.pin_bit_start, &self.pin_bits, p)
     }
 
-    /// Returns the index of param `name`.
+    /// Returns the index of param `name`. O(params).
+    #[must_use]
     pub fn param(&self, name: Name) -> Option<usize> {
+        debug_assert_eq!(
+            self.param_prog.len(),
+            self.param_name.len(),
+            "param columns in step"
+        );
         self.param_name.iter().position(|n| *n == name)
     }
 
     /// Returns the index of the schematic impl, if the cell has one.
+    #[must_use]
     pub fn schematic_impl(&self, names: &Names) -> Option<usize> {
+        debug_assert_eq!(
+            self.impl_lang.len(),
+            self.impl_name.len(),
+            "impl columns in step"
+        );
         self.impl_lang
             .iter()
             .position(|l| names.get(*l) == "schematic")
@@ -234,19 +266,36 @@ impl Iface {
     /// The value of bound `w` of param `k` when it reads nothing (the usual `min 0.15`:
     /// evaluated once when compiled, `Progs::konst`); `None` when absent or not constant.
     pub(crate) fn bound_konst(&self, k: usize, w: usize) -> Option<&Val> {
-        assert!(w < BOUNDS);
+        assert!(
+            w < BOUNDS,
+            "bound {w} is not one of min max step grid valid"
+        );
+        assert!(k < self.param_bound.len(), "param {k} out of range");
         let b = self.param_bound[k][w];
         (b != NONE).then(|| self.progs.konst[b as usize].as_ref())?
     }
 
     /// Returns the choices of param `k`.
+    ///
+    /// # Panics
+    ///
+    /// If `k` is not a param of the interface.
+    #[must_use]
     pub fn choices_of(&self, k: usize) -> &[Name] {
-        &self.choices[self.choice_start[k] as usize..self.choice_start[k + 1] as usize]
+        nets::csr(&self.choice_start, &self.choices, k)
     }
 }
 
 /// Resolves `name` in a cell's own scope: params first, then vars (expr spec §4).
 pub(crate) fn own_ref(names: &Names, params: &[Name], vars: &[Name], name: &str) -> Option<Ref> {
+    assert!(
+        (params.len() as Ref) < VAR,
+        "param indices stay below the var flag"
+    );
+    assert!(
+        (vars.len() as Ref) < VAR,
+        "var indices stay below the var flag"
+    );
     let n = names.find(name)?;
     if let Some(k) = params.iter().position(|p| *p == n) {
         return Some(k as Ref);
@@ -267,6 +316,7 @@ impl Iface {
     fn read_pins(&mut self, doc: &Document, names: &mut Names) {
         let (s, pool, pins) = (doc.strings(), doc.pool(), doc.pins());
         let f = self;
+        assert!(f.pin_name.is_empty(), "pins are read once");
         let mut buf = String::new();
         f.pin_bit_start.push(0);
         for p in 0..pins.name.len() {
@@ -315,6 +365,8 @@ impl Iface {
             }
         }
         assert_eq!(f.pin_off.len(), f.pin_name.len());
+        assert_eq!(f.pin_alias.len(), f.pin_name.len(), "pin columns in step");
+        assert_eq!(f.pin_domain.len(), f.pin_name.len(), "pin columns in step");
     }
 
     /// Param and var columns with their compiled programs: names first, so programs can
@@ -323,6 +375,7 @@ impl Iface {
         let s = doc.strings();
         let (params, blocks) = (doc.params(), doc.doc_blocks());
         let f = self;
+        assert!(f.param_name.is_empty(), "params are read once");
         let vars: Vec<usize> = (0..blocks.kind.len())
             .filter(|&r| blocks.kind[r] == RecordKind::Var)
             .collect();
@@ -395,12 +448,19 @@ impl Iface {
         }
         assert_eq!(k, f.choices.len());
         assert_eq!(f.var_prog.len(), f.var_name.len());
+        assert_eq!(
+            f.param_bound.len(),
+            f.param_name.len(),
+            "param columns in step"
+        );
+        assert_eq!(f.choice_start.len(), f.param_name.len() + 1);
     }
 
     /// Impl columns and their `format` lines.
     fn read_impls(&mut self, doc: &Document, names: &mut Names) {
         let (s, pool, impls) = (doc.strings(), doc.pool(), doc.impls());
         let f = self;
+        assert!(f.impl_name.is_empty(), "impls are read once");
         f.fmt_start.push(0);
         for r in 0..impls.kind.len() {
             f.impl_name.push(names.intern(s.get(impls.fields[r][0])));
@@ -421,15 +481,21 @@ impl Iface {
             f.fmt_start.push(f.fmt_dialect.len() as u32);
         }
         assert_eq!(f.impl_ignore.len(), f.impl_name.len());
+        assert_eq!(
+            f.fmt_template.len(),
+            f.fmt_dialect.len(),
+            "format columns in step"
+        );
     }
 }
 
-fn attr_vals<'d>(
+fn attr_vals<'doc>(
     t: &Records,
     r: usize,
     s: &Strings,
-    doc: &'d Document,
+    doc: &'doc Document,
     key: &str,
-) -> Option<&'d [Sym]> {
+) -> Option<&'doc [Sym]> {
+    assert!(r < t.attrs.len(), "record {r} out of range");
     doc.pool().find_attr(s, t.attrs[r], key)
 }

@@ -4,32 +4,52 @@
 //! bookkeeping is `comps`'.
 //!
 //! Contents:
-//! - `Live::update` (`pub(crate)`); `Live::write_row`, `Live::enter`, `Live::index_wire`
-//!   (`pub(super)`)
+//! - `Live::update` (`pub(crate)`); `Live::write_row`, `Live::enter` (`pub(super)`)
 
-use super::{
-    Ctx, Delta, INSTS, Kind, LABELS, Live, NOCONNS, PORTS, WIRES, changed_rows, geometric,
-    table_ids,
-};
+use super::{Ctx, Delta, INSTS, Kind, LABELS, Live, NOCONNS, PORTS, WIRES};
 use crate::names::{Name, Names};
-use crate::netcheck::port_findings;
-use crate::nets::{CellNets, find, label_is_global, on_segment, place, union};
+use crate::netcheck;
+use crate::nets::{self, CellNets};
+use crate::state::{self, Subject};
 use crate::values::NONE;
 use schemify_doc::{Document, ObjId, Op};
 use schemify_format::RecordKind;
 use std::collections::HashMap;
+use std::mem;
 
 /// The objects one edit touched, per geometry table (`WIRES`..`NOCONNS`, `INSTS` for an
 /// instance's `at`).
 struct Rows {
-    /// (table, first node) of objects gone from the document.
-    removed: Vec<(usize, u32)>,
-    /// (table, first node, new row) of objects the document moved to another row.
-    moved: Vec<(usize, u32, u32)>,
-    /// (table, row) of new objects.
-    added: Vec<(usize, u32)>,
-    /// (table, row) of objects that stayed but whose content an op changed, sorted.
-    modified: Vec<(usize, u32)>,
+    /// Objects gone from the document, by first node.
+    removed: Vec<TableNode>,
+    /// Objects the document moved to another row.
+    moved: Vec<Moved>,
+    /// New objects, by row.
+    added: Vec<TableRow>,
+    /// Objects that stayed but whose content an op changed, by row, sorted.
+    modified: Vec<TableRow>,
+}
+
+/// An object by its table and document row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TableRow {
+    table: usize,
+    row: u32,
+}
+
+/// An object by its table and first node.
+#[derive(Clone, Copy, Debug)]
+struct TableNode {
+    table: usize,
+    first: u32,
+}
+
+/// An object whose first node stays while its document row changes.
+#[derive(Clone, Copy, Debug)]
+struct Moved {
+    table: usize,
+    first: u32,
+    row: u32,
 }
 
 impl Live {
@@ -69,9 +89,9 @@ impl Live {
             added,
             modified,
         } = self.diff(ops, doc);
-        let global = |&(t, r): &(usize, u32)| t == LABELS && label_is_global(doc, r as usize);
-        let label = |&(t, _): &(usize, u32)| t == LABELS;
-        let labels = removed.iter().any(label) || added.iter().any(label);
+        let global = |o: &TableRow| o.table == LABELS && nets::label_is_global(doc, o.row as usize);
+        let label = |o: &TableRow| o.table == LABELS;
+        let labels = removed.iter().any(|o| o.table == LABELS) || added.iter().any(label);
         if added.iter().any(global)
             || modified.iter().any(global)
             || (self.global_labels > 0 && (labels || modified.iter().any(label)))
@@ -82,7 +102,7 @@ impl Live {
         // ---- removed objects: dead nodes, dirty components
         self.begin();
         let mut olds = Vec::new();
-        for &(t, first) in &removed {
+        for &TableNode { table: t, first } in &removed {
             if t == WIRES {
                 self.unindex_wire(first);
             }
@@ -99,7 +119,7 @@ impl Live {
 
         // ---- row mirrors and row outputs
         for t in 0..INSTS {
-            let len = table_ids(doc, t).len();
+            let len = super::table_ids(doc, t).len();
             self.ids[t].resize(len, NONE);
             self.first[t].resize(len, NONE);
             match t {
@@ -109,8 +129,13 @@ impl Live {
                 _ => {}
             }
         }
-        for &(t, first, row) in &moved {
-            self.ids[t][row as usize] = table_ids(doc, t)[row as usize].0;
+        for &Moved {
+            table: t,
+            first,
+            row,
+        } in &moved
+        {
+            self.ids[t][row as usize] = super::table_ids(doc, t)[row as usize].0;
             self.first[t][row as usize] = first;
             for v in first..first + if t == WIRES { 2 } else { 1 } {
                 self.row[v as usize] = row;
@@ -119,7 +144,7 @@ impl Live {
         }
 
         // ---- added objects: new nodes, in the region
-        for &(t, row) in &added {
+        for &TableRow { table: t, row } in &added {
             let first = self.x.len() as u32;
             let kind = [Kind::Wire, Kind::Label, Kind::Port, Kind::Noconn][t];
             for sub in 0..if t == WIRES { 2 } else { 1 } {
@@ -134,20 +159,20 @@ impl Live {
                 self.uf.push(0);
                 self.enter(first + u32::from(sub));
             }
-            self.ids[t][row as usize] = table_ids(doc, t)[row as usize].0;
+            self.ids[t][row as usize] = super::table_ids(doc, t)[row as usize].0;
             self.first[t][row as usize] = first;
             self.place(t, row as usize, cx);
         }
 
         // ---- changed objects: same nodes, new geometry or text
-        for &(t, row) in &modified {
+        for &TableRow { table: t, row } in &modified {
             let first = self.first[t][row as usize];
             let count = match t {
                 WIRES => 2,
                 INSTS => cx
                     .ifaces
                     .get(cx.inst_iface[row as usize] as usize)
-                    .map_or(0, |f| geometric(f).count() as u32),
+                    .map_or(0, |f| super::geometric(f).count() as u32),
                 _ => 1,
             };
             if count == 0 {
@@ -170,10 +195,13 @@ impl Live {
         }
 
         // ---- ports, then the bits touched
-        let port = |&(t, _): &(usize, u32)| t == PORTS;
-        if removed.iter().any(port) || added.iter().any(port) || modified.iter().any(port) {
+        let port = |o: &TableRow| o.table == PORTS;
+        let ports_touched = removed.iter().any(|o| o.table == PORTS)
+            || added.iter().any(port)
+            || modified.iter().any(port);
+        if ports_touched {
             self.gone.append(&mut self.ports);
-            port_findings(doc, cx.own, names, &mut self.ports);
+            netcheck::port_findings(doc, cx.own, names, &mut self.ports);
             self.new.extend(self.ports.iter().cloned());
         }
         let mut rows = Vec::new();
@@ -187,16 +215,24 @@ impl Live {
         if cfg!(debug_assertions) && self.x.len() < 1 << 14 {
             self.check(doc, cn);
         }
-        Some((
-            std::mem::take(&mut self.gone),
-            std::mem::take(&mut self.new),
-        ))
+        assert!(
+            self.region.iter().all(|&v| self.comp[v as usize] != NONE),
+            "region rebuilt"
+        );
+        Some(Delta {
+            gone: mem::take(&mut self.gone),
+            added: mem::take(&mut self.new),
+        })
     }
 
     /// Writes the row output (`wire_net`, `label_net`, `port_net`) of the object whose
     /// first node is `first`.
     pub(super) fn write_row(&self, first: u32, cn: &mut CellNets) {
         let (v, c) = (first as usize, self.comp[first as usize]);
+        assert!(
+            self.kind[v] != Kind::Wire || self.sub[v] == 0,
+            "a wire's first node is end 0"
+        );
         let r = self.row[v] as usize;
         match self.kind[v] {
             Kind::Wire => cn.wire_net[r] = c,
@@ -211,17 +247,10 @@ impl Live {
         self.mark[v as usize] = self.epoch;
         self.uf[v as usize] = v;
         self.region.push(v);
-    }
-
-    pub(super) fn index_wire(&mut self, first: u32) {
-        let (x1, y1, x2, y2) = self.ends(first);
-        if x1 == x2 {
-            self.vw.insert((x1, y1.min(y2), y1.max(y2), first));
-        } else if y1 == y2 {
-            self.hw.insert((y1, x1.min(x2), x1.max(x2), first));
-        } else {
-            self.dw.push(first);
-        }
+        assert!(
+            self.region.len() <= self.x.len(),
+            "a node enters the region once"
+        );
     }
 }
 
@@ -235,7 +264,7 @@ impl Live {
         // Records named by content ops.
         let mut named: Vec<(usize, ObjId)> = Vec::new();
         for op in ops {
-            let (kind, key, attr) = crate::state::subject(op);
+            let Subject { kind, key, attr } = state::subject(op);
             let t = match kind {
                 RecordKind::Wire => WIRES,
                 RecordKind::Label => LABELS,
@@ -256,9 +285,9 @@ impl Live {
         // A rejected transaction permutes rows without ops reaching here (its replayed
         // `delete` inverse re-inserts at the end), so every table is diffed, every time.
         for t in 0..INSTS {
-            let ids = table_ids(doc, t);
+            let ids = super::table_ids(doc, t);
             rows.clear();
-            changed_rows(&self.ids[t], ids, &mut rows);
+            super::changed_rows(&self.ids[t], ids, &mut rows);
             for &j in &rows {
                 if j < self.ids[t].len() {
                     gone.push((t, self.ids[t][j], self.first[t][j]));
@@ -277,24 +306,41 @@ impl Live {
             let ka = gone.get(a).map(|g| (g.0, g.1));
             let kb = came.get(b).map(|c| (c.0, c.1));
             if ka.is_some() && ka == kb {
-                moved.push((gone[a].0, gone[a].2, came[b].2));
+                moved.push(Moved {
+                    table: gone[a].0,
+                    first: gone[a].2,
+                    row: came[b].2,
+                });
                 (a, b) = (a + 1, b + 1);
             } else if kb.is_none() || ka.is_some_and(|x| Some(x) < kb) {
-                removed.push((gone[a].0, gone[a].2));
+                removed.push(TableNode {
+                    table: gone[a].0,
+                    first: gone[a].2,
+                });
                 a += 1;
             } else {
-                added.push((came[b].0, came[b].2));
+                added.push(TableRow {
+                    table: came[b].0,
+                    row: came[b].2,
+                });
                 b += 1;
             }
         }
+        // Every displaced row is either removed or moved; every new row added or moved.
+        assert_eq!(removed.len() + moved.len(), gone.len());
+        assert_eq!(added.len() + moved.len(), came.len());
         // Records named by content ops that stayed (an added one is placed fresh anyway).
-        let mut modified: Vec<(usize, u32)> = Vec::new();
+        let mut modified: Vec<TableRow> = Vec::new();
         for &(t, id) in &named {
             let Some(loc) = doc.find_id(id) else {
                 continue; // deleted: the diff has it
             };
-            if !added.contains(&(t, loc.row)) {
-                modified.push((t, loc.row));
+            let at = TableRow {
+                table: t,
+                row: loc.row,
+            };
+            if !added.contains(&at) {
+                modified.push(at);
             }
         }
         modified.sort_unstable();
@@ -329,7 +375,7 @@ impl Live {
                     assert!(c != NONE, "an indexed node is live");
                     self.make_dirty(c, cx, cn, names);
                 }
-                union(&mut self.uf, v, m);
+                nets::union(&mut self.uf, v, m);
             }
         }
 
@@ -338,7 +384,7 @@ impl Live {
         let mut pieces: Vec<Vec<u32>> = Vec::new();
         for k in 0..self.region.len() {
             let v = self.region[k];
-            let r = find(&mut self.uf, v);
+            let r = nets::find(&mut self.uf, v);
             let at = *piece.entry(r).or_insert_with(|| {
                 pieces.push(Vec::new());
                 pieces.len() - 1
@@ -359,17 +405,15 @@ impl Live {
     /// (debug builds, small cells: O(n)).
     fn check(&self, doc: &Document, cn: &CellNets) {
         for t in 0..INSTS {
-            let ids = table_ids(doc, t);
+            let ids = super::table_ids(doc, t);
             assert_eq!(self.ids[t].len(), ids.len(), "table {t} length");
             for r in 0..ids.len() {
                 assert_eq!(self.ids[t][r], ids[r].0, "table {t} row {r} id");
                 let f = self.first[t][r] as usize;
                 assert_eq!(self.row[f] as usize, r, "table {t} row {r} node row");
                 let c = self.comp[f];
-                assert!(
-                    c != NONE && self.head[c as usize] != NONE,
-                    "table {t} row {r} live"
-                );
+                assert!(c != NONE, "table {t} row {r} has a component");
+                assert!(self.head[c as usize] != NONE, "table {t} row {r} live");
                 let out = match t {
                     WIRES => cn.wire_net[r],
                     LABELS => cn.label_net[r],
@@ -385,7 +429,13 @@ impl Live {
                 continue;
             }
             let mut v = head;
+            let mut members = 0;
             loop {
+                members += 1;
+                assert!(
+                    members <= self.x.len(),
+                    "component {c}'s member list is a cycle"
+                );
                 assert_eq!(self.comp[v as usize], c as u32, "member of {c}");
                 v = self.next[v as usize];
                 if v == head {
@@ -409,12 +459,15 @@ impl Live {
         self.region.clear();
         self.gone.clear();
         self.new.clear();
+        assert!(self.epoch != 0, "stamp 0 marks nothing");
     }
 
     /// Places the nodes of table `t`'s object at `row` from the document and indexes them.
     fn place(&mut self, t: usize, row: usize, cx: &Ctx<'_>) {
         let doc = cx.doc;
+        assert!(row < self.first[t].len(), "table {t} row {row} is mirrored");
         let first = self.first[t][row];
+        assert!(first != NONE, "table {t} row {row} has nodes");
         let at = |lv: &mut Live, v: u32, (x, y): (i32, i32)| {
             lv.x[v as usize] = x;
             lv.y[v as usize] = y;
@@ -437,107 +490,11 @@ impl Live {
                     inst.orient[row].mirrored(),
                     inst.orient[row].quarter_turns(),
                 );
-                for (k, p) in geometric(f).enumerate() {
-                    let xy = place(f.pin_x[p], f.pin_y[p], m, q, inst.x[row], inst.y[row]);
+                for (k, p) in super::geometric(f).enumerate() {
+                    let xy = nets::place(f.pin_x[p], f.pin_y[p], m, q, inst.x[row], inst.y[row]);
                     at(self, first + k as u32, xy);
                 }
             }
-        }
-    }
-
-    fn index(&mut self, v: u32) {
-        let (x, y) = (self.x[v as usize], self.y[v as usize]);
-        assert!(self.by_x.insert((x, y, v)) && self.by_y.insert((y, x, v)));
-    }
-
-    fn unindex(&mut self, v: u32) {
-        let (x, y) = (self.x[v as usize], self.y[v as usize]);
-        assert!(self.by_x.remove(&(x, y, v)) && self.by_y.remove(&(y, x, v)));
-    }
-
-    /// The wire whose ends are nodes `first`, `first + 1`: `(x1, y1, x2, y2)`.
-    fn ends(&self, first: u32) -> (i32, i32, i32, i32) {
-        let (a, b) = (first as usize, first as usize + 1);
-        (self.x[a], self.y[a], self.x[b], self.y[b])
-    }
-
-    fn unindex_wire(&mut self, first: u32) {
-        let (x1, y1, x2, y2) = self.ends(first);
-        if x1 == x2 {
-            assert!(self.vw.remove(&(x1, y1.min(y2), y1.max(y2), first)));
-        } else if y1 == y2 {
-            assert!(self.hw.remove(&(y1, x1.min(x2), x1.max(x2), first)));
-        } else {
-            let at = self.dw.iter().position(|&w| w == first).expect("indexed");
-            self.dw.swap_remove(at);
-        }
-    }
-
-    /// Appends every node joined to `v` by one rule of `connect` (§3): the same point, the
-    /// other end and the nodes on the wire `v` ends, the ends of the wires through `v`, and
-    /// alias pins.
-    fn neighbors(&self, v: u32, cx: &Ctx<'_>, out: &mut Vec<u32>) {
-        let vi = v as usize;
-        let (x, y) = (self.x[vi], self.y[vi]);
-        let same = self.by_x.range((x, y, 0)..=(x, y, u32::MAX));
-        out.extend(same.map(|e| e.2).filter(|&m| m != v));
-        match self.kind[vi] {
-            Kind::Wire => {
-                let first = v - u32::from(self.sub[vi]);
-                self.on_wire(first, out);
-            }
-            Kind::Pin => {
-                let i = self.row[vi] as usize;
-                let f = &cx.ifaces[cx.inst_iface[i] as usize];
-                let p = usize::from(self.sub[vi]);
-                let first = self.first[INSTS][i];
-                for (k, q) in geometric(f).enumerate() {
-                    if q != p && (f.pin_alias[p] == q as u32 || f.pin_alias[q] == p as u32) {
-                        out.push(first + k as u32);
-                    }
-                }
-            }
-            Kind::Label | Kind::Port | Kind::Noconn => {}
-        }
-        // ponytail: the wires through a point scan their row (column) up to the point; an
-        // interval tree if long runs of collinear wires show up in profiles.
-        let row = (y, i32::MIN, i32::MIN, 0)..=(y, x, i32::MAX, u32::MAX);
-        for &(_, _, xb, w) in self.hw.range(row) {
-            if xb >= x {
-                out.extend([w, w + 1]);
-            }
-        }
-        let col = (x, i32::MIN, i32::MIN, 0)..=(x, y, i32::MAX, u32::MAX);
-        for &(_, _, yb, w) in self.vw.range(col) {
-            if yb >= y {
-                out.extend([w, w + 1]);
-            }
-        }
-        for &w in &self.dw {
-            let (x1, y1, x2, y2) = self.ends(w);
-            if on_segment(x, y, x1, y1, x2, y2) {
-                out.extend([w, w + 1]);
-            }
-        }
-    }
-
-    /// Appends the nodes lying on the wire whose first node is `first`, its ends included.
-    fn on_wire(&self, first: u32, out: &mut Vec<u32>) {
-        let (x1, y1, x2, y2) = self.ends(first);
-        if x1 == x2 {
-            let r = (x1, y1.min(y2), 0)..=(x1, y1.max(y2), u32::MAX);
-            out.extend(self.by_x.range(r).map(|e| e.2));
-        } else if y1 == y2 {
-            let r = (y1, x1.min(x2), 0)..=(y1, x1.max(x2), u32::MAX);
-            out.extend(self.by_y.range(r).map(|e| e.2));
-        } else {
-            // ponytail: as in `connect`, a diagonal wire scans every node in its x-range.
-            let r = (x1.min(x2), i32::MIN, 0)..=(x1.max(x2), i32::MAX, u32::MAX);
-            let on = self
-                .by_x
-                .range(r)
-                .filter(|e| on_segment(e.0, e.1, x1, y1, x2, y2));
-            out.extend(on.map(|e| e.2));
         }
     }
 }

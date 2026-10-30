@@ -69,12 +69,19 @@ impl Default for Name {
 
 impl Names {
     /// Returns the number of interned names.
+    #[must_use]
     pub fn len(&self) -> u32 {
+        debug_assert!(self.ends.len() <= NAMES_MAX as usize);
         self.ends.len() as u32
     }
 
     /// Returns whether nothing is interned.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert!(
+            !self.ends.is_empty() || self.bytes.is_empty(),
+            "no name, no text"
+        );
         self.ends.is_empty()
     }
 
@@ -83,23 +90,29 @@ impl Names {
     /// # Panics
     ///
     /// Panics on [`Name::NONE`] or a name from another arena that is out of range.
+    #[must_use]
     pub fn get(&self, n: Name) -> &str {
         let i = n.0 as usize;
         assert!(i < self.ends.len(), "name from another arena or NONE");
         let start = if i == 0 { 0 } else { self.ends[i - 1] as usize };
+        debug_assert!(start <= self.ends[i] as usize, "name ends are monotone");
         &self.bytes[start..self.ends[i] as usize]
     }
 
     /// Returns the name of `text` without interning it.
+    #[must_use]
     pub fn find(&self, text: &str) -> Option<Name> {
         if self.table.is_empty() {
             return None;
         }
-        self.probe(text, hash(text)).ok()
+        let found = self.probe(text, hash(text)).ok();
+        debug_assert!(found.is_none_or(|n| self.get(n) == text));
+        found
     }
 
     /// Compares two names bytewise by text (the order every sorted output uses).
     /// [`Name::NONE`] sorts first.
+    #[must_use]
     pub fn cmp(&self, a: Name, b: Name) -> Ordering {
         if a == b {
             return Ordering::Equal; // one arena: equal handles are equal text
@@ -135,7 +148,7 @@ impl Names {
         for (d, r) in v.iter_mut().zip(&rows) {
             *d = r.0;
         }
-        assert_eq!(rows.len(), v.len());
+        debug_assert!(v.windows(2).all(|w| self.cmp(w[0], w[1]).is_le()));
     }
 
     /// Makes room for `additional` more names without growing the table on the way (a
@@ -166,9 +179,14 @@ impl Names {
             Ok(n) => return n,
             Err(slot) => slot,
         };
+        assert_eq!(self.table[slot], 0, "the probe ended on an empty slot");
         let n = self.append(text);
         self.table[slot] = entry(h, n);
         debug_assert_eq!(self.get(n), text);
+        debug_assert!(
+            self.ends.len() * 2 <= self.table.len(),
+            "load stays below 1/2"
+        );
         n
     }
 
@@ -183,6 +201,7 @@ impl Names {
     /// Cost: O(n) passes over the batch plus the probe sequences.
     pub(crate) fn intern_batch(&mut self, texts: &[&str], out: &mut Vec<Name>) {
         let n = texts.len();
+        let before = out.len();
         if n < BATCH_MIN {
             out.extend(texts.iter().map(|t| self.intern(t)));
             return;
@@ -244,6 +263,7 @@ impl Names {
             self.table[sl] = entry((it >> 32) as u32, Name(by_k[it as u32 as usize]));
         }
         out.extend(by_k.into_iter().map(Name));
+        assert_eq!(out.len(), before + n, "one name per text");
         assert!(
             self.ends.len() * 2 <= self.table.len(),
             "load stays below 1/2"
@@ -345,6 +365,7 @@ pub(crate) fn radix_sort(mut v: Vec<(u64, u32)>) -> Vec<(u64, u32)> {
 impl Names {
     /// Where `text` (hashing to `h`) is: `Ok(name)`, or `Err(empty slot)` to put it in.
     fn probe(&self, text: &str, h: u32) -> Result<Name, usize> {
+        assert!(!self.table.is_empty(), "a probe needs a table");
         self.probe_from(text, h, h as usize & (self.table.len() - 1))
     }
 
@@ -398,6 +419,7 @@ impl Names {
 
 /// A table entry: `(hash, name + 1)`.
 fn entry(h: u32, n: Name) -> u64 {
+    debug_assert!(n != Name::NONE, "NONE is never placed");
     (u64::from(h) << 32) | u64::from(n.0 + 1)
 }
 
@@ -406,6 +428,11 @@ fn entry(h: u32, n: Name) -> u64 {
 /// and the table sequentially and touch a text only on a hash match.
 fn slot_order(texts: &[&str], mask: usize) -> Vec<u64> {
     let n = texts.len();
+    assert!(n <= u32::MAX as usize, "an item's low half holds its index");
+    assert!(
+        (mask + 1).is_power_of_two(),
+        "`mask` masks a power-of-two table"
+    );
     let mut items: Vec<u64> = texts
         .iter()
         .enumerate()

@@ -1,7 +1,7 @@
 //! Shared test helpers: projects from file texts, ids, a seeded RNG, random schematics,
 //! the naive O(n²) connectivity oracle, and partition comparison.
 
-#![allow(dead_code)] // each test binary uses a subset
+#![allow(dead_code, reason = "each test binary uses a subset")]
 
 use schemify_doc::{DocHandle, Document, Project};
 use schemify_elab::{CellNets, Dialect, Elab, Request, elaborate, no_funcs};
@@ -49,9 +49,11 @@ pub fn c(milli: i64) -> String {
 
 /// A project with every file indexed in the project library and opened.
 pub fn project(files: &[(&str, &str)]) -> (Project, Vec<DocHandle>) {
-    let mut p = Project::new(None, None, 11).unwrap();
+    let mut p = Project::new(None, None, 11).expect("an in-memory project opens");
     let listing: Vec<(&str, &[u8])> = files.iter().map(|(n, t)| (*n, t.as_bytes())).collect();
-    let (_, diags) = p.index_library("", "", &listing).unwrap();
+    let (_, diags) = p
+        .index_library("", "", &listing)
+        .expect("indexing the in-memory library succeeds");
     assert!(diags.is_empty(), "index diags: {diags:?}");
     let handles = files
         .iter()

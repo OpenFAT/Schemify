@@ -17,8 +17,14 @@ use schemify_expr::{Mode, Program, Scratch, Value};
 /// Bound on nested `${NAME}` expansion; deeper (or cyclic) definitions are `E034`.
 const EXPAND_DEPTH_MAX: u8 = 16;
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
+    /// The header data of bench `doc` (the top, cell 0) under corner row `corner`.
     pub(super) fn bench_lines(&mut self, doc: &Document, corner: Option<usize>) -> Bench {
+        assert!(!self.cells.is_empty(), "the top cell is prepared first");
+        assert!(
+            corner.is_none_or(|r| r < doc.corners().attrs.len()),
+            "corner row in range"
+        );
         let mut b = Bench::default();
         let s = doc.strings();
         // Vars: the top graph's own nodes in the default context.
@@ -150,6 +156,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             ));
         }
         assert!(out.len() <= codes.kind.len());
+        debug_assert!(
+            out.windows(2)
+                .all(|w| s.get(codes.fields[w[0]][0]) <= s.get(codes.fields[w[1]][0])),
+            "rows stay sorted by name"
+        );
         out
     }
 
@@ -193,9 +204,9 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
 ///
 /// Errors: the first undefined name, the unclosed `${…` text, or the name at which
 /// nesting passes [`EXPAND_DEPTH_MAX`] (a cycle).
-fn expand_dollars<'v>(
+fn expand_dollars<'value>(
     text: &str,
-    lookup: &impl Fn(&str) -> Option<&'v str>,
+    lookup: &impl Fn(&str) -> Option<&'value str>,
     depth: u8,
 ) -> Result<String, String> {
     assert!(depth <= EXPAND_DEPTH_MAX);
@@ -227,6 +238,11 @@ fn expand_dollars<'v>(
 
 /// Evaluates a corner `temp` expression with the bench vars in scope.
 fn eval_in_bench(text: &str, b: &Bench, names: &Names) -> Result<String, schemify_expr::Error> {
+    assert_eq!(
+        b.var_name.len(),
+        b.var_text.len(),
+        "bench var columns in step"
+    );
     let p = Program::compile(text, Mode::Scalar)?;
     let vals: Vec<Val> = b
         .var_text

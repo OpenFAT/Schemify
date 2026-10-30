@@ -15,25 +15,27 @@
 //! - `pub(crate) fn inst_overrides(cx, i, unresolved, names, out)`
 //! - `pub(crate) fn check_values(cx, vals, names, funcs, ws, out)`
 //! - `pub(crate) fn value_errors(cx, vals, nodes, out)`
-//! - `pub(crate) fn inst_rules(cx, i, vals, names, funcs, ws, found, out)`
+//! - `pub(crate) fn inst_rules(cx, i, vals, names, funcs, ws, out)`
 //! - `pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<String>`
 
-use crate::eval::Work;
-use crate::graph::{Graph, OWN};
+use crate::eval::{BoundOf, Work};
+use crate::graph::{self, Graph, OWN};
 use crate::iface::{BOUNDS, GRID, Iface, MAX, MIN, STEP, VALID};
-use crate::names::{Name, Names, fnv1a64};
-use crate::values::{Code as PCode, Funcs, NONE, Val, cached_text};
+use crate::names::{self, Name, Names};
+use crate::values::{self, Code as PCode, Funcs, NONE, Val};
 use crate::violations::{Code, Violation};
 use schemify_doc::{Document, Instances, ObjId};
+use std::cell::OnceCell;
+use std::mem;
 
 /// What one evaluation context of a cell is checked against.
-pub(crate) struct CellCtx<'a> {
-    pub(crate) doc: &'a Document,
-    pub(crate) ifaces: &'a [Iface],
+pub(crate) struct CellCtx<'cell> {
+    pub(crate) doc: &'cell Document,
+    pub(crate) ifaces: &'cell [Iface],
     pub(crate) own: u32,
-    pub(crate) inst_iface: &'a [u32],
-    pub(crate) graph: &'a Graph,
-    pub(crate) waivers: &'a [(ObjId, Name)],
+    pub(crate) inst_iface: &'cell [u32],
+    pub(crate) graph: &'cell Graph,
+    pub(crate) waivers: &'cell [(ObjId, Name)],
 }
 
 /// The codes a cell state's per-instance checks write ([`inst_overrides`],
@@ -77,9 +79,10 @@ pub(crate) fn gate(
     names: &Names,
     out: &mut Vec<(Code, String)>,
 ) {
+    let before = out.len();
     // The value's text goes only into a finding or a choice compare: written on first use
     // (a flat 1M-instance netlist gates 10^6 passing values).
-    let cell = std::cell::OnceCell::new();
+    let cell = OnceCell::new();
     let text = || {
         cell.get_or_init(|| {
             let mut t = String::new();
@@ -166,12 +169,25 @@ pub(crate) fn gate(
             out.push((Code::E038, format!("its valid rule gives {t}, not a bool")));
         }
     }
+    // min, max, one of grid/step, choices, valid: at most five findings.
+    assert!(
+        out.len() - before <= 5,
+        "gate appended {} findings",
+        out.len() - before
+    );
+    debug_assert!(
+        out[before..]
+            .iter()
+            .all(|(c, _)| matches!(c, Code::E005 | Code::E006 | Code::E032 | Code::E038)),
+        "gate writes gating codes only"
+    );
 }
 
 /// Whether [`gate`] finds nothing for a number `x` against numeric bounds `b` (`MIN`,
 /// `MAX`, `STEP`, `GRID`; `None` absent) and no choices: the per-instance fast path, with
 /// no bound copied and no text written.
 pub(crate) fn passes(x: f64, b: [Option<f64>; 4]) -> bool {
+    debug_assert!(x.is_finite(), "a gated number is finite");
     let grid = b[GRID].filter(|g| *g != 0.0);
     let step = b[STEP].filter(|s| *s != 0.0);
     let base = b[MIN].unwrap_or(0.0);
@@ -194,6 +210,11 @@ pub(crate) fn check_overrides(
     out: &mut Vec<Violation>,
 ) {
     assert_eq!(unresolved.len(), cx.doc.instances().id.len());
+    assert_eq!(
+        cx.inst_iface.len(),
+        unresolved.len(),
+        "one interface slot per instance"
+    );
     for (i, why) in unresolved.iter().enumerate() {
         inst_overrides(cx, i, why.as_deref(), names, out);
     }
@@ -215,6 +236,10 @@ pub(crate) fn inst_overrides(
     let cell = cx.ifaces[cx.own as usize].cell;
     assert!(i < inst.id.len(), "instance row {i} in range");
     if let Some(why) = unresolved {
+        assert!(
+            cx.inst_iface[i] == NONE,
+            "an unresolved instance has no interface"
+        );
         out.push(Violation::new(
             Code::E001,
             cell,
@@ -258,10 +283,10 @@ pub(crate) fn check_values<F: Funcs>(
 ) {
     let g = cx.graph;
     assert_eq!(vals.len(), g.len());
+    assert_eq!(cx.inst_iface.len(), cx.doc.instances().id.len());
     value_errors(cx, vals, 0..g.len() as u32, out);
-    let mut found = Vec::new();
     for i in 0..cx.doc.instances().id.len() {
-        inst_rules(cx, i, vals, names, funcs, ws, &mut found, out);
+        inst_rules(cx, i, vals, names, funcs, ws, out);
     }
 }
 
@@ -277,6 +302,7 @@ pub(crate) fn value_errors(
     let me = &cx.ifaces[cx.own as usize];
     let inst = cx.doc.instances();
     assert_eq!(vals.len(), g.len());
+    let before = out.len();
     for n in nodes {
         let Val::Err(e) = &vals[n as usize] else {
             continue;
@@ -295,12 +321,12 @@ pub(crate) fn value_errors(
         let detail = format!("{}: {}", e.code.as_str(), e.msg);
         out.push(Violation::new(Code::E008, me.cell, object, param, detail));
     }
+    debug_assert!(out[before..].iter().all(|v| v.code == Code::E008));
 }
 
 /// Gating (`E005`, `E006`, `E032`, `E038`, waived `I005`) and stale derived values (`E039`)
 /// of instance row `i`: a function of that instance's nodes, its attributes and the
-/// waivers only. `found` is scratch.
-#[allow(clippy::too_many_arguments)]
+/// waivers only.
 pub(crate) fn inst_rules<F: Funcs>(
     cx: &CellCtx<'_>,
     i: usize,
@@ -308,13 +334,13 @@ pub(crate) fn inst_rules<F: Funcs>(
     names: &Names,
     funcs: &mut F,
     ws: &mut Work,
-    found: &mut Vec<(Code, String)>,
     out: &mut Vec<Violation>,
 ) {
     let g = cx.graph;
     let me = &cx.ifaces[cx.own as usize];
     let inst = cx.doc.instances();
     assert!(i < inst.id.len(), "instance row {i} in range");
+    assert_eq!(vals.len(), g.len(), "values indexed like the graph");
     let Some(c) = cx.ifaces.get(cx.inst_iface[i] as usize) else {
         return;
     };
@@ -349,10 +375,16 @@ pub(crate) fn inst_rules<F: Funcs>(
         }
         let mut bounds: [Option<Val>; BOUNDS] = Default::default();
         for (which, b) in bounds.iter_mut().enumerate() {
-            *b = g.bound(i, k, which, vals, cx.ifaces, funcs, ws);
+            let at = BoundOf {
+                inst: i,
+                param: k,
+                which,
+            };
+            *b = g.bound(at, vals, cx.ifaces, funcs, ws);
         }
+        let mut found = mem::take(&mut ws.gated);
         found.clear();
-        gate(v, &bounds, c.choices_of(k), names, found);
+        gate(v, &bounds, c.choices_of(k), names, &mut found);
         for (code, detail) in found.drain(..) {
             let waived = cx
                 .waivers
@@ -371,6 +403,7 @@ pub(crate) fn inst_rules<F: Funcs>(
                 detail,
             ));
         }
+        ws.gated = found;
     }
 }
 
@@ -378,6 +411,10 @@ pub(crate) fn inst_rules<F: Funcs>(
 /// one `<name>=<cached text>` line per input, in `vinputs` order, as 16 lowercase hex
 /// digits; `None` when an input is not a param of the cell or has no value.
 pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<String> {
+    assert!(
+        vals.len() >= c.param_name.len(),
+        "one value per param of the cell"
+    );
     let mut text = String::new();
     for &n in &c.vinputs {
         let v = &vals[c.param(n)?];
@@ -386,10 +423,12 @@ pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<St
         }
         text.push_str(names.get(n));
         text.push('=');
-        cached_text(v, &mut text);
+        values::cached_text(v, &mut text);
         text.push('\n');
     }
-    Some(format!("{:016x}", fnv1a64(text.as_bytes())))
+    let digest = format!("{:016x}", names::fnv1a64(text.as_bytes()));
+    debug_assert_eq!(digest.len(), 16, "a digest is 16 hex digits");
+    Some(digest)
 }
 
 // ---- private ----
@@ -397,6 +436,11 @@ pub(crate) fn inputs_digest(c: &Iface, vals: &[Val], names: &Names) -> Option<St
 /// Whether `x` is `base + k·step` for an integer `k`, to a relative 1e-9 (values are
 /// f64 from decimal text, so `0.3` on a `0.1` grid must pass).
 fn on_grid(x: f64, base: f64, step: f64) -> bool {
+    assert!(step != 0.0, "callers drop a zero grid or step");
+    debug_assert!(
+        step.is_finite() && base.is_finite(),
+        "bounds are finite numbers"
+    );
     let r = (x - base) / step;
     (r - r.round()).abs() <= 1e-9 * r.abs().max(1.0)
 }
@@ -404,6 +448,7 @@ fn on_grid(x: f64, base: f64, step: f64) -> bool {
 fn num_text(x: f64) -> String {
     let mut s = String::new();
     schemify_expr::write_num(&mut s, x);
+    debug_assert!(!s.is_empty());
     s
 }
 
@@ -419,6 +464,12 @@ fn stale_derived(
     names: &Names,
     out: &mut Vec<Violation>,
 ) {
+    assert!(i < cx.doc.instances().id.len(), "instance row {i} in range");
+    assert_eq!(
+        c.param_vderived.len(),
+        c.param_name.len(),
+        "param columns in step"
+    );
     let Some(now) = inputs_digest(c, vals, names) else {
         return; // an input failed: its own E008 says so
     };
@@ -426,12 +477,13 @@ fn stale_derived(
     let set = c
         .vinputs
         .iter()
-        .any(|&n| crate::graph::cached_of(doc, i, names.get(n)).1);
-    for k in (0..c.param_name.len()).filter(|&k| c.param_vderived[k]) {
-        let (cached, own) = crate::graph::cached_of(doc, i, names.get(c.param_name[k]));
-        let detail = match cached {
-            _ if own => continue,
-            Some((_, d)) if d == now => continue,
+        .any(|&n| graph::cached_of(doc, i, names.get(n)).own_override);
+    let derived = (0..c.param_name.len()).filter(|&k| c.param_vderived[k]);
+    for k in derived {
+        let found = graph::cached_of(doc, i, names.get(c.param_name[k]));
+        let detail = match found.digest {
+            _ if found.own_override => continue,
+            Some(digest) if digest == now => continue,
             Some(_) => "its inputs changed since Virtuoso derived it",
             None if set => "an input is set, and Virtuoso never derived it for these values",
             None => continue,

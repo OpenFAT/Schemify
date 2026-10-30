@@ -6,7 +6,11 @@
 //! Contents:
 //! - `Elaborator::build_def` (`pub(super)`)
 
-use super::{COMPUTED, DEFAULT, DEPTH_MAX, DefRows, Elaborator, OVERRIDDEN, RowTmp, Target, tuple};
+use super::defs::DefPlace;
+use super::{
+    COMPUTED, DEFAULT, DEPTH_MAX, DefRows, Elaborator, InheritedPin, OVERRIDDEN, ParamEntry,
+    RowTmp, Target, defs,
+};
 use crate::graph::OWN;
 use crate::names::{Name, Names};
 use crate::netexpr;
@@ -14,6 +18,7 @@ use crate::nets::{Ignore, NO_NET};
 use crate::values::{Funcs, NONE, Val};
 use crate::violations::{Code, Violation};
 use schemify_doc::ObjId;
+use std::ops::Range;
 
 /// Canonical text of recent scalar values, (tag, bits) → name, in 64 hashed slots: a flat
 /// design repeats a few values a million times; formatting and interning each was a tenth
@@ -23,7 +28,7 @@ struct ValTexts {
     text: String,
 }
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// Builds (or reuses) the definition of cell `ci` for own-param values `tuple` at
     /// instance path `path`. `None` when the cell cannot be elaborated here.
     pub(super) fn build_def(
@@ -37,11 +42,20 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             self.stack.len() as u32 == depth,
             "one stack entry per level"
         );
-        let (key, pairs) = tuple(&self.ifaces[ci as usize], &own_vals, &mut self.names);
-        let sensitive = self.config.inst.iter().any(|(p, _)| {
+        assert_eq!(
+            own_vals.len(),
+            self.ifaces[ci as usize].param_name.len(),
+            "one value per own param"
+        );
+        let tuple = defs::tuple(&self.ifaces[ci as usize], &own_vals, &mut self.names);
+        let sensitive = self.config.inst.iter().any(|rule| {
+            let p = &rule.path;
             p.len() > path.len() && p.starts_with(&path) && p.as_bytes()[path.len()] == b'/'
         });
-        let known = self.memo.get(&(ci, key.clone())).filter(|_| !sensitive);
+        let known = self
+            .memo
+            .get(&(ci, tuple.key.clone()))
+            .filter(|_| !sensitive);
         if let Some(&d) = known {
             return Some(d);
         }
@@ -59,7 +73,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             });
             return None;
         }
-        let (vals, _unverified) = self.prepare_eval(ci, &own_vals);
+        let vals = self.prepare_eval(ci, &own_vals);
         self.stack.push(ci);
         let doc = self.cells[ci as usize].doc;
         let ni = doc.instances().id.len();
@@ -189,14 +203,19 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 });
             }
         }
-        self.stack.pop();
-        Some(self.finish_def(ci, key, pairs, sensitive, out, is_top))
+        assert_eq!(self.stack.pop(), Some(ci), "the stack unwinds in order");
+        let d = self.finish_def(ci, tuple, out, DefPlace { sensitive, is_top });
+        assert!(
+            (d as usize) < self.defs.cell.len(),
+            "finish_def returns a definition"
+        );
+        Some(d)
     }
 }
 
 // ---- private ----
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// Appends the param entries of instance row `i`'s values (`vals[first..]`, child cell
     /// `c`, in cell `ci`) with their canonical text and flags; returns their range.
     fn push_params(
@@ -206,8 +225,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         first: usize,
         vals: &[Val],
         texts: &mut ValTexts,
-        out: &mut Vec<(Name, Name, Val, u8)>,
-    ) -> std::ops::Range<u32> {
+        out: &mut Vec<ParamEntry>,
+    ) -> Range<u32> {
         let p0 = out.len() as u32;
         let f = &self.ifaces[c as usize];
         let defaults = self.cells[c as usize].defaults.as_ref().expect("computed");
@@ -226,8 +245,18 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             if table[first + k] == OWN {
                 flags |= OVERRIDDEN;
             }
-            out.push((f.param_name[k], t, v.clone(), flags));
+            out.push(ParamEntry {
+                name: f.param_name[k],
+                text: t,
+                value: v.clone(),
+                flags,
+            });
         }
+        assert_eq!(
+            out.len() - p0 as usize,
+            f.param_name.len(),
+            "one entry per param"
+        );
         p0..out.len() as u32
     }
 
@@ -249,6 +278,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let is_top = self.stack.len() == 1;
         let (conn, propagated) = (&mut out.conn, &mut out.propagated);
         let c = self.cells[ci as usize].inst_iface[i];
+        assert!(c != NONE, "only resolved instances have rows");
         let nets = self.nets[ci as usize].as_ref().expect("prepared");
         let bits = self.ifaces[c as usize].bits_total as usize;
         let start = nets.conn_start[i] as usize + k * bits;
@@ -271,24 +301,30 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         if none {
             return; // no inherited pins (the common case): nothing more to resolve
         }
-        let inherited: Vec<(Name, Name)> = match target {
+        let inherited: Vec<InheritedPin> = match target {
             Target::Leaf(_) => {
                 let f = &self.ifaces[c as usize];
                 (0..f.pin_name.len())
                     .filter(|&p| f.pin_inherit[p] != Name::NONE)
-                    .map(|p| (f.pin_name[p], f.pin_inherit[p]))
+                    .map(|p| InheritedPin {
+                        pin: f.pin_name[p],
+                        default: f.pin_inherit[p],
+                    })
                     .collect()
             }
             Target::Def(d) => {
                 let r = self.defs.inh_start[d as usize] as usize
                     ..self.defs.inh_start[d as usize + 1] as usize;
-                r.map(|j| (self.defs.inh_pin[j], self.defs.inh_default[j]))
-                    .collect()
+                r.map(|j| InheritedPin {
+                    pin: self.defs.inh_pin[j],
+                    default: self.defs.inh_default[j],
+                })
+                .collect()
             }
         };
         let mut buf = String::new();
         let mut tmp = Vec::new();
-        for (pin, default) in inherited {
+        for InheritedPin { pin, default } in inherited {
             let nets = self.nets[ci as usize].as_ref().expect("prepared");
             let local = (0..nets.inh_inst.len())
                 .find(|&j| nets.inh_inst[j] == i as u32 && nets.inh_pin[j] == pin);
@@ -320,8 +356,8 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             let via = if is_top {
                 default
             } else {
-                match propagated.iter().find(|(p, _)| *p == pin) {
-                    Some(&(_, d)) if d != default => {
+                match propagated.iter().find(|p| p.pin == pin) {
+                    Some(&InheritedPin { default: d, .. }) if d != default => {
                         let (cell, p) = (self.ifaces[ci as usize].cell, self.names.intern(path));
                         let detail = format!(
                             "inherited pin `{}` defaults to `{}` and `{}`",
@@ -335,7 +371,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                         });
                     }
                     Some(_) => {}
-                    None => propagated.push((pin, default)),
+                    None => propagated.push(InheritedPin { pin, default }),
                 }
                 pin
             };
@@ -356,7 +392,10 @@ fn name_prefix(text: &str) -> u64 {
     let mut b = [0u8; 8];
     let n = text.len().min(8);
     b[..n].copy_from_slice(&text.as_bytes()[..n]);
-    u64::from_be_bytes(b)
+    let prefix = u64::from_be_bytes(b);
+    // Big-endian keeps the text order: the first byte is the most significant.
+    debug_assert_eq!(prefix >> 56, u64::from(text.bytes().next().unwrap_or(0)));
+    prefix
 }
 
 impl ValTexts {

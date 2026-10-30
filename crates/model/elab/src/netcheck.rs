@@ -5,29 +5,47 @@
 //! `connect` runs all of them; `live` reruns the per-bit and port ones per edit.
 //!
 //! Contents:
-//! - `pub(crate) fn element_names(doc, names, cell) -> (Vec<u32>, Vec<Name>, Vec<Violation>)`
-//! - `pub(crate) fn findings(cx, geo, comps, cn, real, other, names, out)`
-//! - `pub(crate) fn bit_findings(cell, name, global, (conns, real, other), names, out)`
+//! - `pub(crate) struct Elements`, `pub(crate) struct BitCounts`
+//! - `pub(crate) fn element_names(doc, names, cell) -> Elements`
+//! - `pub(crate) fn findings(cx, geo, comps, cn, domains, names, out)`
+//! - `pub(crate) fn bit_findings(cell, name, global, counts, names, out)`
 //! - `pub(crate) fn port_findings(doc, own, names, out)`
 
+use crate::bits::DomainCounts;
 use crate::connect::{Comps, Cx, Found};
 use crate::iface::Iface;
 use crate::names::{Name, Names};
 use crate::netexpr;
-use crate::nets::{CellNets, OWN_BITS, OWN_PORTS, OWN_STATIC, Seed, id_cmp};
+use crate::nets::{self, CellNets, OWN_BITS, OWN_PORTS, OWN_STATIC, Seed};
 use crate::values::NONE;
 use crate::violations::{Code, Violation};
 use schemify_doc::{Document, ObjId};
 
-/// Element names of every instance of `doc` (`X1[3]` … for `X1[3:0]`, else the name):
-/// `(CSR starts, names, E011 findings of cell `cell`)`. Plain names (nearly all) are
+/// Every instance's element names: what [`element_names`] returns.
+pub(crate) struct Elements {
+    /// CSR offsets (`instances + 1`) into `name`.
+    pub(crate) start: Vec<u32>,
+    pub(crate) name: Vec<Name>,
+    /// `E011` for each instance name wider than 65535 elements.
+    pub(crate) too_wide: Vec<Violation>,
+}
+
+/// What the bit findings of one bit net read.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BitCounts {
+    /// Connections (instance pin bits, port bits, inherit overrides).
+    pub(crate) conns: u32,
+    /// Instance pin bits in the `real` domain.
+    pub(crate) real: u32,
+    /// Instance pin bits in the other domains.
+    pub(crate) other: u32,
+}
+
+/// Element names of every instance of `doc` (`X1[3]` … for `X1[3:0]`, else the name),
+/// with the `E011` findings of cell `cell`. Plain names (nearly all) are
 /// interned in batches (`Names::intern_batch`: 10^6 new names in a flat design); a bus
 /// name flushes the batch first, so every name gets the number one-by-one interning gives.
-pub(crate) fn element_names(
-    doc: &Document,
-    names: &mut Names,
-    cell: Name,
-) -> (Vec<u32>, Vec<Name>, Vec<Violation>) {
+pub(crate) fn element_names(doc: &Document, names: &mut Names, cell: Name) -> Elements {
     let (s, inst) = (doc.strings(), doc.instances());
     let ni = inst.id.len();
     let (mut start, mut elems, mut found) = (Vec::with_capacity(ni + 1), Vec::new(), Vec::new());
@@ -73,24 +91,37 @@ pub(crate) fn element_names(
         "every element named"
     );
     assert_eq!(start.len(), ni + 1);
-    (start, elems, found)
+    assert!(elems.len() >= ni, "every instance has an element");
+    Elements {
+        start,
+        name: elems,
+        too_wide: found,
+    }
 }
 
 /// The findings of one `connect` run after its outputs exist: `W004` per lone pin node,
 /// the bit findings (`W016`, `W010`), `E009` duplicate element names, and the port
 /// findings (`E012`, `E002`), each with its owner.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn findings(
     cx: &Cx<'_>,
     geo: &Seed,
     comps: &Comps,
     cn: &CellNets,
-    real: &[u32],
-    other: &[u32],
+    domains: &DomainCounts,
     names: &Names,
     out: &mut Found<'_>,
 ) {
     let (s, inst) = (cx.doc.strings(), cx.doc.instances());
+    assert_eq!(
+        domains.real.len(),
+        cn.bit_name.len(),
+        "one count per bit net"
+    );
+    assert_eq!(
+        domains.other.len(),
+        cn.bit_name.len(),
+        "one count per bit net"
+    );
     let before = out.owner.len();
     // A cell's floating pins share few names (G, S, B, …): format each detail once.
     let mut unconnected: Vec<(Name, String)> = Vec::new();
@@ -118,7 +149,11 @@ pub(crate) fn findings(
     let mut rows = Vec::new();
     for b in 0..cn.bit_name.len() {
         let (name, global) = (cn.bit_name[b], cn.bit_global[b]);
-        let counts = (cn.bit_conns[b], real[b], other[b]);
+        let counts = BitCounts {
+            conns: cn.bit_conns[b],
+            real: domains.real[b],
+            other: domains.other[b],
+        };
         bit_findings(cx.own.cell, name, global, counts, names, &mut rows);
         for v in rows.drain(..) {
             out.push(OWN_BITS, v);
@@ -135,11 +170,14 @@ pub(crate) fn findings(
     });
     drop(seen);
     let mut elems: Vec<(Name, ObjId)> = Vec::new();
-    for i in (0..inst.id.len()).filter(|_| twice) {
-        elems.extend(cn.elems(i).iter().map(|&e| (e, inst.id[i])));
+    if twice {
+        for i in 0..inst.id.len() {
+            elems.extend(cn.elems(i).iter().map(|&e| (e, inst.id[i])));
+        }
     }
-    elems.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(id_cmp(a.1, b.1, s)));
-    for w in elems.windows(2).filter(|w| w[0].0 == w[1].0) {
+    elems.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(nets::id_cmp(a.1, b.1, s)));
+    let repeats = elems.windows(2).filter(|w| w[0].0 == w[1].0);
+    for w in repeats {
         let detail = format!("instance name `{}` is used twice", names.get(w[1].0));
         let v = Violation::new(Code::E009, cx.own.cell, w[1].1, w[1].0, detail);
         out.push(OWN_STATIC, v);
@@ -148,6 +186,10 @@ pub(crate) fn findings(
     for v in rows.drain(..) {
         out.push(OWN_PORTS, v);
     }
+    assert!(
+        out.owner.len() <= out.out.len(),
+        "every owner has its finding"
+    );
     assert!(out.owner.len() >= before);
 }
 
@@ -157,10 +199,13 @@ pub(crate) fn bit_findings(
     cell: Name,
     name: Name,
     global: bool,
-    (conns, real, other): (u32, u32, u32),
+    counts: BitCounts,
     names: &Names,
     out: &mut Vec<Violation>,
 ) {
+    assert!(name != Name::NONE, "a hole bit has no findings");
+    let BitCounts { conns, real, other } = counts;
+    let before = out.len();
     let row = |code, detail| Violation::new(code, cell, ObjId::NONE, name, detail);
     if conns == 1 && !global {
         let detail = format!("net `{}` has a single connection", names.get(name));
@@ -173,6 +218,7 @@ pub(crate) fn bit_findings(
         );
         out.push(row(Code::W010, detail));
     }
+    assert!(out.len() - before <= 2, "at most W016 and W010");
 }
 
 /// `E012` (ports ↔ own interface pins) and `E002` once when the schematic impl breaks it.
@@ -183,6 +229,11 @@ pub(crate) fn port_findings(doc: &Document, own: &Iface, names: &Names, out: &mu
     }
     let row = |code, object, param, detail| Violation::new(code, own.cell, object, param, detail);
     let before = out.len();
+    assert_eq!(
+        own.pin_alias.len(),
+        own.pin_name.len(),
+        "pin columns in step"
+    );
     for p in 0..ports.id.len() {
         let text = names.find(s.get(ports.text[p]));
         let known = text.is_some_and(|t| own.pin_name.contains(&t));
@@ -211,4 +262,9 @@ pub(crate) fn port_findings(doc: &Document, own: &Iface, names: &Names, out: &mu
         );
         out.push(row(Code::E002, ObjId::NONE, own.impl_name[si], detail));
     }
+    debug_assert!(
+        out[before..]
+            .iter()
+            .all(|v| matches!(v.code, Code::E012 | Code::E002))
+    );
 }

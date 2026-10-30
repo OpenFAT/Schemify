@@ -13,27 +13,37 @@ use crate::violations::{Code, Violation};
 use schemify_doc::ObjId;
 use schemify_format::FileKind;
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// Impl selection (spec §2) for the instance at `path` of cell `c`. Reports `E031`
     /// for config names the cell lacks and `E013` when nothing is selectable.
     pub(super) fn select(&mut self, path: &str, c: u32) -> Option<u32> {
+        assert!(
+            (c as usize) < self.ifaces.len(),
+            "cell {c} has an interface"
+        );
+        assert_eq!(
+            self.config.inst_hit.len(),
+            self.config.inst.len(),
+            "one hit flag per inst rule"
+        );
         let f = &self.ifaces[c as usize];
+        let f_impls = f.impl_name.len();
         let by_name =
             |name: &str, names: &Names| f.impl_name.iter().position(|n| names.get(*n) == name);
         let mut finding = None;
         let mut chosen = None;
-        let rule = self.config.inst.iter().position(|(p, _)| p == path);
+        let rule = self.config.inst.iter().position(|r| r.path == path);
         if let Some(r) = rule {
             self.config.inst_hit[r] = true;
         }
-        if let Some((_, imp)) = rule.map(|r| &self.config.inst[r]) {
+        if let Some(imp) = rule.map(|r| &self.config.inst[r].imp) {
             match by_name(imp, &self.names) {
                 Some(k) => chosen = Some(k),
                 None => finding = Some((imp.clone(), "inst")),
             }
         }
-        let cell_rule = self.config.cell.iter().find(|(r, _)| *r as u32 == f.row);
-        if let Some((_, imp)) = cell_rule.filter(|_| chosen.is_none()) {
+        let cell_rule = self.config.cell.iter().find(|r| r.row as u32 == f.row);
+        if let Some(imp) = cell_rule.filter(|_| chosen.is_none()).map(|r| &r.imp) {
             match by_name(imp, &self.names) {
                 Some(k) => chosen = Some(k),
                 None => finding = finding.or(Some((imp.clone(), "cell"))),
@@ -78,11 +88,19 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 "the cell has no selectable impl".to_owned(),
             ));
         }
+        assert!(
+            chosen.is_none_or(|k| k < f_impls),
+            "the chosen impl is the cell's"
+        );
         chosen.map(|k| k as u32)
     }
 
     /// The leaf impl row for (cell `c`, impl `k`), checking dialect support (`E013`).
     pub(super) fn leaf_impl(&mut self, c: u32, k: u32) -> Option<u32> {
+        assert!(
+            (k as usize) < self.ifaces[c as usize].impl_name.len(),
+            "impl {k} of cell {c}"
+        );
         if let Some(&id) = self.impl_ids.get(&(c, k)) {
             return (id != NONE).then_some(id);
         }
@@ -135,12 +153,18 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         self.impls.template.push(template.unwrap_or(Name::NONE));
         self.push_body(c, k);
         self.impl_ids.insert((c, k), id);
+        assert_eq!(
+            self.impls.template.len(),
+            self.impls.cell.len(),
+            "impl columns in step"
+        );
         Some(id)
     }
 
     /// The [`Impls`] row carrying the body of cell `c`'s schematic impl, `NONE` when no
     /// schematic impl has one (spec §7.6.8). Memoized like leaf rows.
     pub(super) fn def_body(&mut self, c: u32) -> u32 {
+        assert!((c as usize) < self.cells.len(), "cell {c} is loaded");
         let f = &self.ifaces[c as usize];
         let doc = self.cells[c as usize].doc;
         let (s, bodies) = (doc.strings(), doc.bodies());
@@ -161,6 +185,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         self.impls.template.push(Name::NONE);
         self.push_body(c, k);
         self.impl_ids.insert((c, k), id);
+        assert_eq!(
+            self.impls.index.len(),
+            self.impls.cell.len(),
+            "impl columns in step"
+        );
         id
     }
 
@@ -187,11 +216,15 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
 
 // ---- private ----
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     /// Why impl `k` of cell `c` cannot render the template `src`: its parse error, or
     /// the first identifier that no builtin, pin or param provides, resolved as the
     /// netlister resolves them (spec §7.6.6). `None` when every row can render.
     fn template_error(&self, c: u32, k: u32, src: &str) -> Option<String> {
+        assert!(
+            (k as usize) < self.ifaces[c as usize].impl_name.len(),
+            "impl {k} of cell {c}"
+        );
         let tmpl = match schemify_expr::Template::parse(src) {
             Err(err) => return Some(err.to_string()),
             Ok(t) => t,

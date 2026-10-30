@@ -19,7 +19,7 @@
 //! - `pub(crate) fn is_plain(text: &str) -> bool`
 //! - `pub(crate) fn expand(text, names, out, buf) -> Result<u32, TooWide>`
 
-use crate::names::{Name, Names, push_decimal};
+use crate::names::{self, Name, Names};
 
 /// Most bits one expression expands to (the plugin `Nets.width` column is `u16`).
 pub const WIDTH_MAX: u32 = u16::MAX as u32;
@@ -72,6 +72,7 @@ pub(crate) fn expand(
     if total > u64::from(WIDTH_MAX) {
         return Err(TooWide);
     }
+    assert!(total > 0, "every parsed term is at least one bit");
     for t in &terms {
         for _ in 0..t.count {
             let Some((a, b)) = t.range else {
@@ -84,7 +85,7 @@ pub(crate) fn expand(
                 buf.clear();
                 buf.push_str(t.ident);
                 buf.push('[');
-                push_decimal(i as u32, buf);
+                names::push_decimal(i as u32, buf);
                 buf.push(']');
                 out.push(names.intern(buf));
                 if i == i64::from(b) {
@@ -103,6 +104,7 @@ pub(crate) fn expand(
 
 impl Term<'_> {
     fn width(&self) -> u64 {
+        debug_assert!(self.count > 0, "`parse` rejects a zero repeat");
         let per = self.range.map_or(1, |(a, b)| u64::from(a.abs_diff(b)) + 1);
         u64::from(self.count) * per
     }
@@ -146,6 +148,7 @@ fn parse(text: &str) -> Option<Vec<Term<'_>>> {
                 i += 1;
             }
         }
+        assert!(i > start, "an ident has at least one byte");
         let ident = &text[start..i];
         let mut range = None;
         if b.get(i) == Some(&b'[') {
@@ -165,6 +168,7 @@ fn parse(text: &str) -> Option<Vec<Term<'_>>> {
             ident,
             range,
         });
+        assert!(i <= b.len(), "the cursor stays inside the text");
         match b.get(i) {
             None => break,
             Some(b',') => i += 1,

@@ -16,6 +16,7 @@
 //! - `pub fn cached_text(v: &Val, out: &mut String)`
 //! - `pub(crate) type Ref`, `pub(crate) const VAR`, `pub(crate) const NONE`
 //! - `pub(crate) enum Syntax`, `pub(crate) enum Code`
+//! - `pub(crate) struct Evaluated`
 //! - `pub(crate) struct Progs`: `push`, `refs`, `eval`
 
 use schemify_expr::{
@@ -80,6 +81,15 @@ pub(crate) enum Code {
     Bad(Box<XError>),
 }
 
+/// One evaluation's result (D20).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Evaluated {
+    pub(crate) val: Val,
+    /// A plugin function was missing and the record's `cached` value stands in for the
+    /// whole expression.
+    pub(crate) unverified: bool,
+}
+
 /// A table of compiled programs with resolved scope references (CSR) and the D20
 /// `cached` value of the record each came from.
 #[derive(Clone, Debug, Default)]
@@ -99,6 +109,7 @@ pub(crate) struct Progs {
 
 impl Val {
     /// Returns the value as an expression input; `None` for the two error states.
+    #[must_use]
     pub fn value(&self) -> Option<Value<'_>> {
         Some(match self {
             Val::Int(i) => Value::Int(*i),
@@ -111,6 +122,7 @@ impl Val {
     }
 
     /// Copies an evaluation result out of the scratch it borrows.
+    #[must_use]
     pub fn from_value(v: Value<'_>) -> Val {
         match v {
             Value::Int(i) => Val::Int(i),
@@ -122,17 +134,21 @@ impl Val {
     }
 
     /// Returns whether this is one of the two error states.
+    #[must_use]
     pub fn is_err(&self) -> bool {
         matches!(self, Val::Err(_) | Val::Upstream)
     }
 
     /// Returns the value as `f64` for gating (`int` promotes); `None` otherwise.
+    #[must_use]
     pub fn as_f64(&self) -> Option<f64> {
-        match self {
+        let x = match self {
             Val::Int(i) => Some(*i as f64),
             Val::Num(x) => Some(*x),
             _ => None,
-        }
+        };
+        debug_assert!(x.is_none_or(f64::is_finite), "a `num` is finite");
+        x
     }
 
     /// Appends the canonical text (expr spec §7): numbers canonical, `bool` as
@@ -142,6 +158,7 @@ impl Val {
     ///
     /// Panics on the error states (they have no text; check [`Val::is_err`]).
     pub fn write_text(&self, out: &mut String) {
+        let start = out.len();
         match self {
             Val::Int(i) => schemify_expr::write_int(out, *i),
             Val::Num(x) => schemify_expr::write_num(out, *x),
@@ -157,6 +174,8 @@ impl Val {
             }
             Val::Err(_) | Val::Upstream => panic!("an error has no text"),
         }
+        // `str` may be empty; every other value has a text.
+        debug_assert!(out.len() > start || matches!(self, Val::Str(_)));
     }
 
     /// Parses a `cached <value>` attribute (D20): a quoted string ([`cached_text`]), a
@@ -174,6 +193,13 @@ impl Val {
                 Err(_) => Val::Str(text.into()),
             },
         }
+    }
+}
+
+impl From<Value<'_>> for Val {
+    /// [`Val::from_value`].
+    fn from(v: Value<'_>) -> Val {
+        Val::from_value(v)
     }
 }
 
@@ -213,6 +239,11 @@ impl Progs {
         if self.ref_start.is_empty() {
             self.ref_start.push(0);
         }
+        assert_eq!(self.code.len() + 1, self.ref_start.len(), "columns in step");
+        assert!(
+            self.code.len() < u32::MAX as usize,
+            "a program index fits u32"
+        );
         let compiled = match syntax {
             Syntax::Expr => Program::compile(text, Mode::Scalar).map(Code::Expr),
             Syntax::Template => Template::parse(text).map(Code::Tmpl),
@@ -254,9 +285,9 @@ impl Progs {
         let p = (self.code.len() - 1) as u32;
         if pure && inputs == 0 {
             let (mut s, mut t) = (Scratch::default(), String::new());
-            let (v, unverified) = self.eval(p, &[], &mut no_funcs, &mut s, &mut t);
-            assert!(!unverified, "no plugin call, no stand-in");
-            self.konst[p as usize] = (!v.is_err()).then_some(v);
+            let r = self.eval(p, &[], &mut no_funcs, &mut s, &mut t);
+            assert!(!r.unverified, "no plugin call, no stand-in");
+            self.konst[p as usize] = (!r.val.is_err()).then_some(r.val);
         }
         assert_eq!(self.code.len() + 1, self.ref_start.len());
         assert_eq!(self.konst.len(), self.code.len());
@@ -265,12 +296,15 @@ impl Progs {
 
     pub(crate) fn refs(&self, p: u32) -> &[Ref] {
         let p = p as usize;
+        assert!(p + 1 < self.ref_start.len(), "program {p} exists");
+        assert!(
+            self.ref_start[p] <= self.ref_start[p + 1],
+            "ref offsets are monotone"
+        );
         &self.refs[self.ref_start[p] as usize..self.ref_start[p + 1] as usize]
     }
 
-    /// Evaluates program `p` on `inputs` (one per ref, in ref order). Returns the value
-    /// and whether it is *unverified* (D20: a plugin function was missing and the
-    /// record's `cached` value stands in for the whole expression).
+    /// Evaluates program `p` on `inputs` (one per ref, in ref order).
     pub(crate) fn eval<F: Funcs>(
         &self,
         p: u32,
@@ -278,14 +312,24 @@ impl Progs {
         funcs: &mut F,
         scratch: &mut Scratch,
         text: &mut String,
-    ) -> (Val, bool) {
-        if let Some(v) = &self.konst[p as usize] {
-            debug_assert!(inputs.is_empty());
-            return (v.clone(), false);
+    ) -> Evaluated {
+        let at = p as usize;
+        assert!(at < self.code.len(), "program {p} exists");
+        debug_assert_eq!(inputs.len(), self.refs(p).len(), "one input per ref");
+        if let Some(v) = &self.konst[at] {
+            return Evaluated {
+                val: v.clone(),
+                unverified: false,
+            };
         }
         let mut missing = false;
         let result = match &self.code[p as usize] {
-            Code::Bad(e) => return (Val::Err(e.clone()), false),
+            Code::Bad(e) => {
+                return Evaluated {
+                    val: Val::Err(e.clone()),
+                    unverified: false,
+                };
+            }
             Code::Expr(prog) => {
                 let mut call =
                     |slot: u32, args: &[Value<'_>]| plugin(prog, slot, args, funcs, &mut missing);
@@ -301,11 +345,12 @@ impl Progs {
                     .map(|()| Val::Str(text.as_str().into()))
             }
         };
-        match (result, &self.cached[p as usize]) {
+        let (val, unverified) = match (result, &self.cached[at]) {
             (Ok(v), _) => (v, false),
             (Err(_), Some(c)) if missing => (c.clone(), true),
             (Err(e), _) => (Val::Err(Box::new(e)), false),
-        }
+        };
+        Evaluated { val, unverified }
     }
 }
 
@@ -339,6 +384,7 @@ pub fn cached_text(v: &Val, out: &mut String) {
 
 /// A registry with no plugin functions loaded: every `ns.f(...)` falls back to its
 /// record's `cached` value (unverified) or fails with `X006`.
+#[must_use]
 pub fn no_funcs(_name: &str, _args: &[Value<'_>]) -> Option<Result<Value<'static>, XError>> {
     None
 }
@@ -373,6 +419,10 @@ fn plugin<F: Funcs>(
     funcs: &mut F,
     missing: &mut bool,
 ) -> Result<F::Out, XError> {
+    assert!(
+        (slot as usize) < prog.plugin_fns().len(),
+        "slot {slot} is one of this program's calls"
+    );
     let (ns, f) = prog
         .plugin_fns()
         .nth(slot as usize)
@@ -395,6 +445,10 @@ fn plugin<F: Funcs>(
 mod tests {
     use super::*;
 
+    fn ev(val: Val, unverified: bool) -> Evaluated {
+        Evaluated { val, unverified }
+    }
+
     fn lookup(name: &str) -> Option<Ref> {
         match name {
             "w" => Some(0),
@@ -416,16 +470,16 @@ mod tests {
         assert_eq!(p.refs(c), &[0]);
         assert!(matches!(&p.code[d as usize], Code::Bad(e) if e.code == XCode::X009));
         let (mut s, mut t) = (Scratch::default(), String::new());
-        let (v, unverified) = p.eval(
+        let r = p.eval(
             a,
             &[Value::Num(0.5), Value::Int(1)],
             &mut no_funcs,
             &mut s,
             &mut t,
         );
-        assert_eq!((v, unverified), (Val::Num(2.0), false));
-        let (v, _) = p.eval(c, &[Value::Int(3)], &mut no_funcs, &mut s, &mut t);
-        assert_eq!(v, Val::Str("M3".into()));
+        assert_eq!(r, ev(Val::Num(2.0), false));
+        let r = p.eval(c, &[Value::Int(3)], &mut no_funcs, &mut s, &mut t);
+        assert_eq!(r.val, Val::Str("M3".into()));
     }
 
     #[test]
@@ -437,10 +491,10 @@ mod tests {
         let inputs = [Value::Num(1.0)];
         assert_eq!(
             p.eval(with, &inputs, &mut no_funcs, &mut s, &mut t),
-            (Val::Num(2.5), true)
+            ev(Val::Num(2.5), true)
         );
-        let (v, u) = p.eval(without, &inputs, &mut no_funcs, &mut s, &mut t);
-        assert!(matches!(v, Val::Err(e) if e.code == XCode::X006) && !u);
+        let r = p.eval(without, &inputs, &mut no_funcs, &mut s, &mut t);
+        assert!(matches!(r.val, Val::Err(e) if e.code == XCode::X006) && !r.unverified);
         let mut loaded =
             |name: &str, args: &[Value<'_>]| -> Option<Result<Value<'static>, XError>> {
                 assert_eq!(name, "gmid.width");
@@ -449,7 +503,7 @@ mod tests {
             };
         assert_eq!(
             p.eval(with, &inputs, &mut loaded, &mut s, &mut t),
-            (Val::Num(3.0), false)
+            ev(Val::Num(3.0), false)
         );
     }
 
@@ -468,7 +522,7 @@ mod tests {
         let inputs = [Value::Num(1.0)];
         assert_eq!(
             p.eval(a, &inputs, &mut strings, &mut s, &mut t),
-            (Val::Str("12!".into()), false)
+            ev(Val::Str("12!".into()), false)
         );
         let odd = Val::Str("12 \"x\"\\\n".into());
         let mut text = String::new();
@@ -481,7 +535,7 @@ mod tests {
         let b = p.push("pdk.corner(w)", Syntax::Expr, c, lookup);
         assert_eq!(
             p.eval(b, &inputs, &mut no_funcs, &mut s, &mut t),
-            (Val::Str("tt".into()), true)
+            ev(Val::Str("tt".into()), true)
         );
     }
 

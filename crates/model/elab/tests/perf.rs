@@ -9,11 +9,11 @@
 
 mod common;
 
-use common::*;
-use schemify_doc::{Edit, EditRequest, Mode, Op, Outcome, Target, Transaction, apply_edits};
+use common::{DEV, Mix};
+use schemify_doc::{Edit, EditRequest, Mode, Op, Outcome, Target, Transaction};
 use schemify_elab::Names;
-use schemify_elab::test_support::iface;
-use schemify_elab::{CellState, connect, elaborate, no_funcs};
+use schemify_elab::test_support;
+use schemify_elab::{CellState, no_funcs};
 use schemify_format::RecordKind;
 use std::time::{Duration, Instant};
 
@@ -28,8 +28,8 @@ fn level(child: &str, fan: usize, param_child: &str) -> String {
     for i in 0..fan {
         s.push_str(&format!(
             "inst {} ./{child}\n  at {} 0 R0\n  name X{i}\n  {param_child} r*2\n",
-            id(i as u64 + 1),
-            c(i as i64 * 100_000)
+            common::id(i as u64 + 1),
+            common::c(i as i64 * 100_000)
         ));
     }
     for i in 0..fan {
@@ -45,20 +45,20 @@ fn level(child: &str, fan: usize, param_child: &str) -> String {
         };
         s.push_str(&format!(
             "label {} {} 0 R0 {a}\n",
-            id(1000 + 2 * i as u64),
-            c(i as i64 * 100_000)
+            common::id(1000 + 2 * i as u64),
+            common::c(i as i64 * 100_000)
         ));
         s.push_str(&format!(
             "label {} {} 20 R0 {b}\n",
-            id(1001 + 2 * i as u64),
-            c(i as i64 * 100_000)
+            common::id(1001 + 2 * i as u64),
+            common::c(i as i64 * 100_000)
         ));
     }
     s.push_str(&format!(
         "port {} 0 0 R0 A\nport {} {} 20 R0 B\n",
-        id(5000),
-        id(5001),
-        c((fan as i64 - 1) * 100_000)
+        common::id(5000),
+        common::id(5001),
+        common::c((fan as i64 - 1) * 100_000)
     ));
     s
 }
@@ -72,7 +72,7 @@ fn elaborate_a_hierarchy_of_a_million_leaves() {
     let l3 = level("l2", fan, "r");
     let l4 = level("l3", fan, "r");
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./l4\n  at 0 0 R0\n  name X\n\nlabel 0n0001 0 0 R0 in\nlabel 0n0002 0 20 R0 0\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", RES),
         ("l1.shcomp", &l1),
         ("l2.shcomp", &l2),
@@ -83,10 +83,10 @@ fn elaborate_a_hierarchy_of_a_million_leaves() {
     let mut best = Duration::MAX;
     for _ in 0..5 {
         let t = Instant::now();
-        let e = elaborate(&p, hs[5], &ngspice(), &mut no_funcs);
+        let e = schemify_elab::elaborate(&p, hs[5], &common::ngspice(), &mut no_funcs);
         best = best.min(t.elapsed());
         assert_eq!(e.flat_leaves(e.top), (fan as u64).pow(4));
-        assert!(!e.violations.blocking(), "{:?}", codes(&e));
+        assert!(!e.violations.blocking(), "{:?}", common::codes(&e));
         assert_eq!(
             e.defs.cell.len(),
             5,
@@ -113,14 +113,14 @@ fn elaborate_a_flat_bench_of_100k_instances() {
         // A chain: R_i's B pin abuts R_{i+1}'s A pin.
         s.push_str(&format!(
             "inst {} ./res\n  at 0 {} R0\n  name R{i}\n  R {}\n",
-            id(i as u64 + 1),
-            c(i as i64 * 20_000),
+            common::id(i as u64 + 1),
+            common::c(i as i64 * 20_000),
             i % 7 + 1
         ));
     }
-    let (p, hs) = project(&[("res.shprim", RES), ("tb.shbench", &s)]);
+    let (p, hs) = common::project(&[("res.shprim", RES), ("tb.shbench", &s)]);
     let t = Instant::now();
-    let e = elaborate(&p, hs[1], &ngspice(), &mut no_funcs);
+    let e = schemify_elab::elaborate(&p, hs[1], &common::ngspice(), &mut no_funcs);
     let dt = t.elapsed();
     assert_eq!(e.flat_leaves(e.top), n as u64);
     eprintln!("elaborate a flat 100k-instance bench: {dt:?} (×10 ≈ 1M flat)");
@@ -141,12 +141,15 @@ fn a_param_edit_with_1k_dependents_recomputes_within_8ms() {
         };
         s.push_str(&format!(
             "inst {} ./dev\n  at {} 0 R0\n  name M{i}\n  W {w}\n",
-            id(i as u64 + 1),
-            c(i as i64 * 10_000)
+            common::id(i as u64 + 1),
+            common::c(i as i64 * 10_000)
         ));
     }
-    s.push_str(&format!("\nport {} 0 0 R0 P\n\nvar a 1\n", id(99_999)));
-    let (mut p, hs) = project(&[("dev.shprim", dev), ("cell.shcomp", &s)]);
+    s.push_str(&format!(
+        "\nport {} 0 0 R0 P\n\nvar a 1\n",
+        common::id(99_999)
+    ));
+    let (mut p, hs) = common::project(&[("dev.shprim", dev), ("cell.shcomp", &s)]);
     let h = hs[1];
     let t = Instant::now();
     let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
@@ -163,7 +166,7 @@ fn a_param_edit_with_1k_dependents_recomputes_within_8ms() {
             mode: Mode::Commit,
             ops: vec![op.clone()],
         };
-        let out = apply_edits(
+        let out = schemify_doc::apply_edits(
             &mut p,
             &[EditRequest {
                 doc: h,
@@ -200,12 +203,12 @@ fn connectivity_of_a_100k_object_cell() {
     let g = |rng: &mut Mix| (rng.below(side as u64) as i64 - side / 2) * 10_000;
     let mut s = String::from("schemify 1 shbench\n\n");
     for i in 0..n {
-        let k = id(i as u64 + 1);
+        let k = common::id(i as u64 + 1);
         match i * 100 / n {
             0..35 => s.push_str(&format!(
                 "inst {k} ./dev\n  at {} {} R90\n  name X{i}\n",
-                c(g(&mut rng)),
-                c(g(&mut rng))
+                common::c(g(&mut rng)),
+                common::c(g(&mut rng))
             )),
             35..80 => {
                 let (x, y) = (g(&mut rng), g(&mut rng));
@@ -215,35 +218,41 @@ fn connectivity_of_a_100k_object_cell() {
                 } else {
                     (x, y + len)
                 };
-                s.push_str(&format!("wire {k} {} {} {} {}\n", c(x), c(y), c(x2), c(y2)));
+                s.push_str(&format!(
+                    "wire {k} {} {} {} {}\n",
+                    common::c(x),
+                    common::c(y),
+                    common::c(x2),
+                    common::c(y2)
+                ));
             }
             80..92 => s.push_str(&format!(
                 "label {k} {} {} R0 n{}\n",
-                c(g(&mut rng)),
-                c(g(&mut rng)),
+                common::c(g(&mut rng)),
+                common::c(g(&mut rng)),
                 rng.below(5000)
             )),
             _ => s.push_str(&format!(
                 "noconn {k} {} {}\n",
-                c(g(&mut rng)),
-                c(g(&mut rng))
+                common::c(g(&mut rng)),
+                common::c(g(&mut rng))
             )),
         }
     }
-    let (p, hs) = project(&[("dev.shprim", DEV), ("big.shbench", &s)]);
+    let (p, hs) = common::project(&[("dev.shprim", DEV), ("big.shbench", &s)]);
     let doc = p.doc(hs[1]).unwrap();
     let dev_doc = p.doc(hs[0]).unwrap();
     let mut best = Duration::MAX;
     let mut nets = 0;
     for _ in 0..5 {
         let mut names = Names::default();
-        let own = iface(doc, "big", &mut names);
-        let dev = iface(dev_doc, "dev", &mut names);
+        let own = test_support::iface(doc, "big", &mut names);
+        let dev = test_support::iface(dev_doc, "dev", &mut names);
         let ifaces = [own, dev];
         let inst_iface = vec![1u32; doc.instances().id.len()];
         let mut found = Vec::new();
         let t = Instant::now();
-        let cn = connect(
+        let cn = schemify_elab::connect(
             doc,
             &ifaces[0],
             &ifaces,
@@ -270,12 +279,12 @@ fn tiles(tiles: u64) -> String {
     s.push_str("schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\n");
     for t in 0..tiles {
         let (x, y) = ((t % side) as i64 * 200_000, (t / side) as i64 * 200_000);
-        let k = |n: u64| id(t * 16 + n);
+        let k = |n: u64| common::id(t * 16 + n);
         s.push_str(&format!(
             "inst {} ./dev\n  at {} {} R0\n  name X{t}\n",
             k(0),
-            c(x),
-            c(y)
+            common::c(x),
+            common::c(y)
         ));
         let wires = [
             (x - 40_000, y, x, y),
@@ -289,29 +298,29 @@ fn tiles(tiles: u64) -> String {
             s.push_str(&format!(
                 "wire {} {} {} {} {}\n",
                 k(1 + n as u64),
-                c(w.0),
-                c(w.1),
-                c(w.2),
-                c(w.3)
+                common::c(w.0),
+                common::c(w.1),
+                common::c(w.2),
+                common::c(w.3)
             ));
         }
         s.push_str(&format!(
             "label {} {} {} R0 in{t}\nlabel {} {} {} R0 gnd\nlabel {} {} {} R0 vdd!\nnoconn {} {} {}\n",
             k(7),
-            c(x - 40_000),
-            c(y),
+            common::c(x - 40_000),
+            common::c(y),
             k(8),
-            c(x - 40_000),
-            c(y + 60_000),
+            common::c(x - 40_000),
+            common::c(y + 60_000),
             k(9),
-            c(x - 40_000),
-            c(y + 90_000),
+            common::c(x - 40_000),
+            common::c(y + 90_000),
             k(10),
-            c(x + 100_000),
-            c(y)
+            common::c(x + 100_000),
+            common::c(y)
         ));
     }
-    s.push_str(&format!("port {} 0 -100 R0 P\n", id(1 << 28)));
+    s.push_str(&format!("port {} 0 -100 R0 P\n", common::id(1 << 28)));
     s
 }
 
@@ -320,7 +329,7 @@ fn tiles(tiles: u64) -> String {
 /// name), move the device, or move a wire end.
 fn local_edit(rng: &mut Mix, t: u64, side: u64) -> Vec<Op> {
     let (x, y) = ((t % side) as i64 * 200_000, (t / side) as i64 * 200_000);
-    let k = |n: u64| id(t * 16 + n);
+    let k = |n: u64| common::id(t * 16 + n);
     match rng.below(5) {
         0 => vec![Op::Delete(Target::new(
             RecordKind::Wire,
@@ -329,10 +338,10 @@ fn local_edit(rng: &mut Mix, t: u64, side: u64) -> Vec<Op> {
         1 => vec![Op::Insert {
             rec: schemify_doc::RecordBuf::new(RecordKind::Wire)
                 .field("-")
-                .field(&c(x + 60_000))
-                .field(&c(y))
-                .field(&c(x + 160_000))
-                .field(&c(y)),
+                .field(&common::c(x + 60_000))
+                .field(&common::c(y))
+                .field(&common::c(x + 160_000))
+                .field(&common::c(y)),
             at: None,
         }],
         2 => vec![Op::SetField {
@@ -343,12 +352,12 @@ fn local_edit(rng: &mut Mix, t: u64, side: u64) -> Vec<Op> {
         3 => vec![Op::SetAttr {
             target: Target::new(RecordKind::Inst, &k(0)),
             key: "at".into(),
-            values: vec![c(x + 10_000), c(y), "R0".into()],
+            values: vec![common::c(x + 10_000), common::c(y), "R0".into()],
         }],
         _ => vec![Op::SetField {
             target: Target::new(RecordKind::Wire, &k(2)),
             index: 3,
-            value: c(x + 80_000),
+            value: common::c(x + 80_000),
         }],
     }
 }
@@ -369,16 +378,16 @@ fn percentiles(samples: &mut [Duration]) -> (f64, f64, f64) {
 fn edit_costs(objects: u64) -> (f64, f64, f64) {
     let n = objects / 10;
     let side = (n as f64).sqrt().ceil() as u64;
-    let (mut p, hs) = project(&[("dev.shprim", DEV), ("big.shcomp", &tiles(n))]);
+    let (mut p, hs) = common::project(&[("dev.shprim", DEV), ("big.shcomp", &tiles(n))]);
     let h = hs[1];
     let t0 = Instant::now();
-    let mut st = CellState::build(&p, h, &mut no_funcs).unwrap();
+    let mut st = CellState::build(&p, h, &mut no_funcs).expect("a live handle builds");
     let build = t0.elapsed();
     let mut rng = Mix(7);
     let mut samples = Vec::new();
     let mut patched = 0;
     let mut step = |p: &mut schemify_doc::Project, edit: Edit, ops: &[Op], st: &mut CellState| {
-        let out = apply_edits(
+        let out = schemify_doc::apply_edits(
             p,
             &[EditRequest {
                 doc: h,
@@ -420,7 +429,7 @@ fn edit_costs(objects: u64) -> (f64, f64, f64) {
     );
     if objects <= 10_000 {
         // The patched rows equal a fresh build's (names compared as text: two arenas).
-        let fresh = CellState::build(&p, h, &mut no_funcs).unwrap();
+        let fresh = CellState::build(&p, h, &mut no_funcs).expect("a live handle builds");
         let text = |st: &CellState| -> Vec<String> {
             let n = |x: schemify_elab::Name| {
                 (x != schemify_elab::Name::NONE).then(|| st.names.get(x).to_owned())

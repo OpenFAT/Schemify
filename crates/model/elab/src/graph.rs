@@ -25,16 +25,19 @@
 //! Contents:
 //! - `pub struct Graph`: `len`, `is_empty`, `inst_param`; `pub(crate)` `build`,
 //!   `node_param`, `child_var`, `node_deps`, `set_deps`, `code`, `progs_of`
+//! - `pub(crate) struct CyclicNode`, `pub(crate) struct ChildVar`
+//! - `pub(crate) struct CachedOf`
 //! - `pub(crate) const OWN`
 //! - `pub(crate) fn override_of(doc: &Document, i: usize, key: &str) -> Option<Sym>`
-//! - `pub(crate) fn cached_of(doc, i, key) -> (Option<(&str, &str)>, bool)`
+//! - `pub(crate) fn cached_of(doc, i, key) -> CachedOf`
 //! - `pub(crate) fn own_node(params: u32, r: Ref) -> u32`
 
-use crate::iface::Iface;
+use crate::iface::{self, Iface};
 use crate::names::{Name, Names};
 use crate::values::{Code as PCode, NONE, Progs, Ref, Syntax, VAR, Val};
 use schemify_doc::{Document, Instances, Sym};
-use schemify_expr::{Deps, Error as XError, reverse, topo_order, topo_order_all};
+use schemify_expr::{Deps, Error as XError};
+use schemify_format::RecordKind;
 use std::collections::HashMap;
 
 /// One cell's dependency graph and its current values.
@@ -68,7 +71,7 @@ pub struct Graph {
     /// Nodes in topological order (dependencies first).
     pub(crate) order: Vec<u32>,
     /// Nodes on a dependency cycle (`X005`), with the error, sorted by node.
-    pub(crate) cyclic: Vec<(u32, XError)>,
+    pub(crate) cyclic: Vec<CyclicNode>,
     /// Current value per node (default context in the editor).
     pub vals: Vec<Val>,
     /// D20: the value rests on a `cached` stand-in for a missing plugin function.
@@ -85,10 +88,36 @@ pub struct Graph {
     pub inst_first: Vec<u32>,
     /// Interface of each instance row (`u32::MAX`: unresolved).
     pub(crate) inst_iface: Vec<u32>,
-    /// `(instance row, child var) → node`, sorted.
-    pub(crate) child_vars: Vec<(u32, u32, u32)>,
+    /// The nodes made for child vars, sorted by `(inst, var)`.
+    pub(crate) child_vars: Vec<ChildVar>,
     /// Programs the graph compiled itself: overrides and substituted vars.
     pub(crate) progs: Progs,
+}
+
+/// A node on a dependency cycle and its `X005` error.
+#[derive(Clone, Debug)]
+pub(crate) struct CyclicNode {
+    pub(crate) node: u32,
+    pub(crate) error: XError,
+}
+
+/// The node a child var of one instance got.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChildVar {
+    /// Instance row.
+    pub(crate) inst: u32,
+    /// Var index in the instance's interface.
+    pub(crate) var: u32,
+    pub(crate) node: u32,
+}
+
+/// What [`cached_of`] found on one instance for one key.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CachedOf<'doc> {
+    /// The inputs digest of the `cached <key> <value> <digest>` line (D20), if any.
+    pub(crate) digest: Option<&'doc str>,
+    /// Whether the key also has an override of its own.
+    pub(crate) own_override: bool,
 }
 
 /// Program table of a node: the graph's own table (overrides, substituted vars), or the
@@ -129,12 +158,14 @@ impl Graph {
         g.resolve_deps(ifaces);
         g.finish(ifaces, names);
         assert_eq!(g.inst_first.len(), ni);
+        assert_eq!(g.vals.len(), g.len(), "every node has a value slot");
         g
     }
 
     /// The param or var node `n` is the value of: an own param or var, or a param or
     /// var of its instance's cell.
     pub(crate) fn node_param(&self, n: u32, ifaces: &[Iface]) -> Name {
+        assert!((n as usize) < self.len(), "node {n} out of range");
         let (owner, slot) = (self.owner[n as usize], self.slot[n as usize]);
         let f = if owner == NONE {
             &ifaces[self.own as usize]
@@ -152,14 +183,23 @@ impl Graph {
     pub(crate) fn child_var(&self, i: u32, v: u32) -> Option<u32> {
         let at = self
             .child_vars
-            .binary_search_by_key(&(i, v), |e| (e.0, e.1))
+            .binary_search_by_key(&(i, v), |e| (e.inst, e.var))
             .ok()?;
-        Some(self.child_vars[at].2)
+        let node = self.child_vars[at].node;
+        assert!((node as usize) < self.len(), "a child var's node exists");
+        Some(node)
     }
 
     /// Returns the nodes node `n` depends on, in its program's identifier order.
     pub(crate) fn node_deps(&self, n: u32) -> &[u32] {
-        &self.deps[self.dep_start[n as usize] as usize..self.dep_end[n as usize] as usize]
+        let (start, end) = (self.dep_start[n as usize], self.dep_end[n as usize]);
+        assert!(start <= end, "node {n}'s dependency range is reversed");
+        let deps = &self.deps[start as usize..end as usize];
+        debug_assert!(
+            deps.iter().all(|&d| (d as usize) < self.len()),
+            "edge to no node"
+        );
+        deps
     }
 
     /// Replaces node `n`'s dependencies by `new` (in its program's identifier order) when
@@ -175,7 +215,7 @@ impl Graph {
         assert!(at < self.len(), "node {n} in range");
         let r = self.rank[at];
         if new.iter().any(|&d| self.rank[d as usize] >= r)
-            || self.cyclic.binary_search_by_key(&n, |e| e.0).is_ok()
+            || self.cyclic.binary_search_by_key(&n, |e| e.node).is_ok()
             || self.deps.len() + self.rdeps.len() > 4 * self.edges + (1 << 16)
         {
             return false;
@@ -190,7 +230,8 @@ impl Graph {
             self.deps.extend_from_slice(new);
             self.dep_end[at] = self.deps.len() as u32;
         }
-        for &d in new.iter().filter(|d| !old.contains(d)) {
+        let added = new.iter().filter(|d| !old.contains(d));
+        for &d in added {
             let d = d as usize;
             let (a, b) = (self.rdep_start[d] as usize, self.rdep_end[d] as usize);
             if b != self.rdeps.len() {
@@ -205,29 +246,53 @@ impl Graph {
     }
 
     /// Returns the node count.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.slot.len(), self.owner.len(), "node columns in step");
         self.owner.len()
     }
 
     /// Returns whether the graph has no nodes.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.table.len(), self.owner.len(), "node columns in step");
         self.owner.is_empty()
     }
 
-    /// Returns the node of param `k` of instance row `i`, if the instance resolved.
+    /// Returns the node of param `k` of instance row `i`, if the instance resolved. `k`
+    /// must be below the instantiated cell's param count; the result is then a node.
+    ///
+    /// # Panics
+    ///
+    /// If the returned node would not exist (`k` past the cell's params).
+    #[must_use]
     pub fn inst_param(&self, i: usize, k: usize) -> Option<u32> {
         let first = *self.inst_first.get(i)?;
-        (first != NONE).then_some(first + k as u32)
+        if first == NONE {
+            return None;
+        }
+        let node = first + k as u32;
+        assert!(
+            (node as usize) < self.len(),
+            "param {k} past instance {i}'s block"
+        );
+        Some(node)
     }
 
     /// Returns the compiled program of node `n`.
     pub(crate) fn code<'a>(&'a self, n: u32, ifaces: &'a [Iface]) -> &'a PCode {
         let progs = self.progs_of(n, ifaces);
-        &progs.code[self.prog[n as usize] as usize]
+        let prog = self.prog[n as usize] as usize;
+        assert!(
+            prog < progs.code.len(),
+            "node {n}'s program is in its table"
+        );
+        &progs.code[prog]
     }
 
     /// Returns the program table holding node `n`'s program.
     pub(crate) fn progs_of<'a>(&'a self, n: u32, ifaces: &'a [Iface]) -> &'a Progs {
+        assert!((n as usize) < self.len(), "node {n} out of range");
         match self.table[n as usize] {
             OWN => &self.progs,
             t => &ifaces[t as usize].progs,
@@ -240,6 +305,10 @@ impl Graph {
 /// of its `cached <key> <value> <digest>` line (a value Virtuoso derived, D20 as amended
 /// 2026-10-15).
 pub(crate) fn override_of(doc: &Document, i: usize, key: &str) -> Option<Sym> {
+    assert!(
+        i < doc.instances().id.len(),
+        "instance row {i} out of range"
+    );
     let s = doc.strings();
     let mut found = None;
     let mut cached = None;
@@ -254,28 +323,29 @@ pub(crate) fn override_of(doc: &Document, i: usize, key: &str) -> Option<Sym> {
     found.or(cached)
 }
 
-/// The `(value, digest)` of instance row `i`'s `cached <key> <value> <digest>` line, and
-/// whether `key` has an override of its own.
-pub(crate) fn cached_of<'d>(
-    doc: &'d Document,
-    i: usize,
-    key: &str,
-) -> (Option<(&'d str, &'d str)>, bool) {
+/// Instance row `i`'s `cached <key> <value> <digest>` line, and whether `key` has an
+/// override of its own.
+pub(crate) fn cached_of<'doc>(doc: &'doc Document, i: usize, key: &str) -> CachedOf<'doc> {
+    assert!(
+        i < doc.instances().id.len(),
+        "instance row {i} out of range"
+    );
     let s = doc.strings();
-    let (mut cached, mut own) = (None, false);
+    let mut found = CachedOf::default();
     for (k, vals) in doc.pool().attrs(doc.instances().attrs[i]) {
         let k = s.get(k);
         if Instances::is_override(k) && k == key {
-            own = true;
+            found.own_override = true;
         } else if k == "cached" && vals.len() == 3 && s.get(vals[0]) == key {
-            cached = Some((s.get(vals[1]), s.get(vals[2])));
+            found.digest = Some(s.get(vals[2]));
         }
     }
-    (cached, own)
+    found
 }
 
 /// The own-scope node of ref `r` (params first, then vars).
 pub(crate) fn own_node(params: u32, r: Ref) -> u32 {
+    assert!(r != NONE, "an unresolved ref has no node");
     if r & VAR == 0 { r } else { params + (r & !VAR) }
 }
 
@@ -284,6 +354,7 @@ pub(crate) fn own_node(params: u32, r: Ref) -> u32 {
 impl Graph {
     /// Own param and var nodes; `subst` replaces var expressions or adds vars (later wins).
     fn own_nodes(&mut self, doc: &Document, me: &Iface, subst: &[(Name, &str)], names: &Names) {
+        assert!(self.is_empty(), "own nodes come first");
         let mut var_subst: Vec<Option<&str>> = vec![None; me.var_name.len()];
         for &(n, text) in subst {
             match self.var_name.iter().position(|v| *v == n) {
@@ -305,8 +376,7 @@ impl Graph {
             let src = var_src.get(v as usize).copied().unwrap_or(Sym::NONE);
             match var_subst[v as usize] {
                 Some(text) => {
-                    let lookup =
-                        |n: &str| crate::iface::own_ref(names, &me.param_name, &self.var_name, n);
+                    let lookup = |n: &str| iface::own_ref(names, &me.param_name, &self.var_name, n);
                     let prog = self.progs.push(text, Syntax::Expr, None, lookup);
                     self.push(NONE, VAR | v, OWN, prog, Sym::NONE);
                 }
@@ -319,6 +389,12 @@ impl Graph {
     /// One node per param of each resolved instance: its override (own scope, one compile
     /// per distinct text), else the cell's program in the child scope.
     fn inst_blocks(&mut self, doc: &Document, me: &Iface, ifaces: &[Iface], names: &Names) {
+        assert!(self.inst_first.is_empty(), "instance blocks are built once");
+        assert_eq!(
+            self.len(),
+            (self.params + self.vars) as usize,
+            "after the own nodes"
+        );
         let s = doc.strings();
         let mut dedupe: HashMap<(Sym, bool), u32> = HashMap::new();
         for i in 0..self.inst_iface.len() {
@@ -343,9 +419,8 @@ impl Graph {
                 let prog = match dedupe.get(&key) {
                     Some(&prog) => prog,
                     None => {
-                        let lookup = |n: &str| {
-                            crate::iface::own_ref(names, &me.param_name, &self.var_name, n)
-                        };
+                        let lookup =
+                            |n: &str| iface::own_ref(names, &me.param_name, &self.var_name, n);
                         let prog = self.progs.push(s.get(sym), syntax, None, lookup);
                         dedupe.insert(key, prog);
                         prog
@@ -360,6 +435,7 @@ impl Graph {
     /// The CSR of each node's dependencies; child var nodes are appended (and resolved in
     /// turn) as references meet them.
     fn resolve_deps(&mut self, ifaces: &[Iface]) {
+        assert!(self.dep_start.is_empty(), "dependencies are resolved once");
         self.dep_start.push(0);
         self.dep_start.reserve(self.len());
         let mut refs: Vec<Ref> = Vec::new(); // reused: one allocation, not one per node
@@ -389,7 +465,8 @@ impl Graph {
                     if b == NONE {
                         continue;
                     }
-                    for &r in c.progs.refs(b).iter().filter(|&&r| r & VAR != 0) {
+                    let var_refs = c.progs.refs(b).iter().filter(|&&r| r & VAR != 0);
+                    for &r in var_refs {
                         self.child_ref(owner, table, r, ifaces);
                     }
                 }
@@ -398,6 +475,10 @@ impl Graph {
             n += 1;
         }
         assert_eq!(self.dep_start.len(), self.len() + 1);
+        debug_assert!(
+            self.deps.iter().all(|&d| (d as usize) < self.len()),
+            "edge to no node"
+        );
     }
 
     fn push(&mut self, owner: u32, slot: u32, table: u32, prog: u32, src: Sym) {
@@ -410,22 +491,36 @@ impl Graph {
         self.table.push(table);
         self.prog.push(prog);
         self.src.push(src);
+        assert_eq!(self.src.len(), self.owner.len(), "node columns in step");
     }
 
     /// Node for a child-scope reference of instance `owner` (interface `table`).
     fn child_ref(&mut self, owner: u32, table: u32, r: Ref, ifaces: &[Iface]) -> u32 {
+        assert!(r != NONE, "an unresolved ref has no node");
+        assert!(
+            self.inst_first[owner as usize] != NONE,
+            "only resolved instances have scopes"
+        );
         if r & VAR == 0 {
             return self.inst_first[owner as usize] + r;
         }
         let v = r & !VAR;
         let key = (owner, v);
-        match self.child_vars.binary_search_by_key(&key, |e| (e.0, e.1)) {
-            Ok(i) => self.child_vars[i].2,
+        match self
+            .child_vars
+            .binary_search_by_key(&key, |e| (e.inst, e.var))
+        {
+            Ok(i) => self.child_vars[i].node,
             Err(i) => {
                 let node = self.len() as u32;
                 let prog = ifaces[table as usize].var_prog[v as usize];
                 self.push(owner, VAR | v, table, prog, Sym::NONE);
-                self.child_vars.insert(i, (owner, v, node));
+                let child = ChildVar {
+                    inst: owner,
+                    var: v,
+                    node,
+                };
+                self.child_vars.insert(i, child);
                 node
             }
         }
@@ -443,17 +538,20 @@ impl Graph {
             targets: &self.deps,
         };
         // The acyclic case (nearly every cell) takes the cheaper order.
-        if topo_order(deps, &mut self.order).is_err() {
+        if schemify_expr::topo_order(deps, &mut self.order).is_err() {
             let mut cycles = Vec::new();
-            topo_order_all(deps, &mut self.order, &mut cycles);
+            schemify_expr::topo_order_all(deps, &mut self.order, &mut cycles);
             for c in &cycles {
                 let err = c.error(|n| names.get(self.node_param(n, ifaces)));
-                self.cyclic
-                    .extend(c.nodes.iter().map(|&node| (node, err.clone())));
+                let members = c.nodes.iter().map(|&node| CyclicNode {
+                    node,
+                    error: err.clone(),
+                });
+                self.cyclic.extend(members);
             }
             // A node on several cycles reports the first.
-            self.cyclic.sort_by_key(|e| e.0);
-            self.cyclic.dedup_by_key(|e| e.0);
+            self.cyclic.sort_by_key(|e| e.node);
+            self.cyclic.dedup_by_key(|e| e.node);
             assert!(!self.cyclic.is_empty(), "a failed order has a cycle");
             self.cut();
         }
@@ -461,7 +559,7 @@ impl Graph {
             offsets: &self.dep_start,
             targets: &self.deps,
         };
-        reverse(deps, &mut self.rdep_start, &mut self.rdeps);
+        schemify_expr::reverse(deps, &mut self.rdep_start, &mut self.rdeps);
         self.rdep_end = self.rdep_start[1..].to_vec();
         self.edges = self.deps.len();
         self.rank = vec![0; n];
@@ -471,14 +569,21 @@ impl Graph {
         self.vals = vec![Val::Upstream; n];
         self.unverified = vec![false; n];
         assert_eq!(self.order.len(), n);
+        // Every kept edge points back in the order (cycle nodes lost theirs in `cut`).
+        debug_assert!((0..n as u32).all(|v| {
+            let r = self.rank[v as usize];
+            self.node_deps(v).iter().all(|&d| self.rank[d as usize] < r)
+        }));
+        assert_eq!(self.rdep_end.len(), n, "one dependent range per node");
     }
 
     /// Drops the edges of the `cyclic` nodes (rebuilds the CSR).
     fn cut(&mut self) {
+        assert!(!self.cyclic.is_empty(), "cut runs only on a cyclic graph");
         let mut start = vec![0u32];
         let mut deps = Vec::with_capacity(self.deps.len());
         for node in 0..self.len() as u32 {
-            if self.cyclic.binary_search_by_key(&node, |e| e.0).is_err() {
+            if self.cyclic.binary_search_by_key(&node, |e| e.node).is_err() {
                 deps.extend_from_slice(self.node_deps(node));
             }
             start.push(deps.len() as u32);
@@ -494,7 +599,7 @@ impl Graph {
 fn own_sources(doc: &Document) -> (Vec<Sym>, Vec<Sym>) {
     let s = doc.strings();
     let params = doc.params();
-    let ps = (0..params.kind.len())
+    let ps: Vec<Sym> = (0..params.kind.len())
         .map(|r| {
             let computed = doc
                 .pool()
@@ -504,9 +609,10 @@ fn own_sources(doc: &Document) -> (Vec<Sym>, Vec<Sym>) {
         })
         .collect();
     let blocks = doc.doc_blocks();
-    let vs = (0..blocks.kind.len())
-        .filter(|&r| blocks.kind[r] == schemify_format::RecordKind::Var)
+    let vs: Vec<Sym> = (0..blocks.kind.len())
+        .filter(|&r| blocks.kind[r] == RecordKind::Var)
         .map(|r| blocks.fields[r][1])
         .collect();
+    assert_eq!(ps.len(), params.kind.len(), "one source per own param");
     (ps, vs)
 }

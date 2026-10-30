@@ -14,6 +14,7 @@
 //! - `pub fn impl_ports(lang: &str, text: &str) -> Result<Vec<(String, PinDir)>, PortError>`
 
 use schemify_doc::PinDir;
+use std::fmt;
 
 /// Most ports a body may declare: the `pins` table capacity (format rank 1, 2^12).
 pub const PORTS_MAX: usize = 1 << 12;
@@ -28,13 +29,13 @@ pub struct PortError {
 }
 
 #[derive(Clone, Copy)]
-struct Tok<'a> {
-    text: &'a str,
+struct Tok<'text> {
+    text: &'text str,
     line: u32,
 }
 
-impl std::fmt::Display for PortError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for PortError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "line {}: {}", self.line, self.why)
     }
 }
@@ -48,15 +49,21 @@ impl std::fmt::Display for PortError {
 /// `spice`: the first `.subckt` (any case, `+` continuation lines); every node is `inout`
 /// and the list ends at `params:` or the first `name=value`.
 ///
-/// Errors (nothing partial is returned): another language, no `module`/`.subckt`, an
-/// unterminated port or parameter list, a duplicate port, more than [`PORTS_MAX`] ports.
+/// # Errors
+///
+/// Nothing partial is returned: another language, no `module`/`.subckt`, an unterminated
+/// port or parameter list, a duplicate port, more than [`PORTS_MAX`] ports.
+///
+/// # Panics
+///
+/// Never for any text: the asserts check this function's own bound and uniqueness.
 pub fn impl_ports(lang: &str, text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
     let ports = match lang {
         "verilog" | "veriloga" => verilog_ports(text)?,
         "spice" => spice_ports(text)?,
         _ => return Err(err(1, format!("a {lang} impl declares no ports"))),
     };
-    assert!(ports.len() <= PORTS_MAX);
+    assert!(ports.len() <= PORTS_MAX, "push caps the port list");
     debug_assert!(
         ports
             .iter()
@@ -69,6 +76,7 @@ pub fn impl_ports(lang: &str, text: &str) -> Result<Vec<(String, PinDir)>, PortE
 // ---- private ----
 
 fn err(line: u32, why: impl Into<String>) -> PortError {
+    assert!(line >= 1, "lines are 1-based");
     PortError {
         line,
         why: why.into(),
@@ -81,6 +89,8 @@ fn push(
     dir: PinDir,
     line: u32,
 ) -> Result<(), PortError> {
+    assert!(!name.is_empty(), "a port name is a token, never empty");
+    assert!(line >= 1, "lines are 1-based");
     if ports.iter().any(|p| p.0 == name) {
         return Err(err(line, format!("duplicate port {name}")));
     }
@@ -88,6 +98,7 @@ fn push(
         return Err(err(line, format!("more than {PORTS_MAX} ports")));
     }
     ports.push((name, dir));
+    assert!(ports.len() <= PORTS_MAX);
     Ok(())
 }
 
@@ -127,6 +138,10 @@ fn spice_ports(text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
         }
         push(&mut ports, w.to_owned(), PinDir::Inout, *line)?;
     }
+    assert!(
+        ports.iter().all(|p| p.1 == PinDir::Inout),
+        "SPICE nodes have no direction"
+    );
     Ok(ports)
 }
 
@@ -171,6 +186,7 @@ fn verilog_ports(text: &str) -> Result<Vec<(String, PinDir)>, PortError> {
             push(&mut ports, format!("{}{range}", name.text), dir, name.line)?;
             ansi.push(declared);
         }
+        assert!(j <= toks.len(), "a closed list ends inside the tokens");
         i = j;
     }
     // Non-ANSI declarations after the header, up to `endmodule`.
@@ -205,6 +221,7 @@ fn tokens(text: &str) -> Vec<Tok<'_>> {
     let b = text.as_bytes();
     let mut out = Vec::new();
     let (mut i, mut line) = (0, 1u32);
+    let lines_total = text.bytes().filter(|&d| d == b'\n').count() as u32 + 1;
     let skip_to = |i: usize, end: &str| text[i..].find(end).map_or(b.len(), |k| i + k + end.len());
     // To the end of the line, leaving its `\n` to be counted.
     let eol = |i: usize| text[i..].find('\n').map_or(b.len(), |k| i + k);
@@ -237,6 +254,8 @@ fn tokens(text: &str) -> Vec<Tok<'_>> {
             // One (possibly multi-byte) character of punctuation.
             _ => i + text[i..].chars().next().map_or(1, char::len_utf8),
         };
+        // Every arm consumes a byte, so the loop runs at most `text.len()` times.
+        assert!(i > start, "the tokenizer made no progress at byte {start}");
         let t = &text[start..i];
         let keep = !t.trim().is_empty()
             && !t.starts_with("//")
@@ -250,6 +269,8 @@ fn tokens(text: &str) -> Vec<Tok<'_>> {
             line += t.bytes().filter(|&d| d == b'\n').count() as u32;
         }
     }
+    assert!(line <= lines_total, "counted more lines than the text has");
+    debug_assert!(out.is_sorted_by_key(|t| t.line));
     out
 }
 
@@ -268,6 +289,10 @@ fn is_ident(t: &str) -> bool {
 
 /// Index one past the bracket closing the one at `open`, or `None` when the tokens end.
 fn close(toks: &[Tok<'_>], open: usize) -> Option<usize> {
+    assert!(
+        matches!(toks[open].text, "(" | "[" | "{"),
+        "close starts at an opening bracket"
+    );
     let mut depth = 0usize;
     for (k, t) in toks.iter().enumerate().skip(open) {
         match t.text {
@@ -285,7 +310,7 @@ fn close(toks: &[Tok<'_>], open: usize) -> Option<usize> {
 }
 
 /// Splits `toks` at depth-0 commas.
-fn items<'t, 'a>(toks: &'t [Tok<'a>]) -> Vec<&'t [Tok<'a>]> {
+fn items<'toks, 'text>(toks: &'toks [Tok<'text>]) -> Vec<&'toks [Tok<'text>]> {
     let (mut out, mut depth, mut from) = (Vec::new(), 0i32, 0);
     for (k, t) in toks.iter().enumerate() {
         match t.text {
@@ -299,11 +324,16 @@ fn items<'t, 'a>(toks: &'t [Tok<'a>]) -> Vec<&'t [Tok<'a>]> {
         }
     }
     out.push(&toks[from..]);
+    // Only the separating commas are dropped.
+    debug_assert_eq!(
+        out.iter().map(|item| item.len()).sum::<usize>() + out.len() - 1,
+        toks.len()
+    );
     out
 }
 
 /// The first `[...]` of `toks` as text (`[3:0]`), and the last identifier outside brackets.
-fn range_and_name<'a>(toks: &[Tok<'a>]) -> (String, Option<Tok<'a>>) {
+fn range_and_name<'text>(toks: &[Tok<'text>]) -> (String, Option<Tok<'text>>) {
     let (mut range, mut name, mut depth) = (String::new(), None, 0i32);
     let mut first_done = false;
     for t in toks {
@@ -325,6 +355,7 @@ fn range_and_name<'a>(toks: &[Tok<'a>]) -> (String, Option<Tok<'a>>) {
             name = Some(*t);
         }
     }
+    assert!(range.is_empty() || range.starts_with('['));
     (range, name)
 }
 

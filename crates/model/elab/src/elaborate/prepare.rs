@@ -7,20 +7,23 @@
 //! - `Elaborator::{request_finding, read_config, unmatched_inst_rules, push_cell, discover,
 //!   prepare_eval, defaults}` (`pub(super)`)
 
-use super::{CellData, Elaborator, record, tuple};
-use crate::cells::{display, readable};
-use crate::check::{CellCtx, check_overrides, check_values, waivers};
-use crate::connect::connect;
-use crate::graph::Graph;
-use crate::iface::Iface;
+use super::{CellData, CellRule, Elaborator, InstRule, defs};
+use crate::cells::{self, CellName};
+use crate::check::{self, CellCtx};
+use crate::connect;
+use crate::graph::{self, Graph};
+use crate::iface::{Held, Iface};
 use crate::names::{Name, Names};
+use crate::nets;
 use crate::values::{Funcs, NONE, Val};
 use crate::violations::{Code, Violation};
 use schemify_doc::{Document, ObjId, Sym};
 use std::collections::HashMap;
+use std::{mem, thread};
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     pub(super) fn request_finding(&mut self, cell: Name, detail: &str) {
+        assert!(!detail.is_empty(), "a request finding says what is wrong");
         self.viol.push(Violation::new(
             Code::E035,
             cell,
@@ -31,10 +34,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
     }
 
     pub(super) fn read_config(&mut self, doc: &Document, name: &str, top_cell: Name) {
-        let Some(r) = record(doc.configs(), doc, name) else {
+        let Some(r) = super::record(doc.configs(), doc, name) else {
             self.request_finding(top_cell, &format!("config `{name}` does not exist"));
             return;
         };
+        assert!(self.config.inst.is_empty(), "one config per elaboration");
         let s = doc.strings();
         for (k, vals) in doc.pool().attrs(doc.configs().attrs[r]) {
             let v: Vec<&str> = vals.iter().map(|v| s.get(*v)).collect();
@@ -44,13 +48,17 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                     .order
                     .extend(names.iter().map(|n| (*n).to_owned())),
                 ("inst", [path, imp]) => {
-                    self.config
-                        .inst
-                        .push(((*path).to_owned(), (*imp).to_owned()));
+                    self.config.inst.push(InstRule {
+                        path: (*path).to_owned(),
+                        imp: (*imp).to_owned(),
+                    });
                     self.config.inst_hit.push(false);
                 }
                 ("cell", [cellref, imp]) => match self.project.resolve(self.top, cellref) {
-                    Ok(row) => self.config.cell.push((row, (*imp).to_owned())),
+                    Ok(row) => self.config.cell.push(CellRule {
+                        row,
+                        imp: (*imp).to_owned(),
+                    }),
                     Err(_) => self.viol.push(Violation::new(
                         Code::E001,
                         top_cell,
@@ -62,6 +70,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 _ => {}
             }
         }
+        assert_eq!(self.config.inst.len(), self.config.inst_hit.len());
     }
 
     /// `W037` per config `inst` rule whose path no elaborated instance has (a typo, or a
@@ -72,8 +81,9 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         if !self.needs_open.is_empty() {
             return;
         }
-        for r in (0..self.config.inst.len()).filter(|&r| !self.config.inst_hit[r]) {
-            let (path, imp) = &self.config.inst[r];
+        let missed = (0..self.config.inst.len()).filter(|&r| !self.config.inst_hit[r]);
+        for r in missed {
+            let InstRule { path, imp } = &self.config.inst[r];
             let detail = format!(
                 "config `inst` rule `{path} {imp}` names no instance (paths are `/`-joined \
                  instance names from the bench, e.g. `/X1/X3`)"
@@ -86,7 +96,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         }
     }
 
-    pub(super) fn push_cell(&mut self, doc: &'p Document, iface: Iface) -> u32 {
+    pub(super) fn push_cell(&mut self, doc: &'project Document, iface: Iface) -> u32 {
         let ci = self.ifaces.len() as u32;
         assert!(ci < NONE - 1, "cell capacity");
         self.ifaces.push(iface);
@@ -118,7 +128,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             assert!(ci < NONE as usize - 1, "cell capacity");
             if self.ifaces[ci].open {
                 self.resolve(ci as u32);
-                crate::nets::global_labels(self.cells[ci].doc, &mut self.names, &mut globals);
+                nets::global_labels(self.cells[ci].doc, &mut self.names, &mut globals);
             }
             ci += 1;
         }
@@ -135,14 +145,20 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
 
     /// Evaluates cell `ci`'s graph for own-param values `own_vals` and gates the values
     /// (`E008`, D13), building the cell's connectivity and graph first, once per cell, with
-    /// its context-free findings. Returns the values and their unverified flags.
+    /// its context-free findings. Returns the values, one per node (a netlist has no use
+    /// for the unverified flags: the D20 stand-in is the value).
     ///
     /// A large cell (`crate::PARALLEL_MIN` instances, native targets) builds its connectivity on a
     /// second thread while this one builds, evaluates and gates the graph (`funcs` stays
     /// here). The two share only the name arena: the graph side interns nothing and reads
     /// a snapshot, and every interning call happens in the serial order, so names, values
     /// and findings are the serial ones (D37: jobs = 1 vs N byte-identical).
-    pub(super) fn prepare_eval(&mut self, ci: u32, own_vals: &[Val]) -> (Vec<Val>, Vec<bool>) {
+    pub(super) fn prepare_eval(&mut self, ci: u32, own_vals: &[Val]) -> Vec<Val> {
+        assert_eq!(
+            own_vals.len(),
+            self.ifaces[ci as usize].param_name.len(),
+            "one value per own param"
+        );
         let (mut vals, mut unv) = (Vec::new(), Vec::new());
         let mut gated = Vec::new();
         if self.cells[ci as usize].prepared {
@@ -164,7 +180,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 graph: &cell.graph,
                 waivers: &cell.waivers,
             };
-            check_values(
+            check::check_values(
                 &cx,
                 &vals,
                 &self.names,
@@ -173,15 +189,17 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 &mut gated,
             );
             self.viol.append(&mut gated);
-            return (vals, unv);
+            assert_eq!(vals.len(), cell.graph.len(), "one value per node");
+            return vals;
         }
         self.resolve(ci);
         let doc = self.cells[ci as usize].doc;
-        let inst_iface = std::mem::take(&mut self.cells[ci as usize].inst_iface);
-        let unresolved = std::mem::take(&mut self.cells[ci as usize].unresolved);
+        let inst_iface = mem::take(&mut self.cells[ci as usize].inst_iface);
+        let unresolved = mem::take(&mut self.cells[ci as usize].unresolved);
+        assert_eq!(inst_iface.len(), doc.instances().id.len(), "resolve ran");
         let subst = self.subst_of(ci);
         let subst: Vec<(Name, &str)> = subst.iter().map(|(n, t)| (*n, t.as_str())).collect();
-        let waiv = waivers(doc, &self.names);
+        let waiv = check::waivers(doc, &self.names);
         let mut found = Vec::new();
         let parallel = crate::parallel_ok(doc.instances().id.len());
         let Elaborator {
@@ -205,16 +223,17 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 graph: &graph,
                 waivers: &waiv,
             };
-            check_values(&cx, &vals, names, *funcs, ws, &mut gated);
+            check::check_values(&cx, &vals, names, *funcs, ws, &mut gated);
             graph
         };
         let own = &ifaces[ci as usize];
         let (nets, graph) = if parallel {
             let snapshot = names.clone();
-            std::thread::scope(|sc| {
+            thread::scope(|sc| {
                 let worker = sc.spawn(|| {
                     let mut found = Vec::new();
-                    let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
+                    let nets =
+                        connect::connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
                     (nets, found)
                 });
                 let graph = graph_side(&snapshot);
@@ -223,7 +242,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 (nets, graph)
             })
         } else {
-            let nets = connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
+            let nets = connect::connect(doc, own, ifaces, &inst_iface, globals, names, &mut found);
             (nets, graph_side(names))
         };
         {
@@ -236,7 +255,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 graph: &graph,
                 waivers: &waiv,
             };
-            check_overrides(&cx, &unresolved, &mut self.names, &mut found);
+            check::check_overrides(&cx, &unresolved, &mut self.names, &mut found);
         }
         for p in &self.ifaces[ci as usize].too_wide {
             found.push(Violation::new(
@@ -256,13 +275,15 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         cell.graph = graph;
         cell.waivers = waiv;
         cell.prepared = true;
-        assert_eq!(vals.len(), cell.graph.len());
-        (vals, unv)
+        assert_eq!(vals.len(), cell.graph.len(), "one value per node");
+        assert_eq!(unv.len(), vals.len(), "value columns in step");
+        vals
     }
 
     /// Default values of cell `ci`'s own params (its defaults evaluated in its own
     /// scope) and their tuple text. Evaluated on a params-and-vars-only graph.
     pub(super) fn defaults(&mut self, ci: u32) -> Vec<Val> {
+        assert!((ci as usize) < self.cells.len(), "cell {ci} is loaded");
         if let Some(d) = &self.cells[ci as usize].defaults {
             return d.clone();
         }
@@ -275,19 +296,23 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         let (mut vals, mut unv) = (Vec::new(), Vec::new());
         g.eval_own(&mut vals, &mut unv, &self.ifaces, self.funcs, &mut self.ws);
         vals.truncate(g.params as usize);
-        let (key, _) = tuple(&self.ifaces[ci as usize], &vals, &mut self.names);
+        let tuple = defs::tuple(&self.ifaces[ci as usize], &vals, &mut self.names);
         assert_eq!(vals.len(), self.ifaces[ci as usize].param_name.len());
         let cell = &mut self.cells[ci as usize];
         cell.defaults = Some(vals.clone());
-        cell.default_key = Some(key);
+        cell.default_key = Some(tuple.key);
         vals
     }
 }
 
 // ---- private ----
 
-impl<'p, F: Funcs> Elaborator<'p, '_, F> {
+impl<'project, F: Funcs> Elaborator<'project, '_, F> {
     fn cell_of_row(&mut self, row: usize) -> u32 {
+        assert!(
+            row < self.project.cells().lib.len(),
+            "cell row {row} exists"
+        );
         if let Some(&ci) = self.row_cell.get(&(row as u32)) {
             return ci;
         }
@@ -295,12 +320,16 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             .project
             .interface(row)
             .expect("resolution checked the interface");
-        let (cell, stem) = display(self.project, row);
+        let CellName { cell, stem } = cells::display(self.project, row);
         // A derived `tech` cell has no file: its interface is the whole cell (pdk spec §5).
         let derived = self.project.libs().name[self.project.cells().lib[row] as usize]
             == schemify_doc::TECH_LIB;
-        let open = derived || self.project.open_handle(row).is_some();
-        let iface = Iface::from_doc(doc, &cell, &stem, row as u32, open, &mut self.names);
+        let held = if derived || self.project.open_handle(row).is_some() {
+            Held::Open
+        } else {
+            Held::Indexed
+        };
+        let iface = Iface::from_doc(doc, &cell, &stem, row as u32, held, &mut self.names);
         let ci = self.push_cell(doc, iface);
         assert!(
             self.row_cell.insert(row as u32, ci).is_none(),
@@ -323,13 +352,13 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
         for i in 0..ni {
             let sym = doc.instances().cell[i];
             // A technology class instance resolves per its `flavor` override (pdk spec §5).
-            let flavor = crate::graph::override_of(doc, i, "flavor")
+            let flavor = graph::override_of(doc, i, "flavor")
                 .map(|f| s.get(f))
                 .filter(|f| *f != "core");
             if let (Some(class), Some(flavor)) = (s.get(sym).strip_prefix("tech:"), flavor) {
                 let found = self.project.resolve_tech(class, flavor).ok();
                 let text = format!("tech:{class} ({flavor})");
-                match crate::cells::readable(self.project, found, &text) {
+                match cells::readable(self.project, found, &text) {
                     Ok(row) => inst_iface[i] = self.cell_of_row(row),
                     Err(why) => unresolved[i] = Some(why),
                 }
@@ -345,7 +374,7 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                         let row = self.ifaces[ci as usize].row as usize;
                         self.project.resolve_in(row, text)
                     };
-                    let row = readable(self.project, found.ok(), text);
+                    let row = cells::readable(self.project, found.ok(), text);
                     let r = row.map(|row| self.cell_of_row(row));
                     seen.insert(sym, r.clone());
                     r
@@ -356,6 +385,10 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
                 Err(why) => unresolved[i] = Some(why),
             }
         }
+        debug_assert!(
+            (0..ni).all(|i| (inst_iface[i] == NONE) == unresolved[i].is_some()),
+            "an instance resolves or says why not"
+        );
         let cell = &mut self.cells[ci as usize];
         cell.inst_iface = inst_iface;
         cell.unresolved = unresolved;
@@ -369,9 +402,11 @@ impl<'p, F: Funcs> Elaborator<'p, '_, F> {
             return Vec::new();
         }
         let subst = self.subst.clone();
-        subst
+        let interned: Vec<(Name, String)> = subst
             .into_iter()
             .map(|(a, b)| (self.names.intern(&a), b))
-            .collect()
+            .collect();
+        assert_eq!(interned.len(), self.subst.len());
+        interned
     }
 }

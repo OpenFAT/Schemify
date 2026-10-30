@@ -5,9 +5,8 @@
 
 mod common;
 
-use common::codes;
 use schemify_doc::{DocHandle, Project};
-use schemify_elab::{Elab, Target, elaborate, no_funcs};
+use schemify_elab::{Elab, Target, no_funcs};
 use std::path::{Path, PathBuf};
 
 /// A deterministic text dump of an elaboration (definitions and rows by name).
@@ -65,8 +64,8 @@ fn load(root: &Path) -> (Project, Vec<(String, DocHandle)>) {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path: PathBuf = entry.unwrap().path();
+        for entry in std::fs::read_dir(&dir).expect("the fixture directory is readable") {
+            let path: PathBuf = entry.expect("a directory entry reads").path();
             if path.is_dir() {
                 stack.push(path);
             } else if matches!(
@@ -75,20 +74,21 @@ fn load(root: &Path) -> (Project, Vec<(String, DocHandle)>) {
             ) {
                 let rel = path
                     .strip_prefix(root)
-                    .unwrap()
+                    .expect("the walk stays under the root")
                     .to_string_lossy()
                     .replace('\\', "/");
-                files.push((rel, std::fs::read(&path).unwrap()));
+                files.push((rel, std::fs::read(&path).expect("a fixture file reads")));
             }
         }
     }
     files.sort();
-    let mut p = Project::new(None, None, 5).unwrap();
+    let mut p = Project::new(None, None, 5).expect("an in-memory project opens");
     let listing: Vec<(&str, &[u8])> = files
         .iter()
         .map(|(n, b)| (n.as_str(), b.as_slice()))
         .collect();
-    p.index_library("", "", &listing).unwrap();
+    p.index_library("", "", &listing)
+        .expect("indexing the in-memory library succeeds");
     let mut handles = Vec::new();
     for (rel, bytes) in &files {
         if let Ok(o) = p.open("", rel, bytes, None) {
@@ -103,19 +103,22 @@ fn fixtures() -> (Project, Vec<(String, DocHandle)>) {
 }
 
 fn top(hs: &[(String, DocHandle)], name: &str) -> DocHandle {
-    hs.iter().find(|(n, _)| n == name).unwrap().1
+    hs.iter()
+        .find(|(n, _)| n == name)
+        .expect("the fixture set has that top")
+        .1
 }
 
 fn row(e: &Elab, d: u32, name: &str) -> usize {
     e.insts_of(d)
         .find(|&r| e.names.get(e.insts.name[r]) == name)
-        .unwrap()
+        .expect("the definition has an instance of that name")
 }
 
 #[test]
 fn inverter_bench() {
     let (p, hs) = fixtures();
-    let e = elaborate(
+    let e = schemify_elab::elaborate(
         &p,
         top(&hs, "inv_tb.shbench"),
         &common::ngspice(),
@@ -156,7 +159,7 @@ fn inverter_bench() {
 #[test]
 fn opamp_hierarchy_specializes_per_size() {
     let (p, hs) = fixtures();
-    let e = elaborate(
+    let e = schemify_elab::elaborate(
         &p,
         top(&hs, "opamp_tb.shbench"),
         &common::ngspice(),
@@ -200,7 +203,7 @@ fn opamp_hierarchy_specializes_per_size() {
     assert_eq!(tail[2], "tail", "the wire carries the tail label to M2");
     assert_eq!(
         dump(&e),
-        dump(&elaborate(
+        dump(&schemify_elab::elaborate(
             &p,
             top(&hs, "opamp_tb.shbench"),
             &common::ngspice(),
@@ -212,7 +215,7 @@ fn opamp_hierarchy_specializes_per_size() {
 #[test]
 fn bus_array_slices_per_element() {
     let (p, hs) = fixtures();
-    let e = elaborate(
+    let e = schemify_elab::elaborate(
         &p,
         top(&hs, "bus_tb.shbench"),
         &common::ngspice(),
@@ -227,7 +230,7 @@ fn bus_array_slices_per_element() {
             .collect();
         assert_eq!(c, [d_in, d_out], "{x}");
     }
-    assert_eq!(codes(&e).iter().filter(|c| *c == "W016").count(), 8);
+    assert_eq!(common::codes(&e).iter().filter(|c| *c == "W016").count(), 8);
 }
 
 /// Every bench under `$SCHEMIFY_CORPUS`: elaboration never panics and is
@@ -246,13 +249,18 @@ fn corpus_smoke() {
             continue;
         }
         benches += 1;
-        let e = elaborate(&p, *h, &common::ngspice(), &mut no_funcs);
+        let e = schemify_elab::elaborate(&p, *h, &common::ngspice(), &mut no_funcs);
         assert_eq!(
             dump(&e),
-            dump(&elaborate(&p, *h, &common::ngspice(), &mut no_funcs)),
+            dump(&schemify_elab::elaborate(
+                &p,
+                *h,
+                &common::ngspice(),
+                &mut no_funcs
+            )),
             "{name}"
         );
-        for c in codes(&e) {
+        for c in common::codes(&e) {
             *by_code.entry(c).or_default() += 1;
         }
     }

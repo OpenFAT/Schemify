@@ -38,37 +38,41 @@
 //! few touched nodes.
 //!
 //! This file holds the state, its seeding and the row checks; `patch` runs an edit,
-//! `comps` keeps components and bits.
+//! `comps` keeps components and bits, `index` holds the spatial index and its queries.
 //!
 //! Contents:
-//! - `pub(crate) type Delta`
+//! - `pub(crate) struct Delta`
 //! - `pub(crate) struct Ctx`: `new`
 //! - `pub(crate) struct Live`: `seed`, `instances_moved`, `rows_moved`, `rename`, `rows`;
 //!   `update` (in `patch`)
 
 mod comps;
+mod index;
 mod patch;
 
 use crate::iface::Iface;
 use crate::names::{Name, Names};
 use crate::netexpr;
-use crate::nets::{
-    CellNets, OWN_BITS, OWN_PORTS, OWN_STATIC, Seed, id_cmp, label_is_global, unkey,
-};
+use crate::nets::{self, CellNets, OWN_BITS, OWN_PORTS, OWN_STATIC, Seed};
 use crate::values::NONE;
 use crate::violations::{Code, Violation};
 use schemify_doc::{Document, ObjId};
 use std::collections::BTreeSet;
+use std::mem;
 
-/// Findings an edit removed and added (`connect` codes only), unordered.
-pub(crate) type Delta = (Vec<Violation>, Vec<Violation>);
+/// Findings an edit removed and added, unordered.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Delta {
+    pub(crate) gone: Vec<Violation>,
+    pub(crate) added: Vec<Violation>,
+}
 
 /// The document and the interfaces an update reads.
-pub(crate) struct Ctx<'a> {
-    pub(crate) doc: &'a Document,
-    pub(crate) own: &'a Iface,
-    pub(crate) ifaces: &'a [Iface],
-    pub(crate) inst_iface: &'a [u32],
+pub(crate) struct Ctx<'cell> {
+    pub(crate) doc: &'cell Document,
+    pub(crate) own: &'cell Iface,
+    pub(crate) ifaces: &'cell [Iface],
+    pub(crate) inst_iface: &'cell [u32],
 }
 
 /// The incremental state. See the module docs.
@@ -159,10 +163,15 @@ const PORTS: usize = 2;
 const NOCONNS: usize = 3;
 const INSTS: usize = 4;
 
-impl<'a> Ctx<'a> {
+impl<'cell> Ctx<'cell> {
     /// The context of `doc` whose own interface is `ifaces[0]`.
-    pub(crate) fn new(doc: &'a Document, ifaces: &'a [Iface], inst_iface: &'a [u32]) -> Ctx<'a> {
+    pub(crate) fn new(
+        doc: &'cell Document,
+        ifaces: &'cell [Iface],
+        inst_iface: &'cell [u32],
+    ) -> Ctx<'cell> {
         assert_eq!(inst_iface.len(), doc.instances().id.len());
+        assert!(!ifaces.is_empty(), "the own interface is ifaces[0]");
         Ctx {
             doc,
             own: &ifaces[0],
@@ -187,6 +196,11 @@ impl Live {
         names: &mut Names,
     ) -> Live {
         assert_eq!(found.len(), seed.owner.len(), "one owner per finding");
+        assert_eq!(
+            seed.named.len(),
+            cn.net_name.len(),
+            "one named flag per component"
+        );
         let n = seed.px.len();
         let nc = cn.net_name.len();
         let doc = cx.doc;
@@ -212,12 +226,16 @@ impl Live {
         lv.slots = vec![0; cn.bit_name.len()];
         lv.named = seed.named;
         lv.cmark = vec![0; nc];
-        for c in (0..nc).filter(|&c| lv.named[c]) {
+        for c in 0..nc {
+            if !lv.named[c] {
+                continue;
+            }
             for &b in cn.bits_of(c) {
                 lv.slots[b as usize] += 1;
             }
         }
-        for &b in cn.port_bits.iter().chain(&cn.inh_bits) {
+        let own_slots = cn.port_bits.iter().chain(&cn.inh_bits);
+        for &b in own_slots {
             lv.slots[b as usize] += 1;
         }
         for t in 0..5 {
@@ -273,7 +291,7 @@ impl Live {
 
         // ---- index: the sorted runs build the sets in O(n)
         let decode = |&(k, v): &(u64, u32)| {
-            let (a, b) = unkey(k);
+            let (a, b) = nets::unkey(k);
             (a, b, v)
         };
         lv.by_x = seed.xy.iter().map(decode).collect();
@@ -301,7 +319,7 @@ impl Live {
             .map(|&p| seed.pins0 as u32 + p)
             .collect();
         lv.global_labels = (0..doc.labels().id.len())
-            .filter(|&l| label_is_global(doc, l))
+            .filter(|&l| nets::label_is_global(doc, l))
             .count();
         assert_eq!(lv.kind.len(), n);
         assert_eq!(lv.first[INSTS].len(), doc.instances().id.len());
@@ -313,6 +331,7 @@ impl Live {
     ///
     /// Cost: one compare per instance row (vectorized).
     pub(crate) fn instances_moved(&self, doc: &Document) -> bool {
+        assert_eq!(self.ids.len(), INSTS + 1, "one id mirror per table");
         let mut rows = Vec::new();
         changed_rows(&self.ids[INSTS], &doc.instances().id, &mut rows);
         !rows.is_empty()
@@ -324,6 +343,7 @@ impl Live {
     ///
     /// Cost: one compare per row of those tables (vectorized).
     pub(crate) fn rows_moved(&self, doc: &Document) -> bool {
+        assert_eq!(self.ids.len(), INSTS + 1, "one id mirror per table");
         let mut rows = Vec::new();
         for t in 0..INSTS {
             changed_rows(&self.ids[t], table_ids(doc, t), &mut rows);
@@ -378,7 +398,7 @@ impl Live {
         touched.dedup();
         // `connect`'s E009 rule over the touched names: every element after the first of
         // its name (in id order) is a duplicate.
-        let (gone, kept): (Vec<Violation>, Vec<Violation>) = std::mem::take(&mut self.fixed)
+        let (gone, kept): (Vec<Violation>, Vec<Violation>) = mem::take(&mut self.fixed)
             .into_iter()
             .partition(|v| v.code == Code::E009 && touched.binary_search(&v.param).is_ok());
         self.fixed = kept;
@@ -393,7 +413,7 @@ impl Live {
                 }
             }
         }
-        elems.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(id_cmp(a.1, b.1, s)));
+        elems.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(nets::id_cmp(a.1, b.1, s)));
         let mut new = Vec::new();
         for w in elems.windows(2) {
             if w[0].0 == w[1].0 {
@@ -408,11 +428,17 @@ impl Live {
         }
         self.fixed.extend(new.iter().cloned());
         assert!(new.len() < elems.len().max(1), "a duplicate has a first");
-        Some((gone, new))
+        Some(Delta { gone, added: new })
     }
 
     /// Every connectivity finding, owner by owner (what a full check pass starts from).
     pub(crate) fn rows(&self, cn: &CellNets, own: &Iface, names: &Names) -> Vec<Violation> {
+        assert_eq!(
+            self.found.len(),
+            cn.net_name.len(),
+            "one finding list per component"
+        );
+        assert_eq!(self.real.len(), cn.bit_name.len(), "one count per bit");
         let mut out = self.fixed.clone();
         for f in &self.found {
             out.extend(f.iter().cloned());
@@ -430,6 +456,7 @@ impl Live {
 // ---- private ----
 
 fn table_ids(doc: &Document, t: usize) -> &[ObjId] {
+    assert!(t <= INSTS, "table {t} is not mirrored");
     match t {
         WIRES => &doc.wires().id,
         LABELS => &doc.labels().id,
@@ -442,6 +469,7 @@ fn table_ids(doc: &Document, t: usize) -> &[ObjId] {
 /// Appends the rows where `old` and `ids` differ, and the rows only one of them has.
 fn changed_rows(old: &[u32], ids: &[ObjId], out: &mut Vec<usize>) {
     const CHUNK: usize = 64;
+    let before = out.len();
     let n = old.len().min(ids.len());
     let mut i = 0;
     while i < n {
@@ -458,9 +486,15 @@ fn changed_rows(old: &[u32], ids: &[ObjId], out: &mut Vec<usize>) {
         i = end;
     }
     out.extend(n..old.len().max(ids.len()));
+    assert!(
+        out.len() - before <= old.len().max(ids.len()),
+        "each row at most once"
+    );
+    debug_assert!(out[before..].is_sorted(), "rows ascend");
 }
 
 /// Geometric (non-inherited) pins of `f`, in order: an instance's node `k` is the `k`-th.
 fn geometric(f: &Iface) -> impl Iterator<Item = usize> + '_ {
+    debug_assert_eq!(f.pin_inherit.len(), f.pin_name.len(), "pin columns in step");
     (0..f.pin_name.len()).filter(|&p| f.pin_inherit[p] == Name::NONE)
 }

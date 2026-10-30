@@ -3,22 +3,31 @@
 //! pass delta ([`CellState::changes`]) out; or the full check pass.
 //!
 //! Contents:
+//! - `pub(super) enum OwnScope`
 //! - `CellState::check`, `CellState::next_pass`, `CellState::apply_net_delta`,
 //!   `CellState::recheck` (`pub(super)`)
 
 use super::{CellState, RowKey};
-use crate::check::{
-    CellCtx, INST_CODES, check_overrides, check_values, inst_overrides, inst_rules, value_errors,
-    waivers,
-};
+use crate::check::{self, CellCtx, INST_CODES};
 use crate::live::Delta;
 use crate::values::Funcs;
-use crate::violations::{Violation, Violations, cmp_key};
+use crate::violations::{self, Violation, Violations};
 use schemify_doc::{Document, ObjId};
 use std::cmp::Ordering;
+use std::mem;
+use std::sync::atomic::{self, AtomicU64};
+
+/// Whether a recheck covers the own scope's `E008` rows besides the instance rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OwnScope {
+    /// No own-scope value changed: its rows stay.
+    Kept,
+    /// An own var or param changed value: its rows are rechecked too.
+    Rechecked,
+}
 
 /// Process-unique check pass ids (0 is "no pass").
-static PASSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static PASSES: AtomicU64 = AtomicU64::new(1);
 
 /// Changes past this count merge in one pass instead of a memmove per row.
 const MERGE_MIN: usize = 32;
@@ -26,9 +35,14 @@ const MERGE_MIN: usize = 32;
 impl CellState {
     /// Recomputes every finding (the full pass).
     pub(super) fn check<F: Funcs>(&mut self, doc: &Document, funcs: &mut F) {
-        self.waivers = waivers(doc, &self.names);
+        assert_eq!(
+            self.unresolved.len(),
+            self.inst_iface.len(),
+            "one resolution per instance row"
+        );
+        self.waivers = check::waivers(doc, &self.names);
         let mut net = self.live.rows(&self.nets, &self.ifaces[0], &self.names);
-        net.sort_by(|a, b| cmp_key(a, b, &self.names));
+        net.sort_by(|a, b| violations::cmp_key(a, b, &self.names));
         // Bulk: one stable sort by raw key (runs keep their key order), then the map built
         // from the sorted runs.
         let mut keyed: Vec<(RowKey, Violation)> =
@@ -42,6 +56,7 @@ impl CellState {
             }
         }
         self.net_rows = runs.into_iter().collect();
+        assert!(self.net_rows.len() <= net.len(), "one run per key");
         let mut rows = net;
         let cx = CellCtx {
             doc,
@@ -51,12 +66,12 @@ impl CellState {
             graph: &self.graph,
             waivers: &self.waivers,
         };
-        check_overrides(&cx, &self.unresolved, &mut self.names, &mut rows);
+        check::check_overrides(&cx, &self.unresolved, &mut self.names, &mut rows);
         let vals = &self.graph.vals;
-        check_values(&cx, vals, &self.names, funcs, &mut self.ws, &mut rows);
+        check::check_values(&cx, vals, &self.names, funcs, &mut self.ws, &mut rows);
         let fresh = Violations::from_rows(rows, &self.names);
         // The first pass has no predecessor: consumers take every row (`prev_pass == 0`).
-        let changes = if self.pass == 0 {
+        let (gone, added): (Vec<Violation>, Vec<Violation>) = if self.pass == 0 {
             (Vec::new(), Vec::new())
         } else {
             let (gone, new) = fresh.diff(&self.violations, &self.names);
@@ -66,15 +81,16 @@ impl CellState {
             )
         };
         self.violations = fresh;
-        self.next_pass(changes);
+        self.next_pass(gone, added);
     }
 
-    /// Starts a new check pass whose delta from the current one is `changes`.
-    pub(super) fn next_pass(&mut self, changes: (Vec<Violation>, Vec<Violation>)) {
+    /// Starts a new check pass whose delta from the current one is `gone` and `added`.
+    pub(super) fn next_pass(&mut self, gone: Vec<Violation>, added: Vec<Violation>) {
         self.prev_pass = self.pass;
-        self.pass = PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.changes = changes;
+        self.pass = PASSES.fetch_add(1, atomic::Ordering::Relaxed);
+        self.changes = (gone, added);
         assert!(self.pass > self.prev_pass);
+        assert!(self.pass != 0, "pass 0 means no pass");
     }
 
     /// Posts a connectivity patch's findings: `gone` leave the table and `new` enter it
@@ -83,17 +99,23 @@ impl CellState {
     /// only with its last connectivity row.
     ///
     /// Cost: O((gone + new) · log rows) compares plus a memmove per changed row.
-    pub(super) fn apply_net_delta(&mut self, (mut gone, mut new): Delta) -> Delta {
+    pub(super) fn apply_net_delta(&mut self, delta: Delta) -> Delta {
+        let Delta {
+            mut gone,
+            added: mut new,
+        } = delta;
         let names = &self.names;
         let order = |a: &Violation, b: &Violation| {
-            cmp_key(a, b, names).then_with(|| a.detail.cmp(&b.detail))
+            violations::cmp_key(a, b, names).then_with(|| a.detail.cmp(&b.detail))
         };
         gone.sort_by(order);
         new.sort_by(order);
-        let (g, n) = cancel(gone, new, order);
+        let kept = cancel(gone, new, order);
         let (rows, net) = (&mut self.violations.rows, &mut self.net_rows);
-        let mut changes: Delta = (Vec::new(), Vec::new());
-        for r in g {
+        let rows_before = rows.len();
+        let mut changes = Delta::default();
+        let (lost_count, new_count) = (kept.gone.len(), kept.added.len());
+        for r in kept.gone {
             let key = row_key(&r);
             let run = net
                 .get_mut(&key)
@@ -108,35 +130,50 @@ impl CellState {
                 net.remove(&key);
             }
             let t = rows
-                .binary_search_by(|x| cmp_key(x, &r, names))
+                .binary_search_by(|x| violations::cmp_key(x, &r, names))
                 .expect("its key is in the table");
             match kept {
-                None => changes.0.push(rows.remove(t)),
+                None => changes.gone.push(rows.remove(t)),
                 Some(k) if rows[t] == r => {
-                    changes.0.push(std::mem::replace(&mut rows[t], k.clone()));
-                    changes.1.push(k);
+                    changes.gone.push(mem::replace(&mut rows[t], k.clone()));
+                    changes.added.push(k);
                 }
                 Some(_) => {}
             }
         }
-        for r in n {
+        for r in kept.added {
             net.entry(row_key(&r)).or_default().push(r.clone());
-            if let Err(t) = rows.binary_search_by(|x| cmp_key(x, &r, names)) {
+            if let Err(t) = rows.binary_search_by(|x| violations::cmp_key(x, &r, names)) {
                 rows.insert(t, r.clone());
-                changes.1.push(r);
+                changes.added.push(r);
             }
         }
-        changes.0.sort_by(|a, b| cmp_key(a, b, names));
-        changes.1.sort_by(|a, b| cmp_key(a, b, names));
+        changes
+            .gone
+            .sort_by(|a, b| violations::cmp_key(a, b, names));
+        changes
+            .added
+            .sort_by(|a, b| violations::cmp_key(a, b, names));
         debug_assert!(
             rows.windows(2)
-                .all(|w| cmp_key(&w[0], &w[1], names).is_lt())
+                .all(|w| violations::cmp_key(&w[0], &w[1], names).is_lt())
         );
+        // The table changes by exactly what the delta reports.
+        assert_eq!(
+            rows.len() + changes.gone.len(),
+            rows_before + changes.added.len(),
+            "the table moved by the reported delta"
+        );
+        assert!(
+            changes.gone.len() <= lost_count,
+            "only cancelled-out rows leave"
+        );
+        assert!(changes.added.len() <= lost_count + new_count);
         changes
     }
 
     /// Reruns the per-instance checks of instance rows `rows` (sorted, unique) and, with
-    /// `own`, the own scope's `E008` rows, and replaces those rows of the table. Returns what
+    /// [`OwnScope::Rechecked`], the own scope's `E008` rows, and replaces those rows of the table. Returns what
     /// the table lost and gained (key order; a row whose key stayed but whose detail changed
     /// is in both), or `None` near [`crate::VIOLATIONS_MAX`] (the caller runs the full pass,
     /// which truncates).
@@ -151,7 +188,7 @@ impl CellState {
         &mut self,
         doc: &Document,
         rows: &[u32],
-        own: bool,
+        own: OwnScope,
         funcs: &mut F,
     ) -> Option<Delta> {
         assert!(
@@ -161,12 +198,12 @@ impl CellState {
         if self.violations.rows.len() >= crate::VIOLATIONS_MAX / 2 {
             return None;
         }
-        if rows.is_empty() && !own {
-            return Some((Vec::new(), Vec::new()));
+        if rows.is_empty() && own == OwnScope::Kept {
+            return Some(Delta::default());
         }
         let fresh = self.fresh_rows(doc, rows, own, funcs);
         let names = &self.names;
-        let order = |a: &Violation, b: &Violation| cmp_key(a, b, names);
+        let order = |a: &Violation, b: &Violation| violations::cmp_key(a, b, names);
         let old = self.old_rows(doc, rows, own);
         // Rows on both sides cancel.
         let table = &self.violations.rows;
@@ -191,11 +228,12 @@ impl CellState {
             }
         }
         let rows = &mut self.violations.rows;
+        let before = rows.len();
         let lost: Vec<Violation> = gone.iter().map(|&o| rows[o].clone()).collect();
         if gone.len() + new.len() > MERGE_MIN {
             let mut out = Vec::with_capacity(rows.capacity());
             let (mut k, mut n) = (0, new.iter().peekable());
-            for (t, r) in std::mem::take(rows).into_iter().enumerate() {
+            for (t, r) in mem::take(rows).into_iter().enumerate() {
                 if gone.get(k) == Some(&t) {
                     k += 1;
                     continue;
@@ -219,25 +257,32 @@ impl CellState {
             }
         }
         debug_assert!(rows.windows(2).all(|w| order(&w[0], &w[1]).is_lt()));
-        assert_eq!(lost.len(), gone.len());
-        Some((lost, new))
+        assert_eq!(
+            rows.len() + gone.len(),
+            before + new.len(),
+            "the table moved by the reported delta"
+        );
+        Some(Delta {
+            gone: lost,
+            added: new,
+        })
     }
 }
 
 // ---- private ----
 
 impl CellState {
-    /// The per-instance findings of instance rows `rows` (and the own scope's with `own`),
-    /// sorted and one per key.
+    /// The per-instance findings of instance rows `rows` (and the own scope's with
+    /// [`OwnScope::Rechecked`]), sorted and one per key.
     fn fresh_rows<F: Funcs>(
         &mut self,
         doc: &Document,
         rows: &[u32],
-        own: bool,
+        own: OwnScope,
         funcs: &mut F,
     ) -> Vec<Violation> {
         let g = &self.graph;
-        let mut nodes: Vec<u32> = if own {
+        let mut nodes: Vec<u32> = if own == OwnScope::Rechecked {
             (0..g.params + g.vars).collect()
         } else {
             Vec::new()
@@ -249,9 +294,9 @@ impl CellState {
             };
             let first = g.inst_first[i];
             nodes.extend(first..first + c.param_name.len() as u32);
-            let at = g.child_vars.partition_point(|e| e.0 < i as u32);
-            let child = g.child_vars[at..].iter().take_while(|e| e.0 == i as u32);
-            nodes.extend(child.map(|e| e.2));
+            let at = g.child_vars.partition_point(|e| e.inst < i as u32);
+            let child = g.child_vars[at..].iter().take_while(|e| e.inst == i as u32);
+            nodes.extend(child.map(|e| e.node));
         }
         nodes.sort_unstable();
         let cx = CellCtx {
@@ -265,28 +310,26 @@ impl CellState {
         let mut fresh = Vec::new();
         for &i in rows {
             let why = self.unresolved[i as usize].as_deref();
-            inst_overrides(&cx, i as usize, why, &mut self.names, &mut fresh);
+            check::inst_overrides(&cx, i as usize, why, &mut self.names, &mut fresh);
         }
-        value_errors(&cx, &g.vals, nodes.into_iter(), &mut fresh);
-        let mut found = Vec::new();
+        check::value_errors(&cx, &g.vals, nodes.into_iter(), &mut fresh);
         for &i in rows {
             let (names, ws) = (&self.names, &mut self.ws);
-            inst_rules(
-                &cx, i as usize, &g.vals, names, funcs, ws, &mut found, &mut fresh,
-            );
+            check::inst_rules(&cx, i as usize, &g.vals, names, funcs, ws, &mut fresh);
         }
-        let order = |a: &Violation, b: &Violation| cmp_key(a, b, &self.names);
+        let order = |a: &Violation, b: &Violation| violations::cmp_key(a, b, &self.names);
         fresh.sort_by(order);
         fresh.dedup_by(|b, a| order(a, b).is_eq());
         fresh
     }
 
     /// Indices of the table rows the per-instance checks wrote last time for `rows` (and
-    /// the own scope with `own`), ascending: per code, a run sorted by object (one cell).
-    fn old_rows(&self, doc: &Document, rows: &[u32], own: bool) -> Vec<usize> {
+    /// the own scope with [`OwnScope::Rechecked`]), ascending: per code, a run sorted by
+    /// object (one cell).
+    fn old_rows(&self, doc: &Document, rows: &[u32], own: OwnScope) -> Vec<usize> {
         let inst = doc.instances();
         let mut objs: Vec<ObjId> = rows.iter().map(|&r| inst.id[r as usize]).collect();
-        if own {
+        if own == OwnScope::Rechecked {
             objs.push(ObjId::NONE);
         }
         objs.sort_unstable();
@@ -304,6 +347,8 @@ impl CellState {
             }
         }
         old.sort_unstable();
+        assert!(old.len() <= table.len(), "each old row once");
+        debug_assert!(old.windows(2).all(|w| w[0] < w[1]), "each old row once");
         old
     }
 }
@@ -318,6 +363,15 @@ fn cancel(
     new: Vec<Violation>,
     order: impl Fn(&Violation, &Violation) -> Ordering,
 ) -> Delta {
+    debug_assert!(
+        gone.windows(2).all(|w| order(&w[0], &w[1]).is_le()),
+        "sorted"
+    );
+    debug_assert!(
+        new.windows(2).all(|w| order(&w[0], &w[1]).is_le()),
+        "sorted"
+    );
+    let total = gone.len() + new.len();
     let (mut g, mut n) = (Vec::new(), Vec::new());
     let (mut gi, mut ni) = (gone.into_iter().peekable(), new.into_iter().peekable());
     loop {
@@ -335,5 +389,7 @@ fn cancel(
             (None, None) => break,
         }
     }
-    (g, n)
+    // Each cancelled pair removes one row from each side.
+    assert_eq!((total - g.len() - n.len()) % 2, 0, "rows cancel in pairs");
+    Delta { gone: g, added: n }
 }

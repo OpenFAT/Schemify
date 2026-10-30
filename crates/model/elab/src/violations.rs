@@ -15,7 +15,7 @@ use std::cmp::Ordering;
 
 /// Check codes (netlist spec §8; `E035`, `E036`, `W037` are elab amendments).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(missing_docs)] // meanings: `Code::meaning`
+#[allow(missing_docs, reason = "each code's meaning is `Code::meaning`")]
 pub enum Code {
     E001,
     E002,
@@ -87,18 +87,26 @@ pub struct Violations {
 
 impl Code {
     /// Returns the code as written in reports (`"E005"`).
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         const S: [&str; 26] = [
             "E001", "E002", "E003", "W004", "E005", "E006", "W007", "E008", "E009", "W010", "E011",
             "E012", "E013", "E014", "W016", "E030", "E031", "E032", "E033", "E034", "E035", "E036",
             "W037", "E038", "E039", "I005",
         ];
+        const _: () = assert!(S.len() == Code::I005 as usize + 1, "one text per code");
         S[self as usize]
     }
 
     /// Returns the severity, from the code's letter.
+    #[must_use]
     pub fn severity(self) -> Severity {
-        match self.as_str().as_bytes()[0] {
+        let letter = self.as_str().as_bytes()[0];
+        debug_assert!(
+            matches!(letter, b'E' | b'W' | b'I'),
+            "a code starts with its severity letter"
+        );
+        match letter {
             b'E' => Severity::Error,
             b'W' => Severity::Warning,
             _ => Severity::Info,
@@ -106,14 +114,19 @@ impl Code {
     }
 
     /// Returns whether a `waive` record can downgrade it to `I005` (D13).
+    #[must_use]
     pub fn waivable(self) -> bool {
-        matches!(
+        let waivable = matches!(
             self,
             Code::E005 | Code::E006 | Code::E032 | Code::E038 | Code::E039
-        )
+        );
+        // A waiver downgrades an error to `I005`; nothing else is gated (D13).
+        debug_assert!(!waivable || self.severity() == Severity::Error);
+        waivable
     }
 
     /// Returns the spec meaning.
+    #[must_use]
     pub fn meaning(self) -> &'static str {
         match self {
             Code::E001 => "missing lib/cell, or bench instantiated",
@@ -167,8 +180,15 @@ impl Violation {
 
     /// The order [`Violations::rows`] are sorted in (unique per table): code text, cell,
     /// object, path, param (texts through `names`, the arena both rows' names are from).
+    #[must_use]
     pub fn key_cmp(&self, other: &Violation, names: &Names) -> Ordering {
-        cmp_key(self, other, names)
+        let order = cmp_key(self, other, names);
+        debug_assert_eq!(
+            order,
+            cmp_key(other, self, names).reverse(),
+            "antisymmetric"
+        );
+        order
     }
 }
 
@@ -179,6 +199,7 @@ impl Violations {
         rows.sort_by(|a, b| cmp_key(a, b, names));
         rows.dedup_by(|b, a| cmp_key(a, b, names) == Ordering::Equal);
         rows.truncate(VIOLATIONS_MAX);
+        assert!(rows.len() <= VIOLATIONS_MAX);
         // Room for a patch's insertions: the first one after a build would otherwise
         // reallocate the whole table in an edit frame.
         rows.reserve(rows.len() / 8 + 64);
@@ -195,6 +216,11 @@ impl Violations {
     ///
     /// Cost: one merge pass, O(rows) row compares; key comparisons (string compares through
     /// `names`) only where the two lists differ.
+    ///
+    /// # Panics
+    ///
+    /// Panics only on a broken internal invariant: the rows both sides keep not pairing up.
+    #[must_use]
     pub fn diff<'a>(
         &'a self,
         old: &'a Violations,
@@ -202,6 +228,8 @@ impl Violations {
     ) -> (Vec<&'a Violation>, Vec<&'a Violation>) {
         let (mut gone, mut new) = (Vec::new(), Vec::new());
         let (a, b) = (&old.rows, &self.rows);
+        debug_assert!(a.windows(2).all(|w| cmp_key(&w[0], &w[1], names).is_lt()));
+        debug_assert!(b.windows(2).all(|w| cmp_key(&w[0], &w[1], names).is_lt()));
         let (mut i, mut j) = (0, 0);
         while i < a.len() && j < b.len() {
             if a[i] == b[j] {
@@ -226,11 +254,18 @@ impl Violations {
         }
         gone.extend(&a[i..]);
         new.extend(&b[j..]);
-        assert!(gone.len() <= a.len() && new.len() <= b.len());
+        assert!(gone.len() <= a.len(), "gone rows come from old");
+        assert!(new.len() <= b.len(), "new rows come from self");
+        assert_eq!(
+            a.len() - gone.len(),
+            b.len() - new.len(),
+            "the rows both sides keep pair up"
+        );
         (gone, new)
     }
 
     /// Returns whether any row blocks (severity `Error`).
+    #[must_use]
     pub fn blocking(&self) -> bool {
         self.rows
             .iter()

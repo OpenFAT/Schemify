@@ -24,39 +24,39 @@
 //!
 //! Contents:
 //! - `pub fn connect(doc, own, ifaces, inst_iface, globals, names, out) -> CellNets`
-//! - `pub(crate) fn connect_seeded(…, seed: Option<&mut Seed>) -> CellNets`
+//! - `pub(crate) fn connect_seeded(cx, names, out, seed: Option<&mut Seed>) -> CellNets`
 //! - `pub(crate) struct Cx`, `pub(crate) struct Found` (`push`), `pub(crate) struct Comps`,
 //!   `pub(crate) struct Sources` (`bits`)
 
 use crate::bits;
 use crate::iface::Iface;
-use crate::names::{Name, Names, radix_sort};
+use crate::names::{self, Name, Names};
 use crate::netcheck;
 use crate::netexpr;
 use crate::nets::{
-    CellNets, GLOBAL, Ignore, LABEL, NONE_PIN, OWN_STATIC, PORT, Seed, find, glob, id_cmp, key,
-    on_segment, place, union,
+    self, CellNets, GLOBAL, Ignore, LABEL, NONE_PIN, NetKey, OWN_STATIC, PORT, Seed,
 };
 use crate::values::NONE;
 use crate::violations::{Code, Violation};
 use schemify_doc::{Document, ObjId};
 use std::cmp::Ordering;
+use std::{mem, thread};
 
 /// The inputs every phase of one [`connect`] run reads.
-pub(crate) struct Cx<'a> {
-    pub(crate) doc: &'a Document,
+pub(crate) struct Cx<'cell> {
+    pub(crate) doc: &'cell Document,
     /// The cell's own interface (ports and inherited pins bind to its pins).
-    pub(crate) own: &'a Iface,
-    pub(crate) ifaces: &'a [Iface],
+    pub(crate) own: &'cell Iface,
+    pub(crate) ifaces: &'cell [Iface],
     /// Interface of each instance row, `u32::MAX` when unresolved.
-    pub(crate) inst_iface: &'a [u32],
+    pub(crate) inst_iface: &'cell [u32],
     /// Names made global by `global true` labels, sorted.
-    pub(crate) globals: &'a [Name],
+    pub(crate) globals: &'cell [Name],
 }
 
 /// Findings with their owners (what `live` drops when the owner changes).
-pub(crate) struct Found<'a> {
-    pub(crate) out: &'a mut Vec<Violation>,
+pub(crate) struct Found<'out> {
+    pub(crate) out: &'out mut Vec<Violation>,
     /// Owner of each finding appended to `out`: a component, or an `OWN_*` constant.
     pub(crate) owner: Vec<u32>,
 }
@@ -68,7 +68,7 @@ pub(crate) struct Comps {
     /// Instance pins and ports touching it (the plugin `Nets.pin_count`).
     pub(crate) pins: Vec<u32>,
     /// Naming key: an owned object id (pin `NONE_PIN`), else its smallest pin node.
-    pub(crate) key: Vec<(ObjId, u32)>,
+    pub(crate) key: Vec<NetKey>,
     /// Best name source ([`Sources`] row), `u32::MAX` when unnamed.
     pub(crate) best: Vec<u32>,
     /// Bits it carries: its best name's, else its widest pin's.
@@ -114,27 +114,6 @@ pub fn connect(
     names: &mut Names,
     out: &mut Vec<Violation>,
 ) -> CellNets {
-    connect_seeded(doc, own, ifaces, inst_iface, globals, names, out, None)
-}
-
-/// [`connect`], also filling `seed` (the editor's incremental start) when given.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn connect_seeded(
-    doc: &Document,
-    own: &Iface,
-    ifaces: &[Iface],
-    inst_iface: &[u32],
-    globals: &[Name],
-    names: &mut Names,
-    out: &mut Vec<Violation>,
-    seed: Option<&mut Seed>,
-) -> CellNets {
-    assert!(
-        globals.windows(2).all(|w| w[0] <= w[1]),
-        "globals are sorted"
-    );
-    let ni = doc.instances().id.len();
-    assert_eq!(inst_iface.len(), ni, "one interface slot per instance");
     let cx = Cx {
         doc,
         own,
@@ -142,6 +121,20 @@ pub(crate) fn connect_seeded(
         inst_iface,
         globals,
     };
+    connect_seeded(&cx, names, out, None)
+}
+
+/// [`connect`] of `cx`, also filling `seed` (the editor's incremental start) when given.
+pub(crate) fn connect_seeded(
+    cx: &Cx<'_>,
+    names: &mut Names,
+    out: &mut Vec<Violation>,
+    seed: Option<&mut Seed>,
+) -> CellNets {
+    let (doc, own) = (cx.doc, cx.own);
+    assert!(cx.globals.is_sorted(), "globals are sorted");
+    let ni = doc.instances().id.len();
+    assert_eq!(cx.inst_iface.len(), ni, "one interface slot per instance");
     let mut out = Found {
         out,
         owner: Vec::new(),
@@ -150,42 +143,41 @@ pub(crate) fn connect_seeded(
     // Element names, then a generated name per unnamed component: at most one per two
     // nodes in practice (a component holds a wire's two ends, or two pins), so the table
     // grows once; a bigger fresh table only costs page faults.
-    names.reserve(ni + node_count(&cx) / 2);
+    names.reserve(ni + node_count(cx) / 2);
     // Instance elements run on a second thread in a large cell: they are the only names
     // interned before the components exist.
     let (elems, (mut geo, nc)) = if crate::parallel_ok(ni) {
-        std::thread::scope(|sc| {
+        thread::scope(|sc| {
             let worker = sc.spawn(|| netcheck::element_names(doc, names, own.cell));
-            let geo = geometry(&cx);
+            let geo = geometry(cx);
             (worker.join().expect("element names do not panic"), geo)
         })
     } else {
-        (netcheck::element_names(doc, names, own.cell), geometry(&cx))
+        (netcheck::element_names(doc, names, own.cell), geometry(cx))
     };
-    let (elem_start, elem_name, wide) = elems;
-    (cn.elem_start, cn.elem_name) = (elem_start, elem_name);
-    for v in wide {
+    (cn.elem_start, cn.elem_name) = (elems.start, elems.name);
+    for v in elems.too_wide {
         out.push(OWN_STATIC, v);
     }
     cn.ignore = ignore_modes(doc);
-    let mut comps = components(&cx, &geo, nc);
-    let mut src = sources(&cx, &geo, names, &mut out);
-    let merged = name_components(&cx, &mut comps, &mut src, names, &mut out);
-    let mut slots = bits::slots(&cx, &geo, &comps, &src, names, &mut cn, &mut out);
-    let (net_of, nb) = bits::merge(&mut slots, &cn);
-    bits::name_bits(&cx, &comps, &slots, &net_of, nb, names, &mut cn);
-    bits::outputs(&cx, &geo, &comps, &src, &slots, &net_of, names, &mut cn);
-    let (real, other) = bits::domains(&slots, &net_of, nb);
-    netcheck::findings(&cx, &geo, &comps, &cn, &real, &other, names, &mut out);
+    let mut comps = components(cx, &geo, nc);
+    let mut src = sources(cx, &geo, names, &mut out);
+    let merged = name_components(cx, &mut comps, &mut src, names, &mut out);
+    let slots = bits::slots(cx, &geo, &comps, &src, names, &mut cn, &mut out);
+    let bit_nets = bits::merge(slots, &cn);
+    bits::name_bits(cx, &comps, &bit_nets, names, &mut cn);
+    bits::outputs(cx, &geo, &comps, &src, &bit_nets, names, &mut cn);
+    let domains = bits::domains(&bit_nets);
+    netcheck::findings(cx, &geo, &comps, &cn, &domains, names, &mut out);
     if let Some(sd) = seed {
         geo.named = comps.best.iter().map(|&b| b != NONE).collect();
-        geo.owner = std::mem::take(&mut out.owner);
-        (geo.real, geo.other) = (real, other);
+        geo.owner = mem::take(&mut out.owner);
+        (geo.real, geo.other) = (domains.real, domains.other);
         geo.merged = merged || cn.ignore.contains(&Ignore::Short);
         *sd = geo;
     }
     assert_eq!(cn.net_name.len(), nc);
-    assert_eq!(cn.bit_name.len(), nb);
+    assert_eq!(cn.bit_name.len(), bit_nets.count);
     assert_eq!(cn.conn_start.len(), ni + 1);
     cn
 }
@@ -202,7 +194,7 @@ impl Found<'_> {
 impl Sources {
     /// The bit names of source `k`.
     pub(crate) fn bits(&self, k: usize) -> &[Name] {
-        &self.bits[self.start[k] as usize..self.start[k + 1] as usize]
+        nets::csr(&self.start, &self.bits, k)
     }
 }
 
@@ -213,6 +205,7 @@ impl Sources {
 fn node_count(cx: &Cx<'_>) -> usize {
     let doc = cx.doc;
     let inst = doc.instances();
+    assert_eq!(cx.inst_iface.len(), inst.id.len());
     let pins: usize = (0..inst.id.len())
         .filter_map(|i| cx.ifaces.get(cx.inst_iface[i] as usize))
         .map(|f| f.pin_inherit.iter().filter(|p| **p == Name::NONE).count())
@@ -259,7 +252,7 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
                 let at = (first..px.len()).find(|&k| pin_pin[k - pins0] == q as u16);
                 aliased.extend(at.map(|k| (px.len() as u32, k as u32)));
             }
-            let (x, y) = place(f.pin_x[p], f.pin_y[p], m, t, inst.x[i], inst.y[i]);
+            let (x, y) = nets::place(f.pin_x[p], f.pin_y[p], m, t, inst.x[i], inst.y[i]);
             px.push(x);
             py.push(y);
             pin_inst.push(i as u32);
@@ -282,15 +275,15 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
     // ---- union-find over nodes
     let mut parent: Vec<u32> = (0..n as u32).collect();
     for w in 0..nw {
-        union(&mut parent, 2 * w as u32, 2 * w as u32 + 1);
+        nets::union(&mut parent, 2 * w as u32, 2 * w as u32 + 1);
     }
     for &(a, b) in &aliased {
-        union(&mut parent, a, b);
+        nets::union(&mut parent, a, b);
     }
     let xy = sorted_nodes(&px, &py);
     for pair in xy.windows(2) {
         if pair[0].0 == pair[1].0 {
-            union(&mut parent, pair[0].1, pair[1].1);
+            nets::union(&mut parent, pair[0].1, pair[1].1);
         }
     }
     // Only horizontal wires search the (y, x) order: a wireless cell (a flat netlist of
@@ -305,26 +298,27 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
         let (x1, y1, x2, y2) = (wires.x1[w], wires.y1[w], wires.x2[w], wires.y2[w]);
         let wn = 2 * w as u32;
         let (sorted, lo, hi) = if x1 == x2 {
-            (&xy, key(x1, y1.min(y2)), key(x1, y1.max(y2)))
+            (&xy, nets::key(x1, y1.min(y2)), nets::key(x1, y1.max(y2)))
         } else if y1 == y2 {
-            (&yx, key(y1, x1.min(x2)), key(y1, x1.max(x2)))
+            (&yx, nets::key(y1, x1.min(x2)), nets::key(y1, x1.max(x2)))
         } else {
             // ponytail: diagonal wires scan every node in their x-range, O(range) each;
             // a 2-D index if diagonal-heavy imports show up in profiles.
             let (xa, xb) = (x1.min(x2), x1.max(x2));
-            let start = xy.partition_point(|e| e.0 < key(xa, i32::MIN));
-            let end = xy.partition_point(|e| e.0 <= key(xb, i32::MAX));
+            let start = xy.partition_point(|e| e.0 < nets::key(xa, i32::MIN));
+            let end = xy.partition_point(|e| e.0 <= nets::key(xb, i32::MAX));
             for &(_, node) in &xy[start..end] {
                 let (x, y) = (px[node as usize], py[node as usize]);
-                if on_segment(x, y, x1, y1, x2, y2) {
-                    union(&mut parent, node, wn);
+                if nets::on_segment(x, y, x1, y1, x2, y2) {
+                    nets::union(&mut parent, node, wn);
                 }
             }
             continue;
         };
         let start = sorted.partition_point(|e| e.0 < lo);
-        for &(_, node) in sorted[start..].iter().take_while(|e| e.0 <= hi) {
-            union(&mut parent, node, wn);
+        let on_wire = sorted[start..].iter().take_while(|e| e.0 <= hi);
+        for &(_, node) in on_wire {
+            nets::union(&mut parent, node, wn);
         }
     }
 
@@ -333,7 +327,7 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
     let mut comp = vec![NONE; n];
     let mut ncomp = 0u32;
     for i in 0..n {
-        let r = find(&mut parent, i as u32) as usize;
+        let r = nets::find(&mut parent, i as u32) as usize;
         comp[i] = if r == i {
             ncomp += 1;
             ncomp - 1
@@ -342,6 +336,7 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
         };
     }
     assert!(ncomp as usize <= n);
+    assert!(n == 0 || ncomp > 0, "a node is in a component");
     let seed = Seed {
         px,
         py,
@@ -362,8 +357,13 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
 /// `(key(a, b), i)` for every node `i`, sorted (the radix sort keeps ties in index order).
 fn sorted_nodes(a: &[i32], b: &[i32]) -> Vec<(u64, u32)> {
     assert_eq!(a.len(), b.len());
-    let v: Vec<(u64, u32)> = (0..a.len()).map(|i| (key(a[i], b[i]), i as u32)).collect();
-    radix_sort(v)
+    assert!(a.len() < NONE as usize, "node indices fit u32");
+    let v: Vec<(u64, u32)> = (0..a.len())
+        .map(|i| (nets::key(a[i], b[i]), i as u32))
+        .collect();
+    let sorted = names::radix_sort(v);
+    assert_eq!(sorted.len(), a.len(), "the sort keeps every node");
+    sorted
 }
 
 /// The `ignore` attribute of every instance (absent or unknown: [`Ignore::No`]).
@@ -395,13 +395,18 @@ fn components(cx: &Cx<'_>, geo: &Seed, nc: usize) -> Comps {
     let s = doc.strings();
     let (inst, wires, labels) = (doc.instances(), doc.wires(), doc.labels());
     let (ports, noconns) = (doc.ports(), doc.noconns());
+    assert!(nc <= geo.comp.len(), "at most one component per node");
     let mut nodes = vec![0u32; nc];
     let mut pins = vec![0u32; nc];
     let mut pinw = vec![1u32; nc];
     let mut minid = vec![ObjId::NONE; nc];
-    let mut minpin = vec![(ObjId::NONE, 0u32); nc];
+    let unkeyed = NetKey {
+        id: ObjId::NONE,
+        pin: 0,
+    };
+    let mut minpin = vec![unkeyed; nc];
     let mut better = |c: usize, id: ObjId| {
-        if minid[c] == ObjId::NONE || id_cmp(id, minid[c], s) == Ordering::Less {
+        if minid[c] == ObjId::NONE || nets::id_cmp(id, minid[c], s) == Ordering::Less {
             minid[c] = id;
         }
     };
@@ -417,15 +422,15 @@ fn components(cx: &Cx<'_>, geo: &Seed, nc: usize) -> Comps {
             pins[c] += 1;
             pinw[c] = pinw[c].max(f.pin_bit_start[p + 1] - f.pin_bit_start[p]);
             let id = inst.id[geo.pin_inst[k] as usize];
-            let (best_id, best_p) = minpin[c];
-            let take = best_id == ObjId::NONE
-                || match id_cmp(id, best_id, s) {
+            let held = minpin[c];
+            let take = held.id == ObjId::NONE
+                || match nets::id_cmp(id, held.id, s) {
                     Ordering::Less => true,
-                    Ordering::Equal => (p as u32) < best_p,
+                    Ordering::Equal => (p as u32) < held.pin,
                     Ordering::Greater => false,
                 };
             if take {
-                minpin[c] = (id, p as u32);
+                minpin[c] = NetKey { id, pin: p as u32 };
             }
         } else if i < geo.ports0 {
             better(c, labels.id[i - geo.labels0]);
@@ -436,14 +441,14 @@ fn components(cx: &Cx<'_>, geo: &Seed, nc: usize) -> Comps {
             better(c, noconns.id[i - geo.noconns0]);
         }
     }
-    let key: Vec<(ObjId, u32)> = (0..nc)
+    let key: Vec<NetKey> = (0..nc)
         .map(|c| match minid[c] {
             ObjId::NONE => minpin[c],
-            id => (id, NONE_PIN),
+            id => NetKey { id, pin: NONE_PIN },
         })
         .collect();
     assert!(
-        key.iter().all(|k| k.0 != ObjId::NONE),
+        key.iter().all(|k| k.id != ObjId::NONE),
         "every component holds an id"
     );
     Comps {
@@ -460,6 +465,11 @@ fn components(cx: &Cx<'_>, geo: &Seed, nc: usize) -> Comps {
 fn sources(cx: &Cx<'_>, geo: &Seed, names: &mut Names, out: &mut Found<'_>) -> Sources {
     let doc = cx.doc;
     let (s, labels, ports) = (doc.strings(), doc.labels(), doc.ports());
+    assert_eq!(
+        geo.noconns0 - geo.ports0,
+        ports.id.len(),
+        "one node per port"
+    );
     let mut src = Sources {
         start: vec![0],
         ..Sources::default()
@@ -489,7 +499,7 @@ fn sources(cx: &Cx<'_>, geo: &Seed, names: &mut Names, out: &mut Found<'_>) -> S
         }
         let global = src.bits[before..]
             .iter()
-            .all(|b| glob(cx.globals, names, *b));
+            .all(|b| nets::glob(cx.globals, names, *b));
         src.comp.push(c);
         src.class.push(if global { GLOBAL } else { class });
         src.text.push(names.intern(text));
@@ -511,6 +521,10 @@ fn name_components(
     names: &Names,
     out: &mut Found<'_>,
 ) -> bool {
+    assert!(
+        comps.best.iter().all(|&b| b == NONE),
+        "names are picked once"
+    );
     for k in 0..src.comp.len() {
         let c = src.comp[k] as usize;
         let b = comps.best[c];
@@ -575,7 +589,8 @@ mod tests {
         ] {
             let mut coord = || (next() % range) as i64 as i32;
             let (a, b): (Vec<i32>, Vec<i32>) = (0..n).map(|_| (coord(), coord())).unzip();
-            let mut want: Vec<(u64, u32)> = (0..n).map(|i| (key(a[i], b[i]), i as u32)).collect();
+            let mut want: Vec<(u64, u32)> =
+                (0..n).map(|i| (nets::key(a[i], b[i]), i as u32)).collect();
             want.sort_unstable();
             assert_eq!(sorted_nodes(&a, &b), want, "n {n} range {range}");
         }

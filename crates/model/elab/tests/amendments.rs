@@ -4,16 +4,15 @@
 
 mod common;
 
-use common::*;
 use schemify_doc::Project;
-use schemify_elab::{CellState, Code, Elab, Ignore, Name, Request, elaborate, no_funcs};
+use schemify_elab::{CellState, Code, Elab, Ignore, Name, Request, no_funcs};
 
 const RES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
 
 fn row(e: &Elab, d: u32, name: &str) -> usize {
     e.insts_of(d)
         .find(|&r| e.names.get(e.insts.name[r]) == name)
-        .unwrap()
+        .expect("the definition has an instance of that name")
 }
 
 fn conn_names(e: &Elab, r: usize) -> Vec<String> {
@@ -29,19 +28,19 @@ fn global_labels_are_global_through_the_whole_hierarchy() {
     // the same global net (no W016 for it, listed in the globals).
     let sub = "schemify 1 shcomp\n\npin P inout 0 0\n\nimpl sch schematic\n\ninst 0r0001 ./res\n  at 0 0 R0\n  name R1\n\nport 0p0001 0 0 R0 P\nlabel 0n0001 0 20 R0 VDDA\n  global true\n";
     let bench = "schemify 1 shbench\n\ninst 0x0001 ./sub\n  at 0 0 R0\n  name X1\ninst 0x0002 ./res\n  at 100 0 R0\n  name R2\n\nlabel 0n0001 100 0 R0 VDDA\nlabel 0n0002 0 0 R0 a\nlabel 0n0003 100 20 R0 a\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", RES),
         ("sub.shcomp", sub),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[2]);
+    let e = common::elab(&p, hs[2]);
     let globals: Vec<&str> = e.globals.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(globals, ["VDDA"]);
     let w016_vdda = e
         .violations
         .with(Code::W016)
         .any(|v| e.names.get(v.param) == "VDDA");
-    assert!(!w016_vdda, "{:?}", codes(&e));
+    assert!(!w016_vdda, "{:?}", common::codes(&e));
     // The editor sees its own document's global labels.
     let st = CellState::build(&p, hs[1], &mut no_funcs).unwrap();
     let vdda = st.nets.bit(st.names.find("VDDA").unwrap()).unwrap();
@@ -53,13 +52,13 @@ fn impl_ignore_short_and_open() {
     let jumper = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nimpl short spice\n  ignore short\n";
     let probe = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nimpl open spice\n  ignore open\n";
     let bench = "schemify 1 shbench\n\ninst 0j0001 ./jumper\n  at 0 0 R0\n  name J1\ninst 0j0002 ./probe\n  at 200 0 R0\n  name P1\ninst 0r0001 ./res\n  at 0 0 R0\n  name R1\ninst 0r0002 ./res\n  at 0 20 R0\n  name R2\n\nlabel 0n0001 0 0 R0 zed\nlabel 0n0002 0 20 R0 abc\nlabel 0n0003 200 0 R0 p\nlabel 0n0004 200 20 R0 q\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", RES),
         ("jumper.shprim", jumper),
         ("probe.shprim", probe),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[3]);
+    let e = common::elab(&p, hs[3]);
     assert_eq!(
         conn_names(&e, row(&e, e.top, "R1")),
         ["abc", "abc"],
@@ -86,9 +85,9 @@ fn dollar_names_expand_from_project_sets_then_env() {
     let env = [("HOME", "/home/u"), ("PDK", "/env/loses")];
     let req = Request {
         env: &env,
-        ..ngspice()
+        ..common::ngspice()
     };
-    let e = elaborate(&p, h, &req, &mut no_funcs);
+    let e = schemify_elab::elaborate(&p, h, &req, &mut no_funcs);
     let args: Vec<&str> = e
         .bench
         .corner_args
@@ -129,7 +128,7 @@ fn dollar_values_expand_recursively_and_cycles_are_e034() {
         .open("", "tb.shbench", bench.as_bytes(), None)
         .unwrap()
         .handle;
-    let e = elaborate(&p, h, &ngspice(), &mut no_funcs);
+    let e = schemify_elab::elaborate(&p, h, &common::ngspice(), &mut no_funcs);
     let lines: Vec<&str> = e.bench.code_lines.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(lines[0], ".lib /pdk/sky130A/libs.tech/combined.lib tt");
     let e034 = e.violations.with(Code::E034).count();
@@ -141,8 +140,8 @@ fn generated_net_names_never_merge_two_components() {
     // R1 has the smallest id; each of its pins touches its own unnamed wire. Naming
     // both components after R1 would make them one SPICE node (a shorted resistor).
     let bench = "schemify 1 shbench\n\ninst 0aaaaa ./res\n  at 0 0 R0\n  name R1\ninst 0aaaab ./res\n  at 200 0 R0\n  name R2\n\nwire zzzzz1 -40 0 0 0\nwire zzzzz2 -40 20 0 20\n";
-    let (p, hs) = project(&[("res.shprim", RES), ("tb.shbench", bench)]);
-    let e = elab(&p, hs[1]);
+    let (p, hs) = common::project(&[("res.shprim", RES), ("tb.shbench", bench)]);
+    let e = common::elab(&p, hs[1]);
     let top = e.top;
     let r1 = conn_names(&e, row(&e, top, "R1"));
     assert_eq!(r1, ["net_zzzzz1", "net_zzzzz2"]);
@@ -158,12 +157,12 @@ fn alias_pins_are_one_port_at_two_positions() {
     // connection of its own, and a component's definition lists the port once.
     let cross = "schemify 1 shcomp\n\npin A inout 0 0\npin A_2 inout 100 0\n  alias A\npin B inout 50 50\n\nimpl sch schematic\n\ninst 0r0001 ./res\n  at 0 0 R0\n  name R9\n\nport 0p0001 0 0 R0 A\nport 0p0002 0 20 R0 B\n";
     let bench = "schemify 1 shbench\n\ninst 0c0001 ./cross\n  at 0 0 R0\n  name X1\ninst 0r0001 ./res\n  at 0 0 R0\n  name R1\ninst 0r0002 ./res\n  at 100 0 R0\n  name R2\n\nlabel 0n0001 0 20 R0 n1\nlabel 0n0002 100 20 R0 n2\nlabel 0n0003 50 50 R0 b\n";
-    let (p, hs) = project(&[
+    let (p, hs) = common::project(&[
         ("res.shprim", RES),
         ("cross.shcomp", cross),
         ("tb.shbench", bench),
     ]);
-    let e = elab(&p, hs[2]);
+    let e = common::elab(&p, hs[2]);
     let (r1, r2) = (
         conn_names(&e, row(&e, e.top, "R1")),
         conn_names(&e, row(&e, e.top, "R2")),
@@ -179,6 +178,6 @@ fn alias_pins_are_one_port_at_two_positions() {
     assert!(
         e.violations.with(Code::E012).next().is_none(),
         "an alias pin needs no port: {:?}",
-        codes(&e)
+        common::codes(&e)
     );
 }

@@ -19,7 +19,7 @@
 //! sorts and a union-find, what elaboration and every rebuild run) and the editor's
 //! per-net patch inside [`CellState::recompute`] (ordered sets over the touched nodes).
 //! They are not one spine because the patch's ordered sets cost several times the sorts
-//! on a whole cell; the incremental-equals-full oracle (`tests/incremental.rs`) holds
+//! on a whole cell; the incremental-equals-full oracle (`tests/incremental/`) holds
 //! them equal.
 //!
 //! # What the netlister reads
@@ -33,7 +33,7 @@
 //!
 //! ```
 //! use schemify_doc::Project;
-//! use schemify_elab::{Dialect, Request, Target, elaborate, no_funcs};
+//! use schemify_elab::{Dialect, Request, Target, no_funcs};
 //!
 //! let mut p = Project::new(None, None, 1).unwrap();
 //! let res = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
@@ -42,7 +42,7 @@
 //! p.open("", "res.shprim", res.as_bytes(), None).unwrap();
 //! let top = p.open("", "tb.shbench", bench.as_bytes(), None).unwrap().handle;
 //! let req = Request { config: None, corner: None, overrides: &[], env: &[], dialect: Dialect::Ngspice };
-//! let e = elaborate(&p, top, &req, &mut no_funcs);
+//! let e = schemify_elab::elaborate(&p, top, &req, &mut no_funcs);
 //! assert!(!e.violations.blocking());
 //! let row = e.insts_of(e.top).start;
 //! let nets: Vec<&str> = e.conns(row).iter().map(|n| e.names.get(*n)).collect();
@@ -59,9 +59,11 @@
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
-// Tables are SoA: loops index several parallel columns by one row, which is clearer
-// than zipping four iterators.
-#![allow(clippy::needless_range_loop)]
+#![allow(
+    clippy::needless_range_loop,
+    reason = "tables are SoA: a loop indexes several parallel columns by one row, which \
+              reads clearer than zipping four iterators"
+)]
 
 mod annotate;
 mod bits;
@@ -115,7 +117,7 @@ pub mod test_support {
         cell: &str,
         names: &mut crate::Names,
     ) -> crate::Iface {
-        crate::Iface::from_doc(doc, cell, cell, u32::MAX, true, names)
+        crate::Iface::from_doc(doc, cell, cell, u32::MAX, crate::iface::Held::Open, names)
     }
 }
 
