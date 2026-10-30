@@ -154,14 +154,14 @@ fn incremental_recompute_equals_full_rebuild_after_random_edits() {
             }
             assert_eq!(st.prev_pass, pass, "passes chain");
             let mut rows = before;
-            for g in &st.changes.0 {
+            for g in &st.changes.gone {
                 let at = rows
                     .iter()
                     .position(|r| r == g)
                     .expect("a removed row existed");
                 rows.remove(at);
             }
-            rows.extend(st.changes.1.iter().cloned());
+            rows.extend(st.changes.added.iter().cloned());
             let text = |v: &[schemify_elab::Violation]| {
                 let mut t: Vec<String> = v.iter().map(|r| format!("{r:?}")).collect();
                 t.sort();

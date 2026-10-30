@@ -20,12 +20,13 @@ mod revalue;
 
 use findings::OwnScope;
 
+use crate::ViolationDelta;
 use crate::cells::{self, CellName};
 use crate::connect::{self, Cx};
 use crate::eval::Work;
 use crate::graph::Graph;
 use crate::iface::{Held, Iface};
-use crate::live::{Ctx, Delta, Live};
+use crate::live::{Ctx, Live};
 use crate::names::{Name, Names};
 use crate::nets::{self, CellNets, Seed};
 use crate::values::{Funcs, NONE};
@@ -76,9 +77,9 @@ pub struct CellState {
     pub graph: Graph,
     /// Context-free findings of this document, sorted.
     pub violations: Violations,
-    /// What the last check pass changed in `violations`: (rows removed, rows added), each in
-    /// key order. Applying it to pass `prev_pass`'s rows gives pass `pass`'s.
-    pub changes: (Vec<Violation>, Vec<Violation>),
+    /// What the last check pass changed in `violations`, each side in key order. Applying
+    /// it to pass `prev_pass`'s rows gives pass `pass`'s.
+    pub changes: ViolationDelta,
     /// Process-unique id of the check pass `violations` comes from.
     pub pass: u64,
     /// The pass `changes` starts from; 0 after [`CellState::build`] (no delta: take all).
@@ -223,7 +224,7 @@ impl CellState {
         t.geom = t.geom || self.live.rows_moved(doc);
 
         // ---- connectivity: patch, or rebuild when the patch gives up
-        let mut delta: Option<Delta> = None;
+        let mut delta: Option<ViolationDelta> = None;
         if !t.nets && t.geom {
             let cx = Ctx::new(doc, &self.ifaces, &self.inst_iface);
             delta = self.live.update(ops, &cx, &mut self.nets, &mut self.names);
@@ -318,7 +319,7 @@ impl CellState {
             })
         };
         match changes {
-            Some(c) => self.next_pass(c.gone, c.added),
+            Some(c) => self.next_pass(c),
             None => self.check(doc, funcs),
         }
         if done.graph {

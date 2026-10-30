@@ -281,11 +281,13 @@ fn nets_view(st: &CellState, doc: &schemify_doc::Document) -> Vec<String> {
                 )
             }),
     );
-    live.extend(
-        n.by_name
-            .iter()
-            .map(|&(k, b)| format!("by_name {} {}", name(k), name(n.bit_name[b as usize]))),
-    );
+    live.extend(n.by_name.iter().map(|r| {
+        format!(
+            "by_name {} {}",
+            name(r.name),
+            name(n.bit_name[r.bit as usize])
+        )
+    }));
     live.sort();
     out.extend(live);
     out
@@ -342,14 +344,14 @@ fn geometry_run(seed: u64, steps: usize) -> usize {
         }
         assert_eq!(st.prev_pass, pass, "passes chain");
         let mut rows = before;
-        for g in &st.changes.0 {
+        for g in &st.changes.gone {
             let at = rows
                 .iter()
                 .position(|r| r == g)
                 .expect("a removed row existed");
             rows.remove(at);
         }
-        rows.extend(st.changes.1.iter().cloned());
+        rows.extend(st.changes.added.iter().cloned());
         let text = |v: &[schemify_elab::Violation]| {
             let mut t: Vec<String> = v.iter().map(|r| format!("{r:?}")).collect();
             t.sort();

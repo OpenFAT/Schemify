@@ -7,10 +7,11 @@
 //! Contents:
 //! - `pub const NO_NET`, `pub enum Ignore` (`pub(crate) parse`)
 //! - `pub struct CellNets`: `bit`, `elems`, `port`, `pins`, `bits_of`
+//! - `pub struct NameBit`
 //! - `pub(crate) struct Seed`, `pub(crate) struct NetKey`
 //! - `pub(crate) const GLOBAL`, `PORT`, `LABEL`, `OWN_STATIC`, `OWN_PORTS`, `OWN_BITS`,
 //!   `NONE_PIN`
-//! - `pub fn place(x, y, mirrored, turns, at_x, at_y) -> (i32, i32)`
+//! - `pub fn place(x, y, orient, at_x, at_y) -> (i32, i32)`
 //! - `pub fn global_labels(doc: &Document, names: &mut Names, out: &mut Vec<Name>)`
 //! - `pub(crate) fn label_is_global(doc: &Document, l: usize) -> bool`
 //! - `pub(crate) fn glob(globals: &[Name], names: &Names, n: Name) -> bool`
@@ -26,6 +27,7 @@
 use crate::names::{self, Name, Names};
 use crate::netexpr;
 use schemify_doc::{Document, ObjId, Strings};
+use schemify_format::Orient;
 use std::cmp::Ordering;
 
 /// "Not connected" in [`CellNets::conns`] (a pin-width mismatch, `E011`).
@@ -43,6 +45,16 @@ pub enum Ignore {
     Open,
     /// `ignore short`: not emitted; all its pin nets are one net.
     Short,
+}
+
+/// One row of [`CellNets::by_name`]: a name and the bit net it refers to. Orders by
+/// name first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NameBit {
+    /// The name (emitted or merged).
+    pub name: Name,
+    /// The bit net it names.
+    pub bit: u32,
 }
 
 /// The connectivity of one cell. Component rows ("nets") are geometric; bit rows are
@@ -88,7 +100,7 @@ pub struct CellNets {
     /// Connections: instance pin bits, port bits and inherit overrides on the bit.
     pub bit_conns: Vec<u32>,
     /// Every name that refers to a bit (emitted or merged by name), sorted by `Name`.
-    pub by_name: Vec<(Name, u32)>,
+    pub by_name: Vec<NameBit>,
 
     /// CSR offsets (`instances + 1`) into [`CellNets::elem_name`].
     pub(crate) elem_start: Vec<u32>,
@@ -198,8 +210,8 @@ impl CellNets {
     /// Panics only on a broken internal invariant: a name index row past the bit table.
     #[must_use]
     pub fn bit(&self, name: Name) -> Option<u32> {
-        let i = self.by_name.binary_search_by_key(&name, |p| p.0).ok()?;
-        let bit = self.by_name[i].1;
+        let i = self.by_name.binary_search_by_key(&name, |p| p.name).ok()?;
+        let bit = self.by_name[i].bit;
         assert!(
             (bit as usize) < self.bit_name.len(),
             "by_name points past the bit table"
@@ -258,15 +270,12 @@ impl CellNets {
 
 /// Places a symbol-local point (format spec §3): mirror x, rotate clockwise by quarter
 /// turns (y down), translate. Saturates at the i32 range.
-///
-/// # Panics
-///
-/// If `turns` is not below 4.
 #[must_use]
-pub fn place(x: i32, y: i32, mirrored: bool, turns: u8, at_x: i32, at_y: i32) -> (i32, i32) {
-    assert!(turns < 4, "a rotation is 0 to 3 quarter turns, got {turns}");
+pub fn place(x: i32, y: i32, orient: Orient, at_x: i32, at_y: i32) -> (i32, i32) {
+    let turns = orient.quarter_turns();
+    debug_assert!(turns < 4, "a rotation is 0 to 3 quarter turns, got {turns}");
     let (mut x, y) = (i64::from(x), i64::from(y));
-    if mirrored {
+    if orient.mirrored() {
         x = -x;
     }
     let (rx, ry) = match turns {

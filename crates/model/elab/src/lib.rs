@@ -94,9 +94,9 @@ pub use graph::Graph;
 pub use iface::{Domain, Iface, ParamKind};
 pub use names::{NAMES_MAX, Name, Names};
 pub use netexpr::WIDTH_MAX;
-pub use nets::{CellNets, Ignore, NO_NET, global_labels, place};
+pub use nets::{CellNets, Ignore, NO_NET, NameBit, global_labels, place};
 pub use ports::{PORTS_MAX, PortError, impl_ports};
-pub use violations::{Code, Severity, VIOLATIONS_MAX, Violation, Violations};
+pub use violations::{Code, Severity, VIOLATIONS_MAX, Violation, ViolationDelta, Violations};
 // `Iface::pin_dir`'s element type, so readers of elab need not depend on doc.
 pub use schemify_doc::PinDir;
 pub use state::{CellState, NetChange, Recomputed};

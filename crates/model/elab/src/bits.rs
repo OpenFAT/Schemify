@@ -19,7 +19,8 @@ use crate::iface::Domain;
 use crate::names::{self, Name, Names};
 use crate::netexpr;
 use crate::nets::{
-    self, CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, NetKey, OWN_STATIC, PORT, Seed,
+    self, CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, NameBit, NetKey, OWN_STATIC, PORT,
+    Seed,
 };
 use crate::values::NONE;
 use crate::violations::{Code, Violation};
@@ -303,14 +304,17 @@ pub(crate) fn name_bits(
     cn.by_name = sl
         .pairs
         .iter()
-        .map(|p| (p.name, net_of[p.slot as usize]))
+        .map(|p| NameBit {
+            name: p.name,
+            bit: net_of[p.slot as usize],
+        })
         .collect();
     assert!(
         cn.by_name.windows(2).all(|w| w[0] <= w[1]),
         "pairs sorted by name"
     );
-    cn.by_name.dedup_by_key(|p| p.0);
-    debug_assert!(cn.by_name.windows(2).all(|w| w[0].0 < w[1].0));
+    cn.by_name.dedup_by_key(|p| p.name);
+    debug_assert!(cn.by_name.windows(2).all(|w| w[0].name < w[1].name));
 }
 
 /// The row outputs: connections, own pin and override bits as bit nets (`ignore open`

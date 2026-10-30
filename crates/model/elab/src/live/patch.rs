@@ -6,7 +6,8 @@
 //! Contents:
 //! - `Live::update` (`pub(crate)`); `Live::write_row`, `Live::enter` (`pub(super)`)
 
-use super::{Ctx, Delta, INSTS, Kind, LABELS, Live, NOCONNS, PORTS, WIRES};
+use super::{Ctx, INSTS, Kind, LABELS, Live, NOCONNS, PORTS, WIRES};
+use crate::ViolationDelta;
 use crate::names::{Name, Names};
 use crate::netcheck;
 use crate::nets::{self, CellNets};
@@ -67,7 +68,7 @@ impl Live {
         cx: &Ctx<'_>,
         cn: &mut CellNets,
         names: &mut Names,
-    ) -> Option<Delta> {
+    ) -> Option<ViolationDelta> {
         if self.merged
             || self.dead > self.x.len() / 2 + (1 << 16)
             || cn.net_bits.len() > 2 * self.live_bits + (1 << 16)
@@ -219,7 +220,7 @@ impl Live {
             self.region.iter().all(|&v| self.comp[v as usize] != NONE),
             "region rebuilt"
         );
-        Some(Delta {
+        Some(ViolationDelta {
             gone: mem::take(&mut self.gone),
             added: mem::take(&mut self.new),
         })
@@ -486,12 +487,14 @@ impl Live {
             _ => {
                 let f = &cx.ifaces[cx.inst_iface[row] as usize];
                 let inst = doc.instances();
-                let (m, q) = (
-                    inst.orient[row].mirrored(),
-                    inst.orient[row].quarter_turns(),
-                );
                 for (k, p) in super::geometric(f).enumerate() {
-                    let xy = nets::place(f.pin_x[p], f.pin_y[p], m, q, inst.x[row], inst.y[row]);
+                    let xy = nets::place(
+                        f.pin_x[p],
+                        f.pin_y[p],
+                        inst.orient[row],
+                        inst.x[row],
+                        inst.y[row],
+                    );
                     at(self, first + k as u32, xy);
                 }
             }

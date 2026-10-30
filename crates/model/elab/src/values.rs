@@ -10,7 +10,7 @@
 //! and template positions), D20 (cached stand-ins).
 //!
 //! Contents:
-//! - `pub enum Val`: `value`, `from_value`, `is_err`, `as_f64`, `write_text`,
+//! - `pub enum Val`: `value`, `is_err`, `as_f64`, `write_text`,
 //!   `pub(crate) parse_cached`
 //! - `pub trait Funcs`, `pub fn no_funcs`
 //! - `pub fn cached_text(v: &Val, out: &mut String)`
@@ -121,18 +121,6 @@ impl Val {
         })
     }
 
-    /// Copies an evaluation result out of the scratch it borrows.
-    #[must_use]
-    pub fn from_value(v: Value<'_>) -> Val {
-        match v {
-            Value::Int(i) => Val::Int(i),
-            Value::Num(x) => Val::Num(x),
-            Value::Bool(b) => Val::Bool(b),
-            Value::Cnum { re, im } => Val::Cnum(re, im),
-            Value::Str(s) => Val::Str(s.into()),
-        }
-    }
-
     /// Returns whether this is one of the two error states.
     #[must_use]
     pub fn is_err(&self) -> bool {
@@ -197,9 +185,15 @@ impl Val {
 }
 
 impl From<Value<'_>> for Val {
-    /// [`Val::from_value`].
+    /// Copies an evaluation result out of the scratch it borrows.
     fn from(v: Value<'_>) -> Val {
-        Val::from_value(v)
+        match v {
+            Value::Int(i) => Val::Int(i),
+            Value::Num(x) => Val::Num(x),
+            Value::Bool(b) => Val::Bool(b),
+            Value::Cnum { re, im } => Val::Cnum(re, im),
+            Value::Str(s) => Val::Str(s.into()),
+        }
     }
 }
 
@@ -333,8 +327,7 @@ impl Progs {
             Code::Expr(prog) => {
                 let mut call =
                     |slot: u32, args: &[Value<'_>]| plugin(prog, slot, args, funcs, &mut missing);
-                prog.eval_with(inputs, &mut call, scratch)
-                    .map(Val::from_value)
+                prog.eval_with(inputs, &mut call, scratch).map(Val::from)
             }
             Code::Tmpl(t) => {
                 let mut call = |slot: u32, args: &[Value<'_>]| {

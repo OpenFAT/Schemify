@@ -183,7 +183,7 @@ pub(super) fn sync_cell_groups(
     }
     // Violations: the pass's own delta from the previous pass (`changes`), placed by key.
     let nv = s.rows(Table::Violations) as usize;
-    let (gone, added) = &c.changes;
+    let (gone, added) = (&c.changes.gone, &c.changes.added);
     if !continues || gone.len() + added.len() > 64 {
         snapshot::fill_violations(s, c, 0..nv, 0..c.violations.rows.len());
     } else {

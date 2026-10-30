@@ -8,8 +8,8 @@
 //!   `CellState::recheck` (`pub(super)`)
 
 use super::{CellState, RowKey};
+use crate::ViolationDelta;
 use crate::check::{self, CellCtx, INST_CODES};
-use crate::live::Delta;
 use crate::values::Funcs;
 use crate::violations::{self, Violation, Violations};
 use schemify_doc::{Document, ObjId};
@@ -71,24 +71,24 @@ impl CellState {
         check::check_values(&cx, vals, &self.names, funcs, &mut self.ws, &mut rows);
         let fresh = Violations::from_rows(rows, &self.names);
         // The first pass has no predecessor: consumers take every row (`prev_pass == 0`).
-        let (gone, added): (Vec<Violation>, Vec<Violation>) = if self.pass == 0 {
-            (Vec::new(), Vec::new())
+        let changes = if self.pass == 0 {
+            ViolationDelta::default()
         } else {
-            let (gone, new) = fresh.diff(&self.violations, &self.names);
-            (
-                gone.into_iter().cloned().collect(),
-                new.into_iter().cloned().collect(),
-            )
+            let delta = fresh.diff(&self.violations, &self.names);
+            ViolationDelta {
+                gone: delta.gone.into_iter().cloned().collect(),
+                added: delta.added.into_iter().cloned().collect(),
+            }
         };
         self.violations = fresh;
-        self.next_pass(gone, added);
+        self.next_pass(changes);
     }
 
-    /// Starts a new check pass whose delta from the current one is `gone` and `added`.
-    pub(super) fn next_pass(&mut self, gone: Vec<Violation>, added: Vec<Violation>) {
+    /// Starts a new check pass whose delta from the current one is `changes`.
+    pub(super) fn next_pass(&mut self, changes: ViolationDelta) {
         self.prev_pass = self.pass;
         self.pass = PASSES.fetch_add(1, atomic::Ordering::Relaxed);
-        self.changes = (gone, added);
+        self.changes = changes;
         assert!(self.pass > self.prev_pass);
         assert!(self.pass != 0, "pass 0 means no pass");
     }
@@ -99,8 +99,8 @@ impl CellState {
     /// only with its last connectivity row.
     ///
     /// Cost: O((gone + new) · log rows) compares plus a memmove per changed row.
-    pub(super) fn apply_net_delta(&mut self, delta: Delta) -> Delta {
-        let Delta {
+    pub(super) fn apply_net_delta(&mut self, delta: ViolationDelta) -> ViolationDelta {
+        let ViolationDelta {
             mut gone,
             added: mut new,
         } = delta;
@@ -113,7 +113,7 @@ impl CellState {
         let kept = cancel(gone, new, order);
         let (rows, net) = (&mut self.violations.rows, &mut self.net_rows);
         let rows_before = rows.len();
-        let mut changes = Delta::default();
+        let mut changes = ViolationDelta::default();
         let (lost_count, new_count) = (kept.gone.len(), kept.added.len());
         for r in kept.gone {
             let key = row_key(&r);
@@ -190,7 +190,7 @@ impl CellState {
         rows: &[u32],
         own: OwnScope,
         funcs: &mut F,
-    ) -> Option<Delta> {
+    ) -> Option<ViolationDelta> {
         assert!(
             rows.windows(2).all(|w| w[0] < w[1]),
             "rows sorted and unique"
@@ -199,7 +199,7 @@ impl CellState {
             return None;
         }
         if rows.is_empty() && own == OwnScope::Kept {
-            return Some(Delta::default());
+            return Some(ViolationDelta::default());
         }
         let fresh = self.fresh_rows(doc, rows, own, funcs);
         let names = &self.names;
@@ -262,7 +262,7 @@ impl CellState {
             before + new.len(),
             "the table moved by the reported delta"
         );
-        Some(Delta {
+        Some(ViolationDelta {
             gone: lost,
             added: new,
         })
@@ -362,7 +362,7 @@ fn cancel(
     gone: Vec<Violation>,
     new: Vec<Violation>,
     order: impl Fn(&Violation, &Violation) -> Ordering,
-) -> Delta {
+) -> ViolationDelta {
     debug_assert!(
         gone.windows(2).all(|w| order(&w[0], &w[1]).is_le()),
         "sorted"
@@ -391,5 +391,5 @@ fn cancel(
     }
     // Each cancelled pair removes one row from each side.
     assert_eq!((total - g.len() - n.len()) % 2, 0, "rows cancel in pairs");
-    Delta { gone: g, added: n }
+    ViolationDelta { gone: g, added: n }
 }

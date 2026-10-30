@@ -257,7 +257,7 @@ fn eval_in_bench(text: &str, b: &Bench, names: &Names) -> Result<String, schemif
     let mut scratch = Scratch::default();
     let v: Value<'_> = p.eval(&inputs, &mut scratch)?;
     let mut out = String::new();
-    Val::from_value(v).write_text(&mut out);
+    Val::from(v).write_text(&mut out);
     Ok(out)
 }
 

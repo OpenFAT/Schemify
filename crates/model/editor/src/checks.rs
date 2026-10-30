@@ -180,14 +180,7 @@ pub fn pins_of(doc: &Document, cell: &CellState, i: usize) -> Vec<(u32, Pt)> {
     let mut out = Vec::with_capacity(comps.len());
     let ordinary = (0..f.pin_name.len()).filter(|&k| f.pin_inherit[k] == Name::NONE);
     for (k, &c) in ordinary.zip(comps) {
-        let at = schemify_elab::place(
-            f.pin_x[k],
-            f.pin_y[k],
-            o.mirrored(),
-            o.quarter_turns(),
-            inst.x[i],
-            inst.y[i],
-        );
+        let at = schemify_elab::place(f.pin_x[k], f.pin_y[k], o, inst.x[i], inst.y[i]);
         out.push((c, at));
     }
     assert!(out.len() <= comps.len());

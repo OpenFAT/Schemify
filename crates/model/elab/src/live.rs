@@ -41,7 +41,6 @@
 //! `comps` keeps components and bits, `index` holds the spatial index and its queries.
 //!
 //! Contents:
-//! - `pub(crate) struct Delta`
 //! - `pub(crate) struct Ctx`: `new`
 //! - `pub(crate) struct Live`: `seed`, `instances_moved`, `rows_moved`, `rename`, `rows`;
 //!   `update` (in `patch`)
@@ -55,17 +54,10 @@ use crate::names::{Name, Names};
 use crate::netexpr;
 use crate::nets::{self, CellNets, OWN_BITS, OWN_PORTS, OWN_STATIC, Seed};
 use crate::values::NONE;
-use crate::violations::{Code, Violation};
+use crate::violations::{Code, Violation, ViolationDelta};
 use schemify_doc::{Document, ObjId};
 use std::collections::BTreeSet;
 use std::mem;
-
-/// Findings an edit removed and added, unordered.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Delta {
-    pub(crate) gone: Vec<Violation>,
-    pub(crate) added: Vec<Violation>,
-}
 
 /// The document and the interfaces an update reads.
 pub(crate) struct Ctx<'cell> {
@@ -369,7 +361,7 @@ impl Live {
         cx: &Ctx<'_>,
         cn: &mut CellNets,
         names: &mut Names,
-    ) -> Option<Delta> {
+    ) -> Option<ViolationDelta> {
         let doc = cx.doc;
         let (s, inst) = (doc.strings(), doc.instances());
         assert_eq!(cn.elem_start.len(), inst.id.len() + 1, "element rows fixed");
@@ -428,7 +420,7 @@ impl Live {
         }
         self.fixed.extend(new.iter().cloned());
         assert!(new.len() < elems.len().max(1), "a duplicate has a first");
-        Some(Delta { gone, added: new })
+        Some(ViolationDelta { gone, added: new })
     }
 
     /// Every connectivity finding, owner by owner (what a full check pass starts from).

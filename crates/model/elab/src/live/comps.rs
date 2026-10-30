@@ -12,7 +12,7 @@ use crate::iface::{Domain, Iface};
 use crate::names::{self, Name, Names};
 use crate::netcheck::{self, BitCounts};
 use crate::netexpr;
-use crate::nets::{self, CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, NetKey, PORT};
+use crate::nets::{self, CellNets, GLOBAL, Ignore, LABEL, NO_NET, NONE_PIN, NameBit, NetKey, PORT};
 use crate::values::NONE;
 use crate::violations::{Code, Violation};
 use schemify_doc::ObjId;
@@ -478,15 +478,15 @@ impl Live {
 
     /// The bit named `name`, made when no slot carried it; counts one more slot.
     fn named_bit(&mut self, name: Name, cx: &Ctx<'_>, cn: &mut CellNets, names: &Names) -> u32 {
-        let b = match cn.by_name.binary_search_by_key(&name, |p| p.0) {
+        let b = match cn.by_name.binary_search_by_key(&name, |p| p.name) {
             Ok(k) => {
-                let b = cn.by_name[k].1;
+                let b = cn.by_name[k].bit;
                 self.touch(b, cx, cn, names);
                 b
             }
             Err(k) => {
                 let b = self.alloc_bit(name, cx, cn, names);
-                cn.by_name.insert(k, (name, b));
+                cn.by_name.insert(k, NameBit { name, bit: b });
                 b
             }
         };
@@ -503,8 +503,10 @@ impl Live {
         assert_eq!(self.real[bi], 0, "no real pin on a freed bit");
         assert_eq!(self.other[bi], 0, "no other pin on a freed bit");
         assert_eq!(cn.bit_conns[bi], 0, "no connection on a freed bit");
-        if let Ok(k) = cn.by_name.binary_search_by_key(&cn.bit_name[bi], |p| p.0)
-            && cn.by_name[k].1 == b
+        if let Ok(k) = cn
+            .by_name
+            .binary_search_by_key(&cn.bit_name[bi], |p| p.name)
+            && cn.by_name[k].bit == b
         {
             cn.by_name.remove(k);
         }

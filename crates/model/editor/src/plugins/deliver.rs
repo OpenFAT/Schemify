@@ -198,7 +198,10 @@ impl Host {
         let mut funcs = |name: &str, args: &[Value<'_>]| self.call_fn(name, args);
         match eval_in(st, expr, &mut funcs) {
             Ok(text) => (0, text),
-            Err(e) => (Code::Parse.neg(), format!("{}: {}", e.code.as_str(), e.message)),
+            Err(e) => (
+                Code::Parse.neg(),
+                format!("{}: {}", e.code.as_str(), e.message),
+            ),
         }
     }
 }
@@ -252,7 +255,7 @@ pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<St
     let mut out = String::new();
     match value {
         Value::Str(s) => out.push_str(&crate::docs::quote(s)),
-        other => Val::from_value(other).write_text(&mut out),
+        other => Val::from(other).write_text(&mut out),
     }
     assert!(
         !out.is_empty() || matches!(value, Value::Str(_)),

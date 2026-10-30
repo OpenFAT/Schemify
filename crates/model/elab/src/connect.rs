@@ -240,7 +240,6 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
         let Some(f) = cx.ifaces.get(cx.inst_iface[i] as usize) else {
             continue;
         };
-        let (m, t) = (inst.orient[i].mirrored(), inst.orient[i].quarter_turns());
         let first = px.len();
         for p in 0..f.pin_name.len() {
             if f.pin_inherit[p] != Name::NONE {
@@ -252,7 +251,7 @@ fn geometry(cx: &Cx<'_>) -> (Seed, usize) {
                 let at = (first..px.len()).find(|&k| pin_pin[k - pins0] == q as u16);
                 aliased.extend(at.map(|k| (px.len() as u32, k as u32)));
             }
-            let (x, y) = nets::place(f.pin_x[p], f.pin_y[p], m, t, inst.x[i], inst.y[i]);
+            let (x, y) = nets::place(f.pin_x[p], f.pin_y[p], inst.orient[i], inst.x[i], inst.y[i]);
             px.push(x);
             py.push(y);
             pin_inst.push(i as u32);

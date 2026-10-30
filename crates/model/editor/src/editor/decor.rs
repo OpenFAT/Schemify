@@ -52,8 +52,8 @@ impl Editor {
         let continues = c.prev_pass != 0 && self.checks_key == Some((active, c.prev_pass));
         let delta = continues
             .then(|| {
-                let gone = checks::violation_marks_of(&c.changes.0, c, d)?;
-                let new = checks::violation_marks_of(&c.changes.1, c, d)?;
+                let gone = checks::violation_marks_of(&c.changes.gone, c, d)?;
+                let new = checks::violation_marks_of(&c.changes.added, c, d)?;
                 Some((gone, new))
             })
             .flatten();

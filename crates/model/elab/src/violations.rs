@@ -7,6 +7,7 @@
 //! - `pub struct Violation`: `key_cmp`, `pub(crate) new`
 //! - `pub const VIOLATIONS_MAX`
 //! - `pub struct Violations`: `diff`, `blocking`, `with`, `pub(crate) from_rows`
+//! - `pub struct ViolationDelta`
 //! - `pub(crate) fn cmp_key(a: &Violation, b: &Violation, names: &Names) -> Ordering`
 
 use crate::names::{Name, Names};
@@ -77,6 +78,27 @@ pub struct Violation {
 
 /// Most violations one table holds (ARCHITECTURE capacity).
 pub const VIOLATIONS_MAX: usize = 1 << 20;
+
+/// Rows that left and rows that entered a findings table: a check pass's delta
+/// ([`Violations::diff`], [`CellState::changes`](crate::CellState::changes)) or an edit's.
+/// A row whose key stayed but whose detail changed is in both.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViolationDelta<Row = Violation> {
+    /// Rows the table lost.
+    pub gone: Vec<Row>,
+    /// Rows the table gained.
+    pub added: Vec<Row>,
+}
+
+// Derived `Default` would demand `Row: Default`; empty lists need nothing of `Row`.
+impl<Row> Default for ViolationDelta<Row> {
+    fn default() -> Self {
+        ViolationDelta {
+            gone: Vec::new(),
+            added: Vec::new(),
+        }
+    }
+}
 
 /// Violations, sorted by key and unique per key.
 #[derive(Clone, Debug, Default)]
@@ -210,9 +232,8 @@ impl Violations {
         Violations { rows }
     }
 
-    /// What changed from `old` to `self` (both from the same names arena): `(gone, new)`,
-    /// the rows only `old` has and the rows only `self` has, each in key order. A row whose
-    /// key stayed but whose detail changed is in both.
+    /// What changed from `old` to `self` (both from the same names arena): the rows only
+    /// `old` has (`gone`) and the rows only `self` has (`added`), each in key order.
     ///
     /// Cost: one merge pass, O(rows) row compares; key comparisons (string compares through
     /// `names`) only where the two lists differ.
@@ -221,11 +242,7 @@ impl Violations {
     ///
     /// Panics only on a broken internal invariant: the rows both sides keep not pairing up.
     #[must_use]
-    pub fn diff<'a>(
-        &'a self,
-        old: &'a Violations,
-        names: &Names,
-    ) -> (Vec<&'a Violation>, Vec<&'a Violation>) {
+    pub fn diff<'a>(&'a self, old: &'a Violations, names: &Names) -> ViolationDelta<&'a Violation> {
         let (mut gone, mut new) = (Vec::new(), Vec::new());
         let (a, b) = (&old.rows, &self.rows);
         debug_assert!(a.windows(2).all(|w| cmp_key(&w[0], &w[1], names).is_lt()));
@@ -261,7 +278,7 @@ impl Violations {
             b.len() - new.len(),
             "the rows both sides keep pair up"
         );
-        (gone, new)
+        ViolationDelta { gone, added: new }
     }
 
     /// Returns whether any row blocks (severity `Error`).
@@ -347,7 +364,7 @@ mod tests {
                         .all(|w| w[0].key_cmp(&w[1], &names).is_lt())
                 );
             }
-            let (gone, came) = new.diff(&old, &names);
+            let ViolationDelta { gone, added: came } = new.diff(&old, &names);
             let want_gone: Vec<&Violation> =
                 old.rows.iter().filter(|r| !new.rows.contains(r)).collect();
             let want_came: Vec<&Violation> =
