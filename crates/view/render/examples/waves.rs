@@ -20,7 +20,7 @@ use std::time::Instant;
 use schemify_render::waves::{WaveLook, WaveScratch, draw_pane, draw_window};
 use schemify_render::widgets::{UiScratch, draw_ui};
 use schemify_render::{App, Painter, run};
-use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
+use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveCommand, WaveUi};
 use schemify_ui::{
     Contribution, InputEvents, Layer, Rect, Routed, Strings, Sym, TextSystem, UiLayout, UiState,
     UiTables, access, compose, layout, records, route_input,
@@ -77,10 +77,12 @@ impl App for Viewer {
                 let fx = self.ui.command(
                     &self.waves,
                     &self.geo,
-                    &name,
-                    routed.commands.arg(i),
-                    &node,
-                    now,
+                    WaveCommand {
+                        name: &name,
+                        arg: routed.commands.arg(i),
+                        node: &node,
+                        now_ms: now,
+                    },
                     &mut self.requests,
                 );
                 changed |= fx.redraw;
@@ -327,7 +329,7 @@ impl Viewer {
         let mut recompose = false;
         for r in std::mem::take(&mut self.requests) {
             let res = self.waves.apply(&r);
-            recompose |= self.ui.note(&self.waves, &r, &res).recompose;
+            recompose |= self.ui.note(&self.waves, &r, res.as_ref()).recompose;
         }
         recompose
     }

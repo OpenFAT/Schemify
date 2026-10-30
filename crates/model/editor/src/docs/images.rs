@@ -47,7 +47,7 @@ pub fn load_images(
             row,
         });
         for line in &rec.verbatim {
-            let Some((_, path)) = schemify_ui::prose::image_line(line.trim()) else {
+            let Some(path) = schemify_ui::prose::image_line(line.trim()).map(|i| i.path) else {
                 continue;
             };
             if text.image_id(path).is_some() || failed.iter().any(|f| f == path) {

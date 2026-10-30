@@ -42,6 +42,7 @@ mod pointer;
 mod readout;
 mod rows;
 
+pub use command::WaveCommand;
 pub use readout::{
     LANE_NAME_CHARS, READOUT_HEADINGS, READOUT_NAME_CHARS, ReadoutHead, ReadoutRow, lane_name,
     legend_label, measure_at, measure_label, readout_head, readout_rows,

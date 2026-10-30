@@ -4,6 +4,8 @@
 //! - `Editor::contribute_parity`
 //! - `Editor::contribute_integration`
 
+use std::ops::Range;
+
 use schemify_elab::Dialect;
 use schemify_ui::{Kind, StyleProp, records};
 
@@ -255,7 +257,7 @@ impl Editor {
             .find("textview")
             .map_or(0.0, |s| sh.ui.scroll_of(s));
         let len = TEXT_WINDOW.max(2 * (self.viewport.1 / m.line).ceil() as u32);
-        let (mut start, end) = records::window(scroll, m.line, n, len);
+        let Range { mut start, end } = records::window(scroll, m.line, n, len);
         // Wrap width: last frame's, less the window's shrink since (the tab never shrinks more).
         let shrink = sh
             .layout

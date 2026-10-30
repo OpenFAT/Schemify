@@ -20,10 +20,11 @@
 //! - `pub enum RejectReason`, `pub struct Reject`, `pub const LENGTH_MAX: u32`
 //! - `pub fn parse(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>)`
 //! - `pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Reject>)`
-//! - `pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32)`
+//! - `pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> Range<u32>`
 //! - `pub fn spacer(t: &mut String, parent: &str, id: &str, px: u32, gap: u32)`
 
 use std::iter::Peekable;
+use std::ops::Range;
 use std::str::Chars;
 
 use crate::keys::Chord;
@@ -124,7 +125,7 @@ pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Rejec
     out
 }
 
-/// Rows `[start, end)` a virtualized list lays out (only those rows become nodes, D39's node
+/// The rows a virtualized list lays out (only those rows become nodes, D39's node
 /// budget): `rows` rows `pitch` px apart, its scroll pane `offset` px past the first row. The
 /// window is `len` rows starting `len / 8` rows above the first visible one, the start rounded
 /// down to a multiple of 16 so a small scroll leaves the window, and so the contribution text,
@@ -134,7 +135,7 @@ pub fn parse_live(text: &str, strings: &mut Strings) -> (Contribution, Vec<Rejec
 ///
 /// Panics if `pitch` is not positive or `len` is 0.
 #[must_use]
-pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32) {
+pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> Range<u32> {
     assert!(pitch > 0.0, "rows have a pitch");
     assert!(len > 0, "a window shows rows");
     let first = ((offset.max(0.0) / pitch) as u32).min(rows);
@@ -142,7 +143,7 @@ pub fn window(offset: f32, pitch: f32, rows: u32, len: u32) -> (u32, u32) {
     let end = (start + len).min(rows);
     assert!(start <= end);
     assert!(end - start <= len);
-    (start, end)
+    start..end
 }
 
 /// Appends `px` of empty column to contribution text `t`: `panel` nodes `{id}.{k}` under
@@ -457,12 +458,12 @@ mod tests {
 
     #[test]
     fn window_and_spacer_cover_the_rows() {
-        assert_eq!(window(0.0, 19.0, 0, 64), (0, 0));
-        assert_eq!(window(0.0, 19.0, 10, 64), (0, 10));
-        assert_eq!(window(-5.0, 19.0, 1000, 64), (0, 64));
+        assert_eq!(window(0.0, 19.0, 0, 64), 0..0);
+        assert_eq!(window(0.0, 19.0, 10, 64), 0..10);
+        assert_eq!(window(-5.0, 19.0, 1000, 64), 0..64);
         // First visible row 152: 8 above, rounded down to 16.
-        assert_eq!(window(152.0 * 19.0, 19.0, 1000, 64), (144, 208));
-        assert_eq!(window(1e9, 19.0, 1000, 64), (992, 1000));
+        assert_eq!(window(152.0 * 19.0, 19.0, 1000, 64), 144..208);
+        assert_eq!(window(1e9, 19.0, 1000, 64), 992..1000);
         let mut s = Strings::new();
         for (px, gap) in [
             (0, 0),

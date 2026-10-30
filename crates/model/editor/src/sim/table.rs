@@ -4,6 +4,7 @@
 //! - `Sim::contribute`
 
 use std::fmt::Write as _;
+use std::ops::Range;
 
 use schemify_run::{JOB_LEVEL, Jobs, NO_SAMPLE, Pass, Results, State};
 use schemify_ui::records;
@@ -196,7 +197,7 @@ impl Sim {
         // Job rows near the scroll offset; spacers keep the list's full height.
         let shown = self.table.rows.len() as u32;
         let data_px = scroll_px - ROW_PX * (1 + extra_rows) as f32;
-        let (start, end) = records::window(data_px, ROW_PX, shown, TABLE_WINDOW);
+        let Range { start, end } = records::window(data_px, ROW_PX, shown, TABLE_WINDOW);
         assert!(start <= end && end <= shown, "a window of the rows");
         assert!(extra_rows <= 2, "the yield and best rows");
         // The list's gap (1) follows every row, so a row's pitch is ROW_PX.

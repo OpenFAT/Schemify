@@ -2,7 +2,8 @@
 //! requests, and the bookkeeping after each request is applied.
 //!
 //! Contents:
-//! - `WaveUi::command(waves, geo, name, arg, node, now_ms, out) -> Effect`
+//! - `pub struct WaveCommand`
+//! - `WaveUi::command(waves, geo, command, out) -> Effect`
 //! - `WaveUi::note(waves, request, result) -> Effect`
 
 use schemify_wave::calc;
@@ -14,32 +15,27 @@ use super::dialog;
 use super::pointer::PaneFraction;
 use super::{DOUBLE_CLICK_MS, DialogFx, Effect, Geometry, SignalClick, WaveUi};
 
-/// One command as the window issued it ([`WaveUi::command`]'s arguments).
+/// One command as the window issued it ([`WaveUi::command`]).
 #[derive(Clone, Copy, Debug)]
-struct Issued<'cmd> {
-    name: &'cmd str,
-    arg: &'cmd str,
-    node: &'cmd str,
-    now_ms: u64,
+pub struct WaveCommand<'cmd> {
+    /// The command name (`waves.plot`).
+    pub name: &'cmd str,
+    /// A submitted field's text, empty for a button.
+    pub arg: &'cmd str,
+    /// The issuing node's id (`waves.sig.12`, `waves.trace.3`, `waves.props.f.4`).
+    pub node: &'cmd str,
+    /// A monotonic clock, for double-clicks.
+    pub now_ms: u64,
 }
 
 impl WaveUi {
-    /// Runs one command from the waves window (buttons, keys, list rows, the dialog). `node` is
-    /// the issuing node's id (`waves.sig.12`, `waves.trace.3`, `waves.props.f.4`), `arg` a
-    /// submitted field's text, `now_ms` a monotonic clock for double-clicks. Unknown names do
-    /// nothing (and ask for no redraw).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "public API used by the app crate; reshaping it is a cross-crate change"
-    )]
+    /// Runs one command from the waves window (buttons, keys, list rows, the dialog). Unknown
+    /// names do nothing (and ask for no redraw).
     pub fn command(
         &mut self,
         waves: &Waves,
         geo: &Geometry,
-        name: &str,
-        arg: &str,
-        node: &str,
-        now_ms: u64,
+        command: WaveCommand<'_>,
         out: &mut Vec<Request>,
     ) -> Effect {
         debug_assert!(
@@ -47,13 +43,7 @@ impl WaveUi {
             "a geometry from a stale layout"
         );
         let before = out.len();
-        let issued = Issued {
-            name,
-            arg,
-            node,
-            now_ms,
-        };
-        let fx = self.run_command(waves, geo, issued, out);
+        let fx = self.run_command(waves, geo, command, out);
         debug_assert!(out.len() >= before, "commands only append requests");
         if !fx.redraw {
             debug_assert!(!fx.recompose, "an unknown command changes nothing");
@@ -68,7 +58,7 @@ impl WaveUi {
         &mut self,
         waves: &Waves,
         request: &Request,
-        result: &Result<Applied, ViewError>,
+        result: Result<&Applied, &ViewError>,
     ) -> Effect {
         let mut fx = Effect {
             redraw: true,
@@ -136,10 +126,10 @@ impl WaveUi {
         &mut self,
         waves: &Waves,
         geo: &Geometry,
-        issued: Issued<'_>,
+        issued: WaveCommand<'_>,
         out: &mut Vec<Request>,
     ) -> Effect {
-        let Issued {
+        let WaveCommand {
             name,
             arg,
             node,

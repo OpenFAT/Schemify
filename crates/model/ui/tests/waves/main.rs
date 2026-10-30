@@ -13,7 +13,7 @@ mod pointer;
 mod readout;
 mod window;
 
-use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
+use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveCommand, WaveUi};
 use schemify_ui::{
     Contribution, InputEvent, InputEvents, Rect, Strings, Sym, TextSystem, UiLayout, UiState,
     UiTables, compose, layout, records,
@@ -114,7 +114,7 @@ impl Win {
         let mut fx = Effect::default();
         for r in reqs {
             let res = self.waves.apply(&r);
-            let e = self.ui.note(&self.waves, &r, &res);
+            let e = self.ui.note(&self.waves, &r, res.as_ref());
             fx.redraw |= e.redraw;
             fx.recompose |= e.recompose;
         }
@@ -152,9 +152,13 @@ impl Win {
 
     pub(crate) fn command(&mut self, name: &str, arg: &str, node: &str, now: u64) -> Vec<Request> {
         let mut out = Vec::new();
-        let fx = self
-            .ui
-            .command(&self.waves, &self.geo, name, arg, node, now, &mut out);
+        let command = WaveCommand {
+            name,
+            arg,
+            node,
+            now_ms: now,
+        };
+        let fx = self.ui.command(&self.waves, &self.geo, command, &mut out);
         self.last = fx;
         if fx.recompose {
             self.rebuild();

@@ -16,7 +16,7 @@
 //! 6. Parallel: no; shaping shares the font context.
 //!
 //! Contents:
-//! - `pub use` [`Segment`], [`split_plots`], [`image_line`] (from the private `markdown`)
+//! - `pub use` [`Segment`], [`split_plots`], [`image_line`], [`ImageLine`] (from the private `markdown`)
 //! - `pub const CODE_PX: RangeInclusive<u16>`
 //! - `pub struct CodeMetrics { pad, line, advance }`, `pub struct ProseList`
 //! - `pub fn code_metrics(ts, px) -> Option<CodeMetrics>`
@@ -34,7 +34,7 @@ use crate::markdown;
 use crate::markdown::{BOLD, Block, CODE, COLUMNS_MAX, ITALIC, Inline};
 use crate::text::{TextId, TextSystem};
 
-pub use crate::markdown::{Segment, image_line, split_plots};
+pub use crate::markdown::{ImageLine, Segment, image_line, split_plots};
 
 /// Prose fonts (px) whose code metrics [`TextSystem::new`] measures ([`code_metrics`]).
 pub const CODE_PX: RangeInclusive<u16> = 8..=32;

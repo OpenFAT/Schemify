@@ -18,7 +18,7 @@
 use std::fmt;
 
 use crate::editor::{DockPicture, UiView};
-use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveUi};
+use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveCommand, WaveUi};
 use schemify_ui::{
     Chord, Contribution, InputEvent, InputEvents, Key, Mods, Routed, Strings, Sym, TextSystem,
     UiLayout, UiState, UiTables, records,
@@ -160,10 +160,12 @@ impl WavesView {
             let fx = self.ui.command(
                 &self.waves,
                 &self.geo,
-                &name,
-                routed.commands.arg(i),
-                &node,
-                now,
+                WaveCommand {
+                    name: &name,
+                    arg: routed.commands.arg(i),
+                    node: &node,
+                    now_ms: now,
+                },
                 &mut self.requests,
             );
             changed |= fx.redraw;
@@ -182,7 +184,7 @@ impl WavesView {
         self.show_dialog(fx.dialog);
         for r in std::mem::take(&mut self.requests) {
             let res = self.waves.apply(&r);
-            recompose |= self.ui.note(&self.waves, &r, &res).recompose;
+            recompose |= self.ui.note(&self.waves, &r, res.as_ref()).recompose;
         }
         if (recompose || routed.relayout) && self.viewport.0 > 0.0 {
             self.rebuild();
@@ -255,7 +257,7 @@ impl WavesView {
             let res = self.waves.apply(&req);
             match &res {
                 Ok(Applied::Trace(_)) => {
-                    self.ui.note(&self.waves, &req, &res);
+                    self.ui.note(&self.waves, &req, res.as_ref());
                     if self.viewport.0 > 0.0 {
                         self.rebuild();
                     }

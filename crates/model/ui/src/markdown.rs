@@ -14,7 +14,7 @@
 //! - `pub(crate) const BOLD`, `pub(crate) const ITALIC`, `pub(crate) const CODE`
 //! - `pub(crate) enum Block`, `pub(crate) struct Inline`, `pub enum Segment<'src>`
 //! - `pub(crate) fn blocks(src) -> Vec<Block>`
-//! - `pub fn image_line(t) -> Option<(&str, &str)>`
+//! - `pub struct ImageLine`, `pub fn image_line(t) -> Option<ImageLine>`
 //! - `pub(crate) fn inlines(src, notes, math) -> Inline`
 //! - `pub fn split_plots(src) -> Vec<Segment<'_>>`
 
@@ -186,7 +186,7 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
             out.push(Block::Note(label.to_owned(), text));
             continue;
         }
-        if let Some((alt, path)) = image_line(t) {
+        if let Some(ImageLine { alt, path }) = image_line(t) {
             out.push(Block::Image(alt.to_owned(), path.to_owned()));
             i += 1;
             continue;
@@ -244,9 +244,9 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
 }
 
 /// A line that is exactly one image, `![alt](path)` (an optional title after the path is
-/// ignored): `(alt, path)`.
+/// ignored).
 #[must_use]
-pub fn image_line(t: &str) -> Option<(&str, &str)> {
+pub fn image_line(t: &str) -> Option<ImageLine<'_>> {
     let (alt, target) = t.strip_prefix("![")?.strip_suffix(')')?.split_once("](")?;
     let path = target.split_whitespace().next()?;
     if alt.contains(']') || target.contains(')') {
@@ -254,7 +254,16 @@ pub fn image_line(t: &str) -> Option<(&str, &str)> {
     }
     debug_assert!(!path.is_empty(), "a path is a whitespace-free word");
     debug_assert!(t.contains(path));
-    Some((alt, path))
+    Some(ImageLine { alt, path })
+}
+
+/// The parts of a one-image line ([`image_line`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageLine<'line> {
+    /// The alt text between `![` and `]`.
+    pub alt: &'line str,
+    /// The path: the first word inside the parentheses.
+    pub path: &'line str,
 }
 
 /// Parses inline markup. `notes` are the block's footnote labels in number order: `[^label]`
