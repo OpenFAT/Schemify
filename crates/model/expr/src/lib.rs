@@ -59,7 +59,7 @@
 //!   [`PluginValue`], [`Template`], [`Segment`], [`Plot`], [`Column`],
 //!   [`CalcResult`], [`ColKind`], [`ColOut`], [`AxisOut`], [`Deps`], [`Cycle`],
 //!   [`topo_order`], [`topo_order_all`], [`reverse`], [`affected`],
-//!   [`parse_num`], [`write_num`], [`write_int`], `dmath`
+//!   [`parse_num`], [`write_num`], [`write_int`], [`write_scientific`], `dmath`
 #![forbid(unsafe_code)]
 
 // Data design (the six DOD questions):
@@ -104,7 +104,7 @@ pub use eval::{PluginValue, Scratch};
 pub use graph::{Cycle, Deps, affected, reverse, topo_order, topo_order_all};
 pub use program::{Mode, Program, SignalKind, op_parts};
 pub use template::{Segment, Template};
-pub use text::{parse_num, write_int, write_num};
+pub use text::{parse_num, write_int, write_num, write_scientific};
 
 /// A scalar value: what identifiers are bound to and what scalar evaluation returns.
 ///

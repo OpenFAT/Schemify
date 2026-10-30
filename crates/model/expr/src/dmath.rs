@@ -243,17 +243,30 @@ fn cln(z: Complex) -> Complex {
     Complex::new(libm::log(norm(z)), argument)
 }
 
-/// Principal square root without cancellation (Kahan's formulation).
+/// Principal square root without cancellation (Kahan's formulation). A `z` near either end
+/// of the f64 range is first scaled by an even power of two, so `|re| + |z|` neither
+/// underflows to zero (a subnormal `z`) nor overflows; the root takes back half the power.
 fn csqrt(z: Complex) -> Complex {
     if z.re == 0.0 && z.im == 0.0 {
         return Complex::new(0.0, z.im);
     }
-    let t = ((z.re.abs() + norm(z)) * 0.5).sqrt();
-    let root = if z.re >= 0.0 {
-        Complex::new(t, z.im / (2.0 * t))
+    let m = z.re.abs().max(z.im.abs());
+    let k = if m < f64::MIN_POSITIVE * 4.0 {
+        54
+    } else if m > f64::MAX / 8.0 {
+        -4
     } else {
-        Complex::new(z.im.abs() / (2.0 * t), t.copysign(z.im))
+        0
     };
+    let s = Complex::new(libm::scalbn(z.re, k), libm::scalbn(z.im, k));
+    let t = ((s.re.abs() + norm(s)) * 0.5).sqrt();
+    debug_assert!(t > 0.0 || t.is_nan(), "sqrt({z:?}): t underflowed");
+    let root = if s.re >= 0.0 {
+        Complex::new(t, s.im / (2.0 * t))
+    } else {
+        Complex::new(s.im.abs() / (2.0 * t), t.copysign(s.im))
+    };
+    let root = Complex::new(libm::scalbn(root.re, -k / 2), libm::scalbn(root.im, -k / 2));
     // The principal root lies in the right half-plane (NaN passes through).
     debug_assert!(
         root.re >= 0.0 || root.re.is_nan(),
@@ -355,6 +368,68 @@ mod tests {
             cpow(Complex::new(0.0, 0.0), Complex::new(2.0, 0.0)),
             Complex::new(0.0, 0.0)
         );
+    }
+
+    /// Regression: `sqrt` of a subnormal imaginary number underflowed `t` to zero and
+    /// returned an infinite part (`X010`). Oracle: sqrt(±iy) = sqrt(y/2)·(1 ± i), and
+    /// sqrt(-y) = i·sqrt(y).
+    #[test]
+    fn sqrt_of_a_subnormal_is_its_root() {
+        let y = f64::from_bits(1); // 2^-1074, the smallest subnormal
+        let (r, h) = (y.sqrt(), y.sqrt() * core::f64::consts::FRAC_1_SQRT_2);
+        let near = |a: f64, b: f64| (a - b).abs() <= 4.0 * f64::EPSILON * b.abs();
+        for (z, want) in [
+            (Complex::new(0.0, y), Complex::new(h, h)),
+            (Complex::new(0.0, -y), Complex::new(h, -h)),
+            (Complex::new(-y, 0.0), Complex::new(0.0, r)),
+            (Complex::new(y, 0.0), Complex::new(r, 0.0)),
+        ] {
+            let got = complex(Builtin::Sqrt, z);
+            assert!(
+                near(got.re, want.re) && near(got.im, want.im),
+                "sqrt({z:?}) = {got:?}, want {want:?}"
+            );
+        }
+    }
+
+    /// Every magnitude from the smallest subnormal to `f64::MAX`, in every quadrant: the root
+    /// is finite, in the right half-plane, and squares back to `z` (both rescaled by exact
+    /// powers of two, so the check itself cannot underflow or overflow).
+    #[test]
+    fn sqrt_squares_back_across_the_f64_range() {
+        let exps = [
+            -1074, -1060, -1030, -1022, -1000, -500, -1, 0, 1, 500, 1000, 1023,
+        ];
+        let parts = exps
+            .iter()
+            .flat_map(|&e| [1.0, 1.75].map(|m| libm::scalbn(m, e)))
+            .filter(|p| p.is_finite())
+            .chain([0.0]);
+        let parts: Vec<f64> = parts.collect();
+        for &a in &parts {
+            for &b in &parts {
+                for z in [(a, b), (-a, b), (a, -b), (-a, -b)].map(|(re, im)| Complex::new(re, im)) {
+                    if z.re == 0.0 && z.im == 0.0 {
+                        continue;
+                    }
+                    let root = complex(Builtin::Sqrt, z);
+                    assert!(
+                        root.re.is_finite() && root.im.is_finite(),
+                        "sqrt({z:?}) = {root:?}"
+                    );
+                    assert!(root.re >= 0.0, "sqrt({z:?}) = {root:?} left of the axis");
+                    // Scale the root near 1 by 2^-k; z scales by 2^-2k.
+                    let k = libm::ilogb(root.re.abs().max(root.im.abs()));
+                    let s = Complex::new(libm::scalbn(root.re, -k), libm::scalbn(root.im, -k));
+                    let zs = Complex::new(libm::scalbn(z.re, -2 * k), libm::scalbn(z.im, -2 * k));
+                    let err = norm(s * s - zs);
+                    assert!(
+                        err <= 8.0 * f64::EPSILON * norm(zs),
+                        "sqrt({z:?}) = {root:?} squares off by {err:e}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -238,7 +238,8 @@ impl Plan {
     ///
     /// # Panics
     ///
-    /// Panics if `doc` holds more than [`TABLE_MAX`] rows in one bench table, which doc's
+    /// Panics if `doc` holds more than [`TABLE_MAX`] rows in one bench table, or an
+    /// `optimize` line with fewer values than the format schema gives it, which doc's
     /// reader never builds.
     pub fn read(doc: &Document) -> Result<Plan, PlanError> {
         let s = doc.strings();
@@ -537,6 +538,7 @@ fn read_dist(var: &str, d: &[&str]) -> Result<Dist, PlanError> {
 }
 
 /// Reads one `optimize` record whose attribute lines `lines(key)` returns, in file order.
+/// Each line has the arity the format schema gives its key (doc never holds another).
 fn read_optimize<'a>(
     plan: &Plan,
     name: &str,
@@ -549,13 +551,26 @@ fn read_optimize<'a>(
             .next()
             .and_then(|v| v.first().map(|x| (*x).to_owned()))
     };
-    let firsts =
-        |k: &str| -> Vec<String> { lines(k).into_iter().map(|v| v[0].to_owned()).collect() };
+    let firsts = |k: &str| -> Vec<String> {
+        let rows = lines(k).into_iter().map(|v| {
+            assert_eq!(
+                v.len(),
+                1,
+                "the format schema gives every `{k}` line one value"
+            );
+            v[0].to_owned()
+        });
+        rows.collect()
+    };
 
     let mut goals = Vec::new();
     let mut weights = Vec::new();
     let shape = || bad("goal: expected `<output> min|max|target <expr> [weight <w>]`".to_owned());
     for g in lines("goal") {
+        assert!(
+            g.len() >= 2,
+            "the format schema gives every `goal` line an output and a goal"
+        );
         let output = plan
             .output(g[0])
             .ok_or_else(|| bad(format!("goal names no output `{}`", g[0])))?;
@@ -646,6 +661,27 @@ mod tests {
         assert!(parse_count("0", 3).is_err());
         assert!(parse_count("4", 3).is_err());
         assert!(parse_count("1e2", 300).is_err(), "no exponent");
+    }
+
+    /// Regression: an attribute line with no values was indexed (`v[0]`) and panicked out of
+    /// bounds. Doc never holds one (format schema: `vary`, `config` and `corner` take one
+    /// value, `goal` two or more; `tests/expand.rs` shows the reader refusing it), so it is a
+    /// precondition, and breaking it names the schema.
+    #[test]
+    #[should_panic(expected = "the format schema gives every `vary` line one value")]
+    fn a_bare_optimize_line_breaks_the_doc_precondition() {
+        let lines = |k: &str| match k {
+            "goal" => vec![vec!["x", "min"]],
+            "vary" => vec![vec![]],
+            _ => Vec::new(),
+        };
+        let mut plan = Plan::default();
+        plan.outputs.push(Output {
+            name: "x".to_owned(),
+            src: "1".to_owned(),
+            prog: Program::compile("1", Mode::Calc).unwrap(),
+        });
+        let _ = read_optimize(&plan, "o", lines);
     }
 
     #[test]

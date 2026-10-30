@@ -66,10 +66,8 @@ impl Router<'_> {
             }) if !state.open.is_empty() && matches!(s, Shown::Cascade | Shown::Normal) => {
                 if let Some(d) = super::popup_depth(self.tables, state, n) {
                     let before = state.open.len();
-                    state.open.truncate(d + 1);
-                    if s == Shown::Cascade && state.open.len() < UiState::MAX_OPEN {
-                        state.open.push(ids[n as usize]);
-                    }
+                    let cascade = (s == Shown::Cascade).then(|| ids[n as usize]);
+                    open_below(state, d, cascade);
                     self.out.relayout |= state.open.len() != before || s == Shown::Cascade;
                 }
             }
@@ -239,8 +237,7 @@ impl Router<'_> {
             }
             (_, Shown::Cascade) => {
                 if let Some(d) = super::popup_depth(self.tables, state, n) {
-                    state.open.truncate(d + 1);
-                    state.open.push(id);
+                    open_below(state, d, Some(id));
                     out.relayout = true;
                 }
             }
@@ -307,6 +304,20 @@ fn interactive(kind: Kind, shown: Shown) -> bool {
                 | Kind::TextInput
                 | Kind::TextArea
         )
+}
+
+/// Keeps the open chain through depth `d` and opens `cascade` below it, unless the chain is
+/// already [`UiState::MAX_OPEN`] deep (the cascade then stays closed). Hover and press both
+/// open a cascade through here.
+fn open_below(state: &mut UiState, d: usize, cascade: Option<Sym>) {
+    debug_assert!(d < state.open.len(), "depth {d} is in the open chain");
+    state.open.truncate(d + 1);
+    if let Some(id) = cascade
+        && state.open.len() < UiState::MAX_OPEN
+    {
+        state.open.push(id);
+    }
+    debug_assert!(state.open.len() <= UiState::MAX_OPEN);
 }
 
 /// Moves the divider of the dragged `split` to the pointer: the second pane takes the space

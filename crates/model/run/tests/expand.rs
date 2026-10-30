@@ -312,6 +312,26 @@ fn records_that_cannot_run_are_refused() {
     );
 }
 
+/// `read_optimize`'s precondition: an optimize line with too few values is the format's
+/// E029, so the doc a plan reads never holds one.
+#[test]
+fn bare_optimize_lines_never_reach_a_plan() {
+    for line in ["vary", "config", "corner", "goal", "goal x"] {
+        let bench = format!(
+            "schemify 1 shbench\n\nvar R 1k\n  min 1\n  max 9k\n\n\
+             optimize o\n  goal x min\n  {line}\n\noutput x \"1\"\n"
+        );
+        let mut p = schemify_doc::Project::new(None, None, 7).unwrap();
+        let _ = p.index_library("", "", &[("tb.shbench", bench.as_bytes())]);
+        match p.open("", "tb.shbench", bench.as_bytes(), None) {
+            Err(schemify_doc::OpenError::Parse(e)) => {
+                assert!(e.to_string().contains("E029"), "`{line}`: {e}");
+            }
+            other => panic!("`{line}` opened: {:?}", other.err()),
+        }
+    }
+}
+
 #[test]
 fn selections_naming_what_the_bench_lacks_are_refused() {
     let p = plan(1, 2, &[2], 2, 0);

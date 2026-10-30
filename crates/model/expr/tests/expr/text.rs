@@ -87,6 +87,51 @@ proptest! {
         let tol = x.abs() * 10f64.powi(1 - digits as i32) + 1e-300;
         prop_assert!((y - x).abs() <= tol, "eng({x}, {digits}) read back as {y}");
     }
+
+    /// Every finite f64: `eng()` is at most `digits + 7` bytes and `num()` reads it
+    /// back within one unit of its last digit (half the smallest subnormal more).
+    #[test]
+    fn eng_is_narrow_and_reads_back_over_all_f64(bits in any::<u64>(), digits in 1usize..=17) {
+        let x = f64::from_bits(bits);
+        prop_assume!(x.is_finite());
+        let text = eng(x, digits);
+        prop_assert!(text.len() <= digits + 7, "eng({x:e}, {digits}) = {text}");
+        let y = parse_num(&text).unwrap();
+        let tol = x.abs() * 10f64.powi(1 - digits as i32) + f64::from_bits(1);
+        prop_assert!((y - x).abs() <= tol, "eng({x:e}, {digits}) = {text} read back as {y:e}");
+    }
+}
+
+fn eng(x: f64, digits: usize) -> String {
+    let r = crate::eval(&format!("eng({}, {digits})", canon(x))).expect("eng is total");
+    let Str(text) = r else { panic!("{r:?}") };
+    text
+}
+
+/// Regression (with `wave::format_si`): past the suffix table the mantissa grows
+/// three digits at most (`0.001f`, `999999t`), then the text is scientific; the
+/// edges are decided after rounding, and `f64::MAX` truncates rather than overflow.
+#[test]
+fn eng_beyond_the_suffixes_is_scientific() {
+    let cases: [(f64, usize, &str); 14] = [
+        (1e-20, 3, "1e-20"),
+        (-1.234e-19, 4, "-1.234e-19"),
+        (1e-18, 4, "0.001f"),
+        (9.99e-19, 3, "9.99e-19"),
+        (9.9996e-19, 4, "0.001f"),
+        (1.5e15, 3, "1500t"),
+        (999.94e15, 4, "999900t"),
+        (999.95e15, 4, "1e18"),
+        (1e18, 4, "1e18"),
+        (1e300, 3, "1e300"),
+        (f64::from_bits(1), 4, "4.941e-324"),
+        (f64::MAX, 4, "1.797e308"),
+        (f64::MAX, 1, "1e308"),
+        (-f64::MAX, 17, "-1.7976931348623157e308"),
+    ];
+    for (x, digits, want) in cases {
+        assert_eq!(eng(x, digits), want, "eng({x:e}, {digits})");
+    }
 }
 
 /// Every casing of an ASCII suffix.

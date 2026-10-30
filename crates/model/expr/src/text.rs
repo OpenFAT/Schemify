@@ -8,9 +8,11 @@
 //! - `pub fn write_num(out: &mut String, x: f64)`
 //! - `pub fn write_int(out: &mut String, x: i64)`
 //! - `pub fn parse_num(s: &str) -> Result<f64, Error>`
+//! - `pub fn write_scientific(out: &mut String, x: f64, digits: usize)`
 //! - `pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32)`
 
 use core::iter;
+use core::ops::Range;
 
 use crate::lex::{self, TokenKind};
 use crate::{Code, Error, Span};
@@ -82,9 +84,58 @@ pub fn parse_num(s: &str) -> Result<f64, Error> {
     Ok(if s.starts_with('-') { -v } else { v })
 }
 
+/// Appends finite `x` in scientific notation with `digits` significant digits
+/// and trailing mantissa zeros trimmed: `4.941e-324`, `-1e20`, `1.5e300`. Where
+/// rounding up would pass `f64::MAX` the mantissa is truncated instead
+/// (`1.797e308` at 4 digits), so [`parse_num`] always reads the text back as a
+/// finite number. At most `digits + 7` bytes. `eng()` and `wave::format_si`
+/// write this past their suffix range.
+///
+/// # Panics
+/// If `digits` is outside `1..=17`.
+pub fn write_scientific(out: &mut String, x: f64, digits: usize) {
+    assert!((1..=17).contains(&digits), "digits {digits} outside 1..=17");
+    debug_assert!(x.is_finite(), "scientific text of a non-finite number {x}");
+    let start = out.len();
+    let mut text = format!("{x:.*e}", digits - 1);
+    if text.parse::<f64>().is_ok_and(f64::is_infinite) {
+        let full = format!("{x:.16e}");
+        let (mant, exp) = full.split_once('e').expect("LowerExp has an exponent");
+        let keep = digits + 1 + usize::from(x < 0.0);
+        text = format!("{}e{exp}", &mant[..keep]);
+    }
+    let (mant, exp) = text.split_once('e').expect("LowerExp has an exponent");
+    let mant = if mant.contains('.') {
+        mant.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        mant
+    };
+    out.push_str(mant);
+    out.push('e');
+    out.push_str(exp);
+    debug_assert!(
+        out[start..].parse::<f64>().is_ok_and(f64::is_finite),
+        "{} reads back finite",
+        &out[start..]
+    );
+    debug_assert!(
+        out.len() - start <= digits + 7,
+        "{} is too wide",
+        &out[start..]
+    );
+}
+
+/// Decimal exponents (of the value rounded to its digits) `eng()` writes with a
+/// suffix: the mantissa grows at most three digits past `f` and `t` (`0.001f`,
+/// `999999t`); outside it is scientific notation, so the text stays narrow.
+const SUFFIX_EXPONENTS: Range<i32> = -18..18;
+
 /// Engineering notation with a spec §2 suffix, rounded to `digits`
 /// significant digits: `4.7k`, `1.5meg`, `220n`. Beyond the suffix range the
-/// mantissa grows (`0.001f`, `1000t`), so `num()` always reads it back.
+/// mantissa grows up to three digits (`0.001f`, `999999t`), then the text is
+/// scientific (`1e-20`, `4.941e-324`; toward zero where rounding up would pass
+/// `f64::MAX`), so `num()` always reads it back and it is at most `digits + 7`
+/// bytes.
 pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32) {
     assert!(x.is_finite(), "eng of a non-finite number");
     assert!(
@@ -100,6 +151,10 @@ pub(crate) fn write_eng(out: &mut String, x: f64, digits: u32) {
         .split_once('e')
         .expect("LowerExp always has an exponent");
     let exp: i32 = exp.parse().expect("LowerExp exponent is an integer");
+    if !SUFFIX_EXPONENTS.contains(&exp) {
+        write_scientific(out, x, digits as usize);
+        return;
+    }
     let sig: String = mant.chars().filter(char::is_ascii_digit).collect();
     debug_assert_eq!(
         sig.len(),
