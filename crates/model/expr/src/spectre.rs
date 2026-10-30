@@ -291,7 +291,7 @@ mod tests {
             let mut s = String::new();
             let e = source(spec, &mut s).expect_err(spec);
             assert_eq!(e.code, crate::Code::X009, "{spec}");
-            assert!(e.msg.contains("spectre_source"), "{spec}: {e}");
+            assert!(e.message.contains("spectre_source"), "{spec}: {e}");
         }
     }
 }

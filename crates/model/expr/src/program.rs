@@ -7,12 +7,15 @@
 //! - `pub enum Mode`, `pub enum SignalKind`, `pub struct Program`
 //! - `pub(crate) enum OpKind`, `pub(crate) struct Op`, `pub(crate) struct Name`,
 //!   `pub(crate) struct Signal`, `pub(crate) struct PluginFn`, `pub(crate) struct CodeRange`
-//! - `pub fn op_parts(name: &str) -> (&str, &str)`
+//! - `pub struct OpParts`, `pub struct PluginFunction` (`Display` as `namespace.function`)
+//! - `pub fn op_parts(name: &str) -> OpParts`
 //! - `Program::compile(src: &str, mode: Mode) -> Result<Program, Error>`,
 //!   `Program::idents(&self)`, `Program::signals(&self)`,
 //!   `Program::signal_span(&self, k: usize) -> Span`, `Program::plugin_fns(&self)`,
 //!   `Program::bind(&self, out, lookup) -> Result<(), Error>`,
 //!   `Program::name(&self, n: Name) -> &str`, `Program::plugin_name(&self, slot: u32) -> String`
+
+use core::fmt;
 
 use crate::compile::Compiler;
 use crate::eval::Scalar;
@@ -37,6 +40,30 @@ pub enum SignalKind {
     /// `op(inst, param)`: a device's DC operating-point value, one number; the
     /// signal name is `<inst>[<param>]` (split it with [`op_parts`]).
     Op,
+}
+
+/// An [`SignalKind::Op`] signal name split by [`op_parts`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpParts<'name> {
+    /// The instance path (`x1/m2`).
+    pub instance: &'name str,
+    /// The device parameter (`gm`), as written.
+    pub parameter: &'name str,
+}
+
+/// One plugin function slot of a [`Program`], from [`Program::plugin_fns`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PluginFunction<'program> {
+    /// The namespace before the dot (`gmid`).
+    pub namespace: &'program str,
+    /// The function after the dot (`id`).
+    pub function: &'program str,
+}
+
+impl fmt::Display for PluginFunction<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.namespace, self.function)
+    }
 }
 
 /// A compiled expression (or the holes of a [`crate::Template`]): immutable,
@@ -148,17 +175,20 @@ pub(crate) struct CodeRange {
 const _: () = assert!(size_of::<Op>() == 8);
 
 /// Splits an [`SignalKind::Op`] signal name `<inst>[<param>]` into its
-/// instance path and parameter (`("x1/m2", "gm")`).
+/// instance path and parameter (`x1/m2[gm]` → `x1/m2`, `gm`).
 ///
 /// # Panics
 /// If `name` is not shaped so; the compiler only makes such names.
 #[must_use]
-pub fn op_parts(name: &str) -> (&str, &str) {
+pub fn op_parts(name: &str) -> OpParts<'_> {
     let (inst, rest) = name.rsplit_once('[').expect("an op signal name");
     let param = rest.strip_suffix(']').expect("an op signal name");
     assert!(!inst.is_empty(), "op signal without an instance");
     assert!(!param.is_empty(), "op signal without a parameter");
-    (inst, param)
+    OpParts {
+        instance: inst,
+        parameter: param,
+    }
 }
 
 impl Program {
@@ -217,14 +247,15 @@ impl Program {
         self.signal_spans[k]
     }
 
-    /// Plugin functions `(namespace, name)` in slot order: the slot number a
-    /// plugin callback receives indexes this list. Non-empty means the value
-    /// depends on plugins, so callers caching values per D20 key on it.
+    /// Plugin functions in slot order: the slot number a plugin callback
+    /// receives indexes this list. Non-empty means the value depends on
+    /// plugins, so callers caching values per D20 key on it.
     #[must_use]
-    pub fn plugin_fns(&self) -> impl ExactSizeIterator<Item = (&str, &str)> + '_ {
-        self.plugins
-            .iter()
-            .map(|plugin| (self.name(plugin.namespace), self.name(plugin.function)))
+    pub fn plugin_fns(&self) -> impl ExactSizeIterator<Item = PluginFunction<'_>> + '_ {
+        self.plugins.iter().map(|plugin| PluginFunction {
+            namespace: self.name(plugin.namespace),
+            function: self.name(plugin.function),
+        })
     }
 
     /// Resolves every identifier through `lookup` into `out` (cleared first),
@@ -270,11 +301,11 @@ impl Program {
             self.plugins.len()
         );
         let plugin = self.plugins[slot as usize];
-        let name = format!(
-            "{}.{}",
-            self.name(plugin.namespace),
-            self.name(plugin.function)
-        );
+        let name = PluginFunction {
+            namespace: self.name(plugin.namespace),
+            function: self.name(plugin.function),
+        }
+        .to_string();
         debug_assert!(name.len() >= 3, "both parts are identifiers");
         name
     }

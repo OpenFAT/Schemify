@@ -305,7 +305,7 @@ fn var_row(
         return;
     };
     let (text, ok) = match val {
-        Val::Err(e) => (format!("{:?} {}", e.code, e.msg), false),
+        Val::Err(e) => (format!("{:?} {}", e.code, e.message), false),
         Val::Upstream => ("(an input has an error)".to_owned(), false),
         _ => {
             let shown = super::value_text(val, unit.unwrap_or(""));

@@ -11,7 +11,7 @@
 //! - `pub(crate) fn check_finite(v: &[f64], name: &str) -> Result<(), Error>`,
 //!   `pub(crate) fn first_nonfinite(v: &[f64]) -> Option<usize>`
 
-use crate::calc::{self, Axis, AxisKind, CalcValue, ColKind, ColumnValue};
+use crate::calc::{self, Axis, AxisKind, CalcValue, ColumnKind, ColumnValue};
 use crate::eval::Scalar;
 use crate::kernel;
 use crate::program::OpKind;
@@ -19,7 +19,7 @@ use crate::{Code, Error};
 
 /// Builds a column one element at a time, widening real to complex.
 struct ColumnBuilder {
-    kind: Option<ColKind>,
+    kind: Option<ColumnKind>,
     re: Vec<f64>,
     im: Vec<f64>,
 }
@@ -73,7 +73,7 @@ pub(crate) fn elementwise(
                 };
             }
             let v = f(&vs, strings).map_err(|e| Error {
-                msg: format!("{} (at point {i})", e.msg),
+                message: format!("{} (at point {i})", e.message),
                 ..e
             })?;
             out.push(v)?;
@@ -122,12 +122,12 @@ pub(crate) fn column_binary(
             );
             if let Some(i) = first_nonfinite(&re) {
                 kernel::finite(re[i], kernel::op_str(op)).map_err(|e| Error {
-                    msg: format!("{} (at point {i})", e.msg),
+                    message: format!("{} (at point {i})", e.message),
                     ..e
                 })?;
             }
             return Ok(ColumnValue {
-                kind: ColKind::Real,
+                kind: ColumnKind::Real,
                 re,
                 im: Vec::new(),
                 axis,
@@ -207,20 +207,20 @@ impl ColumnBuilder {
             "imaginary parts in step with real ones"
         );
         let (kind, re, im) = match v {
-            Scalar::Int(x) => (ColKind::Real, x as f64, 0.0),
-            Scalar::Num(x) => (ColKind::Real, x, 0.0),
-            Scalar::Cnum(re, im) => (ColKind::Complex, re, im),
-            Scalar::Bool(b) => (ColKind::Bool, if b { 1.0 } else { 0.0 }, 0.0),
+            Scalar::Int(x) => (ColumnKind::Real, x as f64, 0.0),
+            Scalar::Num(x) => (ColumnKind::Real, x, 0.0),
+            Scalar::Cnum(re, im) => (ColumnKind::Complex, re, im),
+            Scalar::Bool(b) => (ColumnKind::Bool, if b { 1.0 } else { 0.0 }, 0.0),
             Scalar::Str(..) => return Err(Error::bare(Code::X003, "string columns do not exist")),
         };
         match (self.kind, kind) {
             (None, k) => self.kind = Some(k),
             (Some(a), b) if a == b => {}
-            (Some(ColKind::Real), ColKind::Complex) => {
-                self.kind = Some(ColKind::Complex);
+            (Some(ColumnKind::Real), ColumnKind::Complex) => {
+                self.kind = Some(ColumnKind::Complex);
                 self.im.resize(self.re.len(), 0.0);
             }
-            (Some(ColKind::Complex), ColKind::Real) => {}
+            (Some(ColumnKind::Complex), ColumnKind::Real) => {}
             _ => {
                 return Err(Error::bare(
                     Code::X003,
@@ -229,7 +229,7 @@ impl ColumnBuilder {
             }
         }
         self.re.push(re);
-        if self.kind == Some(ColKind::Complex) {
+        if self.kind == Some(ColumnKind::Complex) {
             self.im.push(im);
             debug_assert_eq!(self.im.len(), self.re.len());
         }
@@ -237,8 +237,8 @@ impl ColumnBuilder {
     }
 
     fn finish(self, axis: u32) -> ColumnValue {
-        let kind = self.kind.unwrap_or(ColKind::Real);
-        if kind == ColKind::Complex {
+        let kind = self.kind.unwrap_or(ColumnKind::Real);
+        if kind == ColumnKind::Complex {
             debug_assert_eq!(self.im.len(), self.re.len(), "complex parts in step");
         } else {
             debug_assert!(
@@ -294,18 +294,18 @@ fn common_axis(args: &[CalcValue], axes: &[Axis]) -> Result<u32, Error> {
 }
 
 fn element(c: &ColumnValue, i: usize) -> Scalar {
-    if c.kind == ColKind::Complex {
+    if c.kind == ColumnKind::Complex {
         debug_assert_eq!(c.im.len(), c.re.len(), "complex parts in step");
     } else {
         debug_assert!(c.im.is_empty(), "only complex columns have imaginary parts");
     }
     match c.kind {
-        ColKind::Real => Scalar::Num(c.re.get(i).copied().unwrap_or(0.0)),
-        ColKind::Complex => Scalar::Cnum(
+        ColumnKind::Real => Scalar::Num(c.re.get(i).copied().unwrap_or(0.0)),
+        ColumnKind::Complex => Scalar::Cnum(
             c.re.get(i).copied().unwrap_or(0.0),
             c.im.get(i).copied().unwrap_or(0.0),
         ),
-        ColKind::Bool => Scalar::Bool(c.re.get(i).is_some_and(|x| *x != 0.0)),
+        ColumnKind::Bool => Scalar::Bool(c.re.get(i).is_some_and(|x| *x != 0.0)),
     }
 }
 
@@ -313,7 +313,7 @@ fn real(v: &CalcValue) -> Option<RealOperand<'_>> {
     match v {
         CalcValue::Scalar(Scalar::Int(x)) => Some(RealOperand::Scalar(*x as f64)),
         CalcValue::Scalar(Scalar::Num(x)) => Some(RealOperand::Scalar(*x)),
-        CalcValue::Column(c) if c.kind == ColKind::Real => Some(RealOperand::Column {
+        CalcValue::Column(c) if c.kind == ColumnKind::Real => Some(RealOperand::Column {
             values: &c.re,
             axis: c.axis,
         }),

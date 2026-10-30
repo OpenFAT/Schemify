@@ -1,11 +1,8 @@
-//! Dependency graph oracle: incremental recompute (dirty → affected, in
-//! topological order) equals a full recompute after random edits, over real
-//! compiled expressions; cycles are found and named.
+//! Dependency graph oracle: topological orders over real compiled
+//! expressions and random graphs; cycles are found and named.
 
 use proptest::prelude::*;
-use schemify_expr::{
-    Code, Deps, Mode, Program, Scratch, Value, affected, reverse, topo_order, topo_order_all,
-};
+use schemify_expr::{Code, Deps, Mode, Program, topo_order, topo_order_all};
 
 /// Deterministic xorshift for structure choices inside one proptest case.
 struct Rng(u64);
@@ -84,68 +81,8 @@ fn deps_of(progs: &[Program]) -> (Vec<u32>, Vec<u32>) {
     (offsets, targets)
 }
 
-/// Values grow geometrically along long chains, so ints may overflow into
-/// nums; both are kept.
-fn eval_node(p: &Program, values: &[Value<'static>], s: &mut Scratch) -> Value<'static> {
-    let inputs: Vec<Value> = p
-        .idents()
-        .map(|n| values[n[1..].parse::<usize>().expect("identifier is p<index>")])
-        .collect();
-    match p.eval(&inputs, s).expect("chain node evaluates") {
-        Value::Int(v) => Value::Int(v),
-        Value::Num(v) => Value::Num(v),
-        v => panic!("{v:?}"),
-    }
-}
-
-fn full(progs: &[Program], order: &[u32]) -> Vec<Value<'static>> {
-    let mut values = vec![Value::Int(0); progs.len()];
-    let mut s = Scratch::default();
-    for &k in order {
-        values[k as usize] = eval_node(&progs[k as usize], &values, &mut s);
-    }
-    values
-}
-
 proptest! {
     #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
-
-    #[test]
-    fn incremental_equals_full(n in 1usize..40, seed in any::<u64>(), edits in prop::collection::vec((any::<usize>(), -50i64..50), 1..6)) {
-        let mut d = Design::random(n, seed);
-        let mut progs = d.programs();
-        let (offsets, targets) = deps_of(&progs);
-        let deps = Deps { offsets: &offsets, targets: &targets };
-        let mut order = Vec::new();
-        topo_order(deps, &mut order).expect("generated designs are acyclic");
-        let mut rank = vec![0u32; n];
-        for (pos, &k) in order.iter().enumerate() {
-            rank[k as usize] = pos as u32;
-            for &j in deps.edges(k) {
-                prop_assert!(order[..pos].contains(&j), "dependency after dependent");
-            }
-        }
-        let mut values = full(&progs, &order);
-
-        // Edit constants (identifiers unchanged, so the order stays valid).
-        let mut dirty = Vec::new();
-        for (k, c) in edits {
-            let k = k % n;
-            d.consts[k] = c;
-            progs[k] = Program::compile(&d.text(k), Mode::Scalar).unwrap();
-            dirty.push(k as u32);
-        }
-        let (mut roff, mut rtgt) = (Vec::new(), Vec::new());
-        reverse(deps, &mut roff, &mut rtgt);
-        let mut todo = Vec::new();
-        affected(Deps { offsets: &roff, targets: &rtgt }, &rank, &dirty, &mut todo);
-        prop_assert!(todo.windows(2).all(|w| rank[w[0] as usize] < rank[w[1] as usize]));
-        let mut s = Scratch::default();
-        for &k in &todo {
-            values[k as usize] = eval_node(&progs[k as usize], &values, &mut s);
-        }
-        prop_assert_eq!(values, full(&progs, &order));
-    }
 
     #[test]
     fn cycles_are_found_and_real(n in 2usize..30, seed in any::<u64>(), pick in any::<(usize, usize)>()) {
@@ -175,7 +112,7 @@ proptest! {
         let names: Vec<String> = (0..n).map(|k| format!("p{k}")).collect();
         let e = cycle.error(|k| &names[k as usize]);
         prop_assert_eq!(e.code, Code::X005);
-        prop_assert!(e.msg.contains(&names[c[0] as usize]));
+        prop_assert!(e.message.contains(&names[c[0] as usize]));
     }
 }
 
@@ -191,7 +128,7 @@ fn self_loop_and_empty() {
     )
     .unwrap_err();
     assert_eq!(e.nodes, [0]);
-    assert_eq!(e.error(|_| "w").msg, "dependency cycle: w -> w");
+    assert_eq!(e.error(|_| "w").message, "dependency cycle: w -> w");
     let mut order = vec![9];
     topo_order(
         Deps {
@@ -316,7 +253,7 @@ fn every_cycle_of_two_disjoint_loops_and_a_self_loop() {
     assert_eq!(order, [1, 0, 2, 5, 4, 3, 6]);
     let names = ["a", "b", "c", "d", "e", "f", "g"];
     assert_eq!(
-        cycles[2].error(|k| names[k as usize]).msg,
+        cycles[2].error(|k| names[k as usize]).message,
         "dependency cycle: d -> e -> f -> d"
     );
     // One component, two overlapping cycles (0 -> 1 -> 0 and 1 -> 2 -> 1): both are

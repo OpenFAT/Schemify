@@ -168,7 +168,7 @@ impl Parser<'_> {
         );
         if self.tok.kind != kind {
             let mut e = self.unexpected();
-            e.msg = format!("{}, expected {what}", e.msg);
+            e.message = format!("{}, expected {what}", e.message);
             return Err(e);
         }
         self.advance()
@@ -291,7 +291,7 @@ impl Parser<'_> {
         let r = self.add()?;
         if self.cmp_op().is_some() {
             let mut e = self.unexpected();
-            e.msg = format!("{}: comparisons do not chain", e.msg);
+            e.message = format!("{}: comparisons do not chain", e.message);
             return Err(e);
         }
         self.bin(op, l, r)

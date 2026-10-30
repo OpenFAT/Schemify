@@ -11,7 +11,7 @@
 
 use core::ops::Range;
 
-use schemify_expr::{CalcResult, ColKind, Mode, Program, Scratch, Value};
+use schemify_expr::{CalcResult, ColumnKind, Mode, Program, Scratch, Value};
 
 use crate::calc;
 use crate::pane::{LineStyle, MAX_BUS_BITS, MAX_TRACES};
@@ -126,7 +126,7 @@ pub(crate) fn evaluate(d: &RawPlot, src: &str, threshold: f64) -> Result<Evaluat
         CalcResult::Scalar(v) => return Ok(Evaluated::Value(format!("{src} = {}", text(v)))),
         CalcResult::Column(c) => c,
     };
-    let complex = c.kind == ColKind::Complex;
+    let complex = c.kind == ColumnKind::Complex;
     let y: Vec<f64> = if complex {
         c.re.iter().zip(&c.im).map(|(r, i)| r.hypot(*i)).collect()
     } else {
@@ -250,7 +250,7 @@ fn eval_bus(d: &RawPlot, body: &str, threshold: f64) -> Result<Bus, ViewError> {
         let CalcResult::Column(c) = r else {
             return Err(ViewError::Bus(format!("`{e}` is a value, not a signal")));
         };
-        if c.axis.is_some() || c.kind == ColKind::Complex || c.re.len() != n {
+        if c.axis.is_some() || c.kind == ColumnKind::Complex || c.re.len() != n {
             return Err(ViewError::Bus(format!(
                 "`{e}` is not a real column on the dataset's axis"
             )));

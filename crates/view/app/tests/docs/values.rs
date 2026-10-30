@@ -192,6 +192,6 @@ fn programs_name_their_plugin_functions() {
         Mode::Scalar,
     )
     .unwrap();
-    let f: Vec<(&str, &str)> = p.plugin_fns().collect();
-    assert_eq!(f, [("gmid", "w"), ("gmid", "jd")]);
+    let f: Vec<String> = p.plugin_fns().map(|f| f.to_string()).collect();
+    assert_eq!(f, ["gmid.w", "gmid.jd"]);
 }

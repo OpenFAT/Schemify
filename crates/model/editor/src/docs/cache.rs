@@ -83,7 +83,7 @@ pub fn cache_ops(
 /// calls; empty when it calls none or does not compile.
 pub(super) fn plugin_fns(text: &str) -> Vec<String> {
     let names = |p: &Program| -> Vec<String> {
-        let mut v: Vec<String> = p.plugin_fns().map(|(n, f)| format!("{n}.{f}")).collect();
+        let mut v: Vec<String> = p.plugin_fns().map(|f| f.to_string()).collect();
         v.sort_unstable();
         v.dedup();
         v

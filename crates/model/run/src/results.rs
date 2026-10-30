@@ -20,7 +20,7 @@ use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
 use schemify_doc::Digest;
 use schemify_elab::{Dialect, Elab};
-use schemify_expr::{CalcResult, Code, Error, Program, Scratch, SignalKind, Value};
+use schemify_expr::{CalcResult, Code, Error, Program, Scratch, SignalKind, Value, op_parts};
 use schemify_netlist::NameMap;
 use schemify_wave::RawPlot;
 use schemify_wave::calc;
@@ -411,11 +411,11 @@ impl Results {
         assert_eq!(self.op_vector.len(), self.rows as usize * n, "covered rows");
         let mut saves = String::new();
         for k in 0..n {
-            let (inst, param) = schemify_expr::op_parts(&self.ops[k]);
+            let op = op_parts(&self.ops[k]);
             let v = match dialect {
                 Dialect::Ngspice => map
-                    .spice_device(inst)
-                    .map(|dev| format!("@{dev}[{}]", param.to_ascii_lowercase()))
+                    .spice_device(op.instance)
+                    .map(|dev| format!("@{dev}[{}]", op.parameter.to_ascii_lowercase()))
                     .map_err(|why| OpMissing {
                         code: Code::X004,
                         why: format!("op(): {why}"),

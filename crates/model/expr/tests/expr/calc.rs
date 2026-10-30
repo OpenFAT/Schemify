@@ -4,7 +4,7 @@ use std::f64::consts::PI;
 use std::ops::Range;
 
 use schemify_expr::{
-    CalcResult, Code, ColKind, ColOut, Column, Mode, Plot, Program, Scratch, Value,
+    CalcResult, Code, Column, ColumnKind, ColumnOut, Mode, Plot, Program, Scratch, Value,
 };
 
 const F: f64 = 3.0;
@@ -54,7 +54,7 @@ fn calc(
     )
 }
 
-fn col(r: Result<CalcResult<'static>, Code>) -> ColOut {
+fn col(r: Result<CalcResult<'static>, Code>) -> ColumnOut {
     match r {
         Ok(CalcResult::Column(c)) => c,
         other => panic!("expected a column, got {other:?}"),
@@ -133,7 +133,7 @@ fn at_cross_delay_settle() {
     // A complex column interpolates both parts, and stays complex.
     let neg: Vec<f64> = ramp.iter().map(|y| -y).collect();
     let z = col(calc("at(v(a), 3.33)", &x, &[], &[(&ramp, &neg)]));
-    assert_eq!(z.kind, ColKind::Complex);
+    assert_eq!(z.kind, ColumnKind::Complex);
     assert!(
         (z.re[0] - (2.0 * 3.33 - 5.0)).abs() < 1e-12,
         "re {}",
@@ -198,7 +198,7 @@ fn fft_finds_the_tone() {
     // fft(a) and fft(b) of one plot share the frequency axis.
     let both = col(calc("fft(v(a)) - fft(v(a))", &x, &[], &[(&y, &[])]));
     assert!(both.re.iter().chain(&both.im).all(|v| *v == 0.0));
-    assert_eq!(both.kind, ColKind::Complex);
+    assert_eq!(both.kind, ColumnKind::Complex);
 }
 
 /// Loop gain A / ((1 + s/p1)(1 + s/p2)(1 + s/p3)) on a dense log sweep.
@@ -318,7 +318,7 @@ fn column_conditions_select_per_element() {
     let b = col(calc("v(a) > 0 && v(a) < 2", &x, &[], &[(&y, &[])]));
     assert_eq!(
         (b.kind, b.re.clone()),
-        (ColKind::Bool, vec![0.0, 1.0, 0.0, 0.0])
+        (ColumnKind::Bool, vec![0.0, 1.0, 0.0, 0.0])
     );
     let b = col(calc("!(v(a) > 0) || x() == 3", &x, &[], &[(&y, &[])]));
     assert_eq!(b.re, [1.0, 0.0, 1.0, 1.0]);
@@ -381,7 +381,8 @@ fn op_is_one_operating_point_number() {
             (SignalKind::V, "a")
         ]
     );
-    assert_eq!(op_parts("x[3]/m2[gm]"), ("x[3]/m2", "gm"));
+    let parts = op_parts("x[3]/m2[gm]");
+    assert_eq!((parts.instance, parts.parameter), ("x[3]/m2", "gm"));
     // The span of the first call naming each signal.
     let s0 = p.signal_span(0);
     assert_eq!((s0.start, s0.end), (0, 17));

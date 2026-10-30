@@ -53,12 +53,13 @@
 //! - `pub(crate) const MAX_NODES`, `MAX_DEPTH`, `MAX_STR_BYTES`, `MAX_PLUGIN_ARGS`
 //! - `Code::as_str(self) -> &'static str`, `Code::is_warning(self) -> bool`
 //! - `Span::new(start, end) -> Span`, `Span::join(self, other) -> Span`
-//! - `Error::new(code, span, msg) -> Error`, `Error::bare(code, msg) -> Error`,
+//! - `Error::new(code, span, message) -> Error`, `Error::bare(code, message) -> Error`,
 //!   `Error::at(self, span) -> Error`
-//! - re-exports: [`Program`], [`Mode`], [`SignalKind`], [`op_parts`], [`Scratch`],
+//! - re-exports: [`Program`], [`Mode`], [`SignalKind`], [`op_parts`], [`OpParts`],
+//!   [`PluginFunction`], [`Scratch`],
 //!   [`PluginValue`], [`Template`], [`Segment`], [`Plot`], [`Column`],
-//!   [`CalcResult`], [`ColKind`], [`ColOut`], [`AxisOut`], [`Deps`], [`Cycle`],
-//!   [`topo_order`], [`topo_order_all`], [`reverse`], [`affected`],
+//!   [`CalcResult`], [`ColumnKind`], [`ColumnOut`], [`AxisOutput`], [`Deps`], [`Cycle`],
+//!   [`topo_order`], [`topo_order_all`], [`reverse`],
 //!   [`parse_num`], [`write_num`], [`write_int`], [`write_scientific`], `dmath`
 #![forbid(unsafe_code)]
 
@@ -99,10 +100,10 @@ mod waveform;
 
 use core::fmt;
 
-pub use calc::{AxisOut, CalcResult, ColKind, ColOut, Column, Plot};
+pub use calc::{AxisOutput, CalcResult, Column, ColumnKind, ColumnOut, Plot};
 pub use eval::{PluginValue, Scratch};
-pub use graph::{Cycle, Deps, affected, reverse, topo_order, topo_order_all};
-pub use program::{Mode, Program, SignalKind, op_parts};
+pub use graph::{Cycle, Deps, reverse, topo_order, topo_order_all};
+pub use program::{Mode, OpParts, PluginFunction, Program, SignalKind, op_parts};
 pub use template::{Segment, Template};
 pub use text::{parse_num, write_int, write_num, write_scientific};
 
@@ -176,7 +177,7 @@ pub struct Error {
     /// Offending source range; empty when not tied to source.
     pub span: Span,
     /// Message naming the offending token, identifier, function or cycle.
-    pub msg: String,
+    pub message: String,
 }
 
 /// Maximum AST nodes per expression (spec §3); more is [`Code::X002`].
@@ -256,7 +257,7 @@ impl Error {
     ///
     /// # Panics
     /// If `span.start > span.end`.
-    pub fn new(code: Code, span: Span, msg: impl Into<String>) -> Error {
+    pub fn new(code: Code, span: Span, message: impl Into<String>) -> Error {
         assert!(
             span.start <= span.end,
             "error span {}..{} is reversed",
@@ -266,14 +267,14 @@ impl Error {
         Error {
             code,
             span,
-            msg: msg.into(),
+            message: message.into(),
         }
     }
 
     /// An error not yet tied to source: the op that raised it spans it later
     /// ([`Error::at`]).
-    pub(crate) fn bare(code: Code, msg: impl Into<String>) -> Error {
-        Error::new(code, Span::default(), msg)
+    pub(crate) fn bare(code: Code, message: impl Into<String>) -> Error {
+        Error::new(code, Span::default(), message)
     }
 
     /// Replaces an empty span (errors raised away from the source) with `span`.
@@ -294,7 +295,7 @@ impl fmt::Display for Error {
             self.code.as_str(),
             self.span.start,
             self.span.end,
-            self.msg
+            self.message
         )
     }
 }

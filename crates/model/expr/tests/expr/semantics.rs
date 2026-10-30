@@ -203,7 +203,9 @@ fn constant_folding_keeps_semantics() {
 fn plugins() {
     let p = Program::compile("gmid.id(w, \"nfet\") * 2 + gmid.vt()", Mode::Scalar).unwrap();
     assert_eq!(
-        p.plugin_fns().collect::<Vec<_>>(),
+        p.plugin_fns()
+            .map(|f| (f.namespace, f.function))
+            .collect::<Vec<_>>(),
         [("gmid", "id"), ("gmid", "vt")]
     );
     let mut s = Scratch::default();
@@ -224,7 +226,7 @@ fn plugins() {
     // Without plugins: X006 naming the function, spanned at the call.
     let e = p.eval(&[Value::Num(1.5)], &mut s).unwrap_err();
     assert_eq!(e.code, Code::X006);
-    assert!(e.msg.contains("gmid.id"), "{e}");
+    assert!(e.message.contains("gmid.id"), "{e}");
     assert_eq!(e.span, Span { start: 0, end: 18 });
     // A plugin returning a non-finite value is X010.
     let mut bad = |_: u32, _: &[Value<'_>]| Ok(Value::Num(f64::INFINITY));

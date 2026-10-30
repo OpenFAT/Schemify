@@ -318,7 +318,7 @@ pub(crate) fn value_errors(
         } else {
             inst.id[owner as usize]
         };
-        let detail = format!("{}: {}", e.code.as_str(), e.msg);
+        let detail = format!("{}: {}", e.code.as_str(), e.message);
         out.push(Violation::new(Code::E008, me.cell, object, param, detail));
     }
     debug_assert!(out[before..].iter().all(|v| v.code == Code::E008));

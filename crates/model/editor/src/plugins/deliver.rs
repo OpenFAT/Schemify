@@ -198,7 +198,7 @@ impl Host {
         let mut funcs = |name: &str, args: &[Value<'_>]| self.call_fn(name, args);
         match eval_in(st, expr, &mut funcs) {
             Ok(text) => (0, text),
-            Err(e) => (Code::Parse.neg(), format!("{}: {}", e.code.as_str(), e.msg)),
+            Err(e) => (Code::Parse.neg(), format!("{}: {}", e.code.as_str(), e.message)),
         }
     }
 }
@@ -237,11 +237,11 @@ pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<St
         inputs.push(value);
     }
     let mut call = |slot: u32, args: &[Value<'_>]| -> Result<F::Out, XError> {
-        let (ns, f) = prog
+        let name = prog
             .plugin_fns()
             .nth(slot as usize)
-            .expect("slot of this program");
-        let name = format!("{ns}.{f}");
+            .expect("slot of this program")
+            .to_string();
         funcs.call(&name, args).unwrap_or_else(|| {
             let msg = format!("plugin function `{name}` is not loaded");
             Err(XError::new(XCode::X006, Span::default(), msg))

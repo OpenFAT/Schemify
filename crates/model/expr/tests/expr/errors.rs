@@ -39,7 +39,7 @@ fn x001_number_literals() {
     }
     let e = compile_err("a + 10nF", Mode::Scalar);
     assert_eq!(span(&e), (4, 8));
-    assert!(e.msg.contains("10nF"), "{e}");
+    assert!(e.message.contains("10nF"), "{e}");
     // num() of bad text is a runtime X001 spanned at the call.
     let e = crate::eval(r#"1 + num(s)"#).err();
     assert!(e.is_some_and(|e| e.code == Code::X004));
@@ -123,7 +123,7 @@ fn x004_unknown_identifier() {
     let p = Program::compile("1 + width * 2", Mode::Scalar).unwrap();
     let e = p.bind(&mut Vec::new(), |_| None).unwrap_err();
     assert_eq!((e.code, span(&e)), (Code::X004, (4, 9)));
-    assert!(e.msg.contains("width"));
+    assert!(e.message.contains("width"));
     assert_eq!(compile_err("phys.nope", Mode::Scalar).code, Code::X004);
 }
 
@@ -133,7 +133,7 @@ fn x005_cycle() {
     let names = ["a", "b", "c"];
     let e = cycle.error(|i| names[i as usize]);
     assert_eq!(e.code, Code::X005);
-    assert_eq!(e.msg, "dependency cycle: c -> a -> c");
+    assert_eq!(e.message, "dependency cycle: c -> a -> c");
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn x009_parse() {
     let e = compile_err("1 + * 2", Mode::Scalar);
     assert_eq!((e.code, span(&e)), (Code::X009, (4, 5)));
     let e = compile_err("a == b == c", Mode::Scalar);
-    assert!(e.msg.contains("chain"), "{e}");
+    assert!(e.message.contains("chain"), "{e}");
     for t in ["{", "{}", "{ }", "a}b", "{1 +}", "x {a"] {
         assert_eq!(
             Template::parse(t).unwrap_err().code,

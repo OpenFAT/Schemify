@@ -66,7 +66,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
                                 self.ifaces[0].cell,
                                 ObjId::NONE,
                                 self.names.intern("temp"),
-                                format!("{}: {}", e.code.as_str(), e.msg),
+                                format!("{}: {}", e.code.as_str(), e.message),
                             ));
                             continue;
                         }

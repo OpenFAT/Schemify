@@ -201,7 +201,7 @@ pub fn signal_expr(plot: &RawPlot, v: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use schemify_expr::{ColKind, Mode};
+    use schemify_expr::{ColumnKind, Mode};
 
     use super::*;
     use crate::plot::Variable;
@@ -266,7 +266,7 @@ mod tests {
         let CalcResult::Column(c) = eval(&program, &p, None, |_| None, &mut s).unwrap() else {
             panic!("column expected")
         };
-        assert_eq!(c.kind, ColKind::Real);
+        assert_eq!(c.kind, ColumnKind::Real);
         let want: Vec<f64> = (0..4).map(|k| p.col(1)[k] * 2.0 + p.col(3)[k]).collect();
         assert_eq!(c.re, want);
         let bad = Program::compile("v(nope)", Mode::Calc).unwrap();

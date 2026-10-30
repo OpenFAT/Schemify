@@ -423,11 +423,11 @@ fn plugin<F: Funcs>(
         (slot as usize) < prog.plugin_fns().len(),
         "slot {slot} is one of this program's calls"
     );
-    let (ns, f) = prog
+    let name = prog
         .plugin_fns()
         .nth(slot as usize)
-        .expect("slot from this program");
-    let name = format!("{ns}.{f}");
+        .expect("slot from this program")
+        .to_string();
     match funcs.call(&name, args) {
         Some(r) => r,
         None => {

@@ -1,14 +1,14 @@
 //! Oracle 2 (docs/dev/testing.md): calculator metamorphic relations on real simulator output, through
 //! the raw binding (names, steps, complex columns), for both ngspice and Xyce data.
 
-use schemify_expr::{CalcResult, ColKind, ColOut, Mode, Program, Scratch};
+use schemify_expr::{CalcResult, ColumnKind, ColumnOut, Mode, Program, Scratch};
 use schemify_wave::{RawPlot, calc, group_datasets};
 
 use crate::{close, fixture};
 
 // ---- private ----
 
-fn col(src: &str, p: &RawPlot) -> ColOut {
+fn col(src: &str, p: &RawPlot) -> ColumnOut {
     let prog = Program::compile(src, Mode::Calc).unwrap_or_else(|e| panic!("{src}: {e}"));
     let mut s = Scratch::default();
     match calc::eval(&prog, p, None, |_| None, &mut s).unwrap_or_else(|e| panic!("{src}: {e}")) {
@@ -128,7 +128,7 @@ fn complex_columns_bind_and_reduce() {
     for file in ["rlc_ac.bin.raw", "rlc_ac.xyce.ascii.raw"] {
         let p = &fixture(file)[0];
         let h = col("v(out) / v(in)", p);
-        assert_eq!(h.kind, ColKind::Complex);
+        assert_eq!(h.kind, ColumnKind::Complex);
         let db = col("db(v(out))", p);
         let mag = col("mag(v(out))", p);
         let re = col("re(v(out) / v(in))", p);

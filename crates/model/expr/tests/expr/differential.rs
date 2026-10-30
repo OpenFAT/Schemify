@@ -5,7 +5,7 @@
 //! scalar mode per element.
 
 use proptest::prelude::*;
-use schemify_expr::{CalcResult, Code, ColKind, Column, Mode, Plot, Program, Scratch, Value};
+use schemify_expr::{CalcResult, Code, Column, ColumnKind, Mode, Plot, Program, Scratch, Value};
 
 use crate::generate;
 use crate::reference::{self, E, RV, VARS};
@@ -113,15 +113,15 @@ proptest! {
                 prop_assert_eq!(col.re.len(), xs.len());
                 for (i, p) in per_point.iter().enumerate() {
                     let got = match col.kind {
-                        ColKind::Real => RV::Num(col.re[i]),
-                        ColKind::Bool => RV::Bool(col.re[i] != 0.0),
-                        ColKind::Complex => RV::C(col.re[i], col.im[i]),
+                        ColumnKind::Real => RV::Num(col.re[i]),
+                        ColumnKind::Bool => RV::Bool(col.re[i] != 0.0),
+                        ColumnKind::Complex => RV::C(col.re[i], col.im[i]),
                     };
                     let want = match p {
                         // A column has one element kind: real elements of a
                         // complex column (mixed arms of a column condition)
                         // went through complex functions (spec §5).
-                        Ok(RV::Int(_) | RV::Num(_)) | Err(_) if col.kind == ColKind::Complex => continue,
+                        Ok(RV::Int(_) | RV::Num(_)) | Err(_) if col.kind == ColumnKind::Complex => continue,
                         Ok(RV::Int(x)) => RV::Num(*x as f64),
                         Ok(v) => v.clone(),
                         Err(c) => return Err(TestCaseError::fail(format!("{scalar_src}: calc ok, scalar {c:?} at {i}"))),

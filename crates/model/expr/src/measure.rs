@@ -12,7 +12,7 @@
 use core::ops::Range;
 
 use crate::builtin::Builtin;
-use crate::calc::{self, Axis, AxisKind, CalcValue, ColKind, ColumnValue};
+use crate::calc::{self, Axis, AxisKind, CalcValue, ColumnKind, ColumnValue};
 use crate::column;
 use crate::dmath::Complex;
 use crate::eval::Scalar;
@@ -175,7 +175,7 @@ fn at(
     no_bool(&y, name)?;
     let per_step_ax = find_axis(axes, AxisKind::PerStep, y.axis);
     let xs: Vec<f64> = match x0 {
-        CalcValue::Column(c) if c.kind == ColKind::Real && per_step_ax == Some(c.axis) => {
+        CalcValue::Column(c) if c.kind == ColumnKind::Real && per_step_ax == Some(c.axis) => {
             c.re.clone()
         }
         CalcValue::Column(_) => {
@@ -206,12 +206,12 @@ fn at(
         })
     };
     let re = part(axes, y.re)?;
-    if y.kind != ColKind::Complex {
+    if y.kind != ColumnKind::Complex {
         return Ok(re);
     }
     let im = part(axes, y.im)?;
     Ok(ColumnValue {
-        kind: ColKind::Complex,
+        kind: ColumnKind::Complex,
         im: im.re,
         ..re
     })
@@ -228,7 +228,7 @@ fn want_column(v: CalcValue, name: &str) -> Result<ColumnValue, Error> {
 }
 
 fn want_real(c: &ColumnValue, name: &str) -> Result<(), Error> {
-    if c.kind == ColKind::Real {
+    if c.kind == ColumnKind::Real {
         return Ok(());
     }
     Err(Error::bare(
@@ -239,7 +239,7 @@ fn want_real(c: &ColumnValue, name: &str) -> Result<(), Error> {
 
 /// Functions that take complex columns still refuse bool ones.
 fn no_bool(c: &ColumnValue, name: &str) -> Result<(), Error> {
-    if c.kind == ColKind::Bool {
+    if c.kind == ColumnKind::Bool {
         want_real(c, name)?;
     }
     Ok(())
@@ -283,7 +283,7 @@ fn ranges(ax: &Axis) -> impl Iterator<Item = Range<usize>> + '_ {
 
 fn real_col(re: Vec<f64>, axis: u32) -> ColumnValue {
     ColumnValue {
-        kind: ColKind::Real,
+        kind: ColumnKind::Real,
         re,
         im: Vec::new(),
         axis,
@@ -333,7 +333,7 @@ fn per_step(
     name: &str,
     mut f: impl FnMut(&[f64], &[f64]) -> Result<f64, Error>,
 ) -> Result<ColumnValue, Error> {
-    debug_assert_eq!(y.kind, ColKind::Real);
+    debug_assert_eq!(y.kind, ColumnKind::Real);
     let ax = &axes[y.axis as usize];
     assert_eq!(y.re.len(), ax.x.len(), "a column covers its axis");
     let mut re = Vec::with_capacity(ax.steps.len());
@@ -401,7 +401,7 @@ fn fft(axes: &mut Vec<Axis>, y: &ColumnValue) -> Result<ColumnValue, Error> {
         }
     };
     Ok(ColumnValue {
-        kind: ColKind::Complex,
+        kind: ColumnKind::Complex,
         re,
         im,
         axis,

@@ -11,8 +11,8 @@
 //! functions are `measure`'s.
 //!
 //! Contents:
-//! - `pub struct Plot`, `pub struct Column`, `pub enum CalcResult`, `pub enum ColKind`,
-//!   `pub struct ColOut`, `pub struct AxisOut`
+//! - `pub struct Plot`, `pub struct Column`, `pub enum CalcResult`, `pub enum ColumnKind`,
+//!   `pub struct ColumnOut`, `pub struct AxisOutput`
 //! - `pub(crate) struct CalcScratch`, `pub(crate) struct ColumnValue`, `pub(crate) enum CalcValue`,
 //!   `pub(crate) enum AxisKind`, `pub(crate) struct Axis`
 //! - `Program::eval_calc(&self, inputs, plot, plugins, scratch) -> Result<CalcResult, Error>`,
@@ -59,12 +59,12 @@ pub enum CalcResult<'scratch> {
     /// the [`Scratch`] until its next evaluation.
     Scalar(Value<'scratch>),
     /// A column (owned; keep it as a trace).
-    Column(ColOut),
+    Column(ColumnOut),
 }
 
 /// What the elements of a column are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColKind {
+pub enum ColumnKind {
     /// `col`.
     Real,
     /// `ccol`.
@@ -75,21 +75,21 @@ pub enum ColKind {
 
 /// An evaluated column.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ColOut {
+pub struct ColumnOut {
     /// Element kind.
-    pub kind: ColKind,
-    /// Real parts (0/1 for [`ColKind::Bool`]).
+    pub kind: ColumnKind,
+    /// Real parts (0/1 for [`ColumnKind::Bool`]).
     pub re: Vec<f64>,
-    /// Imaginary parts; empty unless [`ColKind::Complex`].
+    /// Imaginary parts; empty unless [`ColumnKind::Complex`].
     pub im: Vec<f64>,
     /// `None` when the column is on the plot's own axis; otherwise the axis
     /// it is on: per-step results (x = step index, one step) or `fft` bins.
-    pub axis: Option<AxisOut>,
+    pub axis: Option<AxisOutput>,
 }
 
 /// A derived axis.
 #[derive(Clone, Debug, PartialEq)]
-pub struct AxisOut {
+pub struct AxisOutput {
     /// Axis values.
     pub x: Vec<f64>,
     /// Steps partitioning the axis.
@@ -109,7 +109,7 @@ pub(crate) struct CalcScratch {
 /// An intermediate column; `im` is empty unless the kind is complex.
 #[derive(Clone, Debug)]
 pub(crate) struct ColumnValue {
-    pub kind: ColKind,
+    pub kind: ColumnKind,
     pub re: Vec<f64>,
     pub im: Vec<f64>,
     /// Index into the axis table.
@@ -206,7 +206,7 @@ impl Program {
             CalcValue::Column(c) => {
                 let axis = (c.axis != 0).then(|| {
                     let a = &calc.axes[c.axis as usize];
-                    AxisOut {
+                    AxisOutput {
                         x: a.x.clone(),
                         steps: a.steps.clone(),
                     }
@@ -216,7 +216,7 @@ impl Program {
                     calc.axes[c.axis as usize].x.len(),
                     "a result column covers its axis"
                 );
-                CalcResult::Column(ColOut {
+                CalcResult::Column(ColumnOut {
                     kind: c.kind,
                     re: c.re,
                     im: c.im,
@@ -349,9 +349,9 @@ where
             OpKind::Signal => {
                 let signal = plot.signals[op.arg as usize];
                 let kind = if signal.im.is_empty() {
-                    ColKind::Real
+                    ColumnKind::Real
                 } else {
-                    ColKind::Complex
+                    ColumnKind::Complex
                 };
                 stack.push(CalcValue::Column(ColumnValue {
                     kind,
@@ -361,7 +361,7 @@ where
                 }));
             }
             OpKind::Axis => stack.push(CalcValue::Column(ColumnValue {
-                kind: ColKind::Real,
+                kind: ColumnKind::Real,
                 re: calc.axes[0].x.clone(),
                 im: Vec::new(),
                 axis: 0,
@@ -372,7 +372,9 @@ where
                     CalcValue::Scalar(v) => {
                         CalcValue::Scalar(kernel::unary(op.kind, v).map_err(at)?)
                     }
-                    CalcValue::Column(c) if op.kind == OpKind::Neg && c.kind != ColKind::Bool => {
+                    CalcValue::Column(c)
+                        if op.kind == OpKind::Neg && c.kind != ColumnKind::Bool =>
+                    {
                         CalcValue::Column(ColumnValue {
                             re: c.re.iter().map(|x| -x).collect(),
                             im: c.im.iter().map(|x| -x).collect(),
@@ -420,7 +422,7 @@ where
                         continue;
                     }
                 }
-                CalcValue::Column(c) if c.kind == ColKind::Bool => calc.frames.push(Some(c)),
+                CalcValue::Column(c) if c.kind == ColumnKind::Bool => calc.frames.push(Some(c)),
                 v => {
                     return Err(at(kernel::not_bool(
                         "condition",
@@ -459,7 +461,7 @@ where
                         continue;
                     }
                     CalcValue::Scalar(Scalar::Bool(_)) => calc.frames.push(None),
-                    CalcValue::Column(c) if c.kind == ColKind::Bool => calc.frames.push(Some(c)),
+                    CalcValue::Column(c) if c.kind == ColumnKind::Bool => calc.frames.push(Some(c)),
                     v => {
                         let what = kernel::op_str(op.kind);
                         return Err(at(kernel::not_bool(
@@ -474,7 +476,7 @@ where
                 match calc.frames.pop().expect("EndAnd/EndOr matches an And/Or") {
                     None => match stack.last().expect("operand on stack") {
                         CalcValue::Scalar(Scalar::Bool(_)) => {}
-                        CalcValue::Column(c) if c.kind == ColKind::Bool => {}
+                        CalcValue::Column(c) if c.kind == ColumnKind::Bool => {}
                         v => {
                             let what = kernel::op_str(op.kind);
                             return Err(at(kernel::not_bool(

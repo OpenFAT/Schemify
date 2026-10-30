@@ -11,7 +11,6 @@
 //! - `pub fn topo_order(deps: Deps<'_>, order: &mut Vec<u32>) -> Result<(), Cycle>`
 //! - `pub fn topo_order_all(deps: Deps<'_>, order: &mut Vec<u32>, cycles: &mut Vec<Cycle>)`
 //! - `pub fn reverse(deps: Deps<'_>, offsets: &mut Vec<u32>, targets: &mut Vec<u32>)`
-//! - `pub fn affected(dependents: Deps<'_>, rank: &[u32], dirty: &[u32], out: &mut Vec<u32>)`
 
 use crate::{Code, Error, Span};
 
@@ -234,46 +233,6 @@ pub fn reverse(deps: Deps<'_>, offsets: &mut Vec<u32>, targets: &mut Vec<u32>) {
     assert_eq!(offsets[n] as usize, targets.len());
     // Each node's dependents filled its slot range exactly.
     debug_assert_eq!(fill[..], offsets[1..]);
-}
-
-/// Incremental recompute set: writes into `out` (cleared first) the `dirty`
-/// nodes and everything that transitively depends on them, sorted by `rank`,
-/// so re-evaluating `out` in order equals a full recompute. `rank[i]` is
-/// node `i`'s position in a [`topo_order`] result. Valid only while the edges
-/// are unchanged: an edited expression whose identifiers changed needs a new
-/// order first.
-///
-/// Cost: O(affected nodes + their edges + log) plus O(nodes) scratch.
-///
-/// # Panics
-/// If `dependents` is invalid, `rank.len()` differs from the node count, or
-/// a dirty index is out of range.
-pub fn affected(dependents: Deps<'_>, rank: &[u32], dirty: &[u32], out: &mut Vec<u32>) {
-    dependents.check();
-    let n = dependents.len();
-    assert_eq!(rank.len(), n, "one rank per node");
-    out.clear();
-    let mut seen = vec![false; n];
-    for &d in dirty {
-        assert!((d as usize) < n, "dirty node {d} out of range");
-        if !seen[d as usize] {
-            seen[d as usize] = true;
-            out.push(d);
-        }
-    }
-    let mut i = 0;
-    while i < out.len() {
-        for &w in dependents.edges(out[i]) {
-            if !seen[w as usize] {
-                seen[w as usize] = true;
-                out.push(w);
-            }
-        }
-        i += 1;
-    }
-    out.sort_unstable_by_key(|&v| rank[v as usize]);
-    debug_assert!(out.len() <= n);
-    debug_assert!(out.len() >= dirty.len().min(1), "a dirty node is affected");
 }
 
 impl Deps<'_> {
