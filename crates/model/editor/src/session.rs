@@ -253,6 +253,10 @@ impl Session {
         let n = self.docs.len();
         let i = self.docs.handle.iter().position(|&d| d == h);
         assert!(i.is_none_or(|i| i < n));
+        debug_assert!(
+            i.is_none_or(|i| !self.docs.handle[i + 1..].contains(&h)),
+            "one row per open document"
+        );
         i
     }
 
@@ -265,6 +269,10 @@ impl Session {
     pub fn handle_of(&self, path: &Path) -> Option<DocHandle> {
         let i = self.docs.path.iter().position(|p| p == path)?;
         assert!(i < self.docs.len(), "document columns in step");
+        debug_assert!(
+            !self.docs.path[i + 1..].iter().any(|p| p == path),
+            "one row per file"
+        );
         let h = self.docs.handle[i];
         self.project.doc(h).map(|_| h)
     }

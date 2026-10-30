@@ -43,7 +43,7 @@ impl Host {
     ///
     /// # Panics
     ///
-    /// Never: the lazy list holds at most `schemify_config::PACKS_MAX` packages and loses one here.
+    /// Never: the lazy list loses exactly the package it loads.
     pub fn user_command(&mut self, name: &str, args: &str) -> bool {
         if let Some(f) = schemify_config::fn_of_command(name) {
             let keys = self.user.table().keymaps.clone();
@@ -58,6 +58,7 @@ impl Host {
         else {
             return false;
         };
+        let lazy = self.lazy.len();
         let p = self.lazy.remove(i);
         let mut notes = Vec::new();
         match load::load_installed(&mut self.plugins, &mut self.hashes, &mut notes, &p) {
@@ -70,7 +71,7 @@ impl Host {
             None => notes.push(format!("{name}: its package did not load")),
         }
         self.user_logs.extend(notes);
-        assert!(self.lazy.len() < schemify_config::PACKS_MAX);
+        assert_eq!(self.lazy.len() + 1, lazy, "one lazy package woke");
         true
     }
 
@@ -91,7 +92,12 @@ impl Host {
     /// The editor events recorded after sequence number `seq` (a value [`Host::notes_seq`]
     /// returned), oldest first, as plugin-abi §6 wire text without the line end; only the
     /// last [`NOTES_MAX`] are kept.
+    ///
+    /// # Panics
+    ///
+    /// If `seq` is past [`Host::notes_seq`].
     pub fn notes_since(&self, seq: u64) -> impl Iterator<Item = &Note> {
+        assert!(seq <= self.notes_seq, "note {seq} not recorded yet");
         let new = self
             .notes_seq
             .saturating_sub(seq)
@@ -189,6 +195,11 @@ impl Host {
     pub fn call_fn(&mut self, name: &str, args: &[Value<'_>]) -> Option<Result<Val, XError>> {
         let f = &self.plugins.composed().functions;
         let row = f.find(name)?;
+        debug_assert!(row < f.plugin.len(), "function row {row}");
+        debug_assert!(
+            f.fn_id.len() == f.plugin.len() && f.arity.len() == f.plugin.len(),
+            "function columns in step"
+        );
         let (plugin, fn_id, arity) = (f.plugin[row], f.fn_id[row], f.arity[row]);
         if self.plugins.busy(plugin) {
             // Its event runs on a worker: the record's `cached` value stands in (D20).
@@ -219,6 +230,10 @@ impl Host {
                 }
             }
         }
+        debug_assert!(
+            args.is_empty() || !self.args.is_empty(),
+            "every argument wrote text"
+        );
         match self
             .plugins
             .call(plugin, fn_id, &self.args, &mut self.result)
@@ -241,9 +256,13 @@ impl Host {
     ///
     /// # Panics
     ///
-    /// Never: the assert checks one owner per function at most.
+    /// If `fns` is not sorted and distinct.
     #[must_use]
     pub fn fn_hash(&self, fns: &[String]) -> Option<String> {
+        assert!(
+            fns.windows(2).all(|w| w[0] < w[1]),
+            "function names sorted and distinct"
+        );
         let f = &self.plugins.composed().functions;
         let mut owners: Vec<PluginId> = Vec::with_capacity(fns.len());
         for name in fns {

@@ -175,10 +175,6 @@ impl Bench {
 
 /// Decodes a field node id; a dropdown choice id (`<field>=<value>`) also returns the value.
 /// `None` for an id that is not a panel field.
-///
-/// # Panics
-///
-/// Never: the asserts check how the id was split.
 #[must_use]
 pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
     let (id, choice) = match node.split_once('=') {
@@ -193,7 +189,6 @@ pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
         if parts.next().is_some() || key.is_empty() {
             return None;
         }
-        assert!(!key.contains('.'), "splitn(3) left no dot in a 2-part id");
         return Some((Field::Header(key), choice));
     }
     let row: u32 = parts.next()?.parse().ok()?;
@@ -211,14 +206,6 @@ pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
         ("opt", a) => Field::Bench(Bench::Optimize, row, a),
         _ => return None,
     };
-    assert!(
-        !section.is_empty(),
-        "every matched section is a non-empty word"
-    );
-    assert!(
-        !id.contains('='),
-        "the first `=` splits off the choice: {node}"
-    );
     Some((field, choice))
 }
 
@@ -226,9 +213,17 @@ pub fn parse_field(node: &str) -> Option<(Field<'_>, Option<&str>)> {
 ///
 /// # Panics
 ///
-/// Never: the assert checks how the id was split.
+/// If `section` or `action` is empty or holds a dot (they are single id words).
 #[must_use]
 pub fn button_row(node: &str, section: &str, action: &str) -> Option<u32> {
+    assert!(
+        !section.is_empty() && !section.contains('.'),
+        "a section word: {section}"
+    );
+    assert!(
+        !action.is_empty() && !action.contains('.'),
+        "an action word: {action}"
+    );
     let rest = node
         .strip_prefix("cell.")?
         .strip_prefix(section)?
@@ -238,7 +233,6 @@ pub fn button_row(node: &str, section: &str, action: &str) -> Option<u32> {
         return None;
     }
     let row: u32 = row.parse().ok()?;
-    assert!(node.ends_with(action), "the action is the id's last word");
     Some(row)
 }
 
@@ -268,17 +262,16 @@ fn attr_of<'r>(rec: &'r RecordBuf, key: &str) -> Option<&'r str> {
 
 /// Row of the `body` record of impl `name`, if it has one.
 fn body_row(doc: &Document, name: &str) -> Option<u32> {
+    assert!(!name.is_empty(), "impls are named");
     let n = row_u32(doc.bodies().kind.len());
-    let row = (0..n).find(|&row| {
+    (0..n).find(|&row| {
         doc.record(Loc {
             table: TableId::Bodies,
             row,
         })
         .fields[0]
             == name
-    });
-    assert!(row.is_none_or(|r| r < n));
-    row
+    })
 }
 
 /// The `body` text of impl `name` (empty when it has none).

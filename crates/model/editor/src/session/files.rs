@@ -36,8 +36,13 @@ impl Session {
     ///
     /// # Panics
     ///
-    /// Never: the assert checks that the returned handle is open.
+    /// If `lib` is not a library row.
     pub fn open_file(&mut self, lib: u8, relpath: &str) -> Result<DocHandle, String> {
+        assert!(
+            usize::from(lib) < self.lib_dir.len(),
+            "library row {lib} of {}",
+            self.lib_dir.len()
+        );
         let dir = self
             .lib_dir
             .get(usize::from(lib))
@@ -89,6 +94,7 @@ impl Session {
         match opened.recovery {
             Recovery::None => {}
             Recovery::Offer { txs } | Recovery::Diverged { txs } => {
+                assert!(txs > 0, "an offer holds journal records");
                 self.recovery.push((h, txs));
                 self.status = format!("{relpath}: {txs} unsaved edit(s) can be recovered");
             }
@@ -127,11 +133,16 @@ impl Session {
     /// # Errors
     ///
     /// The file is outside every local library, unreadable, or does not parse.
+    ///
+    /// # Panics
+    ///
+    /// Never: `doc` caps library rows at 256.
     pub fn open_path(&mut self, path: &Path) -> Result<DocHandle, String> {
         let (lib, rel) = self
             .lib_of(path)
             .ok_or_else(|| format!("{}: outside the project", path.display()))?;
-        self.open_file(lib as u8, &rel)
+        let lib = u8::try_from(lib).expect("library rows fit u8 (`doc` caps them)");
+        self.open_file(lib, &rel)
     }
 
     /// The local library holding `path` and the path relative to it: the longest matching
@@ -258,7 +269,10 @@ impl Session {
         assert!(matches!(kind, FileKind::Shcomp | FileKind::Shprim));
         let ext = kind.word();
         let rel = loop {
-            self.untitled += 1;
+            self.untitled = self
+                .untitled
+                .checked_add(1)
+                .expect("fewer than 2^32 new cells");
             let rel = format!("untitled{}.{ext}", self.untitled);
             if !platform::exists(&self.root.join(&rel)) {
                 break rel;
@@ -275,6 +289,10 @@ impl Session {
         self.docs.path.push(path);
         self.docs.epoch.push(0);
         assert_eq!(self.docs.len(), before + 1, "one row per created document");
+        debug_assert!(
+            !platform::exists(&self.docs.path[before]),
+            "a new cell is unsaved"
+        );
         assert!(self.project.doc(h).is_some());
         Ok(h)
     }

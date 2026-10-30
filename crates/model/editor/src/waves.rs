@@ -237,6 +237,10 @@ impl WavesView {
     /// # Errors
     ///
     /// No dataset evaluates `src` (the last dataset's reason), or the viewer is full.
+    ///
+    /// # Panics
+    ///
+    /// Never: the viewer holds at most `MAX_DATASETS` (256) datasets.
     pub fn add_trace(&mut self, src: &str) -> Result<(), String> {
         if self.traces().iter().any(|t| t.eq_ignore_ascii_case(src)) {
             return Ok(());
@@ -245,7 +249,7 @@ impl WavesView {
         for d in (0..self.waves.datasets().len()).rev() {
             let req = Request::AddTrace {
                 src: src.to_owned(),
-                dataset: d as u8,
+                dataset: u8::try_from(d).expect("dataset indices < MAX_DATASETS fit u8"),
                 pane: self.ui.active_pane(),
             };
             let res = self.waves.apply(&req);
@@ -296,8 +300,10 @@ impl WavesView {
 ///
 /// # Panics
 ///
-/// Never: the asserts check that the name only gains a prefix.
+/// If `emitted` is empty.
+#[must_use]
 pub fn spice_device(emitted: &str) -> String {
+    assert!(!emitted.is_empty(), "an emitted device name");
     let lower = emitted.to_ascii_lowercase();
     let dev = match lower.rsplit_once('.') {
         Some((_, last)) if !last.is_empty() => {
@@ -324,7 +330,7 @@ pub fn spice_device(emitted: &str) -> String {
 ///
 /// # Panics
 ///
-/// Never: the assert checks that the probe names a device and a quantity.
+/// If `emitted` is empty.
 #[must_use]
 pub fn current_probe(emitted: &str, pin: &str) -> String {
     let dev = spice_device(emitted);
@@ -346,9 +352,7 @@ pub fn current_probe(emitted: &str, pin: &str) -> String {
         'q' => "ic".to_owned(),
         _ => "i".to_owned(),
     };
-    let out = format!("i(\"@{dev}[{param}]\")");
-    assert!(out.len() > 6);
-    out
+    format!("i(\"@{dev}[{param}]\")")
 }
 
 // ---- private ----
@@ -358,6 +362,12 @@ pub fn current_probe(emitted: &str, pin: &str) -> String {
 fn datasets(title: &str, bytes: &[u8]) -> Result<Vec<RawPlot>, String> {
     let plots = schemify_wave::parse_raw(bytes).map_err(|e| format!("{title}: {e}"))?;
     let d = schemify_wave::group_datasets(plots);
+    const {
+        assert!(
+            MAX_DATASETS <= u8::MAX as usize + 1,
+            "dataset indices fit u8"
+        )
+    };
     if d.len() > MAX_DATASETS {
         return Err(format!(
             "{title}: {} datasets (at most {MAX_DATASETS})",

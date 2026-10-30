@@ -201,6 +201,10 @@ impl Shell {
             .iter()
             .any(|(_, c)| c.edits.iter().any(is_window));
         self.composed = false;
+        debug_assert!(
+            self.rejects <= sets.iter().map(|(_, t)| t.lines().count()).sum::<usize>(),
+            "a reject is a line"
+        );
         assert_eq!(
             self.plugins.len(),
             sets.len(),
@@ -275,6 +279,10 @@ impl Shell {
             self.laid_out = Some(viewport);
         }
         assert!(self.composed);
+        assert!(
+            !stale || viewport.0 == 0.0 || viewport.1 == 0.0 || self.laid_out == Some(viewport),
+            "a stale layout is rebuilt for a visible viewport"
+        );
         stale
     }
 
@@ -363,7 +371,7 @@ impl Shell {
         }
         p.width[usize::from(LAYER_BUS)] = 3.0;
         p.fill = (1 << 5) | (1 << LAYER_JUNCTION);
-        assert!(LAYERS > usize::from(LAYER_SEL));
+        const { assert!(LAYERS > LAYER_SEL as usize) };
         (p, sel)
     }
 }
