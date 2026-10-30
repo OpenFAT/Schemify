@@ -8,28 +8,41 @@
 //!
 //! Contents:
 //! - `pub fn set_serial(serial: bool)`
-//! - `pub(crate) struct Writer`: `Writer::new(e, d, plans, order) -> Writer`,
-//!   `Writer::def_block(&mut self, d: u32) -> (Subcircuit, Vec<Lines>, Vec<String>)`,
+//! - `pub(crate) struct DefBlock`
+//! - `pub(crate) struct Writer`: `Writer::new(context, order) -> Writer`,
+//!   `Writer::def_block(&mut self, def: u32) -> DefBlock`,
 //!   `Writer::finish(self) -> (Uses, NameMap)`
 
-use crate::inst::{self, Tmp, Uses};
+use crate::inst;
+use crate::inst::{Context, RowScratch, Uses};
 use crate::name_map::{Builder, NameMap};
-use crate::plan::Plans;
-use crate::{Lines, NONE, deck, sr};
+use crate::{Lines, NONE, Respelling, deck};
 use schemify_elab::{Dialect, Elab, Ignore, Name, Target};
 use spicerack::codegen::xschem;
 use spicerack::ir::Subcircuit;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::thread::ScopedJoinHandle;
 
-/// The lowering state of one [`crate::lower`] call: the plans, per-row scratch and the
-/// name map under construction. Blocks must be written in name-map order (the top, then
-/// `order`), the order `new` numbers them in.
-pub(crate) struct Writer<'e> {
-    e: &'e Elab,
-    d: Dialect,
-    plans: &'e Plans,
-    tmp: Tmp,
+/// One emitted definition, as [`crate::Lowered`] holds it.
+pub(crate) struct DefBlock {
+    /// Its ports, its cell's own code, D17 as amended, spec §7.6.15, and for CDL its
+    /// parameter tuple.
+    pub(crate) subcircuit: Subcircuit,
+    /// Its rows as packed lines, one run per rendered part (at least one).
+    pub(crate) lines: Vec<Lines>,
+    /// Its Verilog `wire`s (empty for other dialects).
+    pub(crate) nets: Vec<String>,
+}
+
+/// The lowering state of one [`crate::lower`] call: per-row scratch and the name map
+/// under construction. Blocks must be written in name-map order (the top, then `order`),
+/// the order `new` numbers them in.
+pub(crate) struct Writer<'elab> {
+    context: Context<'elab>,
+    scratch: RowScratch,
     /// Elab definition → name-map definition (`NONE` when not emitted).
     def_map: Vec<u32>,
     map: Builder,
@@ -46,109 +59,137 @@ const THREADS_MAX: usize = 4;
 static SERIAL: AtomicBool = AtomicBool::new(false);
 
 /// The rows of one block in row order as packed lines.
-struct Block {
+struct Rendered {
     /// One run per rendered part, in row order.
     runs: Vec<Lines>,
-    /// Per line: its row, and whether it rendered (a failed row is an error comment line
-    /// with no name-map row).
-    kept: Vec<(u32, bool)>,
+    /// Per line, in row order.
+    kept: Vec<Kept>,
+}
+
+/// One rendered line's row.
+#[derive(Clone, Copy, Debug)]
+struct Kept {
+    row: u32,
+    /// The template rendered; a failed row is an error comment line with no name-map row.
+    rendered: bool,
 }
 
 /// Renders every block on one thread (`true`) or lets large blocks use several (`false`,
 /// the default). The text is identical either way; tests compare the two. Process-wide.
 #[doc(hidden)]
 pub fn set_serial(serial: bool) {
-    SERIAL.store(serial, Relaxed);
+    SERIAL.store(serial, Ordering::Relaxed);
 }
 
-impl<'e> Writer<'e> {
+impl<'elab> Writer<'elab> {
     /// Numbers the emitted definitions (the top first when there is one, then `order`)
     /// and sizes the name map for their rows.
-    pub(crate) fn new(e: &'e Elab, d: Dialect, plans: &'e Plans, order: &[u32]) -> Writer<'e> {
-        let mut def_map = vec![NONE; e.defs.cell.len()];
-        let emitted = (e.top != NONE)
-            .then_some(e.top)
-            .into_iter()
-            .chain(order.iter().copied());
+    pub(crate) fn new(context: Context<'elab>, order: &[u32]) -> Writer<'elab> {
+        let elab = context.elab;
+        let mut def_map = vec![NONE; elab.defs.cell.len()];
+        let top = (elab.top != NONE).then_some(elab.top);
+        let emitted = top.into_iter().chain(order.iter().copied());
         let mut rows = 0;
-        for (k, def) in emitted.enumerate() {
+        let mut defs = 0;
+        for def in emitted {
             assert_eq!(def_map[def as usize], NONE, "definition {def} listed once");
-            def_map[def as usize] = k as u32;
-            rows += e.insts_of(def).len();
+            def_map[def as usize] = defs;
+            defs += 1;
+            rows += elab.insts_of(def).len();
         }
-        let defs = order.len() + usize::from(e.top != NONE);
-        let respell = deck::xspice_spellings(e, plans, d);
+        assert_eq!(defs as usize, order.len() + usize::from(top.is_some()));
+        if let Some(top) = top {
+            assert_eq!(
+                def_map[top as usize], 0,
+                "the name map's definition 0 is the top"
+            );
+        }
+        let respellings = deck::xspice_spellings(elab, context.plans, context.dialect);
         Writer {
-            e,
-            d,
-            plans,
-            tmp: Tmp::new(e),
+            context,
+            scratch: RowScratch::new(elab),
             def_map,
-            map: Builder::new(e, d, defs, rows, respell),
+            map: Builder::new(elab, context.dialect, defs as usize, rows, respellings),
         }
     }
 
-    /// Definition `d`: the subcircuit (its ports, its cell's own code, D17 as amended,
-    /// spec §7.6.15, and for CDL its parameter tuple), its rows as lines and its Verilog
-    /// `wire`s. The deck sorts the rows by element name.
-    pub(crate) fn def_block(&mut self, d: u32) -> (Subcircuit, Vec<Lines>, Vec<String>) {
-        let e = self.e;
+    /// Definition `def`: its subcircuit, its rows as lines and its Verilog `wire`s. The
+    /// deck sorts the rows by element name.
+    pub(crate) fn def_block(&mut self, def: u32) -> DefBlock {
+        let Context { elab, dialect, .. } = self.context;
         assert!(
-            self.def_map[d as usize] != NONE,
-            "definition {d} is emitted"
+            self.def_map[def as usize] != NONE,
+            "definition {def} is emitted"
         );
-        self.map.def(e, d, &self.def_map);
-        let lines = self.rows(d);
-        let code =
-            e.defs.code_start[d as usize] as usize..e.defs.code_start[d as usize + 1] as usize;
-        let sc = Subcircuit {
-            name: e.names.get(e.defs.name[d as usize]).to_owned(),
-            ports: deck::ports(e, d, &self.map.respell),
-            parameters: if self.d == Dialect::Cdl {
-                deck::cdl_params(e, d)
+        self.map.def(elab, def, &self.def_map);
+        let lines = self.rows(def);
+        let code = elab.defs.code_start[def as usize] as usize
+            ..elab.defs.code_start[def as usize + 1] as usize;
+        let raw_spice: Vec<String> = elab.defs.code[code]
+            .iter()
+            .map(|l| elab.names.get(*l).to_owned())
+            .collect();
+        let subcircuit = Subcircuit {
+            name: elab.names.get(elab.defs.name[def as usize]).to_owned(),
+            ports: deck::ports(elab, def, &self.map.respellings),
+            parameters: if dialect == Dialect::Cdl {
+                deck::cdl_params(elab, def)
             } else {
                 Vec::new()
             },
-            raw_spice: e.defs.code[code]
-                .iter()
-                .map(|l| e.names.get(*l).to_owned())
-                .collect(),
+            raw_spice,
             ..Subcircuit::default()
         };
-        let nets = if self.d == Dialect::Verilog {
-            wires(e, d)
+        let nets = if dialect == Dialect::Verilog {
+            wires(elab, def)
         } else {
             Vec::new()
         };
         assert!(!lines.is_empty(), "a block has at least one run");
-        (sc, lines, nets)
+        assert_eq!(
+            subcircuit.ports.len(),
+            elab.ports(def).len(),
+            "one port per port net"
+        );
+        DefBlock {
+            subcircuit,
+            lines,
+            nets,
+        }
     }
 
     /// What the emitted rows used, and the finished name map.
     pub(crate) fn finish(self) -> (Uses, NameMap) {
-        (self.tmp.uses, self.map.finish())
+        assert_eq!(
+            self.scratch.uses.impl_used.len(),
+            self.context.elab.impls.cell.len(),
+            "uses of this elaboration"
+        );
+        (self.scratch.uses, self.map.finish())
     }
 }
 
 // ---- private ----
 
 impl Writer<'_> {
-    /// Instance rows of definition `d` in row order as packed lines, each run marked
+    /// Instance rows of definition `def` in row order as packed lines, each run marked
     /// sorted when the whole block is in element-name order, and their name-map rows.
-    fn rows(&mut self, d: u32) -> Vec<Lines> {
-        let mut block = self.render_parts(self.e.insts_of(d));
+    fn rows(&mut self, def: u32) -> Vec<Lines> {
+        let mut block = self.render_parts(self.context.elab.insts_of(def));
         let sorted = self.record_names(&block);
         // The deck then copies the runs without reading their names again.
-        block.runs.iter_mut().for_each(|l| l.sorted = sorted);
+        for run in &mut block.runs {
+            run.sorted = sorted;
+        }
         block.runs
     }
 
-    /// Renders `rows`: the first part here into `self.tmp`, every other part on its own
-    /// thread with its own scratch, whose uses are merged after, in row order.
-    fn render_parts(&mut self, rows: Range<usize>) -> Block {
-        let e = self.e;
-        let chunks = if rows.len() >= PARALLEL_ROWS && !SERIAL.load(Relaxed) {
-            std::thread::available_parallelism().map_or(1, |n| n.get().min(THREADS_MAX))
+    /// Renders `rows`: the first part here into `self.scratch`, every other part on its
+    /// own thread with its own scratch, whose uses are merged after, in row order.
+    fn render_parts(&mut self, rows: Range<usize>) -> Rendered {
+        let context = self.context;
+        let chunks = if rows.len() >= PARALLEL_ROWS && !SERIAL.load(Ordering::Relaxed) {
+            thread::available_parallelism().map_or(1, |n| n.get().min(THREADS_MAX))
         } else {
             1
         };
@@ -160,102 +201,127 @@ impl Writer<'_> {
             .collect();
         assert!(!parts.is_empty());
         assert!(parts.len() <= THREADS_MAX);
-        let (d, plans, respell) = (self.d, self.plans, &self.map.respell);
-        std::thread::scope(|sc| {
-            let workers: Vec<_> = parts[1..]
-                .iter()
-                .map(|p| {
-                    sc.spawn(|| {
-                        let mut tmp = Tmp::new(e);
-                        (render(e, d, plans, respell, p.clone(), &mut tmp), tmp.uses)
-                    })
-                })
-                .collect();
-            let mut all = render(e, d, plans, respell, parts[0].clone(), &mut self.tmp);
-            for w in workers {
-                let (part, uses) = w.join().expect("rows render");
-                self.tmp.uses.merge(uses);
+        let respellings: &[Respelling] = &self.map.respellings;
+        let all = thread::scope(|scope| {
+            let mut workers: Vec<ScopedJoinHandle<'_, (Rendered, Uses)>> =
+                Vec::with_capacity(parts.len() - 1);
+            for part in &parts[1..] {
+                let part = part.clone();
+                workers.push(scope.spawn(move || {
+                    let mut scratch = RowScratch::new(context.elab);
+                    let rendered = render(context, respellings, part, &mut scratch);
+                    (rendered, scratch.uses)
+                }));
+            }
+            let mut all = render(context, respellings, parts[0].clone(), &mut self.scratch);
+            for worker in workers {
+                let (part, uses) = worker.join().expect("rows render");
+                self.scratch.uses.merge(uses);
                 all.runs.extend(part.runs);
                 all.kept.extend(part.kept);
             }
             all
-        })
+        });
+        assert_eq!(all.runs.len(), parts.len(), "one run per part");
+        debug_assert!(
+            all.kept.windows(2).all(|w| w[0].row < w[1].row),
+            "parts append in row order"
+        );
+        all
     }
 
     /// Records the name-map row of every rendered line of `block` under the element name
     /// the deck writes; returns whether those names are in order.
-    fn record_names(&mut self, block: &Block) -> bool {
-        let (e, xd) = (self.e, sr(self.d));
+    fn record_names(&mut self, block: &Rendered) -> bool {
+        let elab = self.context.elab;
+        let dialect = crate::spicerack_dialect(self.context.dialect);
         assert_eq!(
             block.kept.len(),
             block.runs.iter().map(Lines::len).sum::<usize>()
         );
         let (mut run, mut line) = (0, 0);
         let (mut sorted, mut prev) = (true, "");
-        for &(r, rendered) in &block.kept {
+        for kept in &block.kept {
             while line == block.runs[run].len() {
                 (run, line) = (run + 1, 0); // the next part's run
             }
-            let name = xschem::element_name(block.runs[run].get(line), xd);
+            let name = xschem::element_name(block.runs[run].get(line), dialect);
             sorted &= prev <= name;
             prev = name;
-            if rendered {
-                let child = match e.insts.target[r as usize] {
-                    Target::Def(c) => self.def_map[c as usize],
+            if kept.rendered {
+                let child = match elab.insts.target[kept.row as usize] {
+                    Target::Def(def) => self.def_map[def as usize],
                     Target::Leaf(_) => NONE,
                 };
-                self.map.row(e, r as usize, name, child);
+                self.map.row(elab, kept.row as usize, name, child);
             }
             line += 1;
+        }
+        if let Some(last) = block.runs.get(run) {
+            assert_eq!(line, last.len(), "every line is recorded");
         }
         sorted
     }
 }
 
-/// Verilog: every net of definition `d`'s emitted rows that is not a port, sorted by
+/// Verilog: every net of definition `def`'s emitted rows that is not a port, sorted by
 /// name (spec §7.5).
-fn wires(e: &Elab, d: u32) -> Vec<String> {
-    let ports = e.ports(d);
+fn wires(elab: &Elab, def: u32) -> Vec<String> {
+    let ports = elab.ports(def);
     let mut wires: Vec<Name> = Vec::new();
-    for r in e.insts_of(d).filter(|&r| e.insts.ignore[r] == Ignore::No) {
-        wires.extend(e.conns(r).iter().filter(|n| **n != Name::NONE));
+    let emitted = elab
+        .insts_of(def)
+        .filter(|&r| elab.insts.ignore[r] == Ignore::No);
+    for r in emitted {
+        wires.extend(elab.conns(r).iter().filter(|n| **n != Name::NONE));
     }
     wires.sort_unstable();
     wires.dedup();
     wires.retain(|n| !ports.contains(n));
-    e.names.sort(&mut wires);
+    elab.names.sort(&mut wires);
     assert!(!wires.contains(&Name::NONE));
-    wires.iter().map(|n| e.names.get(*n).to_owned()).collect()
+    let texts: Vec<String> = wires
+        .iter()
+        .map(|n| elab.names.get(*n).to_owned())
+        .collect();
+    assert_eq!(texts.len(), wires.len());
+    texts
 }
 
 /// Renders rows `rows` of one block straight into one run of packed lines (spec §7.6.1:
 /// a failed template becomes an error comment, an empty rendering no element). The
-/// impls and models used accumulate in `tmp`.
+/// impls and models used accumulate in `scratch`.
 fn render(
-    e: &Elab,
-    d: Dialect,
-    plans: &Plans,
-    respell: &[(Name, String)],
+    context: Context<'_>,
+    respellings: &[Respelling],
     rows: Range<usize>,
-    tmp: &mut Tmp,
-) -> Block {
+    scratch: &mut RowScratch,
+) -> Rendered {
+    let Context { elab, dialect, .. } = context;
+    assert!(
+        rows.end <= elab.insts.name.len(),
+        "rows of this elaboration"
+    );
+    // `Kept::row` narrows a row index.
+    assert!(rows.end <= u32::MAX as usize);
     let mut lines = Lines {
         text: String::with_capacity(48 * rows.len()),
         ends: Vec::with_capacity(rows.len()),
         sorted: false,
     };
     let mut kept = Vec::with_capacity(rows.len());
-    for r in rows.filter(|&r| e.insts.ignore[r] == Ignore::No) {
-        let local = e.names.get(e.insts.name[r]);
+    let emitted = rows.filter(|&r| elab.insts.ignore[r] == Ignore::No);
+    for r in emitted {
+        let local = elab.names.get(elab.insts.name[r]);
         let start = lines.text.len();
-        let net = |n: Name| crate::spelled(e, respell, n);
-        let rendered = inst::line(e, d, plans, r, local, net, &mut lines.text, tmp);
+        let net = |n: Name| crate::spelled(elab, respellings, n);
+        let rendered = inst::line(context, r, local, net, &mut lines.text, scratch);
         match &rendered {
             Ok(()) if lines.text.len() == start => continue, // renders nothing
             Ok(()) => {}
-            Err(msg) => {
+            Err(message) => {
                 lines.text.truncate(start);
-                push_error(&mut lines.text, d, local, msg);
+                push_error(&mut lines.text, dialect, local, message);
             }
         }
         // The deck copies a part's lines whole, newlines included.
@@ -263,22 +329,30 @@ fn render(
             lines.text.push('\n');
         }
         lines.end_line();
-        kept.push((r as u32, rendered.is_ok()));
+        kept.push(Kept {
+            row: r as u32,
+            rendered: rendered.is_ok(),
+        });
     }
     assert_eq!(kept.len(), lines.len());
-    Block {
+    assert!(lines.text.is_empty() || lines.text.ends_with('\n'));
+    Rendered {
         runs: vec![lines],
         kept,
     }
 }
 
 /// Appends the comment a failed row is written as: `* error in <name>: <message>`.
-fn push_error(out: &mut String, d: Dialect, local: &str, msg: &str) {
+fn push_error(out: &mut String, dialect: Dialect, local: &str, message: &str) {
+    use std::fmt::Write;
+
     let start = out.len();
-    out.push_str(xschem::comment(sr(d)));
-    out.push_str(" error in ");
-    out.push_str(local);
-    out.push_str(": ");
-    out.push_str(&msg.replace('\n', " "));
+    let comment = xschem::comment(crate::spicerack_dialect(dialect));
+    let message = message.replace('\n', " ");
+    write!(out, "{comment} error in {local}: {message}").expect("a String takes any text");
     assert!(out.len() > start);
+    assert!(
+        !out[start..].contains('\n'),
+        "the error is one comment line"
+    );
 }
