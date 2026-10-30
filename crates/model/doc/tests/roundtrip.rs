@@ -4,9 +4,9 @@
 
 mod common;
 
-use common::*;
+use common::{BENCH, MESSY, Mix, NFET, OTA};
 use schemify_doc::ObjId;
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
 
 // ---- private ----
 
@@ -17,22 +17,22 @@ fn spec_examples_round_trip_byte_identically() {
         ("nfet_01v8.shprim", NFET),
         ("ota_ac.shbench", BENCH),
     ] {
-        let (p, h) = open(text, name);
-        assert_eq!(canon(&p, h), text, "{name}");
+        let (p, h) = common::open(text, name);
+        assert_eq!(common::canon(&p, h), text, "{name}");
         assert!(!p.is_dirty(h));
     }
 }
 
 #[test]
 fn messy_input_canonicalizes_like_the_format() {
-    let (p, h) = open(MESSY, "ota5t.shcomp");
-    assert_eq!(canon(&p, h), OTA);
+    let (p, h) = common::open(MESSY, "ota5t.shcomp");
+    assert_eq!(common::canon(&p, h), OTA);
     assert!(!p.is_dirty(h), "canonicalization is not an edit");
 }
 
 #[test]
 fn tables_hold_the_example_data() {
-    let (p, h) = open(OTA, "ota5t.shcomp");
+    let (p, h) = common::open(OTA, "ota5t.shcomp");
     let d = p.doc(h).unwrap();
     let s = d.strings();
     let pins: Vec<&str> = d.pins().name.iter().map(|n| s.get(*n)).collect();
@@ -98,7 +98,7 @@ fn text(rng: &mut Mix) -> &'static str {
 }
 
 fn c(rng: &mut Mix) -> String {
-    coord((rng.below(2001) as i32 - 1000) * if rng.chance(20) { 1 } else { 1000 })
+    common::coord((rng.below(2001) as i32 - 1000) * if rng.chance(20) { 1 } else { 1000 })
 }
 
 fn comment(rng: &mut Mix, d: &mut FormatDoc<'static>) {
@@ -225,9 +225,9 @@ fn gen_file(rng: &mut Mix, kind: FileKind) -> String {
             d.push_field(&ident(rng, &mut ids));
             let (x, y) = (c(rng), (rng.below(2001) as i32 - 1000) * 125);
             d.push_field(&x);
-            d.push_field(&coord(y));
+            d.push_field(&common::coord(y));
             d.push_field(&x);
-            d.push_field(&coord(y + 1000));
+            d.push_field(&common::coord(y + 1000));
             if rng.chance(30) {
                 d.push_attr("bus");
                 d.push_value("true");
@@ -344,7 +344,7 @@ fn gen_file(rng: &mut Mix, kind: FileKind) -> String {
     if rng.chance(30) {
         d.push_eof_comment(" end");
     }
-    write(&d)
+    schemify_format::write(&d)
 }
 
 fn gen_with_default(d: &FormatDoc<'_>, default: &str) -> String {
@@ -360,26 +360,34 @@ fn gen_with_default(d: &FormatDoc<'_>, default: &str) -> String {
     for r in 1..d.record_count() {
         out.copy_record(d, r);
     }
-    write(&out)
+    schemify_format::write(&out)
 }
 
 fn round_trip(seed: u64) {
     let mut rng = Mix::new(seed);
     for kind in [FileKind::Shprim, FileKind::Shcomp, FileKind::Shbench] {
         let text = gen_file(&mut rng, kind);
-        let model = parse(text.as_bytes())
+        let model = schemify_format::parse(text.as_bytes())
             .unwrap_or_else(|e| panic!("seed {seed}: generator broke: {e}\n{text}"));
-        assert_eq!(write(&model), text, "the generator writes canonical text");
-        let (p, h) = open(&text, "gen.x");
         assert_eq!(
-            canon(&p, h),
+            schemify_format::write(&model),
+            text,
+            "the generator writes canonical text"
+        );
+        let (p, h) = common::open(&text, "gen.x");
+        assert_eq!(
+            common::canon(&p, h),
             text,
             "save(load(x)) != x, seed {seed}\n{text}"
         );
-        let (q, g) = open(&canon(&p, h), "gen.x");
-        assert_eq!(canon(&q, g), text, "load(save(x)) != x, seed {seed}");
+        let (q, g) = common::open(&common::canon(&p, h), "gen.x");
+        assert_eq!(
+            common::canon(&q, g),
+            text,
+            "load(save(x)) != x, seed {seed}"
+        );
         // Every record reads back as the same record through the table read path.
-        let d = p.doc(h).unwrap();
+        let d = common::doc(&p, h);
         let rows: usize = schemify_doc::TableId::ALL
             .iter()
             .map(|t| d.table_len(*t))

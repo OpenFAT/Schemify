@@ -24,16 +24,17 @@
 //! - `pub enum LibSource`: `word`; `pub struct Libs`: `find`
 //! - `pub struct Locked`: `find`, `write`; crate: `set`
 //! - `pub enum LockStatus`; `pub struct Cells`: crate `retain_not_lib`, `push_row`, `find`
-//! - `pub(crate) enum CellRef`: `parse`; `pub(crate) struct ManifestRest`
+//! - `pub(crate) enum CellRef`: `parse`; `pub(crate) struct Manifest`,
+//!   `pub(crate) struct ManifestRest`
 //! - `pub(crate) fn parse_manifest`, `pub(crate) fn parse_lock`,
 //!   `pub(crate) fn content_hash`, `pub(crate) fn index_cells`, `pub(crate) fn lock_status`
 
 use crate::document::Document;
 use crate::record::RecordBuf;
-use crate::sha256::{Digest, Sha256, hex};
+use crate::sha256::{self, Digest, Sha256};
 use crate::strings::{Strings, Sym};
 use crate::{Code, Diag};
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse_prefix};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
 
 /// The reserved library name of technology classes (pdk spec §5).
 pub const TECH_LIB: &str = "tech";
@@ -146,19 +147,26 @@ pub struct Cells {
 
 /// A parsed cell reference (netlist spec §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CellRef<'a> {
+pub(crate) enum CellRef<'text> {
     /// `lib:cell`, resolved through the manifest.
     Lib {
         /// Library name.
-        lib: &'a str,
+        lib: &'text str,
         /// Cell name.
-        cell: &'a str,
+        cell: &'text str,
     },
     /// `./cell`, resolved in the referencing file's directory.
     Local {
         /// Cell name.
-        cell: &'a str,
+        cell: &'text str,
     },
+}
+
+/// A parsed `schemify.project`: its library rows and everything else it declares.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Manifest {
+    pub(crate) libs: Libs,
+    pub(crate) rest: ManifestRest,
 }
 
 /// The manifest's non-library records, kept for the app and the plugin host.
@@ -174,6 +182,7 @@ const SYMBOL_RANK: u8 = 2;
 
 impl LibSource {
     /// Returns the lockfile `kind` word.
+    #[must_use]
     pub fn word(&self) -> &'static str {
         match self {
             LibSource::Project => "project",
@@ -188,17 +197,34 @@ impl LibSource {
 
 impl Libs {
     /// Returns the row of library `name`.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: a project holds at most 2^8 libraries, so a row fits
+    /// the `u8` cell columns.
+    #[must_use]
     pub fn find(&self, name: &str) -> Option<usize> {
+        assert!(self.name.len() <= LIBS_MAX, "libraries are bounded");
         let row = self.name.iter().position(|n| n == name);
-        assert!(row.is_none_or(|r| r < self.name.len()));
+        assert!(row.is_none_or(|r| r <= usize::from(u8::MAX)));
         row
     }
 }
 
 impl Locked {
     /// Returns the row for (`ty`, `name`).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the lockfile columns are in step.
+    #[must_use]
     pub fn find(&self, ty: &str, name: &str) -> Option<usize> {
-        (0..self.ty.len()).find(|&i| self.ty[i] == ty && self.name[i] == name)
+        let row = (0..self.ty.len()).find(|&i| self.ty[i] == ty && self.name[i] == name);
+        assert!(
+            row.is_none_or(|r| r < self.hash.len()),
+            "lock columns in step"
+        );
+        row
     }
 
     /// Sets (adds or replaces) a row.
@@ -218,10 +244,17 @@ impl Locked {
         self.resolved[row] = resolved.to_owned();
         self.hash[row] = hash.to_owned();
         assert_eq!(self.find(ty, name), Some(row));
+        assert_eq!(self.ty.len(), self.resolved.len(), "lock columns in step");
     }
 
     /// Writes the lockfile in canonical form.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the format writer starts a lockfile with its header.
+    #[must_use]
     pub fn write(&self) -> String {
+        assert_eq!(self.ty.len(), self.kind.len(), "lock columns in step");
         let mut d = FormatDoc::new(FileKind::Lock);
         for i in 0..self.ty.len() {
             d.begin_record(RecordKind::Locked);
@@ -254,7 +287,8 @@ impl Cells {
         retain_by(&mut self.hash, &keep);
         retain_by(&mut self.iface, &keep);
         retain_by(&mut self.lib, &keep);
-        assert!(self.columns_ok() && !self.lib.contains(&lib));
+        assert!(self.columns_ok());
+        assert!(!self.lib.contains(&lib), "every row of `lib` is gone");
     }
 
     /// Appends one row.
@@ -291,9 +325,9 @@ impl Cells {
     }
 }
 
-impl<'a> CellRef<'a> {
+impl<'text> CellRef<'text> {
     /// Parses `lib:cell` or `./cell`; `None` for anything else.
-    pub(crate) fn parse(text: &'a str) -> Option<CellRef<'a>> {
+    pub(crate) fn parse(text: &'text str) -> Option<CellRef<'text>> {
         let ok = |s: &str| !s.is_empty() && !s.contains(['/', ':']);
         if let Some(cell) = text.strip_prefix("./") {
             return ok(cell).then_some(CellRef::Local { cell });
@@ -308,13 +342,13 @@ impl<'a> CellRef<'a> {
 /// Parses `schemify.project` into library rows (project and builtin `core` first).
 pub(crate) fn parse_manifest(
     bytes: Option<&[u8]>,
-) -> Result<(Libs, ManifestRest), schemify_format::ParseError> {
+) -> Result<Manifest, schemify_format::ParseError> {
     let mut libs = Libs::default();
     libs.push("", LibSource::Project, None);
     let mut rest = ManifestRest::default();
     let Some(bytes) = bytes else {
         libs.push("core", LibSource::Builtin, None);
-        return Ok((libs, rest));
+        return Ok(Manifest { libs, rest });
     };
     let d = schemify_format::parse(bytes)?;
     if d.kind() != FileKind::Project {
@@ -362,7 +396,8 @@ pub(crate) fn parse_manifest(
         libs.push("core", LibSource::Builtin, None);
     }
     assert_eq!(libs.source[0], LibSource::Project);
-    Ok((libs, rest))
+    assert!(libs.find("core").is_some(), "`core` is declared or builtin");
+    Ok(Manifest { libs, rest })
 }
 
 /// Parses `schemify.lock`.
@@ -378,6 +413,10 @@ pub(crate) fn parse_lock(bytes: Option<&[u8]>) -> Result<Locked, schemify_format
         assert_eq!(f.len(), 5, "the reader checked the shape");
         lock.set(f[0], f[1], f[2], f[3], f[4]);
     }
+    assert!(
+        lock.ty.len() < d.record_count() as usize,
+        "at most one row per record"
+    );
     Ok(lock)
 }
 
@@ -441,21 +480,28 @@ pub(crate) fn index_cells(
         }
         let iface = match kind {
             FileKind::Shbench => None,
-            _ => match parse_prefix(bytes, SYMBOL_RANK) {
-                Ok(model) => Some(Document::from_format(&model).doc),
-                Err(e) => {
-                    let d = e.diagnostics[0];
-                    diags.push((
-                        (*path).to_owned(),
-                        Diag {
-                            code: Code::from_format(d.code),
-                            line: d.line,
-                            detail: d.detail,
-                        },
-                    ));
-                    None
+            FileKind::Shprim | FileKind::Shcomp => {
+                match schemify_format::parse_prefix(bytes, SYMBOL_RANK) {
+                    Ok(model) => Some(Document::from_format(&model).doc),
+                    Err(e) => {
+                        let d = e.diagnostics[0];
+                        diags.push((
+                            (*path).to_owned(),
+                            Diag {
+                                code: Code::from_format(d.code),
+                                line: d.line,
+                                detail: d.detail,
+                            },
+                        ));
+                        None
+                    }
                 }
-            },
+            }
+            FileKind::Project
+            | FileKind::Lock
+            | FileKind::Config
+            | FileKind::Journal
+            | FileKind::Techmap => unreachable!("`split_cell_path` yields cell kinds"),
         };
         cells.push_row(lib, dir, stem, kind, *digest, iface);
     }
@@ -466,14 +512,15 @@ pub(crate) fn index_cells(
 /// Compares a library's content hash with its lockfile row.
 pub(crate) fn lock_status(lock: &Locked, name: &str, hash: &Digest) -> LockStatus {
     assert!(!name.is_empty(), "the project row is never locked");
+    let hash = sha256::hex(hash);
     let status = match lock.find("lib", name) {
         None => LockStatus::Unlocked,
-        Some(r) if lock.hash[r] == hex(hash) => LockStatus::Match,
+        Some(r) if lock.hash[r] == hash => LockStatus::Match,
         Some(r) => LockStatus::Mismatch {
             locked: lock.hash[r].clone(),
         },
     };
-    assert!(!matches!(&status, LockStatus::Mismatch { locked } if *locked == hex(hash)));
+    assert!(!matches!(&status, LockStatus::Mismatch { locked } if *locked == hash));
     status
 }
 
@@ -501,7 +548,8 @@ fn split_cell_path(relpath: &str) -> Option<(&str, &str, FileKind)> {
         "shbench" => FileKind::Shbench,
         _ => return None,
     };
-    assert!(!stem.contains('/') && dir.len() < relpath.len());
+    assert!(!stem.contains('/'));
+    assert!(dir.len() < relpath.len());
     (!stem.is_empty()).then_some((dir, stem, kind))
 }
 

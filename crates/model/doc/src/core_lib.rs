@@ -52,6 +52,7 @@ static CORE_FILES: &[(&str, &[u8])] = core_files![
 /// let core = schemify_doc::core_library();
 /// assert!(core.iter().any(|(name, _)| *name == "res.shprim"));
 /// ```
+#[must_use]
 pub fn core_library() -> &'static [(&'static str, &'static [u8])] {
     debug_assert!(CORE_FILES.windows(2).all(|w| w[0].0 < w[1].0));
     CORE_FILES
@@ -61,6 +62,7 @@ pub fn core_library() -> &'static [(&'static str, &'static [u8])] {
 /// when the bundled library has no such cell.
 ///
 /// Cost: a linear scan of the 23 bundled files.
+#[must_use]
 pub fn core_file(cell: &str) -> Option<&'static [u8]> {
     debug_assert!(!cell.ends_with(".shprim"), "core_file takes a stem: {cell}");
     CORE_FILES

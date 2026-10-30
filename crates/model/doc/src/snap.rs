@@ -6,7 +6,6 @@
 //! - `pub(crate) struct ParamFacts`: `snap`; `pub(crate) type ParamMap`
 //! - `fn snap(value: &str, grid: &str, origin: &str) -> Option<String>`
 
-use schemify_format::is_number;
 use std::collections::BTreeMap;
 
 /// What edits need to know about one parameter of an instantiated cell: whether it is
@@ -25,11 +24,11 @@ pub(crate) struct ParamFacts {
 /// elab reports `E001`).
 pub(crate) type ParamMap = BTreeMap<String, Option<Vec<ParamFacts>>>;
 
-/// A decimal `m / 10^s`.
+/// A decimal `mantissa / 10^scale`.
 #[derive(Clone, Copy)]
-struct Dec {
-    m: i128,
-    s: u32,
+struct Decimal {
+    mantissa: i128,
+    scale: u32,
 }
 
 /// Digits a snapped operand may have; beyond it the value is left for elab.
@@ -40,7 +39,7 @@ impl ParamFacts {
     /// plain-number `grid` (multiples of it) or `step` (from `min` when that is a plain
     /// number, else from 0); `None` when nothing changes (expressions are elab's).
     pub(crate) fn snap(&self, value: &str) -> Option<String> {
-        if !is_number(value) {
+        if !schemify_format::is_number(value) {
             return None;
         }
         // A `grid` that is an expression wins over `step`: elab evaluates and gates it.
@@ -50,7 +49,7 @@ impl ParamFacts {
             (None, None) => None,
         };
         assert!(
-            snapped.as_deref().is_none_or(is_number),
+            snapped.as_deref().is_none_or(schemify_format::is_number),
             "snapping yields plain numbers"
         );
         snapped.filter(|s| s != value)
@@ -63,10 +62,10 @@ impl ParamFacts {
 /// zero), in exact decimal arithmetic. Returns the shortest decimal text, or `None` when
 /// an operand is not a plain number, the grid is not positive, or digits overflow.
 fn snap(value: &str, grid: &str, origin: &str) -> Option<String> {
-    let (v, g, o) = (dec(value)?, dec(grid)?, dec(origin)?);
-    let s = v.s.max(g.s).max(o.s);
-    let scale = |d: Dec| d.m.checked_mul(10i128.checked_pow(s - d.s)?);
-    let (v, g, o) = (scale(v)?, scale(g)?, scale(o)?);
+    let (v, g, o) = (decimal(value)?, decimal(grid)?, decimal(origin)?);
+    let s = v.scale.max(g.scale).max(o.scale);
+    let rescale = |d: Decimal| d.mantissa.checked_mul(10i128.checked_pow(s - d.scale)?);
+    let (v, g, o) = (rescale(v)?, rescale(g)?, rescale(o)?);
     if g <= 0 {
         return None;
     }
@@ -80,11 +79,11 @@ fn snap(value: &str, grid: &str, origin: &str) -> Option<String> {
     let out = o.checked_add(k.checked_mul(g)?)?;
     assert_eq!((out - o) % g, 0, "on grid");
     assert!(2 * (out - v).abs() <= g, "nearest");
-    Some(format_dec(out, s))
+    Some(format_decimal(out, s))
 }
 
-fn dec(text: &str) -> Option<Dec> {
-    if !is_number(text) || text.len() > DIGITS_MAX {
+fn decimal(text: &str) -> Option<Decimal> {
+    if !schemify_format::is_number(text) || text.len() > DIGITS_MAX {
         return None;
     }
     let (neg, body) = text.strip_prefix('-').map_or((false, text), |b| (true, b));
@@ -95,13 +94,17 @@ fn dec(text: &str) -> Option<Dec> {
     }
     assert!(m >= 0);
     assert!(m < 10i128.pow(DIGITS_MAX as u32), "at most 30 digits");
-    Some(Dec {
-        m: if neg { -m } else { m },
-        s: frac.len() as u32,
+    Some(Decimal {
+        mantissa: if neg { -m } else { m },
+        scale: frac.len() as u32,
     })
 }
 
-fn format_dec(m: i128, s: u32) -> String {
+fn format_decimal(m: i128, s: u32) -> String {
+    assert!(
+        s as usize <= DIGITS_MAX,
+        "scales come from operands of at most 30 chars"
+    );
     let neg = m < 0;
     let digits = m.unsigned_abs().to_string();
     let s = s as usize;
@@ -112,6 +115,7 @@ fn format_dec(m: i128, s: u32) -> String {
     };
     let (whole, frac) = padded.split_at(padded.len() - s);
     let frac = frac.trim_end_matches('0');
+    assert!(frac.len() <= s);
     let mut out = String::new();
     if neg && (whole != "0" || !frac.is_empty()) {
         out.push('-');
@@ -121,7 +125,7 @@ fn format_dec(m: i128, s: u32) -> String {
         out.push('.');
         out.push_str(frac);
     }
-    assert!(is_number(&out));
+    assert!(schemify_format::is_number(&out));
     out
 }
 

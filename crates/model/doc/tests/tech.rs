@@ -13,16 +13,16 @@ const MANIFEST: &[u8] = b"schemify 1 project\nlib pdk path pdk\nlib tech map map
 // ---- private ----
 
 fn indexed(manifest: &[u8], map: &[u8]) -> Project {
-    let mut p = Project::new(Some(manifest), None, 1).unwrap();
+    let mut p = Project::new(Some(manifest), None, 1).expect("the fixture manifest parses");
     p.index_library("core", "<builtin>", &[("nmos4.shprim", NMOS4)])
-        .unwrap();
+        .expect("the builtin core library indexes");
     if p.libs().find("pdk").is_some() {
         p.index_library("pdk", "pdk", &[("nfet.shprim", NFET)])
-            .unwrap();
+            .expect("the fixture pdk indexes");
     }
     if p.libs().find("tech").is_some() {
         p.index_library("tech", "maps/fake.map", &[("tech.map", map)])
-            .unwrap();
+            .expect("the fixture tech map indexes");
     }
     p
 }

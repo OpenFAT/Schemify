@@ -21,17 +21,18 @@
 
 use crate::Diag;
 use crate::changes::{Change, ChangeLog, Cursor};
-use crate::pool::{Pool, Span, emit_attrs};
+use crate::pool::{self, Pool, Span};
 use crate::record::RecordBuf;
+use crate::schematic::{Instances, Noconns, Placed, Shapes, Wires};
 use crate::strings::{FastMap, ObjId, Strings, Sym};
-use crate::tables::{Graphics, Instances, Noconns, Pins, Placed, Records, Shapes, Table, Wires};
+use crate::tables::{Graphics, Pins, Records, Table};
 use schemify_format::{FileKind, RecordKind, VERSION};
 
 /// Identifies one table of a [`Document`]. Declaration order is rank order, so emitting
 /// tables in this order gives the format writer a rank-ordered model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
-#[allow(missing_docs)] // each variant is the table of the same name
+#[allow(missing_docs, reason = "each variant is the table of the same name")]
 pub enum TableId {
     Pins,
     Params,
@@ -167,6 +168,16 @@ macro_rules! with_table_mut {
     }};
 }
 
+// `TableId::ALL` lists every variant once, in declaration (rank) order.
+const _: () = {
+    assert!(TableId::ALL.len() == TableId::Codes as usize + 1);
+    let mut i = 0;
+    while i < TableId::ALL.len() {
+        assert!(TableId::ALL[i] as usize == i, "ALL is in declaration order");
+        i += 1;
+    }
+};
+
 impl TableId {
     /// Every table, in rank order.
     pub const ALL: [TableId; 23] = [
@@ -197,6 +208,7 @@ impl TableId {
 
     /// Returns the table holding records of `kind`; `None` for the header and unknown
     /// records, and for project/lock/config kinds.
+    #[must_use]
     pub fn of(kind: RecordKind) -> Option<TableId> {
         use RecordKind as K;
         let t = match kind {
@@ -230,6 +242,7 @@ impl TableId {
 
     /// Returns whether row order is file order (ranks 1, 2, 4, 5). Rows of the other
     /// tables are unordered; the writer sorts them by key.
+    #[must_use]
     pub fn ordered(self) -> bool {
         matches!(
             self,
@@ -244,6 +257,7 @@ impl TableId {
 
     /// Returns the row capacity (architecture table capacities); an insert past it is
     /// refused with `E043`, a load past it panics.
+    #[must_use]
     pub fn capacity(self) -> u32 {
         match self {
             TableId::Params => 1 << 8,
@@ -258,7 +272,14 @@ impl TableId {
             | TableId::Ports
             | TableId::Noconns
             | TableId::Texts => 1 << 22,
-            _ => 1 << 12,
+            TableId::Corners
+            | TableId::Configs
+            | TableId::Sweeps
+            | TableId::Montecarlos
+            | TableId::Optimizes
+            | TableId::Outputs
+            | TableId::Specs
+            | TableId::Codes => 1 << 12,
         }
     }
 }
@@ -269,6 +290,7 @@ impl Document {
     /// # Panics
     ///
     /// Panics unless `kind` is a cell file kind (`.shprim`, `.shcomp`, `.shbench`).
+    #[must_use]
     pub fn new(kind: FileKind) -> Document {
         assert!(
             matches!(
@@ -277,7 +299,7 @@ impl Document {
             ),
             "documents are cell files"
         );
-        Document {
+        let doc = Document {
             kind,
             version: VERSION,
             strings: Strings::default(),
@@ -310,11 +332,14 @@ impl Document {
             by_id: FastMap::default(),
             log: ChangeLog::default(),
             unknown_records: 0,
-        }
+        };
+        assert!(!doc.read_only(), "a new document is at the current version");
+        doc
     }
 
     /// Where the change log ends now: [`Document::changes_since`] of it lists the row
     /// writes made after this call.
+    #[must_use]
     pub fn cursor(&self) -> Cursor {
         self.log.cursor()
     }
@@ -324,6 +349,7 @@ impl Document {
     /// document (a reload, a merge and a copy are other documents), more than
     /// [`LOG_MAX`](crate::LOG_MAX) changes ago, or before a compaction renumbered the
     /// tables. A consumer then rebuilds from the tables.
+    #[must_use]
     pub fn changes_since(&self, c: Cursor) -> Option<&[Change]> {
         let rows = self.log.since(c);
         debug_assert!(rows.is_none_or(|r| r.iter().all(|x| x.table.capacity() > x.row)));
@@ -331,32 +357,38 @@ impl Document {
     }
 
     /// Returns the file kind.
+    #[must_use]
     pub fn kind(&self) -> FileKind {
         self.kind
     }
 
     /// Returns the header version. Above [`VERSION`] the document is read-only.
+    #[must_use]
     pub fn version(&self) -> u16 {
         self.version
     }
 
     /// Returns whether edits and saves are refused because the file comes from a newer
     /// format version and holds records this reader cannot keep (`E044`).
+    #[must_use]
     pub fn read_only(&self) -> bool {
         self.version > VERSION
     }
 
     /// Returns the string arena every `Sym` column of this document indexes.
+    #[must_use]
     pub fn strings(&self) -> &Strings {
         &self.strings
     }
 
     /// Returns the pool every `Span` column of this document indexes.
+    #[must_use]
     pub fn pool(&self) -> &Pool {
         &self.pool
     }
 
     /// Returns the value of header attribute `key` (first value), e.g. `default`.
+    #[must_use]
     pub fn header_value(&self, key: &str) -> Option<&str> {
         let v = self.pool.find_attr(&self.strings, self.header, key)?;
         v.first().map(|s| self.strings.get(*s))
@@ -364,6 +396,7 @@ impl Document {
 
     /// Returns every value of header attribute `key` (`vinputs` lists names), empty when
     /// the header has none. Allocates the list.
+    #[must_use]
     pub fn header_values(&self, key: &str) -> Vec<&str> {
         self.pool
             .find_attr(&self.strings, self.header, key)
@@ -373,99 +406,127 @@ impl Document {
     }
 
     /// `pin` rows in port order.
+    #[must_use]
     pub fn pins(&self) -> &Pins {
         &self.pins
     }
     /// `param` rows (the cell's parameter schema), in file order.
+    #[must_use]
     pub fn params(&self) -> &Records {
         &self.params
     }
     /// `impl` rows, in file order.
+    #[must_use]
     pub fn impls(&self) -> &Records {
         &self.impls
     }
     /// Symbol graphics in draw order.
+    #[must_use]
     pub fn graphics(&self) -> &Graphics {
         &self.graphics
     }
     /// `inst` rows (unordered).
+    #[must_use]
     pub fn instances(&self) -> &Instances {
         &self.instances
     }
     /// `wire` rows (unordered).
+    #[must_use]
     pub fn wires(&self) -> &Wires {
         &self.wires
     }
     /// `label` rows (unordered).
+    #[must_use]
     pub fn labels(&self) -> &Placed {
         &self.labels
     }
     /// `port` rows (unordered).
+    #[must_use]
     pub fn ports(&self) -> &Placed {
         &self.ports
     }
     /// `noconn` rows (unordered).
+    #[must_use]
     pub fn noconns(&self) -> &Noconns {
         &self.noconns
     }
     /// `text` rows (unordered).
+    #[must_use]
     pub fn texts(&self) -> &Placed {
         &self.texts
     }
     /// `shape` rows: schematic graphics (unordered).
+    #[must_use]
     pub fn shapes(&self) -> &Shapes {
         &self.shapes
     }
     /// `constraint` rows (unordered, D30).
+    #[must_use]
     pub fn constraints(&self) -> &Records {
         &self.constraints
     }
     /// `waive` rows (unordered, D13): one row per waived (instance, param).
+    #[must_use]
     pub fn waivers(&self) -> &Records {
         &self.waivers
     }
     /// `prose` and `var` rows in document order (D19).
+    #[must_use]
     pub fn doc_blocks(&self) -> &Records {
         &self.doc_blocks
     }
     /// `body` rows, in file order.
+    #[must_use]
     pub fn bodies(&self) -> &Records {
         &self.bodies
     }
     /// Bench `corner` rows.
+    #[must_use]
     pub fn corners(&self) -> &Records {
         &self.corners
     }
     /// Bench `config` rows (D11a).
+    #[must_use]
     pub fn configs(&self) -> &Records {
         &self.configs
     }
     /// Bench `sweep` rows.
+    #[must_use]
     pub fn sweeps(&self) -> &Records {
         &self.sweeps
     }
     /// Bench `montecarlo` rows.
+    #[must_use]
     pub fn montecarlos(&self) -> &Records {
         &self.montecarlos
     }
     /// Bench `optimize` rows.
+    #[must_use]
     pub fn optimizes(&self) -> &Records {
         &self.optimizes
     }
     /// Bench `output` rows.
+    #[must_use]
     pub fn outputs(&self) -> &Records {
         &self.outputs
     }
     /// Bench `spec` rows.
+    #[must_use]
     pub fn specs(&self) -> &Records {
         &self.specs
     }
     /// Bench `code` rows.
+    #[must_use]
     pub fn codes(&self) -> &Records {
         &self.codes
     }
 
     /// Returns the row holding the record with id `id`, in any table.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the id index points past the end of a table.
+    #[must_use]
     pub fn find_id(&self, id: ObjId) -> Option<Loc> {
         let loc = self.by_id.get(&id).copied();
         assert!(loc.is_none_or(|l| (l.row as usize) < self.table_len(l.table)));
@@ -473,8 +534,18 @@ impl Document {
     }
 
     /// Returns the number of rows in table `t`.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: a table holds more rows than its capacity.
+    #[must_use]
     pub fn table_len(&self, t: TableId) -> usize {
-        with_table!(self, t, |tab| tab.len())
+        let len = with_table!(self, t, |tab| tab.len());
+        assert!(
+            len <= t.capacity() as usize,
+            "{t:?} holds more rows than its capacity"
+        );
+        len
     }
 
     /// Returns the record at `loc` as owned text (cold path: allocates).
@@ -482,6 +553,7 @@ impl Document {
     /// # Panics
     ///
     /// Panics on a stale `loc` (its table has no such row).
+    #[must_use]
     pub fn record(&self, loc: Loc) -> RecordBuf {
         assert!((loc.row as usize) < self.table_len(loc.table), "stale row");
         let mut rec = RecordBuf::new(RecordKind::Header);
@@ -501,6 +573,7 @@ impl Document {
     /// # Panics
     ///
     /// Panics on a read-only document (it lost the records it cannot model).
+    #[must_use]
     pub fn canonical(&self) -> String {
         let text = schemify_format::write(&self.to_format());
         assert!(text.starts_with("schemify "));
@@ -510,7 +583,7 @@ impl Document {
     /// Returns the header as a record (fields empty, attributes in order).
     pub(crate) fn header_record(&self) -> RecordBuf {
         let mut rec = RecordBuf::new(RecordKind::Header);
-        emit_attrs(self.header, &self.strings, &self.pool, &mut rec);
+        pool::emit_attrs(self.header, &self.strings, &self.pool, &mut rec);
         assert_eq!(rec.attrs.len(), self.header.len as usize);
         rec
     }

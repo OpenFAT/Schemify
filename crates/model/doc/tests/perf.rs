@@ -4,9 +4,9 @@
 
 mod common;
 
-use common::{Mix, coord};
-use schemify_doc::{Edit, Op, Outcome, Project, Target, apply_edits};
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, write};
+use common::Mix;
+use schemify_doc::{Edit, Op, Outcome, Project, Target};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
 use std::time::{Duration, Instant};
 
 // ---- private ----
@@ -17,7 +17,7 @@ fn design(n: usize, seed: u64) -> String {
     let mut rng = Mix::new(seed);
     let side = ((n as f64).sqrt() * 15.0) as u64 + 1;
     let milli = |rng: &mut Mix| (rng.below(side) as i32 - side as i32 / 2) * 10_000;
-    let grid = |rng: &mut Mix| coord(milli(rng));
+    let grid = |rng: &mut Mix| common::coord(milli(rng));
     let mut d = FormatDoc::new(FileKind::Shcomp);
     d.begin_record(RecordKind::Impl);
     d.push_field("sch");
@@ -81,7 +81,7 @@ fn design(n: usize, seed: u64) -> String {
             }
         }
     }
-    write(&d)
+    schemify_format::write(&d)
 }
 
 fn best_of<T>(runs: u32, mut f: impl FnMut() -> T) -> Duration {
@@ -92,7 +92,7 @@ fn best_of<T>(runs: u32, mut f: impl FnMut() -> T) -> Duration {
             t.elapsed()
         })
         .min()
-        .unwrap()
+        .expect("runs is at least one")
 }
 
 #[test]
@@ -135,9 +135,9 @@ fn load_and_save_100k_objects_within_budget() {
             key: "at".into(),
             values: vec!["10".into(), "20".into(), "R0".into()],
         };
-        let out = apply_edits(&mut p, &[common::req(h, common::tx(vec![mv]))]);
+        let out = schemify_doc::apply_edits(&mut p, &[common::req(h, common::tx(vec![mv]))]);
         assert!(matches!(out[0], Outcome::Committed { .. }));
-        apply_edits(&mut p, &[common::req(h, Edit::Undo)])
+        schemify_doc::apply_edits(&mut p, &[common::req(h, Edit::Undo)])
     });
     let total = load + save;
     eprintln!(
@@ -224,7 +224,7 @@ fn commit_frames_leave_document_work_to_idle_steps_100k() {
     };
     let commit = |p: &mut Project, ops: Vec<Op>| {
         let t = Instant::now();
-        let out = apply_edits(p, &[common::req(h, common::tx(ops))]);
+        let out = schemify_doc::apply_edits(p, &[common::req(h, common::tx(ops))]);
         assert!(matches!(out[0], Outcome::Committed { .. }), "{out:?}");
         t.elapsed()
     };
@@ -236,7 +236,7 @@ fn commit_frames_leave_document_work_to_idle_steps_100k() {
     //    between them.
     let (mut worst, mut commits, mut compact) = (Duration::ZERO, 0, Duration::ZERO);
     while compact.is_zero() {
-        let ops = ids.iter().take(1000).map(|id| set(id, commits)).collect();
+        let ops: Vec<Op> = ids.iter().take(1000).map(|id| set(id, commits)).collect();
         worst = worst.max(commit(&mut p, ops));
         commits += 1;
         while p.idle_pending(Some(h)) {
@@ -251,9 +251,9 @@ fn commit_frames_leave_document_work_to_idle_steps_100k() {
     let wire = |i: u32| {
         schemify_doc::RecordBuf::new(RecordKind::Wire)
             .field(&format!("{:06}", i))
-            .field(&coord(i as i32 * 10_000))
+            .field(&common::coord(i as i32 * 10_000))
             .field("0")
-            .field(&coord(i as i32 * 10_000 + 10_000))
+            .field(&common::coord(i as i32 * 10_000 + 10_000))
             .field("0")
     };
     let mut q = Project::new(None, None, 1).unwrap();
@@ -270,7 +270,7 @@ fn commit_frames_leave_document_work_to_idle_steps_100k() {
             rec: wire(i),
             at: None,
         }));
-        let out = apply_edits(&mut q, &[common::req(n, common::tx(ops))]);
+        let out = schemify_doc::apply_edits(&mut q, &[common::req(n, common::tx(ops))]);
         assert!(matches!(out[0], Outcome::Committed { .. }));
         let req = q.save(n).unwrap().unwrap();
         q.saved(n, req.bytes).unwrap();
@@ -278,7 +278,7 @@ fn commit_frames_leave_document_work_to_idle_steps_100k() {
             q.idle_step(Some(n), 128 << 10);
         }
         let t = Instant::now();
-        let out = apply_edits(
+        let out = schemify_doc::apply_edits(
             &mut q,
             &[common::req(
                 n,

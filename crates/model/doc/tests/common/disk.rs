@@ -6,7 +6,7 @@
 //! - `pub struct Disk`: `sync`; `pub struct Snap`
 //! - `pub fn snap`, `pub fn session`, `pub fn reopen`, `pub fn settle`
 
-use super::{Mix, SEED_DOC, canon, gen_op, open, run};
+use super::{Mix, SEED_DOC};
 use schemify_doc::{DocHandle, Edit, Mode, Op, Project, Recovery, Transaction};
 
 #[derive(Clone, Default)]
@@ -39,7 +39,7 @@ impl Disk {
 pub fn snap(p: &Project, h: DocHandle, disk: &Disk) -> Snap {
     Snap {
         disk: disk.clone(),
-        state: canon(p, h),
+        state: super::canon(p, h),
         history: p.history_len(h),
         labels: p.undo_labels(h).iter().map(|s| s.to_string()).collect(),
         dirty: p.is_dirty(h),
@@ -49,7 +49,7 @@ pub fn snap(p: &Project, h: DocHandle, disk: &Disk) -> Snap {
 /// Runs a seeded session; returns the snapshot after every request (index 0 = opened).
 pub fn session(seed: u64, steps: usize, saves: bool) -> Vec<Snap> {
     let mut rng = Mix::new(seed);
-    let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+    let (mut p, h) = super::open(SEED_DOC, "cell.shcomp");
     let mut disk = Disk {
         file: SEED_DOC.as_bytes().to_vec(),
         journal: Vec::new(),
@@ -63,25 +63,26 @@ pub fn session(seed: u64, steps: usize, saves: bool) -> Vec<Snap> {
         match rng.below(10) {
             0..=5 => {
                 let ops: Vec<Op> = (0..1 + rng.below(2))
-                    .map(|_| gen_op(&mut rng, p.doc(h).unwrap()))
+                    .map(|_| super::gen_op(&mut rng, super::doc(&p, h)))
                     .collect();
                 let edit = Edit::Tx(Transaction {
                     label: format!("step {step}"),
                     mode: Mode::Commit,
                     ops,
                 });
-                run(&mut p, h, edit);
+                super::run(&mut p, h, edit);
             }
             6 | 7 => {
-                run(&mut p, h, Edit::Undo);
+                super::run(&mut p, h, Edit::Undo);
             }
             8 => {
-                run(&mut p, h, Edit::Redo);
+                super::run(&mut p, h, Edit::Redo);
             }
             _ if saves => {
-                if let Some(req) = p.save(h).unwrap() {
+                if let Some(req) = p.save(h).expect("saving an open document builds a request") {
                     disk.file = req.bytes.clone().into_bytes(); // atomic write, then confirm
-                    p.saved(h, req.bytes).unwrap();
+                    p.saved(h, req.bytes)
+                        .expect("the save request was just issued for this document");
                 }
             }
             _ => {}
@@ -94,15 +95,18 @@ pub fn session(seed: u64, steps: usize, saves: bool) -> Vec<Snap> {
 
 /// Opens a crashed disk state and recovers whatever the journal offers.
 pub fn reopen(disk: &Disk) -> (Project, DocHandle, Recovery) {
-    let mut p = Project::new(None, None, 99).unwrap();
+    let mut p =
+        Project::new(None, None, 99).expect("a project without manifest or lock always opens");
     let journal = (!disk.journal.is_empty()).then_some(disk.journal.as_slice());
-    let opened = p.open("", "cell.shcomp", &disk.file, journal).unwrap();
+    let opened = p
+        .open("", "cell.shcomp", &disk.file, journal)
+        .expect("the session's own file reopens");
     let h = opened.handle;
     if matches!(
         opened.recovery,
         Recovery::Offer { .. } | Recovery::Diverged { .. }
     ) {
-        p.recover(h).unwrap();
+        p.recover(h).expect("the session's own journal recovers");
     }
     (p, h, opened.recovery)
 }

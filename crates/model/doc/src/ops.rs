@@ -122,6 +122,7 @@ pub struct OpError {
 
 impl Target {
     /// Addresses a record.
+    #[must_use]
     pub fn new(kind: RecordKind, key: &str) -> Target {
         Target {
             kind,
@@ -130,6 +131,7 @@ impl Target {
     }
 
     /// Addresses the header.
+    #[must_use]
     pub fn header() -> Target {
         Target::new(RecordKind::Header, "0")
     }

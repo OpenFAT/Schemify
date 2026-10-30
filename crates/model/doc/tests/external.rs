@@ -4,11 +4,11 @@
 
 mod common;
 
-use common::*;
+use common::OTA;
 use schemify_doc::{
     Choice, Code, Edit, External, Op, Outcome, Project, RecordBuf, Recovery, Target,
 };
-use schemify_format::{RecordKind, merge3, parse};
+use schemify_format::RecordKind;
 
 // ---- private ----
 
@@ -32,12 +32,12 @@ fn theirs_w(value: &str) -> String {
 }
 
 fn undo_all(p: &mut Project, h: schemify_doc::DocHandle) {
-    while matches!(run(p, h, Edit::Undo), Outcome::Undone { .. }) {}
+    while matches!(common::run(p, h, Edit::Undo), Outcome::Undone { .. }) {}
 }
 
 #[test]
 fn no_local_edits_reload_silently() {
-    let (mut p, h) = open(OTA, "ota5t.shcomp");
+    let (mut p, h) = common::open(OTA, "ota5t.shcomp");
     assert_eq!(
         p.external_change(h, OTA.as_bytes()),
         Ok(External::Unchanged)
@@ -45,19 +45,22 @@ fn no_local_edits_reload_silently() {
     let theirs = theirs_w("7");
     // An edit that was undone leaves nothing unsaved.
     assert!(matches!(
-        run(
+        common::run(
             &mut p,
             h,
-            tx(vec![set_attr("0gsrp0", "at", &["0", "0", "R0"])])
+            common::tx(vec![set_attr("0gsrp0", "at", &["0", "0", "R0"])])
         ),
         Outcome::Committed { .. }
     ));
-    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+    assert!(matches!(
+        common::run(&mut p, h, Edit::Undo),
+        Outcome::Undone { .. }
+    ));
     assert!(matches!(
         p.external_change(h, theirs.as_bytes()),
         Ok(External::Reloaded { .. })
     ));
-    assert_eq!(canon(&p, h), theirs);
+    assert_eq!(common::canon(&p, h), theirs);
     assert_eq!(
         p.history_len(h),
         (0, 0),
@@ -68,44 +71,47 @@ fn no_local_edits_reload_silently() {
 
 #[test]
 fn clean_merge_keeps_local_edits_dirty_and_rebases_undo() {
-    let (mut p, h) = open(OTA, "ota5t.shcomp");
+    let (mut p, h) = common::open(OTA, "ota5t.shcomp");
     assert!(matches!(
-        run(
+        common::run(
             &mut p,
             h,
-            tx(vec![set_attr("0gsrp0", "at", &["-70", "-300", "R0"])])
+            common::tx(vec![set_attr("0gsrp0", "at", &["-70", "-300", "R0"])])
         ),
         Outcome::Committed { .. }
     ));
     assert!(matches!(
-        run(&mut p, h, tx(vec![set_attr("4szjc8", "W", &["8"])])),
+        common::run(&mut p, h, common::tx(vec![set_attr("4szjc8", "W", &["8"])])),
         Outcome::Committed { .. }
     ));
-    let ours = canon(&p, h);
+    let ours = common::canon(&p, h);
     let theirs = theirs_w("7");
-    let want = merge3(
-        &parse(OTA.as_bytes()).unwrap(),
-        &parse(ours.as_bytes()).unwrap(),
-        &parse(theirs.as_bytes()).unwrap(),
+    let want = schemify_format::merge3(
+        &schemify_format::parse(OTA.as_bytes()).unwrap(),
+        &schemify_format::parse(ours.as_bytes()).unwrap(),
+        &schemify_format::parse(theirs.as_bytes()).unwrap(),
     );
     assert_eq!(want.conflicts, 0);
     assert_eq!(
         p.external_change(h, theirs.as_bytes()),
         Ok(External::Merged { dropped: 0 })
     );
-    assert_eq!(canon(&p, h), want.text);
+    assert_eq!(common::canon(&p, h), want.text);
     assert!(p.is_dirty(h));
     assert_eq!(p.history_len(h), (2, 0), "both local edits stay undoable");
-    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+    assert!(matches!(
+        common::run(&mut p, h, Edit::Undo),
+        Outcome::Undone { .. }
+    ));
     undo_all(&mut p, h);
     assert_eq!(
-        canon(&p, h),
+        common::canon(&p, h),
         theirs,
         "undo-all after a rebase reaches the external version"
     );
     assert!(!p.is_dirty(h));
-    while matches!(run(&mut p, h, Edit::Redo), Outcome::Redone { .. }) {}
-    assert_eq!(canon(&p, h), want.text);
+    while matches!(common::run(&mut p, h, Edit::Redo), Outcome::Redone { .. }) {}
+    assert_eq!(common::canon(&p, h), want.text);
     // Saving now writes the merge, and the new bytes are the next merge base.
     let req = p.save(h).unwrap().unwrap();
     assert_eq!(req.bytes, want.text);
@@ -115,7 +121,7 @@ fn clean_merge_keeps_local_edits_dirty_and_rebases_undo() {
 
 #[test]
 fn local_edits_that_no_longer_apply_are_dropped_and_the_merge_still_wins() {
-    let (mut p, h) = open(OTA, "ota5t.shcomp");
+    let (mut p, h) = common::open(OTA, "ota5t.shcomp");
     let wire = |y: &str| {
         RecordBuf::new(RecordKind::Wire)
             .field("aaaaaa")
@@ -125,10 +131,10 @@ fn local_edits_that_no_longer_apply_are_dropped_and_the_merge_still_wins() {
             .field(y)
     };
     assert!(matches!(
-        run(
+        common::run(
             &mut p,
             h,
-            tx(vec![Op::Insert {
+            common::tx(vec![Op::Insert {
                 rec: wire("0"),
                 at: None
             }])
@@ -138,54 +144,57 @@ fn local_edits_that_no_longer_apply_are_dropped_and_the_merge_still_wins() {
     // They added a different wire with the same id: merge3 re-ids theirs, so the merge
     // is clean, but replaying our insert onto their bytes collides.
     let theirs = OTA.replacen("label 2ma7xe", "wire aaaaaa 0 5 10 5\n\nlabel 2ma7xe", 1);
-    let theirs = schemify_format::write(&parse(theirs.as_bytes()).unwrap());
-    let ours = canon(&p, h);
-    let want = merge3(
-        &parse(OTA.as_bytes()).unwrap(),
-        &parse(ours.as_bytes()).unwrap(),
-        &parse(theirs.as_bytes()).unwrap(),
+    let theirs = schemify_format::write(&schemify_format::parse(theirs.as_bytes()).unwrap());
+    let ours = common::canon(&p, h);
+    let want = schemify_format::merge3(
+        &schemify_format::parse(OTA.as_bytes()).unwrap(),
+        &schemify_format::parse(ours.as_bytes()).unwrap(),
+        &schemify_format::parse(theirs.as_bytes()).unwrap(),
     );
     assert_eq!(want.conflicts, 0);
     assert_eq!(
         p.external_change(h, theirs.as_bytes()),
         Ok(External::Merged { dropped: 1 })
     );
-    assert_eq!(canon(&p, h), want.text);
+    assert_eq!(common::canon(&p, h), want.text);
     undo_all(&mut p, h);
-    assert_eq!(canon(&p, h), theirs);
+    assert_eq!(common::canon(&p, h), theirs);
 }
 
 #[test]
 fn edits_below_the_save_point_still_rebase_exactly() {
-    let (mut p, h) = open(OTA, "ota5t.shcomp");
+    let (mut p, h) = common::open(OTA, "ota5t.shcomp");
     assert!(matches!(
-        run(&mut p, h, tx(vec![set_attr("0gsrp0", "L", &["2"])])),
+        common::run(&mut p, h, common::tx(vec![set_attr("0gsrp0", "L", &["2"])])),
         Outcome::Committed { .. }
     ));
     let req = p.save(h).unwrap().unwrap();
     p.saved(h, req.bytes.clone()).unwrap();
-    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
     assert!(matches!(
-        run(&mut p, h, tx(vec![set_attr("4tyd1p", "L", &["3"])])),
+        common::run(&mut p, h, Edit::Undo),
+        Outcome::Undone { .. }
+    ));
+    assert!(matches!(
+        common::run(&mut p, h, common::tx(vec![set_attr("4tyd1p", "L", &["3"])])),
         Outcome::Committed { .. }
     ));
-    let ours = canon(&p, h);
+    let ours = common::canon(&p, h);
     let theirs = req
         .bytes
         .replacen("  name M2\n  W Wp\n", "  name M2\n  W 9\n", 1);
-    let want = merge3(
-        &parse(req.bytes.as_bytes()).unwrap(),
-        &parse(ours.as_bytes()).unwrap(),
-        &parse(theirs.as_bytes()).unwrap(),
+    let want = schemify_format::merge3(
+        &schemify_format::parse(req.bytes.as_bytes()).unwrap(),
+        &schemify_format::parse(ours.as_bytes()).unwrap(),
+        &schemify_format::parse(theirs.as_bytes()).unwrap(),
     );
     assert_eq!(want.conflicts, 0);
     assert!(matches!(
         p.external_change(h, theirs.as_bytes()),
         Ok(External::Merged { .. })
     ));
-    assert_eq!(canon(&p, h), want.text);
+    assert_eq!(common::canon(&p, h), want.text);
     undo_all(&mut p, h);
-    assert_eq!(canon(&p, h), theirs);
+    assert_eq!(common::canon(&p, h), theirs);
 }
 
 #[test]
@@ -195,13 +204,17 @@ fn conflicts_block_saves_and_edits_until_resolved_per_block() {
         (Choice::Theirs, "7"),
         (Choice::Text(String::new()), ""),
     ] {
-        let (mut p, h) = open(OTA, "ota5t.shcomp");
+        let (mut p, h) = common::open(OTA, "ota5t.shcomp");
         assert!(matches!(
-            run(&mut p, h, tx(vec![set_attr("1j446r", "W", &["5"])])),
+            common::run(&mut p, h, common::tx(vec![set_attr("1j446r", "W", &["5"])])),
             Outcome::Committed { .. }
         ));
         assert!(matches!(
-            run(&mut p, h, tx(vec![set_attr("0gsrp0", "nf", &["4"])])),
+            common::run(
+                &mut p,
+                h,
+                common::tx(vec![set_attr("0gsrp0", "nf", &["4"])])
+            ),
             Outcome::Committed { .. }
         ));
         let theirs = theirs_w("7");
@@ -216,8 +229,14 @@ fn conflicts_block_saves_and_edits_until_resolved_per_block() {
         );
         assert_eq!(p.save(h), Err(Code::E044));
         let del = Op::Delete(Target::new(RecordKind::Wire, "0d2k1m"));
-        assert_eq!(run(&mut p, h, tx(vec![del])), Outcome::Refused(Code::E044));
-        assert_eq!(run(&mut p, h, Edit::Undo), Outcome::Refused(Code::E044));
+        assert_eq!(
+            common::run(&mut p, h, common::tx(vec![del])),
+            Outcome::Refused(Code::E044)
+        );
+        assert_eq!(
+            common::run(&mut p, h, Edit::Undo),
+            Outcome::Refused(Code::E044)
+        );
         assert_eq!(p.external_change(h, OTA.as_bytes()), Err(Code::E044));
         assert!(p.resolve_conflicts(h, &[]).is_err(), "one choice per block");
         let text_choice = matches!(choice, Choice::Text(_));
@@ -248,35 +267,35 @@ fn conflicts_block_saves_and_edits_until_resolved_per_block() {
         assert_eq!(s.get(nf[0]), "4", "the non-conflicting local edit survives");
         assert!(p.save(h).unwrap().is_some());
         undo_all(&mut p, h);
-        assert_eq!(canon(&p, h), theirs);
+        assert_eq!(common::canon(&p, h), theirs);
     }
 }
 
 #[test]
 fn unreadable_external_bytes_change_nothing() {
-    let (mut p, h) = open(OTA, "ota5t.shcomp");
+    let (mut p, h) = common::open(OTA, "ota5t.shcomp");
     assert!(matches!(
-        run(&mut p, h, tx(vec![set_attr("1j446r", "W", &["5"])])),
+        common::run(&mut p, h, common::tx(vec![set_attr("1j446r", "W", &["5"])])),
         Outcome::Committed { .. }
     ));
-    let before = canon(&p, h);
+    let before = common::canon(&p, h);
     let broken = format!("{OTA}<<<<<<< ours\n");
     assert!(matches!(
         p.external_change(h, broken.as_bytes()),
         Ok(External::Unreadable(_))
     ));
-    assert_eq!(canon(&p, h), before);
+    assert_eq!(common::canon(&p, h), before);
     assert_eq!(p.history_len(h), (1, 0));
 }
 
 #[test]
 fn the_journal_after_a_merge_recovers_the_merged_state() {
-    let (mut p, h) = open(OTA, "ota5t.shcomp");
+    let (mut p, h) = common::open(OTA, "ota5t.shcomp");
     assert!(matches!(
-        run(
+        common::run(
             &mut p,
             h,
-            tx(vec![set_attr("0gsrp0", "at", &["-70", "-300", "R0"])])
+            common::tx(vec![set_attr("0gsrp0", "at", &["-70", "-300", "R0"])])
         ),
         Outcome::Committed { .. }
     ));
@@ -285,7 +304,7 @@ fn the_journal_after_a_merge_recovers_the_merged_state() {
         p.external_change(h, theirs.as_bytes()),
         Ok(External::Merged { .. })
     ));
-    let merged = canon(&p, h);
+    let merged = common::canon(&p, h);
     let w = p.take_journal(h).unwrap();
     assert!(w.rewrite, "the journal is rewritten against the new base");
     let mut q = Project::new(None, None, 1).unwrap();
@@ -299,5 +318,5 @@ fn the_journal_after_a_merge_recovers_the_merged_state() {
         .unwrap();
     assert_eq!(opened.recovery, Recovery::Offer { txs: 1 });
     q.recover(opened.handle).unwrap();
-    assert_eq!(canon(&q, opened.handle), merged);
+    assert_eq!(common::canon(&q, opened.handle), merged);
 }

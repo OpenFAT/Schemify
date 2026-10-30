@@ -9,17 +9,17 @@
 //! - `Project`: `recover`, `discard_recovery`, `save`, `saved`, `external_change`,
 //!   `conflicts`, `resolve_conflicts`
 
-use crate::Code;
-use crate::Diag;
-use crate::diff::diff_ops;
+use crate::diff;
 use crate::document::Document;
 use crate::edit;
-use crate::journal::{Entry, JRec};
-use crate::open::{DocHandle, Open, OpenError, dirty, refused};
+use crate::journal::{Entry, JournalRecord};
+use crate::open::{self, DocHandle, Open, OpenError};
 use crate::project::Project;
-use crate::requests::{push_commit, redo_top, undo_top};
-use crate::sidecar::{append_journal, disk_hash, rehash, rewrite_journal, settle};
-use schemify_format::{ParseError, merge3, parse};
+use crate::requests;
+use crate::sidecar;
+use crate::{Code, Diag};
+use schemify_format::ParseError;
+use std::mem;
 
 /// Canonical bytes to write for a save. Hand them back to `Project::saved` once they
 /// are on disk.
@@ -98,6 +98,14 @@ const COMPACT_BYTES: u64 = 64 << 20;
 
 const COMPACT_KEEP: usize = 1 << 12;
 
+/// Where a line of merge output sits relative to the conflict markers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Outside,
+    Ours,
+    Theirs,
+}
+
 impl Project {
     /// Replays the journal records offered at `open`. Returns (applied, dropped):
     /// transactions that no longer validate (only possible after `Diverged`) are
@@ -106,37 +114,50 @@ impl Project {
     /// # Errors
     ///
     /// `E040` stale handle or nothing to recover.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: recovering leaves no offer pending.
     pub fn recover(&mut self, h: DocHandle) -> Result<(u32, u32), Code> {
         let open = self.open_mut(h).ok_or(Code::E040)?;
         let tail = open.tail.take().ok_or(Code::E040)?;
         let matched = open.journal.started;
+        let records = tail.len();
         let (mut applied, mut dropped) = (0, 0);
         for rec in tail {
             let ok = match rec {
-                JRec::Tx(mut e) => match edit::replay(&mut open.doc, &mut e.forward) {
+                JournalRecord::Tx(mut e) => match edit::replay(&mut open.doc, &mut e.forward) {
                     Ok(inv) => {
                         e.inverse = inv;
-                        push_commit(open, e);
+                        requests::push_commit(open, e);
                         true
                     }
                     Err(_) => false,
                 },
-                JRec::Undo(s) => {
-                    open.undo.back().is_some_and(|e| e.seq == s) && undo_top(open).is_ok()
+                JournalRecord::Undo(seq) => {
+                    open.undo.back().is_some_and(|e| e.seq == seq)
+                        && requests::undo_top(open).is_ok()
                 }
-                JRec::Redo(s) => {
-                    open.redo.last().is_some_and(|e| e.seq == s) && redo_top(open).is_ok()
+                JournalRecord::Redo(seq) => {
+                    open.redo.last().is_some_and(|e| e.seq == seq)
+                        && requests::redo_top(open).is_ok()
                 }
-                JRec::Base(_) | JRec::Hist(_) | JRec::Save(..) => continue,
+                JournalRecord::Base(_) | JournalRecord::Hist(_) | JournalRecord::Save { .. } => {
+                    continue;
+                }
             };
             if ok { applied += 1 } else { dropped += 1 }
         }
         if !matched || dropped > 0 {
             // The journal on disk no longer describes this lineage: rewrite it.
             open.saved_depth = open.saved_depth.filter(|&d| d <= open.undo.len());
-            rewrite_journal(open);
+            sidecar::rewrite_journal(open);
         }
         assert!(open.tail.is_none());
+        assert!(
+            applied + dropped <= records as u32,
+            "each tail record counts once"
+        );
         Ok((applied, dropped))
     }
 
@@ -145,12 +166,20 @@ impl Project {
     /// # Errors
     ///
     /// `E040` stale handle or nothing to recover.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the rewritten journal must start with its header.
     pub fn discard_recovery(&mut self, h: DocHandle) -> Result<(), Code> {
         let open = self.open_mut(h).ok_or(Code::E040)?;
         open.tail.take().ok_or(Code::E040)?;
         open.redo.clear();
-        rewrite_journal(open);
+        sidecar::rewrite_journal(open);
         assert!(open.tail.is_none());
+        assert!(
+            open.journal.rewrite,
+            "the next journal write replaces the file"
+        );
         Ok(())
     }
 
@@ -161,12 +190,16 @@ impl Project {
     ///
     /// `E040` stale handle; `E044` read-only, in conflict or pending recovery; `E025`
     /// when the kind rules fail (the file would not parse).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the pending save records the bytes it returns.
     pub fn save(&mut self, h: DocHandle) -> Result<Option<SaveRequest>, Code> {
         let open = self.open_mut(h).ok_or(Code::E040)?;
-        if refused(open) {
+        if open::refused(open) {
             return Err(Code::E044);
         }
-        if !dirty(open) {
+        if !open::dirty(open) {
             return Ok(None);
         }
         if !open.doc.kind_rules_ok() {
@@ -190,6 +223,10 @@ impl Project {
     /// # Errors
     ///
     /// `E040` stale handle, no pending save, or `written` is not its bytes (length).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: confirming a save consumes the pending save.
     pub fn saved(&mut self, h: DocHandle, written: String) -> Result<(), Code> {
         let open = self.open_mut(h).ok_or(Code::E040)?;
         let p = open
@@ -209,9 +246,9 @@ impl Project {
             rebase(open, &current, written.as_bytes());
             return Ok(());
         }
-        settle(open); // the journal's `base` names the bytes being replaced
+        sidecar::settle(open); // the journal's `base` names the bytes being replaced
         open.disk = written.into_bytes();
-        rehash(open);
+        sidecar::rehash(open);
         open.saved_depth = Some(p.depth);
         let at_save = p.depth == open.undo.len();
         if at_save && (open.journal.txs > COMPACT_TXS || open.journal.bytes > COMPACT_BYTES) {
@@ -220,16 +257,23 @@ impl Project {
             }
             open.redo.clear();
             open.saved_depth = Some(open.undo.len());
-            rewrite_journal(open);
+            sidecar::rewrite_journal(open);
         } else if open.journal.started && at_save {
-            let rec = JRec::<Entry>::Save(p.top_seq, disk_hash(open));
-            append_journal(&mut open.journal, &[rec]);
+            let rec = JournalRecord::<Entry>::Save {
+                seq: p.top_seq,
+                hash: sidecar::disk_hash(open),
+            };
+            sidecar::append_journal(&mut open.journal, &[rec]);
         } else if open.journal.started {
             // Edits landed between `save` and `saved`: the journal's position no longer
             // matches the saved state, so restate the lineage from the new bytes.
-            rewrite_journal(open);
+            sidecar::rewrite_journal(open);
         }
         assert!(open.pending_save.is_none());
+        assert!(
+            open.saved_depth.is_some_and(|d| d <= open.undo.len()),
+            "the saved state is on the undo stack"
+        );
         Ok(())
     }
 
@@ -238,6 +282,11 @@ impl Project {
     /// # Errors
     ///
     /// `E040` stale handle; `E044` while in conflict state.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the merge base (the last loaded or saved bytes) parses,
+    /// and a reload leaves no history.
     pub fn external_change(&mut self, h: DocHandle, bytes: &[u8]) -> Result<External, Code> {
         let open = self.open_mut(h).ok_or(Code::E040)?;
         if open.conflict.is_some() {
@@ -246,7 +295,7 @@ impl Project {
         if bytes == open.disk.as_slice() {
             return Ok(External::Unchanged);
         }
-        let theirs = match parse(bytes) {
+        let theirs = match schemify_format::parse(bytes) {
             Ok(m) => m,
             Err(e) => return Ok(External::Unreadable(e)),
         };
@@ -260,34 +309,37 @@ impl Project {
             open.saved_depth = Some(0);
             open.disk = bytes.to_vec();
             open.journal.unhashed = None; // a started journal is rewritten below
-            rehash(open);
+            sidecar::rehash(open);
             if open.journal.started {
-                rewrite_journal(open);
+                sidecar::rewrite_journal(open);
             }
-            assert!(open.undo.is_empty() && open.saved_depth == Some(0));
+            assert!(open.undo.is_empty());
+            assert_eq!(
+                open.saved_depth,
+                Some(0),
+                "the reloaded bytes are the saved state"
+            );
             return Ok(External::Reloaded {
                 diags: loaded.diags,
             });
         }
-        let base = parse(&open.disk).expect("the merge base parsed when it was loaded or saved");
+        let base = schemify_format::parse(&open.disk)
+            .expect("the merge base parsed when it was loaded or saved");
         let ours = open.doc.to_format();
-        let merged = merge3(&base, &ours, &theirs);
+        let merged = schemify_format::merge3(&base, &ours, &theirs);
         if merged.conflicts == 0 {
             let dropped = rebase(open, &merged.text, bytes);
             return Ok(External::Merged { dropped });
         }
-        let (pieces, blocks) = split_conflicts(&merged.text);
-        assert_eq!(blocks.len() as u32, merged.conflicts);
-        let n = blocks.len() as u32;
-        open.conflict = Some(Conflict {
-            pieces,
-            blocks,
-            theirs: bytes.to_vec(),
-        });
+        let conflict = split_conflicts(&merged.text, bytes);
+        assert_eq!(conflict.blocks.len() as u32, merged.conflicts);
+        let n = conflict.blocks.len() as u32;
+        open.conflict = Some(conflict);
         Ok(External::Conflict { blocks: n })
     }
 
     /// Returns the conflict blocks of a document in conflict state.
+    #[must_use]
     pub fn conflicts(&self, h: DocHandle) -> Option<&[ConflictBlock]> {
         self.open_ref(h)?
             .conflict
@@ -302,6 +354,11 @@ impl Project {
     ///
     /// `E040` stale handle or no conflict, `E043` wrong number of choices, or the
     /// assembled text's parse error (the conflict state is kept).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: a resolved document leaves conflict state at a saved
+    /// depth of 0.
     pub fn resolve_conflicts(
         &mut self,
         h: DocHandle,
@@ -312,6 +369,11 @@ impl Project {
         if choices.len() != c.blocks.len() {
             return Err(OpenError::Code(Code::E043));
         }
+        assert_eq!(
+            c.pieces.len(),
+            c.blocks.len() + 1,
+            "text around every block"
+        );
         let mut text = c.pieces[0].clone();
         for (i, choice) in choices.iter().enumerate() {
             let side = match choice {
@@ -325,7 +387,7 @@ impl Project {
             }
             text.push_str(&c.pieces[i + 1]);
         }
-        let model = parse(text.as_bytes()).map_err(OpenError::Parse)?;
+        let model = schemify_format::parse(text.as_bytes()).map_err(OpenError::Parse)?;
         if model.kind() != open.doc.kind() {
             return Err(OpenError::Code(Code::E043)); // an edited block changed the header kind
         }
@@ -333,7 +395,12 @@ impl Project {
         let theirs = c.theirs.clone();
         open.conflict = None;
         let dropped = rebase(open, &merged, &theirs);
-        assert!(open.conflict.is_none() && open.saved_depth == Some(0));
+        assert!(open.conflict.is_none());
+        assert_eq!(
+            open.saved_depth,
+            Some(0),
+            "the resolved text is relative to theirs"
+        );
         Ok(External::Merged { dropped })
     }
 }
@@ -344,14 +411,19 @@ impl Project {
 /// `theirs`, keeping unsaved edits as undo entries replayed onto `theirs`. Returns the
 /// number of unsaved transactions that no longer applied.
 fn rebase(open: &mut Open, merged: &str, theirs: &[u8]) -> u32 {
-    assert!(open.conflict.is_none() && open.tail.is_none());
-    let model = parse(theirs).expect("theirs parsed before the merge");
+    assert!(open.conflict.is_none(), "conflicts are resolved first");
+    assert!(
+        open.tail.is_none(),
+        "a pending recovery refuses external changes"
+    );
+    let model = schemify_format::parse(theirs).expect("theirs parsed before the merge");
     let mut lineage = Document::from_format(&model).doc;
     let local: Vec<Entry> = match open.saved_depth {
         Some(d) if d <= open.undo.len() => open.undo.iter().skip(d).cloned().collect(),
         _ => {
-            let base = Document::from_format(&parse(&open.disk).expect("base parsed")).doc;
-            let forward = diff_ops(&base, &open.doc);
+            let base_model = schemify_format::parse(&open.disk).expect("base parsed");
+            let base = Document::from_format(&base_model).doc;
+            let forward = diff::diff_ops(&base, &open.doc);
             vec![Entry {
                 seq: 0,
                 unix_ms: 0,
@@ -361,6 +433,7 @@ fn rebase(open: &mut Open, merged: &str, theirs: &[u8]) -> u32 {
             }]
         }
     };
+    let local_len = local.len();
     let mut kept = Vec::new();
     let mut dropped = 0;
     for mut e in local {
@@ -372,10 +445,15 @@ fn rebase(open: &mut Open, merged: &str, theirs: &[u8]) -> u32 {
             Err(_) => dropped += 1,
         }
     }
-    let merged_doc =
-        Document::from_format(&parse(merged.as_bytes()).expect("merge output parses")).doc;
+    assert_eq!(
+        kept.len() + dropped as usize,
+        local_len,
+        "each local entry kept or dropped"
+    );
+    let merged_model = schemify_format::parse(merged.as_bytes()).expect("merge output parses");
+    let merged_doc = Document::from_format(&merged_model).doc;
     if lineage.canonical() != merged_doc.canonical() {
-        let mut forward = diff_ops(&lineage, &merged_doc);
+        let mut forward = diff::diff_ops(&lineage, &merged_doc);
         let inverse =
             edit::restore(&mut lineage, &mut forward).expect("a diff applies to its source");
         kept.push(Entry {
@@ -397,8 +475,8 @@ fn rebase(open: &mut Open, merged: &str, theirs: &[u8]) -> u32 {
     open.saved_depth = Some(0);
     open.disk = theirs.to_vec();
     open.journal.unhashed = None; // rewritten below
-    rehash(open);
-    rewrite_journal(open);
+    sidecar::rehash(open);
+    sidecar::rewrite_journal(open);
     assert!(
         open.undo
             .iter()
@@ -409,29 +487,35 @@ fn rebase(open: &mut Open, merged: &str, theirs: &[u8]) -> u32 {
 }
 
 /// Splits merge output with conflict markers into the text around the blocks and the
-/// blocks' two sides.
-fn split_conflicts(text: &str) -> (Vec<String>, Vec<ConflictBlock>) {
-    let (mut pieces, mut blocks) = (vec![String::new()], Vec::new());
-    let mut side = 0u8; // 0 outside, 1 ours, 2 theirs
-    let (mut ours, mut theirs) = (String::new(), String::new());
+/// blocks' two sides; `theirs` is the on-disk bytes the merge took.
+fn split_conflicts(text: &str, theirs: &[u8]) -> Conflict {
+    let mut pieces = vec![String::new()];
+    let mut blocks = Vec::new();
+    let mut side = Side::Outside;
+    let mut ours_text = String::new();
+    let mut theirs_text = String::new();
     for line in text.split_inclusive('\n') {
         match (side, line) {
-            (0, "<<<<<<< ours\n") => side = 1,
-            (1, "=======\n") => side = 2,
-            (2, ">>>>>>> theirs\n") => {
+            (Side::Outside, "<<<<<<< ours\n") => side = Side::Ours,
+            (Side::Ours, "=======\n") => side = Side::Theirs,
+            (Side::Theirs, ">>>>>>> theirs\n") => {
                 blocks.push(ConflictBlock {
-                    ours: std::mem::take(&mut ours),
-                    theirs: std::mem::take(&mut theirs),
+                    ours: mem::take(&mut ours_text),
+                    theirs: mem::take(&mut theirs_text),
                 });
                 pieces.push(String::new());
-                side = 0;
+                side = Side::Outside;
             }
-            (0, l) => pieces.last_mut().expect("starts with one").push_str(l),
-            (1, l) => ours.push_str(l),
-            (_, l) => theirs.push_str(l),
+            (Side::Outside, l) => pieces.last_mut().expect("starts with one").push_str(l),
+            (Side::Ours, l) => ours_text.push_str(l),
+            (Side::Theirs, l) => theirs_text.push_str(l),
         }
     }
-    assert_eq!(side, 0, "merge output closes every conflict");
+    assert!(side == Side::Outside, "merge output closes every conflict");
     assert_eq!(pieces.len(), blocks.len() + 1);
-    (pieces, blocks)
+    Conflict {
+        pieces,
+        blocks,
+        theirs: theirs.to_vec(),
+    }
 }

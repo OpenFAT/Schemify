@@ -23,7 +23,7 @@
 //!
 //! Leaves: `strings` (arena, ids), `sha256`, `record` (owned records, validation),
 //! `changes` (change log), `pool` (per-row data, row views and sinks), `tables` (the
-//! column tables). Documents: `document` (struct, reads), `load` (load, save, compaction),
+//! column tables), `schematic` (the rank-3 tables). Documents: `document` (struct, reads), `load` (load, save, compaction),
 //! `rows` (edit primitives). Edits: `ops` (op types), `snap`, `edit` (transactions),
 //! `diff`, `optext` (op text), `journal` (journal records, recovery analysis).
 //! Project: `library`, `techmap`, `core_lib`, `project` (libraries, resolution), `open`
@@ -79,12 +79,15 @@ mod project;
 mod record;
 mod requests;
 mod rows;
+// `row_ops!` is textually scoped: `tables` comes before `schematic`, which uses it.
+#[macro_use]
+mod tables;
+mod schematic;
 mod sha256;
 mod sidecar;
 mod snap;
 mod strings;
 mod sync;
-mod tables;
 mod techmap;
 
 pub use changes::{Change, Cursor, LOG_MAX, Write};
@@ -98,6 +101,7 @@ pub use pool::{Pool, Span};
 pub use project::{Project, ReloadError};
 pub use record::{Attr, RecordBuf};
 pub use requests::{Edit, EditRequest, Outcome, Stage, UNDO_MAX, apply_edits};
+pub use schematic::{Instances, Noconns, Placed, Shapes, Wires};
 /// Format types that appear in this crate's columns and edit targets, re-exported so
 /// consumers need no direct `schemify-format` dependency just to name them.
 pub use schemify_format::{FileKind, RecordKind};
@@ -105,7 +109,7 @@ pub use sha256::{Digest, Sha256, hex, sha256};
 pub use sidecar::JournalWrite;
 pub use strings::{ObjId, Strings, Sym};
 pub use sync::{Choice, ConflictBlock, External, SaveRequest};
-pub use tables::{Graphics, Instances, Noconns, PinDir, Pins, Placed, Records, Shapes, Wires};
+pub use tables::{Graphics, PinDir, Pins, Records};
 pub use techmap::TechMap;
 
 use std::fmt;
@@ -114,7 +118,7 @@ use std::fmt;
 /// `docs/spec/format.md` §7 and `docs/spec/netlist.md` §8; `E040`–`E044` and `W002`
 /// are doc-level (edits spec §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(missing_docs)] // meanings are in `Code::meaning` and the specs
+#[allow(missing_docs, reason = "meanings are in `Code::meaning` and the specs")]
 pub enum Code {
     E001,
     E020,
@@ -150,6 +154,7 @@ pub struct Diag {
 
 impl Code {
     /// Returns the spec meaning.
+    #[must_use]
     pub fn meaning(self) -> &'static str {
         match self {
             Code::E001 => "missing lib or cell, or a bench instantiated",
@@ -175,6 +180,7 @@ impl Code {
     }
 
     /// Returns whether the code is a warning.
+    #[must_use]
     pub fn is_warning(self) -> bool {
         matches!(self, Code::W001 | Code::W002)
     }

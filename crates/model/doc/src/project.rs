@@ -11,15 +11,15 @@
 //!   `cells`, `strings`, `index_library`, `techmap`, `resolve_tech`, `explain_tech`,
 //!   `tech_source`, `lock_library`, `write_lock`, `resolve`, `resolve_in`, `open_handle`,
 //!   `interface`; crate: `resolve_at`, `find_open`
-//! - `pub enum ReloadError`
+//! - `pub enum ReloadError`, `pub(crate) struct TechProblem`
 
 use crate::document::Document;
 use crate::library::{
-    self, CellRef, Cells, LibSource, Libs, LockStatus, Locked, ManifestRest, TECH_LIB,
+    self, CellRef, Cells, LibSource, Libs, LockStatus, Locked, Manifest, ManifestRest, TECH_LIB,
 };
 use crate::open::{DocHandle, Slot};
 use crate::record::RecordBuf;
-use crate::sha256::{hex, sha256};
+use crate::sha256;
 use crate::strings::{Strings, Sym};
 use crate::techmap::{self, TechMap};
 use crate::{Code, Diag};
@@ -37,8 +37,17 @@ pub struct Project {
     pub(crate) rng: IdRng,
     /// The indexed `tech.map` (`lib tech map`), or why it did not load.
     pub(crate) techmap: Option<Result<TechMap, String>>,
-    /// `(class, flavor, why)` per map row that did not become a derived cell.
-    pub(crate) tech_problems: Vec<(String, String, String)>,
+    /// The map rows that did not become a derived cell.
+    pub(crate) tech_problems: Vec<TechProblem>,
+}
+
+/// Why one technology-map row did not become a derived cell.
+#[derive(Debug)]
+pub(crate) struct TechProblem {
+    pub(crate) class: String,
+    pub(crate) flavor: String,
+    /// What the checks panel shows.
+    pub(crate) why: String,
 }
 
 /// Why [`Project::reload_manifest`] refused.
@@ -59,18 +68,23 @@ impl Project {
     /// # Errors
     ///
     /// Format diagnostics when a file does not parse or is the wrong kind (`E028`).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: every project has the project row and `core`.
     pub fn new(
         manifest: Option<&[u8]>,
         lock: Option<&[u8]>,
         seed: u64,
     ) -> Result<Project, ParseError> {
-        let (libs, manifest) = library::parse_manifest(manifest)?;
+        let Manifest { libs, rest } = library::parse_manifest(manifest)?;
         let lock = library::parse_lock(lock)?;
-        assert!(libs.find("").is_some() && libs.find("core").is_some());
+        assert_eq!(libs.find(""), Some(0), "row 0 is the project");
+        assert!(libs.find("core").is_some(), "`core` is declared or builtin");
         Ok(Project {
             strings: Strings::default(),
             libs,
-            manifest,
+            manifest: rest,
             lock,
             cells: Cells::default(),
             slots: Vec::new(),
@@ -89,12 +103,18 @@ impl Project {
     ///
     /// [`ReloadError::Parse`] when a file does not parse; [`ReloadError::LibraryInUse`]
     /// when an open document's library is gone. The project is unchanged on error.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: a reloaded project has the project row and `core` and
+    /// an empty index.
     pub fn reload_manifest(
         &mut self,
         manifest: Option<&[u8]>,
         lock: Option<&[u8]>,
     ) -> Result<(), ReloadError> {
-        let (libs, rest) = library::parse_manifest(manifest).map_err(ReloadError::Parse)?;
+        let Manifest { libs, rest } =
+            library::parse_manifest(manifest).map_err(ReloadError::Parse)?;
         let lock = library::parse_lock(lock).map_err(ReloadError::Parse)?;
         // Open documents keep their library by name; row indices may move.
         let mut remap = Vec::with_capacity(self.slots.len());
@@ -120,38 +140,48 @@ impl Project {
         self.cells = Cells::default();
         self.techmap = None;
         self.tech_problems.clear();
-        assert!(self.libs.find("").is_some() && self.libs.find("core").is_some());
+        assert_eq!(self.libs.find(""), Some(0), "row 0 is the project");
+        assert!(
+            self.libs.find("core").is_some(),
+            "`core` is declared or builtin"
+        );
         assert!(self.cells.lib.is_empty());
         Ok(())
     }
 
     /// Library rows: row 0 is the project itself (`""`), then the manifest's libraries
     /// with the builtin `core` (unless the manifest declares `core`).
+    #[must_use]
     pub fn libs(&self) -> &Libs {
         &self.libs
     }
 
     /// Manifest `plugin` records, for the plugin host.
+    #[must_use]
     pub fn plugins(&self) -> &[RecordBuf] {
         &self.manifest.plugins
     }
 
     /// Manifest `set <key> <value>` entries, in file order (`${NAME}` expansion source).
+    #[must_use]
     pub fn settings(&self) -> &[(String, String)] {
         &self.manifest.sets
     }
 
     /// Lockfile rows.
+    #[must_use]
     pub fn lock(&self) -> &Locked {
         &self.lock
     }
 
     /// The library index.
+    #[must_use]
     pub fn cells(&self) -> &Cells {
         &self.cells
     }
 
     /// The arena of `cells.dir` / `cells.stem`.
+    #[must_use]
     pub fn strings(&self) -> &Strings {
         &self.strings
     }
@@ -169,6 +199,11 @@ impl Project {
     /// # Errors
     ///
     /// `E001` when `name` is not a library of the manifest.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `files` names one path twice, or past [`CELLS_MAX`](crate::CELLS_MAX)
+    /// cells in the project.
     pub fn index_library(
         &mut self,
         name: &str,
@@ -176,7 +211,7 @@ impl Project {
         files: &[(&str, &[u8])],
     ) -> Result<(LockStatus, Vec<(String, Diag)>), Code> {
         let lib = self.libs.find(name).ok_or(Code::E001)?;
-        let digests: Vec<_> = files.iter().map(|f| sha256(f.1)).collect();
+        let digests: Vec<sha256::Digest> = files.iter().map(|f| sha256::sha256(f.1)).collect();
         let diags = library::index_cells(
             &mut self.cells,
             &mut self.strings,
@@ -204,6 +239,7 @@ impl Project {
 
     /// The indexed technology map, `None` before `lib tech` is indexed or when it failed to
     /// parse (see [`Project::explain_tech`]).
+    #[must_use]
     pub fn techmap(&self) -> Option<&TechMap> {
         self.techmap.as_ref().and_then(|m| m.as_ref().ok())
     }
@@ -216,6 +252,10 @@ impl Project {
     ///
     /// `E001` when no technology is selected, the map lacks the row, or the row's PDK cell
     /// did not resolve; [`Project::explain_tech`] says which.
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: a found row is a row of the `tech` library.
     pub fn resolve_tech(&self, class: &str, flavor: &str) -> Result<usize, Code> {
         let tech = self.libs.find(TECH_LIB).ok_or(Code::E001)?;
         let dir = self.strings.find(flavor).ok_or(Code::E001)?;
@@ -231,6 +271,7 @@ impl Project {
     /// Why `tech:<class>` of `flavor` does not resolve, for the checks panel (E001 detail):
     /// no technology selected, the map not loaded, not a class, a class/flavor the PDK
     /// lacks (`sky130 has no lvt pmos`), or the derivation problem.
+    #[must_use]
     pub fn explain_tech(&self, class: &str, flavor: &str) -> String {
         if self.libs.find(TECH_LIB).is_none() {
             return "no technology selected: add `lib tech map <tech.map>` to schemify.project \
@@ -243,7 +284,7 @@ impl Project {
             Some(Ok(m)) => m,
         };
         if techmap::core_symbol(class).is_none() {
-            let names: Vec<&str> = techmap::CLASSES.iter().map(|c| c.0).collect();
+            let names: Vec<&str> = techmap::CLASSES.iter().map(|c| c.class).collect();
             return format!("`{class}` is not a technology class ({})", names.join(", "));
         }
         if map.find(class, flavor).is_none() {
@@ -252,8 +293,8 @@ impl Project {
         let why = self
             .tech_problems
             .iter()
-            .find(|p| p.0 == class && p.1 == flavor)
-            .map(|p| p.2.clone());
+            .find(|p| p.class == class && p.flavor == flavor)
+            .map(|p| p.why.clone());
         why.unwrap_or_else(|| format!("tech:{class} ({flavor}) resolves"))
     }
 
@@ -265,6 +306,7 @@ impl Project {
     /// # Panics
     ///
     /// Panics if `row` is not a row of the current index.
+    #[must_use]
     pub fn tech_source(&self, row: usize) -> Option<usize> {
         assert!(row < self.cells.lib.len(), "cell row from a previous index");
         let tech = self.libs.find(TECH_LIB)?;
@@ -289,6 +331,10 @@ impl Project {
     ///
     /// `E001` unknown or never indexed library; `E043` for the project row and the
     /// builtin `core` (bundled with the tool, never locked).
+    ///
+    /// # Panics
+    ///
+    /// Only on a bug in this crate: the library has a lockfile row afterwards.
     pub fn lock_library(&mut self, name: &str) -> Result<(), Code> {
         let lib = self.libs.find(name).ok_or(Code::E001)?;
         if matches!(
@@ -300,12 +346,18 @@ impl Project {
         let hash = self.libs.hash[lib].ok_or(Code::E001)?;
         let resolved = self.libs.resolved[lib].clone().unwrap_or_default();
         let kind = self.libs.source[lib].word();
-        self.lock.set("lib", name, kind, &resolved, &hex(&hash));
+        self.lock
+            .set("lib", name, kind, &resolved, &sha256::hex(&hash));
         assert!(self.lock.find("lib", name).is_some());
         Ok(())
     }
 
     /// Returns the lockfile bytes (canonical; sorted by type, then name).
+    ///
+    /// # Panics
+    ///
+    /// As [`Locked::write`].
+    #[must_use]
     pub fn write_lock(&self) -> String {
         self.lock.write()
     }
@@ -338,7 +390,11 @@ impl Project {
         assert!(row < self.cells.lib.len(), "cell row from a previous index");
         let found = self.resolve_at(self.cells.lib[row], self.cells.dir[row], cellref);
         if let Ok(r) = found {
-            assert!(r < self.cells.lib.len() && self.cells.kind[r] != FileKind::Shbench);
+            assert!(r < self.cells.lib.len());
+            assert!(
+                self.cells.kind[r] != FileKind::Shbench,
+                "a bench is never instantiable"
+            );
         }
         found
     }
@@ -350,6 +406,7 @@ impl Project {
     /// # Panics
     ///
     /// Panics if `row` is not a row of the current index.
+    #[must_use]
     pub fn open_handle(&self, row: usize) -> Option<DocHandle> {
         assert!(row < self.cells.lib.len(), "cell row from a previous index");
         let c = &self.cells;
@@ -359,12 +416,21 @@ impl Project {
     /// Returns the symbol of indexed cell `row` (interface and graphics, ranks 0–2):
     /// the open document when the cell is open (its edits are the current symbol),
     /// else the indexed one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row` is not a row of the current index.
+    #[must_use]
     pub fn interface(&self, row: usize) -> Option<&Document> {
         let open = self.open_handle(row).and_then(|h| self.doc(h));
         open.or(self.cells.iface[row].as_ref())
     }
 
     pub(crate) fn resolve_at(&self, lib: u8, dir: Sym, cellref: &str) -> Result<usize, Code> {
+        assert!(
+            (lib as usize) < self.libs.name.len(),
+            "library row from the current manifest"
+        );
         let (lib, dir, cell) = match CellRef::parse(cellref).ok_or(Code::E001)? {
             CellRef::Local { cell } => (lib, dir, cell),
             CellRef::Lib {
@@ -394,7 +460,7 @@ impl Project {
         kind: FileKind,
     ) -> Option<DocHandle> {
         let found = self.handles().find(|&h| {
-            let o = self.open_ref(h).expect("live handle");
+            let o = self.open_ref(h).expect("`handles` yields live handles");
             o.lib == lib && o.dir == dir && o.stem == stem && o.doc.kind() == kind
         });
         assert!(found.is_none_or(|h| self.open_ref(h).is_some()));
@@ -418,7 +484,7 @@ impl Project {
             return;
         };
         let mut built = Vec::new();
-        let mut problems = Vec::new();
+        let mut problems: Vec<TechProblem> = Vec::new();
         for row in 0..map.class.len() {
             let (class, flavor) = (&map.class[row], &map.flavor[row]);
             let Some(sym) = techmap::core_symbol(class) else {
@@ -441,16 +507,24 @@ impl Project {
             };
             match doc {
                 Ok(d) => built.push((flavor.clone(), class.clone(), d)),
-                Err(why) => problems.push((class.clone(), flavor.clone(), why)),
+                Err(why) => problems.push(TechProblem {
+                    class: class.clone(),
+                    flavor: flavor.clone(),
+                    why,
+                }),
             }
         }
+        assert!(
+            built.len() + problems.len() <= map.class.len(),
+            "one outcome per map row"
+        );
         for (flavor, class, doc) in built {
-            let hash = sha256(doc.canonical().as_bytes());
+            let hash = sha256::sha256(doc.canonical().as_bytes());
             let (dir, stem) = (self.strings.intern(&flavor), self.strings.intern(&class));
             self.cells
                 .push_row(tech as u8, dir, stem, FileKind::Shprim, hash, Some(doc));
         }
         self.tech_problems = problems;
-        assert!(self.tech_problems.iter().all(|p| !p.2.is_empty()));
+        assert!(self.tech_problems.iter().all(|p| !p.why.is_empty()));
     }
 }

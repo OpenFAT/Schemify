@@ -7,7 +7,7 @@
 //! - `pub type Reject`
 
 use schemify_doc::{Attr, Document, Op, RecordBuf, TableId, Target};
-use schemify_format::{Document as FormatDoc, FileKind, KeyRule, RecordKind, write};
+use schemify_format::{Document as FormatDoc, FileKind, KeyRule, RecordKind};
 use std::collections::BTreeMap;
 
 /// The naive model: records as owned text per table, linear searches, no indexes.
@@ -24,7 +24,7 @@ pub type Reject = &'static str;
 impl Model {
     pub fn from_doc(doc: &Document) -> Model {
         let text = doc.canonical();
-        let f = schemify_format::parse(text.as_bytes()).unwrap();
+        let f = schemify_format::parse(text.as_bytes()).expect("model input is valid format text");
         let mut m = Model {
             kind: f.kind(),
             header: RecordBuf::from_format(&f, 0).attrs,
@@ -33,7 +33,10 @@ impl Model {
         for r in 1..f.record_count() {
             let rec = RecordBuf::from_format(&f, r);
             m.tables
-                .entry(TableId::of(rec.kind).unwrap())
+                .entry(
+                    TableId::of(rec.kind)
+                        .expect("a parsed document's record kinds all map to tables"),
+                )
                 .or_default()
                 .push(rec);
         }
@@ -68,7 +71,7 @@ impl Model {
                 }
             }
         }
-        write(&d)
+        schemify_format::write(&d)
     }
 
     /// Applies one op; on `Err` the model may be partially changed (callers clone).
@@ -100,7 +103,10 @@ impl Model {
             }
             Op::Delete(t) => {
                 let (table, row) = self.find(t).ok_or("E040")?;
-                self.tables.get_mut(&table).unwrap().remove(row);
+                self.tables
+                    .get_mut(&table)
+                    .expect("the target table holds the row the op names")
+                    .remove(row);
                 Ok(())
             }
             Op::SetField {
@@ -150,7 +156,10 @@ impl Model {
             }
             Op::Reorder { target, to } => {
                 let (table, row) = self.find(target).ok_or("E040")?;
-                let recs = self.tables.get_mut(&table).unwrap();
+                let recs = self
+                    .tables
+                    .get_mut(&table)
+                    .expect("the target table holds the row the op names");
                 if !table.ordered() || *to as usize >= recs.len() {
                     return Err("E043");
                 }
@@ -192,7 +201,10 @@ fn normalize(rec: &mut RecordBuf) {
     if rec.kind != RecordKind::Wire {
         return;
     }
-    let c = |i: usize| schemify_format::parse_coord(&rec.fields[i]).unwrap();
+    let c = |i: usize| {
+        schemify_format::parse_coord(&rec.fields[i])
+            .expect("a wire record's coordinate fields parse")
+    };
     if (c(3), c(4)) < (c(1), c(2)) {
         rec.fields.swap(1, 3);
         rec.fields.swap(2, 4);
@@ -218,7 +230,10 @@ impl Model {
     }
 
     fn name_taken(&self, kind: RecordKind, name: &str, except: Option<usize>) -> bool {
-        let Some(recs) = self.tables.get(&TableId::of(kind).unwrap()) else {
+        let Some(recs) = self
+            .tables
+            .get(&TableId::of(kind).expect("every listed kind maps to a table"))
+        else {
             return false;
         };
         recs.iter()
@@ -236,7 +251,9 @@ impl Model {
             return Err("E029");
         }
         normalize(&mut rec);
-        self.tables.get_mut(&table).unwrap()[row] = rec;
+        self.tables
+            .get_mut(&table)
+            .expect("the target table holds the row the op names")[row] = rec;
         Ok(())
     }
 }

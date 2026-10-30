@@ -19,7 +19,7 @@
 //! ```
 //!
 //! Contents:
-//! - `pub(crate) const JOURNAL_HEADER`
+//! - `pub(crate) const JOURNAL_HEADER`, `pub(crate) struct LexError`
 //! - `pub fn ops_from_text(text: &str, file: FileKind) -> Result<Vec<Op>, Vec<OpError>>`
 //! - `pub fn ops_to_text(ops: &[Op]) -> String`
 //! - `pub(crate) fn encode_into`, `pub(crate) fn push_op`, `pub(crate) fn lex`,
@@ -28,10 +28,19 @@
 use crate::Code;
 use crate::ops::{Op, OpError, Target};
 use crate::record::{Attr, RecordBuf};
-use schemify_format::{Document as FormatDoc, FileKind, RecordKind, parse, write_into};
+use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
+use std::str::FromStr;
 
 /// Header the journal file starts with; op text is lexed and built under it too.
 pub(crate) const JOURNAL_HEADER: &str = "schemify 1 journal\n";
+
+/// A lexical error in op text or a journal body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LexError {
+    /// 1-based line within the lexed body (0 for the header the lexer adds).
+    pub(crate) line: u32,
+    pub(crate) code: Code,
+}
 
 /// Parses op text (module docs) for a document of kind `file`, e.g. the `|` lines of a
 /// plugin `edit` record (plugin ABI §7).
@@ -42,6 +51,10 @@ pub(crate) const JOURNAL_HEADER: &str = "schemify 1 journal\n";
 /// record word for `file`, `E029` wrong arity or a non-number index. Lexical errors are
 /// attributed to the op whose lines contain them. Records are validated later, when
 /// the transaction applies.
+///
+/// # Panics
+///
+/// Only on a bug in this function: a lexed body without errors yields one op per record.
 pub fn ops_from_text(text: &str, file: FileKind) -> Result<Vec<Op>, Vec<OpError>> {
     let lexed = lex(text, |d| {
         let mut ops = Vec::with_capacity(d.record_count() as usize);
@@ -65,11 +78,11 @@ pub fn ops_from_text(text: &str, file: FileKind) -> Result<Vec<Op>, Vec<OpError>
     });
     match lexed {
         Ok(result) => result,
-        Err(diags) => Err(diags
+        Err(errors) => Err(errors
             .into_iter()
-            .map(|(line, code)| OpError {
-                op: op_index_at(text, line),
-                code,
+            .map(|e| OpError {
+                op: op_index_at(text, e.line),
+                code: e.code,
             })
             .collect()),
     }
@@ -83,6 +96,7 @@ pub fn ops_from_text(text: &str, file: FileKind) -> Result<Vec<Op>, Vec<OpError>
 /// Panics if a payload record breaks a lexical rule `check_record` enforces (a comment
 /// or verbatim line with a line break, an attribute key that is not a word). Ops that
 /// a transaction accepted never do.
+#[must_use]
 pub fn ops_to_text(ops: &[Op]) -> String {
     let mut text = String::new();
     encode_into(&mut text, |d| {
@@ -100,7 +114,7 @@ pub(crate) fn encode_into(out: &mut String, build: impl FnOnce(&mut FormatDoc<'s
     let mut d = FormatDoc::new(FileKind::Journal);
     build(&mut d);
     let start = out.len();
-    write_into(&d, out);
+    schemify_format::write_into(&d, out);
     assert!(out[start..].starts_with(JOURNAL_HEADER));
     let blank = out[start + JOURNAL_HEADER.len()..].starts_with('\n');
     out.replace_range(start..start + JOURNAL_HEADER.len() + usize::from(blank), "");
@@ -108,6 +122,7 @@ pub(crate) fn encode_into(out: &mut String, build: impl FnOnce(&mut FormatDoc<'s
 }
 
 pub(crate) fn push_op(d: &mut FormatDoc<'static>, op: &Op) {
+    let records = d.record_count();
     match op {
         Op::Insert { rec, at: None } => {
             d.begin_unknown_record("insert");
@@ -165,18 +180,19 @@ pub(crate) fn push_op(d: &mut FormatDoc<'static>, op: &Op) {
             d.push_field(&to.to_string());
         }
     }
+    assert_eq!(d.record_count(), records + 1, "one record per op");
 }
 
 /// Lexes `body` (record lines without a header) with the format's lexer and hands the
-/// model to `read`. Errors are (1-based line within `body`, code).
+/// model to `read`.
 pub(crate) fn lex<T>(
     body: &str,
     read: impl FnOnce(&FormatDoc<'_>) -> T,
-) -> Result<T, Vec<(u32, Code)>> {
+) -> Result<T, Vec<LexError>> {
     let mut text = String::with_capacity(JOURNAL_HEADER.len() + body.len());
     text.push_str(JOURNAL_HEADER);
     text.push_str(body);
-    match parse(text.as_bytes()) {
+    match schemify_format::parse(text.as_bytes()) {
         Ok(d) => {
             assert_eq!(d.kind(), FileKind::Journal);
             assert!((1..d.record_count()).all(|r| d.record_kind(r) == RecordKind::Unknown));
@@ -185,14 +201,17 @@ pub(crate) fn lex<T>(
         Err(e) => Err(e
             .diagnostics
             .iter()
-            .map(|g| (g.line.saturating_sub(1), Code::from_format(g.code)))
+            .map(|g| LexError {
+                line: g.line.saturating_sub(1),
+                code: Code::from_format(g.code),
+            })
             .collect()),
     }
 }
 
 /// Parses a decimal of digits only (no sign, no `+`), as op text and journal records
 /// write row indices and sequence numbers.
-pub(crate) fn number<T: std::str::FromStr>(text: &str) -> Option<T> {
+pub(crate) fn number<T: FromStr>(text: &str) -> Option<T> {
     let digits = text.bytes().all(|b| b.is_ascii_digit());
     digits.then(|| text.parse().ok()).flatten()
 }
@@ -200,6 +219,11 @@ pub(crate) fn number<T: std::str::FromStr>(text: &str) -> Option<T> {
 // ---- private ----
 
 fn push_payload(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
+    let records = d.record_count();
+    assert!(
+        records > 1,
+        "a payload extends an op record after the header"
+    );
     for c in &rec.comments {
         d.push_comment(c);
     }
@@ -215,9 +239,11 @@ fn push_payload(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
     for v in &rec.verbatim {
         d.push_verbatim(v);
     }
+    assert_eq!(d.record_count(), records, "the payload starts no record");
 }
 
 fn push_target(d: &mut FormatDoc<'static>, t: &Target) {
+    assert!(t.kind != RecordKind::Unknown, "ops address known kinds");
     d.push_field(t.kind.word());
     d.push_field(&t.key);
 }
@@ -244,6 +270,11 @@ fn payload(d: &FormatDoc<'_>, r: u32, kind: RecordKind, fields: &[&str]) -> Reco
         comments: d.comments(r).map(str::to_owned).collect(),
     };
     assert_eq!(rec.fields.len(), fields.len());
+    assert_eq!(
+        rec.attrs.len(),
+        d.attrs(r).len(),
+        "every attribute line copied"
+    );
     rec
 }
 
@@ -320,6 +351,7 @@ fn op_index_at(text: &str, line: u32) -> u32 {
         .take(line as usize)
         .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_alphabetic))
         .count() as u32;
+    assert!(starts <= line, "at most one record starts per line");
     starts.saturating_sub(1)
 }
 

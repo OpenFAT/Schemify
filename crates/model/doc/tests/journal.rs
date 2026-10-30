@@ -7,8 +7,9 @@
 
 mod common;
 
-use common::disk::*;
-use common::*;
+use common::disk;
+use common::disk::Disk;
+use common::{Mix, OTA, SEED_DOC};
 use schemify_doc::{Edit, Op, Outcome, Project, RecordBuf, Recovery, Target};
 use schemify_format::RecordKind;
 
@@ -17,15 +18,15 @@ use schemify_format::RecordKind;
 #[test]
 fn replay_after_a_crash_at_every_request_equals_the_pre_crash_state() {
     let original = {
-        let (p, h) = open(SEED_DOC, "cell.shcomp");
-        canon(&p, h)
+        let (p, h) = common::open(SEED_DOC, "cell.shcomp");
+        common::canon(&p, h)
     };
     let (mut offers, mut saved_files, mut redo_states, mut unhashed_crashes) = (0, 0, 0, 0);
     for seed in 0..24 {
-        let snaps = session(seed, 70, true);
+        let snaps = disk::session(seed, 70, true);
         for (k, s) in snaps.iter().enumerate() {
             let ctx = format!("seed {seed} crash after request {k}");
-            let (mut p, h, recovery) = reopen(&s.disk);
+            let (mut p, h, recovery) = disk::reopen(&s.disk);
             // A crash before the idle steps took the disk hash leaves a `base` that
             // matches no file: the tail is replayed onto the (same) file instead.
             let unhashed = String::from_utf8_lossy(&s.disk.journal).contains("base xxxx");
@@ -35,7 +36,7 @@ fn replay_after_a_crash_at_every_request_equals_the_pre_crash_state() {
             offers += u32::from(matches!(recovery, Recovery::Offer { .. }));
             saved_files += u32::from(s.disk.file != SEED_DOC.as_bytes());
             redo_states += u32::from(s.history.1 > 0);
-            assert_eq!(canon(&p, h), s.state, "{ctx}");
+            assert_eq!(common::canon(&p, h), s.state, "{ctx}");
             // That replay rewrites the journal, which keeps no redo history.
             match unhashed {
                 false => assert_eq!(p.history_len(h), s.history, "{ctx}"),
@@ -44,8 +45,12 @@ fn replay_after_a_crash_at_every_request_equals_the_pre_crash_state() {
             let labels: Vec<String> = p.undo_labels(h).iter().map(|l| l.to_string()).collect();
             assert_eq!(labels, s.labels, "{ctx}");
             assert_eq!(p.is_dirty(h), s.dirty, "{ctx}");
-            while matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }) {}
-            assert_eq!(canon(&p, h), original, "undo-all after recovery, {ctx}");
+            while matches!(common::run(&mut p, h, Edit::Undo), Outcome::Undone { .. }) {}
+            assert_eq!(
+                common::canon(&p, h),
+                original,
+                "undo-all after recovery, {ctx}"
+            );
         }
     }
     // The sessions must exercise recovery, saves and redo history, or this proves nothing.
@@ -58,7 +63,7 @@ fn replay_after_a_crash_at_every_request_equals_the_pre_crash_state() {
 #[test]
 fn a_torn_journal_tail_recovers_a_prefix_of_the_session() {
     for seed in 100..108 {
-        let snaps = session(seed, 50, false);
+        let snaps = disk::session(seed, 50, false);
         let full = &snaps.last().unwrap().disk.journal;
         let mut rng = Mix::new(seed);
         for _ in 0..120 {
@@ -71,8 +76,8 @@ fn a_torn_journal_tail_recovers_a_prefix_of_the_session() {
                 file: SEED_DOC.as_bytes().to_vec(),
                 journal: full[..cut].to_vec(),
             };
-            let (p, h, _) = reopen(&disk);
-            let got = canon(&p, h);
+            let (p, h, _) = disk::reopen(&disk);
+            let got = common::canon(&p, h);
             let ok = got == snaps[k].state || snaps.get(k + 1).is_some_and(|s| s.state == got);
             assert!(
                 ok,
@@ -86,7 +91,7 @@ fn a_torn_journal_tail_recovers_a_prefix_of_the_session() {
 
 #[test]
 fn discarding_recovery_keeps_history_and_rewrites_the_journal() {
-    let (mut s, sh) = open(SEED_DOC, "cell.shcomp");
+    let (mut s, sh) = common::open(SEED_DOC, "cell.shcomp");
     let mut disk = Disk {
         file: SEED_DOC.as_bytes().to_vec(),
         journal: Vec::new(),
@@ -100,20 +105,20 @@ fn discarding_recovery_keeps_history_and_rewrites_the_journal() {
             .field("0")
     };
     let ins = |id| {
-        tx(vec![Op::Insert {
+        common::tx(vec![Op::Insert {
             rec: wire(id),
             at: None,
         }])
     };
     assert!(matches!(
-        run(&mut s, sh, ins("aaaaaa")),
+        common::run(&mut s, sh, ins("aaaaaa")),
         Outcome::Committed { .. }
     ));
     let req = s.save(sh).unwrap().unwrap();
     disk.file = req.bytes.clone().into_bytes();
     s.saved(sh, req.bytes.clone()).unwrap();
     assert!(matches!(
-        run(&mut s, sh, ins("bbbbbb")),
+        common::run(&mut s, sh, ins("bbbbbb")),
         Outcome::Committed { .. }
     ));
     disk.sync(&mut s, sh);
@@ -135,7 +140,7 @@ fn discarding_recovery_keeps_history_and_rewrites_the_journal() {
         "saving waits for the decision"
     );
     p.discard_recovery(h).unwrap();
-    assert_eq!(canon(&p, h), req.bytes);
+    assert_eq!(common::canon(&p, h), req.bytes);
     assert!(!p.is_dirty(h));
     let w = p.take_journal(h).unwrap();
     assert!(w.rewrite);
@@ -145,11 +150,11 @@ fn discarding_recovery_keeps_history_and_rewrites_the_journal() {
     assert_eq!(again.recovery, Recovery::None);
     assert_eq!(p.history_len(again.handle), (1, 0));
     assert!(matches!(
-        run(&mut p, again.handle, Edit::Undo),
+        common::run(&mut p, again.handle, Edit::Undo),
         Outcome::Undone { .. }
     ));
     assert_eq!(
-        canon(&p, again.handle),
+        common::canon(&p, again.handle),
         SEED_DOC,
         "undo after restart reaches the original"
     );
@@ -158,7 +163,7 @@ fn discarding_recovery_keeps_history_and_rewrites_the_journal() {
 #[test]
 fn edits_between_save_and_saved_stay_dirty_and_recoverable() {
     for undo_below in [false, true] {
-        let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+        let (mut p, h) = common::open(SEED_DOC, "cell.shcomp");
         let mut disk = Disk {
             file: SEED_DOC.as_bytes().to_vec(),
             journal: Vec::new(),
@@ -172,21 +177,24 @@ fn edits_between_save_and_saved_stay_dirty_and_recoverable() {
                 .field("0")
         };
         let ins = |id| {
-            tx(vec![Op::Insert {
+            common::tx(vec![Op::Insert {
                 rec: wire(id),
                 at: None,
             }])
         };
         assert!(matches!(
-            run(&mut p, h, ins("aaaaaa")),
+            common::run(&mut p, h, ins("aaaaaa")),
             Outcome::Committed { .. }
         ));
         let req = p.save(h).unwrap().unwrap();
         if undo_below {
-            assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+            assert!(matches!(
+                common::run(&mut p, h, Edit::Undo),
+                Outcome::Undone { .. }
+            ));
         }
         assert!(matches!(
-            run(&mut p, h, ins("bbbbbb")),
+            common::run(&mut p, h, ins("bbbbbb")),
             Outcome::Committed { .. }
         ));
         // The write of the older bytes finishes only now.
@@ -194,26 +202,30 @@ fn edits_between_save_and_saved_stay_dirty_and_recoverable() {
         p.saved(h, req.bytes.clone()).unwrap();
         disk.sync(&mut p, h);
         assert!(p.is_dirty(h), "undo_below {undo_below}");
-        let (q, g, recovery) = reopen(&disk);
+        let (q, g, recovery) = disk::reopen(&disk);
         assert!(
             matches!(recovery, Recovery::Offer { .. }),
             "undo_below {undo_below}: {recovery:?}"
         );
-        assert_eq!(canon(&q, g), canon(&p, h), "undo_below {undo_below}");
+        assert_eq!(
+            common::canon(&q, g),
+            common::canon(&p, h),
+            "undo_below {undo_below}"
+        );
         // Undoing back to the saved state is clean again: the undo stack still reaches it.
         while p.is_dirty(h) {
             assert!(
-                matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }),
+                matches!(common::run(&mut p, h, Edit::Undo), Outcome::Undone { .. }),
                 "undo_below {undo_below}"
             );
         }
-        assert_eq!(canon(&p, h), req.bytes, "undo_below {undo_below}");
+        assert_eq!(common::canon(&p, h), req.bytes, "undo_below {undo_below}");
     }
 }
 
 #[test]
 fn a_file_changed_outside_replays_the_tail_onto_it() {
-    let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+    let (mut p, h) = common::open(SEED_DOC, "cell.shcomp");
     let mut disk = Disk {
         file: SEED_DOC.as_bytes().to_vec(),
         journal: Vec::new(),
@@ -226,13 +238,13 @@ fn a_file_changed_outside_replays_the_tail_onto_it() {
             .field("10")
             .field(y)
     };
-    let ins = |rec| tx(vec![Op::Insert { rec, at: None }]);
+    let ins = |rec| common::tx(vec![Op::Insert { rec, at: None }]);
     assert!(matches!(
-        run(&mut p, h, ins(wire("aaaaaa", "0"))),
+        common::run(&mut p, h, ins(wire("aaaaaa", "0"))),
         Outcome::Committed { .. }
     ));
     assert!(matches!(
-        run(&mut p, h, ins(wire("bbbbbb", "5"))),
+        common::run(&mut p, h, ins(wire("bbbbbb", "5"))),
         Outcome::Committed { .. }
     ));
     disk.sync(&mut p, h);
@@ -246,7 +258,7 @@ fn a_file_changed_outside_replays_the_tail_onto_it() {
     let qh = opened.handle;
     let del = Op::Delete(Target::new(RecordKind::Wire, "bbbbbb"));
     assert_eq!(
-        run(&mut q, qh, tx(vec![del])),
+        common::run(&mut q, qh, common::tx(vec![del])),
         Outcome::Refused(schemify_doc::Code::E044),
         "edits wait for the decision"
     );
@@ -276,7 +288,7 @@ fn a_file_changed_outside_replays_the_tail_onto_it() {
 
 #[test]
 fn fresh_ids_and_snapped_values_are_journaled_as_applied() {
-    let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+    let (mut p, h) = common::open(SEED_DOC, "cell.shcomp");
     let wire = RecordBuf::new(RecordKind::Wire)
         .field(schemify_doc::NEW_ID)
         .field("0")
@@ -284,10 +296,10 @@ fn fresh_ids_and_snapped_values_are_journaled_as_applied() {
         .field("10")
         .field("0");
     assert!(matches!(
-        run(
+        common::run(
             &mut p,
             h,
-            tx(vec![Op::Insert {
+            common::tx(vec![Op::Insert {
                 rec: wire,
                 at: None
             }])
@@ -301,18 +313,18 @@ fn fresh_ids_and_snapped_values_are_journaled_as_applied() {
         journal.contains(&format!("insert wire {id} 0 0 10 0")),
         "{journal}"
     );
-    let (q, g, _) = reopen(&Disk {
+    let (q, g, _) = disk::reopen(&Disk {
         file: SEED_DOC.as_bytes().to_vec(),
         journal: journal.into_bytes(),
     });
-    assert_eq!(canon(&q, g), canon(&p, h));
+    assert_eq!(common::canon(&q, g), common::canon(&p, h));
 }
 
 /// 2^16 + 1 commits, then a save: the journal is compacted to `base` plus the last 2^12
 /// transactions as history, and a restart from it can still undo them.
 #[test]
 fn a_long_journal_is_compacted_on_save() {
-    let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+    let (mut p, h) = common::open(SEED_DOC, "cell.shcomp");
     let mut disk = Disk {
         file: SEED_DOC.as_bytes().to_vec(),
         journal: Vec::new(),
@@ -325,7 +337,7 @@ fn a_long_journal_is_compacted_on_save() {
     let n = (1 << 16) + 1;
     for i in 0..n {
         assert!(matches!(
-            run(&mut p, h, tx(vec![label(i)])),
+            common::run(&mut p, h, common::tx(vec![label(i)])),
             Outcome::Committed { .. }
         ));
         if i % 4096 == 0 {
@@ -357,7 +369,7 @@ fn a_long_journal_is_compacted_on_save() {
     assert_eq!(opened.recovery, Recovery::None);
     assert_eq!(q.history_len(opened.handle), (1 << 12, 0));
     assert!(matches!(
-        run(&mut q, opened.handle, Edit::Undo),
+        common::run(&mut q, opened.handle, Edit::Undo),
         Outcome::Undone { .. }
     ));
     let want = (n - 2).to_string();
@@ -373,7 +385,7 @@ fn a_long_journal_is_compacted_on_save() {
 /// is three times the live data. Neither changes the document or its undo history.
 #[test]
 fn edit_garbage_is_compacted_without_changing_the_document() {
-    let (mut p, h) = open(OTA, "ota5t.shcomp");
+    let (mut p, h) = common::open(OTA, "ota5t.shcomp");
     let (mut in_commits, mut in_steps) = (0, 0);
     const COMMITS: usize = 40_000;
     for i in 0..COMMITS {
@@ -384,7 +396,7 @@ fn edit_garbage_is_compacted_without_changing_the_document() {
         };
         let (cursor, dead) = (p.doc(h).unwrap().cursor(), p.doc(h).unwrap().pool().dead);
         assert!(matches!(
-            run(&mut p, h, tx(vec![op])),
+            common::run(&mut p, h, common::tx(vec![op])),
             Outcome::Committed { .. }
         ));
         // A compaction renumbers the tables: the change log no longer reads through it.
@@ -414,9 +426,9 @@ fn edit_garbage_is_compacted_without_changing_the_document() {
         &format!("  name M1\n  W {}\n", (COMMITS - 1) % 7),
         1,
     );
-    assert_eq!(canon(&p, h), expected);
-    while matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }) {}
-    assert_eq!(canon(&p, h), OTA);
+    assert_eq!(common::canon(&p, h), expected);
+    while matches!(common::run(&mut p, h, Edit::Undo), Outcome::Undone { .. }) {}
+    assert_eq!(common::canon(&p, h), OTA);
 }
 
 /// `Edit::Extend` (edits spec §1): ops added to the last commit share its undo entry and its
@@ -425,20 +437,20 @@ fn edit_garbage_is_compacted_without_changing_the_document() {
 /// extended state, one undo reverts all of it, and only the top entry can be extended.
 #[test]
 fn extend_joins_the_last_commit_and_its_journal_record() {
-    let (mut p, h) = open(SEED_DOC, "cell.shcomp");
+    let (mut p, h) = common::open(SEED_DOC, "cell.shcomp");
     let mut disk = Disk {
         file: SEED_DOC.as_bytes().to_vec(),
         journal: Vec::new(),
     };
-    let original = canon(&p, h);
+    let original = common::canon(&p, h);
     let var = |name: &str, v: &str| Op::Insert {
         rec: RecordBuf::new(RecordKind::Var).field(name).field(v),
         at: None,
     };
-    let Outcome::Committed { seq } = run(&mut p, h, tx(vec![var("a", "1")])) else {
+    let Outcome::Committed { seq } = common::run(&mut p, h, common::tx(vec![var("a", "1")])) else {
         panic!("the commit applies");
     };
-    let out = run(&mut p, h, Edit::Extend(seq, vec![var("b", "2")]));
+    let out = common::run(&mut p, h, Edit::Extend(seq, vec![var("b", "2")]));
     assert_eq!(out, Outcome::Committed { seq });
     disk.sync(&mut p, h);
     let journal = String::from_utf8(disk.journal.clone()).unwrap();
@@ -449,34 +461,40 @@ fn extend_joins_the_last_commit_and_its_journal_record() {
         .collect();
     assert_eq!(words, ["tx"], "one record, rewritten in place: {journal}");
     assert_eq!(p.history_len(h), (1, 0), "one undo entry");
-    let extended = canon(&p, h);
+    let extended = common::canon(&p, h);
     assert!(extended.contains("var a 1") && extended.contains("var b 2"));
-    let (rp, rh, _) = reopen(&disk);
+    let (rp, rh, _) = disk::reopen(&disk);
     assert_eq!(
-        canon(&rp, rh),
+        common::canon(&rp, rh),
         extended,
         "recovery replays the extended record"
     );
     // The record is on disk now: the journal is rewritten from base instead.
-    let out = run(&mut p, h, Edit::Extend(seq, vec![var("c", "3")]));
+    let out = common::run(&mut p, h, Edit::Extend(seq, vec![var("c", "3")]));
     assert_eq!(out, Outcome::Committed { seq });
     disk.sync(&mut p, h);
-    let (rp, rh, _) = reopen(&disk);
-    assert_eq!(canon(&rp, rh), canon(&p, h));
-    assert!(matches!(run(&mut p, h, Edit::Undo), Outcome::Undone { .. }));
+    let (rp, rh, _) = disk::reopen(&disk);
+    assert_eq!(common::canon(&rp, rh), common::canon(&p, h));
+    assert!(matches!(
+        common::run(&mut p, h, Edit::Undo),
+        Outcome::Undone { .. }
+    ));
     assert_eq!(
-        canon(&p, h),
+        common::canon(&p, h),
         original,
         "one undo reverts the commit and both extensions"
     );
     // Negative space: with redo pending, or naming another entry, nothing changes.
     let refused = Outcome::Refused(schemify_doc::Code::E040);
     assert_eq!(
-        run(&mut p, h, Edit::Extend(seq, vec![var("d", "4")])),
+        common::run(&mut p, h, Edit::Extend(seq, vec![var("d", "4")])),
         refused
     );
-    assert!(matches!(run(&mut p, h, Edit::Redo), Outcome::Redone { .. }));
+    assert!(matches!(
+        common::run(&mut p, h, Edit::Redo),
+        Outcome::Redone { .. }
+    ));
     let other = Edit::Extend(seq + 1, vec![var("d", "4")]);
-    assert_eq!(run(&mut p, h, other), refused);
-    assert!(!canon(&p, h).contains("var d"));
+    assert_eq!(common::run(&mut p, h, other), refused);
+    assert!(!common::canon(&p, h).contains("var d"));
 }

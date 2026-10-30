@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::*;
+use common::OTA;
 use schemify_doc::{Code, Edit, ObjId, Op, Outcome, Project, RecordBuf, Target};
 use schemify_format::RecordKind;
 
@@ -20,9 +20,9 @@ fn duplicate_ids_are_reassigned_deterministically() {
     assert_eq!(w001, 2);
     let h = opened.handle;
     assert!(p.is_dirty(h), "re-ids must be saved");
-    let first = canon(&p, h);
-    let (q, g) = open(text, "b.shbench");
-    assert_eq!(canon(&q, g), first, "re-iding is deterministic");
+    let first = common::canon(&p, h);
+    let (q, g) = common::open(text, "b.shbench");
+    assert_eq!(common::canon(&q, g), first, "re-iding is deterministic");
     let d = p.doc(h).unwrap();
     let s = d.strings();
     let ids: Vec<String> = d
@@ -57,13 +57,19 @@ fn duplicate_ids_are_reassigned_deterministically() {
 #[test]
 fn newer_versions_open_read_only() {
     let text = "schemify 2 shbench\n\nfrobnicate 0abc 1 2\n  extra x\n\nwire 0d2k1m 0 0 10 0\n";
-    let (mut p, h) = open(text, "new.shbench");
+    let (mut p, h) = common::open(text, "new.shbench");
     let d = p.doc(h).unwrap();
     assert!(d.read_only());
     assert_eq!(d.wires().x1.len(), 1, "known records are still readable");
     let del = Op::Delete(Target::new(RecordKind::Wire, "0d2k1m"));
-    assert_eq!(run(&mut p, h, tx(vec![del])), Outcome::Refused(Code::E044));
-    assert_eq!(run(&mut p, h, Edit::Undo), Outcome::Refused(Code::E044));
+    assert_eq!(
+        common::run(&mut p, h, common::tx(vec![del])),
+        Outcome::Refused(Code::E044)
+    );
+    assert_eq!(
+        common::run(&mut p, h, Edit::Undo),
+        Outcome::Refused(Code::E044)
+    );
     assert_eq!(p.save(h), Err(Code::E044));
 }
 
@@ -89,15 +95,15 @@ fn load_reports_what_the_format_cannot_see() {
     assert!(codes.contains(&Code::E024), "{codes:?}");
     assert!(codes.contains(&Code::E042), "{codes:?}");
     // Kept as written: the file still round-trips.
-    assert_eq!(canon(&p, opened.handle), text);
+    assert_eq!(common::canon(&p, opened.handle), text);
 }
 
 #[test]
 fn instance_at_and_name_are_written_first() {
     let text = "schemify 1 shbench\n\ninst 0gsrp0 ./a\n  name X1\n  W 1\n  at 0 0 R0\n";
-    let (p, h) = open(text, "b.shbench");
+    let (p, h) = common::open(text, "b.shbench");
     assert_eq!(
-        canon(&p, h),
+        common::canon(&p, h),
         "schemify 1 shbench\n\ninst 0gsrp0 ./a\n  at 0 0 R0\n  name X1\n  W 1\n"
     );
 }
@@ -107,8 +113,8 @@ fn instance_at_and_name_are_written_first() {
 #[test]
 fn schematic_shapes_load_edit_and_undo() {
     let text = "schemify 1 shbench\n\nshape 0abc arc 0 0 5 0 90\n  layer 7\nshape 0abd poly 0 0 10 0 10 10\n  closed true\n";
-    let (mut p, h) = open(text, "b.shbench");
-    assert_eq!(canon(&p, h), text, "shapes round-trip");
+    let (mut p, h) = common::open(text, "b.shbench");
+    assert_eq!(common::canon(&p, h), text, "shapes round-trip");
     let d = p.doc(h).unwrap();
     assert_eq!(d.shapes().form, [RecordKind::Arc, RecordKind::Poly]);
     let loc = d
@@ -133,45 +139,45 @@ fn schematic_shapes_load_edit_and_undo() {
         .field("0")
         .field("20")
         .field("0");
-    let out = run(
+    let out = common::run(
         &mut p,
         h,
-        tx(vec![Op::Insert {
+        common::tx(vec![Op::Insert {
             rec: line,
             at: None,
         }]),
     );
     assert!(matches!(out, Outcome::Committed { .. }), "{out:?}");
-    assert!(canon(&p, h).contains("shape 0abe line 0 0 20 0\n"));
+    assert!(common::canon(&p, h).contains("shape 0abe line 0 0 20 0\n"));
     let short = RecordBuf::new(RecordKind::Shape)
         .field("0abf")
         .field("line")
         .field("0")
         .field("0");
-    let out = run(
+    let out = common::run(
         &mut p,
         h,
-        tx(vec![Op::Insert {
+        common::tx(vec![Op::Insert {
             rec: short,
             at: None,
         }]),
     );
     assert!(matches!(out, Outcome::Rejected(_)), "{out:?}");
-    let out = run(
+    let out = common::run(
         &mut p,
         h,
-        tx(vec![Op::Delete(Target::new(RecordKind::Shape, "0abd"))]),
+        common::tx(vec![Op::Delete(Target::new(RecordKind::Shape, "0abd"))]),
     );
     assert!(matches!(out, Outcome::Committed { .. }), "{out:?}");
-    assert!(!canon(&p, h).contains("0abd"));
-    run(&mut p, h, Edit::Undo);
-    run(&mut p, h, Edit::Undo);
-    assert_eq!(canon(&p, h), text, "undo restores the file");
+    assert!(!common::canon(&p, h).contains("0abd"));
+    common::run(&mut p, h, Edit::Undo);
+    common::run(&mut p, h, Edit::Undo);
+    assert_eq!(common::canon(&p, h), text, "undo restores the file");
 }
 
 #[test]
 fn record_read_api_matches_the_file() {
-    let (p, h) = open(OTA, "ota5t.shcomp");
+    let (p, h) = common::open(OTA, "ota5t.shcomp");
     let d = p.doc(h).unwrap();
     let loc = d
         .find_id(ObjId::find("9vdm2q", d.strings()).unwrap())

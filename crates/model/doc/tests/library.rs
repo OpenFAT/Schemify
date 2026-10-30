@@ -4,10 +4,9 @@
 
 mod common;
 
-use common::*;
+use common::{BENCH, LOCK, MANIFEST, NFET, OTA};
 use schemify_doc::{
     Code, LibSource, Loc, LockStatus, Op, Outcome, Project, RecordBuf, TableId, Target,
-    apply_edits, hex, sha256,
 };
 use schemify_format::{FileKind, RecordKind};
 
@@ -16,7 +15,8 @@ const DEV: &str = "schemify 1 shprim\n\npin D inout 0 0\n\nparam L 0.15\n  grid 
 // ---- private ----
 
 fn project() -> Project {
-    Project::new(Some(MANIFEST.as_bytes()), Some(LOCK.as_bytes()), 3).unwrap()
+    Project::new(Some(MANIFEST.as_bytes()), Some(LOCK.as_bytes()), 3)
+        .expect("fixture manifest and lock parse")
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn indexing_hashes_content_and_checks_the_lock() {
     );
     p.lock_library("sky130").unwrap();
     let lock = p.write_lock();
-    let hash = hex(&p.libs().hash[1].unwrap());
+    let hash = schemify_doc::hex(&p.libs().hash[1].unwrap());
     assert!(
         lock.contains(&format!("locked lib sky130 git 4e1c2a9 {hash}\n")),
         "{lock}"
@@ -90,13 +90,13 @@ fn indexing_hashes_content_and_checks_the_lock() {
     // The content hash is defined over sorted (path, file hash), independent of listing order.
     let swapped: &[(&str, &[u8])] = &[("README.md", b"x"), ("nfet_01v8.shprim", NFET.as_bytes())];
     q.index_library("sky130", "4e1c2a9", swapped).unwrap();
-    assert_eq!(hex(&q.libs().hash[1].unwrap()), hash);
+    assert_eq!(schemify_doc::hex(&q.libs().hash[1].unwrap()), hash);
     assert_eq!(
         q.cells().lib.len(),
         1,
         "re-indexing replaces the library's rows"
     );
-    assert_eq!(q.cells().hash[0], sha256(NFET.as_bytes()));
+    assert_eq!(q.cells().hash[0], schemify_doc::sha256(NFET.as_bytes()));
     assert_eq!(p.index_library("nolib", "", files), Err(Code::E001));
     assert_eq!(p.lock_library("core"), Err(Code::E043));
     assert_eq!(p.lock_library("mine"), Err(Code::E001), "never indexed");
@@ -146,7 +146,7 @@ fn cell_references_resolve_per_netlist_spec() {
     assert_eq!(iface.instances().id.len(), 0);
     // The index keeps the symbol graphics: every rank-2 record of the full file, so an
     // instance draws without opening its cell.
-    let (full, fh) = open(OTA, "ota5t.shcomp");
+    let (full, fh) = common::open(OTA, "ota5t.shcomp");
     let full = full.doc(fh).unwrap();
     let graphics = |d: &schemify_doc::Document| -> Vec<RecordBuf> {
         (0..d.table_len(TableId::Graphics) as u32)
@@ -203,7 +203,7 @@ fn cell_references_resolve_per_netlist_spec() {
     assert_eq!(p.open_handle(nfet_row), None);
     let del = Op::Delete(Target::new(RecordKind::Pin, "VSS"));
     assert!(matches!(
-        run(&mut p, oh, tx(vec![del])),
+        common::run(&mut p, oh, common::tx(vec![del])),
         Outcome::Committed { .. }
     ));
     assert_eq!(p.interface(ota).unwrap().pins().name.len(), 5);
@@ -222,19 +222,20 @@ fn cell_references_resolve_per_netlist_spec() {
 }
 
 fn bench_with_device() -> (Project, schemify_doc::DocHandle) {
-    let mut p = Project::new(None, None, 5).unwrap();
+    let mut p =
+        Project::new(None, None, 5).expect("a project without manifest or lock always opens");
     p.index_library("", "", &[("dev.shprim", DEV.as_bytes())])
-        .unwrap();
+        .expect("a root library with one device indexes");
     let bench = "schemify 1 shbench\n\ninst 0gsrp0 ./dev\n  at 0 0 R0\n  name M1\n  W 1\n";
     let h = p
         .open("", "b.shbench", bench.as_bytes(), None)
-        .unwrap()
+        .expect("the bench fixture opens")
         .handle;
     (p, h)
 }
 
 fn attr(p: &Project, h: schemify_doc::DocHandle, key: &str) -> Option<String> {
-    let d = p.doc(h).unwrap();
+    let d = p.doc(h).expect("the handle names an open document");
     let v = d
         .pool()
         .find_attr(d.strings(), d.instances().attrs[0], key)?;
@@ -253,12 +254,12 @@ fn set(key: &str, value: &str) -> Op {
 fn plain_number_overrides_snap_to_grid_and_step_and_are_journaled_snapped() {
     let (mut p, h) = bench_with_device();
     assert!(matches!(
-        run(&mut p, h, tx(vec![set("L", "0.1534")])),
+        common::run(&mut p, h, common::tx(vec![set("L", "0.1534")])),
         Outcome::Committed { .. }
     ));
     assert_eq!(attr(&p, h, "L").as_deref(), Some("0.155"));
     assert!(matches!(
-        run(&mut p, h, tx(vec![set("W", "1.6")])),
+        common::run(&mut p, h, common::tx(vec![set("W", "1.6")])),
         Outcome::Committed { .. }
     ));
     assert_eq!(
@@ -267,7 +268,7 @@ fn plain_number_overrides_snap_to_grid_and_step_and_are_journaled_snapped() {
         "step 0.5 from min 0.25"
     );
     assert!(matches!(
-        run(&mut p, h, tx(vec![set("L", "lmin*2")])),
+        common::run(&mut p, h, common::tx(vec![set("L", "lmin*2")])),
         Outcome::Committed { .. }
     ));
     assert_eq!(
@@ -289,10 +290,10 @@ fn plain_number_overrides_snap_to_grid_and_step_and_are_journaled_snapped() {
         .attr("name", &["M2"])
         .attr("L", &["0.151"]);
     assert!(matches!(
-        run(
+        common::run(
             &mut p,
             h,
-            tx(vec![Op::Insert {
+            common::tx(vec![Op::Insert {
                 rec: inst,
                 at: None
             }])
@@ -315,7 +316,7 @@ fn plain_number_overrides_snap_to_grid_and_step_and_are_journaled_snapped() {
         values: vec!["5".into(), "5".into(), "R0".into()],
     };
     assert!(matches!(
-        run(&mut p, h, tx(vec![mv])),
+        common::run(&mut p, h, common::tx(vec![mv])),
         Outcome::Committed { .. }
     ));
     assert_eq!(attr(&p, h, "W").as_deref(), Some("1.75"));
@@ -324,7 +325,7 @@ fn plain_number_overrides_snap_to_grid_and_step_and_are_journaled_snapped() {
 #[test]
 fn computed_params_cannot_be_overridden() {
     let (mut p, h) = bench_with_device();
-    let out = run(&mut p, h, tx(vec![set("ad", "1")]));
+    let out = common::run(&mut p, h, common::tx(vec![set("ad", "1")]));
     assert!(
         matches!(&out, Outcome::Rejected(e) if e[0].code == Code::E030),
         "{out:?}"
@@ -348,7 +349,7 @@ fn computed_params_cannot_be_overridden() {
         index: 1,
         value: "./other".into(),
     };
-    let out = run(&mut p, h, tx(vec![retarget]));
+    let out = common::run(&mut p, h, common::tx(vec![retarget]));
     assert!(
         matches!(&out, Outcome::Rejected(e) if e[0].code == Code::E030),
         "{out:?}"
@@ -360,7 +361,7 @@ fn computed_params_cannot_be_overridden() {
         value: "./nowhere".into(),
     };
     assert!(matches!(
-        run(&mut p, h, tx(vec![unresolved, set("ad", "1")])),
+        common::run(&mut p, h, common::tx(vec![unresolved, set("ad", "1")])),
         Outcome::Committed { .. }
     ));
 }
@@ -376,7 +377,8 @@ fn overrides_equal_to_defaults_are_kept_but_reported() {
     );
     let canon_tx = p.canonicalize_overrides(h);
     assert_eq!(canon_tx.ops.len(), 1);
-    let out = apply_edits(&mut p, &[req(h, schemify_doc::Edit::Tx(canon_tx))]);
+    let out =
+        schemify_doc::apply_edits(&mut p, &[common::req(h, schemify_doc::Edit::Tx(canon_tx))]);
     assert!(matches!(out[0], Outcome::Committed { .. }));
     assert!(p.redundant_overrides(h).is_empty());
     assert_eq!(attr(&p, h, "W"), None);

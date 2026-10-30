@@ -8,16 +8,29 @@
 //!   `check`
 //! - `locate`, `kind_at`, `key_of`
 //! - `kind_rules_ok`, `dangling`, `wire_zero`
+//! - `pub(crate) struct Dangling`
 
 use crate::Code;
 use crate::changes::Write;
 use crate::document::{Document, Loc, TableId};
 use crate::pool::{RecView, Scratch};
-use crate::record::{RecordBuf, check_record};
+use crate::record::{self, RecordBuf};
 use crate::strings::ObjId;
-use crate::tables::Table;
+use crate::tables::{Owned, Table};
 use schemify_format::{FileKind, KeyRule, RecordKind};
 use std::ops::Range;
+
+/// An in-file reference whose target does not exist (`E042`). Orders by the
+/// referencing record, then the referenced text, so a sorted list can be searched.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Dangling {
+    /// Kind of the referencing record (`Header` for the header's `default`).
+    pub(crate) kind: RecordKind,
+    /// Key of the referencing record (empty for the header).
+    pub(crate) key: String,
+    /// The text that names no record.
+    pub(crate) target: String,
+}
 
 impl Document {
     /// Appends a validated record to table `t` and indexes its id. Returns its row.
@@ -48,6 +61,12 @@ impl Document {
     /// changes position-wise, so file order is kept).
     pub(crate) fn replace_row(&mut self, loc: Loc, rec: &RecordBuf) {
         let (t, row) = (loc.table, loc.row as usize);
+        assert!(row < self.table_len(t), "stale row");
+        assert_eq!(
+            TableId::of(rec.kind),
+            Some(t),
+            "the record belongs to the row's table"
+        );
         let old_id = self.unindex(loc);
         let mut scratch = Scratch::default();
         scratch.fill_buf(rec);
@@ -96,6 +115,7 @@ impl Document {
         let id = with_table!(self, t, |tab| tab.id_at(loc.row as usize, &self.strings));
         self.log.push(t, Write::Content, loc.row, id);
         assert_eq!(self.kind_at(loc), rec.kind);
+        assert_eq!(self.table_len(t), len + 1, "one row added");
         Ok(loc)
     }
 
@@ -132,8 +152,11 @@ impl Document {
             return Err(Code::E043);
         }
         self.check_key_free(rec, Some(loc))?;
+        let len = self.table_len(loc.table);
+        assert!((loc.row as usize) < len, "stale row");
         self.replace_row(loc, rec);
         assert_eq!(self.kind_at(loc), rec.kind);
+        assert_eq!(self.table_len(loc.table), len, "a put keeps the row count");
         Ok(loc)
     }
 
@@ -147,12 +170,15 @@ impl Document {
         if !loc.table.ordered() || to as usize >= len {
             return Err(Code::E043);
         }
+        let kind = self.kind_at(loc);
         self.move_rows(loc.table, loc.row as usize, to as usize);
-        assert!((to as usize) < len);
-        Ok(Loc {
+        let moved = Loc {
             table: loc.table,
             row: to,
-        })
+        };
+        assert_eq!(self.table_len(loc.table), len, "a reorder keeps every row");
+        assert_eq!(self.kind_at(moved), kind, "the record moved to row `to`");
+        Ok(moved)
     }
 
     /// Replaces the header's attribute lines with those of a validated header record.
@@ -177,7 +203,7 @@ impl Document {
 
     /// Validates a record for this document's file kind (see `check_record`).
     pub(crate) fn check(&self, rec: &RecordBuf) -> Result<(), Code> {
-        check_record(rec, self.kind).map_err(|(c, _)| c)
+        record::check_record(rec, self.kind).map_err(|e| e.code)
     }
 
     /// Finds a record by kind and key: id text for id kinds, name for named kinds,
@@ -210,6 +236,7 @@ impl Document {
 
     /// Returns the record kind at `loc`.
     pub(crate) fn kind_at(&self, loc: Loc) -> RecordKind {
+        assert!((loc.row as usize) < self.table_len(loc.table), "stale row");
         with_table!(self, loc.table, |tab| tab.kind_at(loc.row as usize))
     }
 
@@ -248,7 +275,12 @@ impl Document {
         let ok = match self.kind {
             FileKind::Shprim => self.pins.len() >= 1 && impls >= 1 && schematic == 0,
             FileKind::Shcomp => schematic == 1,
-            _ => true,
+            FileKind::Shbench => true,
+            FileKind::Project
+            | FileKind::Lock
+            | FileKind::Config
+            | FileKind::Journal
+            | FileKind::Techmap => unreachable!("documents are cell files (`Document::new`)"),
         };
         let cell = matches!(self.kind, FileKind::Shprim | FileKind::Shcomp);
         ok && !(cell && impls > 1 && self.header_value("default").is_none())
@@ -256,25 +288,30 @@ impl Document {
 
     /// In-file references whose target does not exist (`E042`): `waive` → instance id,
     /// constraint `member` → any id, `body` → impl name, `spec` → output name, header
-    /// `default` → impl name. Returned as (referencing record, its key, referenced text),
-    /// sorted.
-    pub(crate) fn dangling(&self) -> Vec<(RecordKind, String, String)> {
+    /// `default` → impl name. Sorted.
+    pub(crate) fn dangling(&self) -> Vec<Dangling> {
         let mut out = Vec::new();
         let s = &self.strings;
         let id_row = |text: &str| ObjId::find(text, s).and_then(|id| self.find_id(id));
         for r in 0..self.waivers.len() {
             let target = s.get(self.waivers.fields[r][1]);
             if id_row(target).is_none_or(|l| l.table != TableId::Instances) {
-                let key = s.get(self.waivers.fields[r][0]).to_owned();
-                out.push((RecordKind::Waive, key, target.to_owned()));
+                out.push(Dangling {
+                    kind: RecordKind::Waive,
+                    key: s.get(self.waivers.fields[r][0]).to_owned(),
+                    target: target.to_owned(),
+                });
             }
         }
         for r in 0..self.constraints.len() {
             for (k, vals) in self.pool.attrs(self.constraints.attrs[r]) {
                 let target = vals.first().map_or("", |v| s.get(*v));
                 if s.get(k) == "member" && id_row(target).is_none() {
-                    let key = s.get(self.constraints.fields[r][0]).to_owned();
-                    out.push((RecordKind::Constraint, key, target.to_owned()));
+                    out.push(Dangling {
+                        kind: RecordKind::Constraint,
+                        key: s.get(self.constraints.fields[r][0]).to_owned(),
+                        target: target.to_owned(),
+                    });
                 }
             }
         }
@@ -285,14 +322,22 @@ impl Document {
             for r in 0..table.len() {
                 let name = s.get(table.fields[r][0]);
                 if self.locate(named, name).is_none() {
-                    out.push((kind, name.to_owned(), name.to_owned()));
+                    out.push(Dangling {
+                        kind,
+                        key: name.to_owned(),
+                        target: name.to_owned(),
+                    });
                 }
             }
         }
         if let Some(d) = self.header_value("default")
             && self.locate(RecordKind::Impl, d).is_none()
         {
-            out.push((RecordKind::Header, String::new(), d.to_owned()));
+            out.push(Dangling {
+                kind: RecordKind::Header,
+                key: String::new(),
+                target: d.to_owned(),
+            });
         }
         out.sort();
         let members = self.pool.attr_key.len(); // a loose bound: every attribute line
@@ -317,11 +362,12 @@ impl Document {
     /// Returns the row's id.
     fn unindex(&mut self, loc: Loc) -> ObjId {
         let row = loc.row as usize;
+        assert!(row < self.table_len(loc.table), "stale row");
         let id = with_table!(self, loc.table, |tab| tab.id_at(row, &self.strings));
         if id != ObjId::NONE && self.by_id.get(&id) == Some(&loc) {
             self.by_id.remove(&id);
         }
-        let (attrs, others) = with_table!(self, loc.table, |tab| tab.owned(row));
+        let Owned { attrs, others } = with_table!(self, loc.table, |tab| tab.owned(row));
         self.pool.orphan(attrs, others);
         assert!(self.by_id.get(&id) != Some(&loc));
         id
@@ -343,7 +389,8 @@ impl Document {
     fn move_rows(&mut self, t: TableId, from: usize, to: usize) {
         let len = self.table_len(t);
         assert!(t.ordered(), "rows move only in ordered tables");
-        assert!(from < len && to < len);
+        assert!(from < len, "stale row");
+        assert!(to < len, "callers check the destination row");
         if from == to {
             return;
         }
