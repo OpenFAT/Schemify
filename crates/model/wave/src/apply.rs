@@ -11,7 +11,7 @@ use crate::decimate::{self, MinMax};
 use crate::pane::{MAX_PANES, MAX_TRACES, PaneMode, PaneProps, TRACE_COLORS};
 use crate::request::{Applied, Request, ViewError};
 use crate::trace::{self, Evaluated, TraceY};
-use crate::waves::Waves;
+use crate::waves::{TraceColumns, Waves};
 
 impl Waves {
     /// Applies one request. The spine's `wave::apply`: the writer of these tables.
@@ -442,7 +442,7 @@ impl Waves {
                 continue;
             }
             any = true;
-            let s = axis::span(self.xy(i).0, self.x.log);
+            let s = axis::span(self.xy(i).x, self.x.log);
             lo = lo.min(s.min);
             hi = hi.max(s.max);
         }
@@ -469,7 +469,7 @@ impl Waves {
         let histogram = self.props[p].mode == PaneMode::Histogram;
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for i in self.traces_in(p as u8) {
-            let (x, y) = self.xy(i);
+            let TraceColumns { x, y } = self.xy(i);
             let col = if histogram { y } else { x };
             for s in &self.steps(i)[self.shown_steps(i)] {
                 let step = axis::span(&col[s.start as usize..s.end as usize], log);
@@ -521,7 +521,7 @@ impl Waves {
         let x_axis = self.x_of(p);
         let mut all = MinMax::EMPTY;
         for i in self.traces_in(pane) {
-            let (x, y) = self.xy(i);
+            let TraceColumns { x, y } = self.xy(i);
             let steps = &self.steps(i)[self.shown_steps(i)];
             let seen = decimate::extent(x, y, steps, x_axis.lo, x_axis.hi);
             let min = if log && seen.min <= 0.0 {

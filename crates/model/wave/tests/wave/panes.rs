@@ -4,8 +4,8 @@
 
 use proptest::prelude::*;
 use schemify_wave::{
-    Applied, Cursor, PaneMode, PaneProps, RawPlot, Request, VarKind, Variable, ViewError, Waves,
-    group_datasets,
+    Applied, Cursor, PaneMode, PaneProps, RawPlot, Request, TraceColumns, VarKind, Variable,
+    ViewError, Waves, group_datasets,
 };
 
 use crate::fixture;
@@ -96,7 +96,7 @@ proptest! {
     ) {
         let mut w = Waves::new(vec![dataset(&x, &[("v(y)", y)])]);
         add(&mut w, "v(y)", 0).unwrap();
-        let (xs, ys) = w.xy(0);
+        let TraceColumns { x: xs, y: ys } = w.xy(0);
         let steps = w.steps(0).to_vec();
         let mut first = None;
         for (s, r) in steps.iter().enumerate() {
@@ -134,13 +134,13 @@ proptest! {
         let want = |t: f64, k: usize| {
             bits.iter().fold(0u32, |acc, b| (acc << 1) | u32::from(f64::from(b[k]) >= t))
         };
-        for (k, (&xk, &yk)) in x.iter().zip(w.xy(0).1).enumerate() {
+        for (k, (&xk, &yk)) in x.iter().zip(w.xy(0).y).enumerate() {
             prop_assert_eq!(yk, f64::from(want(t, k)));
             prop_assert_eq!(w.logic_at(0, xk), Some(want(t, k)));
         }
         // A new threshold re-evaluates the bus.
         set(&mut w, 0, |p| p.threshold = t - 1.0).unwrap();
-        for (k, &yk) in w.xy(0).1.iter().enumerate() {
+        for (k, &yk) in w.xy(0).y.iter().enumerate() {
             prop_assert_eq!(yk, f64::from(want(t - 1.0, k)));
         }
     }
@@ -154,14 +154,14 @@ fn bus_values_hold_between_samples_and_follow_their_pane() {
         &[("v(a)", vec![0.0, 1.0, 1.0]), ("v(b)", vec![1.0, 0.0, 1.0])],
     )]);
     add(&mut w, "{v(a), v(b)}", 0).unwrap();
-    assert_eq!(w.xy(0).1, &[1.0, 2.0, 3.0]);
+    assert_eq!(w.xy(0).y, &[1.0, 2.0, 3.0]);
     assert_eq!(w.value_at(0, 0.9), Some(1.0), "held, not interpolated");
     assert_eq!(w.value_at(0, 2.0), Some(3.0));
     // Moving it to a pane with another threshold re-evaluates it.
     w.apply(&Request::AddPane).unwrap();
     set(&mut w, 1, |p| p.threshold = 2.0).unwrap();
     w.apply(&Request::MoveTrace { trace: 0, pane: 1 }).unwrap();
-    assert_eq!(w.xy(0).1, &[0.0, 0.0, 0.0]);
+    assert_eq!(w.xy(0).y, &[0.0, 0.0, 0.0]);
     // Malformed buses are refused.
     for bad in ["{}", "{v(a),}", "{v(a), 1}", "{v(nope)}"] {
         assert!(add(&mut w, bad, 0).is_err(), "{bad}");
@@ -181,7 +181,7 @@ fn fft_traces_get_their_own_frequency_axis() {
     assert_eq!((w.panes().len(), w.pane_of(1)), (2, 1));
     assert!(w.has_own_axis(1) && w.props(1).own_x() && !w.props(1).locked);
     let f = w.x_of(1);
-    let bins = w.xy(1).0;
+    let bins = w.xy(1).x;
     assert_eq!((f.lo, f.hi), (bins[0], bins[bins.len() - 1]));
     assert_eq!(w.x(), time, "the time axis does not move");
     // Full zoom fits each axis to its own traces.
@@ -216,7 +216,7 @@ fn per_step_results_of_a_sweep_are_traces_on_the_step_axis() {
     assert!(steps > 1);
     assert_eq!(add(&mut w, "ymax(v(a))", 0), Ok(Applied::Trace(0)));
     assert!(w.has_own_axis(0) && !w.props(0).locked);
-    let (x, y) = w.xy(0);
+    let TraceColumns { x, y } = w.xy(0);
     assert_eq!((x.len(), y.len()), (steps, steps));
     assert_eq!(x[steps - 1], (steps - 1) as f64, "x is the step index");
 }
@@ -360,12 +360,12 @@ fn reload_keeps_traces_that_still_evaluate() {
     add(&mut w, "v(out)", 0).unwrap();
     add(&mut w, "2 * v(out)", 0).unwrap();
     add(&mut w, "{v(in), v(out)}", 0).unwrap();
-    let before: Vec<Vec<f64>> = (0..3).map(|i| w.xy(i).1.to_vec()).collect();
+    let before: Vec<Vec<f64>> = (0..3).map(|i| w.xy(i).y.to_vec()).collect();
     let x = w.x();
     assert!(w.reload(fixture("rc_tran.bin.raw")).is_empty());
     assert_eq!(w.x(), x, "the view stays");
     for (i, b) in before.iter().enumerate() {
-        assert_eq!(w.xy(i).1, &b[..], "{}", w.src(i));
+        assert_eq!(w.xy(i).y, &b[..], "{}", w.src(i));
     }
     // A dataset without `v(out)`: the traces that read it are dropped and named.
     let t = [0.0, 1.0];

@@ -60,4 +60,4 @@ pub use request::{Applied, Request, ViewError};
 // suffixes in, so an unchanged field reads back the same value.
 pub use schemify_expr::{parse_num, write_num};
 pub use si::format_si;
-pub use waves::Waves;
+pub use waves::{TraceColumns, Waves};

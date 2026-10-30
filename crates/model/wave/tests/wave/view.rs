@@ -6,8 +6,8 @@ use std::ptr;
 
 use proptest::prelude::*;
 use schemify_wave::{
-    Applied, Axis, Cursor, MAX_PANES, RawPlot, Request, VarKind, Variable, ViewError, Waves,
-    group_datasets,
+    Applied, Axis, Cursor, MAX_PANES, RawPlot, Request, TraceColumns, VarKind, Variable, ViewError,
+    Waves, group_datasets,
 };
 
 use crate::fixture;
@@ -36,7 +36,7 @@ fn plain_signals_borrow_the_dataset() {
     let mut w = rc();
     assert_eq!(add(&mut w, "v(out)", 0), Ok(Applied::Trace(0)));
     let d = &w.datasets()[0];
-    let (x, y) = w.xy(0);
+    let TraceColumns { x, y } = w.xy(0);
     assert!(ptr::eq(x, d.scale()), "x borrows the scale column");
     assert!(
         ptr::eq(y, d.col(d.find_var("v(out)").unwrap())),
@@ -44,8 +44,8 @@ fn plain_signals_borrow_the_dataset() {
     );
     // An expression owns its values.
     add(&mut w, "v(out) * 2", 0).unwrap();
-    assert!(!ptr::eq(w.xy(1).1, w.datasets()[0].col(2)));
-    assert_eq!(w.xy(1).1[100], 2.0 * w.xy(0).1[100]);
+    assert!(!ptr::eq(w.xy(1).y, w.datasets()[0].col(2)));
+    assert_eq!(w.xy(1).y[100], 2.0 * w.xy(0).y[100]);
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn cursors_read_interpolated_values() {
     w.apply(&Request::SwapCursors).unwrap();
     assert_eq!(w.cursors(), [Some(0.5), Some(1.025)]);
     // Midway between two sweep points of the first step: the mean of their values.
-    let (x, y) = w.xy(0);
+    let TraceColumns { x, y } = w.xy(0);
     let k = x.iter().position(|&v| (v - 1.0).abs() < 1e-12).unwrap();
     let mid = (y[k] + y[k + 1]) / 2.0;
     assert!((w.value_at(0, 1.025).unwrap() - mid).abs() < 1e-12);
@@ -268,7 +268,7 @@ proptest! {
         let mut w = ramp();
         w.apply(&Request::ZoomX { pane: 0, at, factor: f }).unwrap();
         w.apply(&Request::AutoscaleY { pane: 0 }).unwrap();
-        let (x, y) = w.xy(0);
+        let TraceColumns { x, y } = w.xy(0);
         let (vx, vy) = (w.x(), w.panes()[0]);
         for (xv, yv) in x.iter().zip(y) {
             if *xv >= vx.lo && *xv <= vx.hi {

@@ -12,7 +12,7 @@ use std::mem;
 use kurbo::Rect;
 
 use schemify_ui::TextSystem;
-use schemify_wave::{Axis, PaneMode, Scale, Waves};
+use schemify_wave::{Axis, PaneMode, Scale, TraceColumns, Waves};
 
 use super::{TICK_PX, WaveLook, WaveScratch};
 use crate::painter::{self, Painter};
@@ -28,7 +28,7 @@ pub(super) fn draw_lines<P: Painter>(
     s: &mut WaveScratch,
 ) {
     for i in super::traces_of(waves, k) {
-        let (x, y) = waves.xy(i);
+        let TraceColumns { x, y } = waves.xy(i);
         assert_eq!(x.len(), y.len(), "trace {i}: x and y columns in step");
         s.chains.clear();
         for st in &waves.steps(i)[waves.shown_steps(i)] {
@@ -78,7 +78,7 @@ pub(super) fn draw_lanes<P: Painter>(
         let thr = (!bus).then_some(props.threshold);
         let color = painter::rgba(waves.color(i));
         let busy = painter::rgba((waves.color(i) & 0xffff_ff00) | 0x60);
-        let (x, y) = waves.xy(i);
+        let TraceColumns { x, y } = waves.xy(i);
         assert_eq!(x.len(), y.len(), "trace {i}: x and y columns in step");
         s.runs.clear();
         for st in &waves.steps(i)[waves.shown_steps(i)] {

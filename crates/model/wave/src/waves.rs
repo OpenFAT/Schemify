@@ -27,6 +27,7 @@
 //!   `is_magnitude`, `bus_bits`, `has_own_axis`, `xy`, `steps`, `shown_steps`, `panes`, `props`,
 //!   `x_of`, `hcursors`, `x`, `cursors`, `value_at`, `value_at_step`, `logic_at`,
 //!   `closest_step`, `histogram`, `reload`; `pub(crate)` `traces_in`, `check`
+//! - `pub struct TraceColumns`
 
 use core::ops::Range;
 
@@ -36,6 +37,15 @@ use crate::pane::{LineStyle, MAX_BINS, MAX_DATASETS, MAX_PANES, MAX_TRACES, Pane
 use crate::plot::RawPlot;
 use crate::request::ViewError;
 use crate::trace::{self, Evaluated, TraceY, Traces};
+
+/// The x and y columns of one trace ([`Waves::xy`]), borrowed and of equal length.
+#[derive(Clone, Copy, Debug)]
+pub struct TraceColumns<'waves> {
+    /// Sweep values, one per point.
+    pub x: &'waves [f64],
+    /// Trace values, one per point.
+    pub y: &'waves [f64],
+}
 
 /// The viewer tables. See the module docs for the data design.
 ///
@@ -178,7 +188,7 @@ impl Waves {
     ///
     /// Panics when `i >= trace_count()`.
     #[must_use]
-    pub fn xy(&self, i: usize) -> (&[f64], &[f64]) {
+    pub fn xy(&self, i: usize) -> TraceColumns<'_> {
         self.assert_row(i);
         let d = &self.datasets[usize::from(self.traces.dataset[i])];
         let e = &self.traces.eval[i];
@@ -188,7 +198,7 @@ impl Waves {
             TraceY::Owned(y) => &y[..],
         };
         assert_eq!(x.len(), y.len(), "trace {i}: one x per y value");
-        (x, y)
+        TraceColumns { x, y }
     }
 
     /// Sweep steps of trace `i`, partitioning its columns.
@@ -394,7 +404,7 @@ impl Waves {
         );
         out.clear();
         out.resize(bins, 0);
-        let (_, y) = self.xy(i);
+        let y = self.xy(i).y;
         for s in &self.steps(i)[self.shown_steps(i)] {
             let y = &y[s.start as usize..s.end as usize];
             let (t0, t1) = (x_axis.t(x_axis.lo), x_axis.t(x_axis.hi));
@@ -503,7 +513,7 @@ impl Waves {
             "a trace on its own axis in a locked pane"
         );
         debug_assert!((0..n).all(|i| {
-            let (x, y) = self.xy(i);
+            let TraceColumns { x, y } = self.xy(i);
             x.len() == y.len()
         }));
     }
@@ -541,7 +551,7 @@ impl Waves {
     /// Trace `i`'s value at `x` in step `s`: held from the last sample at or before `x`, or
     /// interpolated, as `how` says; `None` outside the step's x range.
     fn sample_at(&self, i: usize, s: usize, x: f64, how: Sampling) -> Option<f64> {
-        let (xs, ys) = self.xy(i);
+        let TraceColumns { x: xs, y: ys } = self.xy(i);
         let step = &self.steps(i)[s];
         assert!(
             step.end as usize <= xs.len(),
