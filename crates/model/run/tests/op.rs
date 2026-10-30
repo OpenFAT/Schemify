@@ -8,9 +8,9 @@
 
 mod common;
 
-use common::{have_ngspice, project, run_dialect, tmp};
 use schemify_elab::Dialect;
 use schemify_run::{Jobs, NO_SAMPLE, Plan, Results, RunnerConfig, SimCommand, State};
+use std::fs;
 
 /// A MOSFET leaf netlisted as an `M` element.
 const NMOS: &str = "schemify 1 shprim\n\npin d inout 0 0\npin g in 0 20\npin s inout 0 40\n\
@@ -99,35 +99,37 @@ fn sh(script: &str) -> SimCommand {
 
 fn one() -> Jobs {
     let mut j = Jobs::new();
-    j.push(None, None, NO_SAMPLE, &[]).unwrap();
+    j.push(None, None, NO_SAMPLE, &[])
+        .expect("an empty table takes a job");
     j
 }
 
 fn run(name: &str, dialect: Dialect, sim: SimCommand) -> (Plan, Jobs, Results, String) {
-    let (p, top) = project(&[
+    let (p, top) = common::project(&[
         ("nmos.shprim", NMOS),
         ("xfet.shprim", XFET),
         ("amp.shcomp", AMP),
         ("tb.shbench", BENCH),
     ]);
-    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
-    let dir = tmp(name);
-    let (jobs, results, runner) = run_dialect(&p, top, &plan, one(), &[], dialect, |d| {
+    let plan = Plan::read(p.doc(top).expect("the bench is open")).expect("the bench reads");
+    let dir = common::tmp(name);
+    let (jobs, results, runner) = common::run_dialect(&p, top, &plan, one(), &[], dialect, |d| {
         let mut c = RunnerConfig::new(&dir, d);
         c.tools.set_sims(&sim);
         c.workers = 1;
         c
     });
-    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+    let netlist = fs::read_to_string(runner.job_dir(0).join("netlist.cir"))
+        .expect("the job wrote its netlist");
     (plan, jobs, results, netlist)
 }
 
 fn value(plan: &Plan, r: &Results, o: &str) -> Option<f64> {
-    r.value(0, plan.output(o).unwrap())
+    r.value(0, plan.output(o).expect("the bench has this output"))
 }
 
 fn error(plan: &Plan, r: &Results, o: &str) -> String {
-    let k = plan.output(o).unwrap();
+    let k = plan.output(o).expect("the bench has this output");
     let errs: Vec<&str> = r.errors().filter(|e| e.1 == k).map(|e| e.2).collect();
     assert_eq!(errs.len(), 1, "{o}: {errs:?}");
     errs[0].to_owned()
@@ -203,7 +205,7 @@ fn op_without_an_operating_point_or_on_espice_is_an_error_not_zero() {
 /// W/L = 1): id = kp/2·(vgs − vt)² = 16 µA, gm = kp·(vgs − vt) = 80 µS.
 #[test]
 fn ngspice_op_values_match_the_square_law() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
     let ngspice = SimCommand {

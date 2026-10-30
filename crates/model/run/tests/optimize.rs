@@ -6,7 +6,6 @@
 
 mod common;
 
-use common::project;
 use schemify_run::{Jobs, OptRun, Plan, Results, State};
 
 // ---- private ----
@@ -32,21 +31,25 @@ fn optimize(
         "schemify 1 shbench\n\nvar R 1\n  min 0\n  max 10\n\n{records}\n\
          output f \"v(f)\"\noutput g \"v(g)\"\n"
     );
-    let (p, top) = project(&[("tb.shbench", &bench)]);
-    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
-    let mut opt = OptRun::new(&plan, "o").unwrap();
+    let (p, top) = common::project(&[("tb.shbench", &bench)]);
+    let plan = Plan::read(p.doc(top).expect("the bench is open")).expect("the bench reads");
+    let mut opt = OptRun::new(&plan, "o").expect("the bench has optimize `o`");
     let mut jobs = Jobs::new();
     let mut results = Results::new(&plan, [7; 32]);
     for _ in 0..100_000 {
         if opt.done() {
             break;
         }
-        let Some(r) = opt.step(&mut jobs, &results).unwrap() else {
+        let Some(r) = opt
+            .step(&mut jobs, &results)
+            .expect("the jobs table has room")
+        else {
             continue;
         };
         assert_eq!(r.end - r.start, opt.jobs_per_candidate());
         for j in r {
-            let x = schemify_expr::parse_num(jobs.assigned(j, "R").unwrap()).unwrap();
+            let x = schemify_expr::parse_num(jobs.assigned(j, "R").expect("a candidate assigns R"))
+                .expect("a candidate value is a number");
             let fg = sim(x, jobs.config(j), jobs.corner(j));
             match fg {
                 Some((f, g)) => results.record(&plan, &mut jobs, j, &raw(f, g)),

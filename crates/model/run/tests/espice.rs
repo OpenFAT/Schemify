@@ -6,9 +6,12 @@
 
 mod common;
 
-use common::{project, run_dialect, tmp};
 use schemify_elab::Dialect;
 use schemify_run::{Jobs, NO_SAMPLE, Plan, RunnerConfig, SimCommand, State};
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
 /// `vgain`: out = k·in (k = 3 by default), its source the impl `body`.
 const VGAIN: &str = "schemify 1 shprim\n\npin in inout 0 0\npin out inout 0 20\n\nparam k 3\n\n\
@@ -42,13 +45,10 @@ file va/bsimcmg.va\n";
 
 /// Whether `espice` runs from PATH; skips (or fails under `SCHEMIFY_REQUIRE_ESPICE`).
 fn have_espice() -> bool {
-    let found = std::process::Command::new("espice")
-        .arg("--version")
-        .output()
-        .is_ok();
+    let found = Command::new("espice").arg("--version").output().is_ok();
     if !found {
         assert!(
-            std::env::var_os("SCHEMIFY_REQUIRE_ESPICE").is_none(),
+            env::var_os("SCHEMIFY_REQUIRE_ESPICE").is_none(),
             "espice must be on PATH (SCHEMIFY_REQUIRE_ESPICE is set)"
         );
         eprintln!("espice not on PATH: skipping");
@@ -64,28 +64,29 @@ fn espice_simulates_verilog_a_bodies_and_files() {
     if !have_espice() {
         return;
     }
-    let (p, top) = project(&[
+    let (p, top) = common::project(&[
         ("vgain.shprim", VGAIN),
         ("vhalf.shprim", VHALF),
         ("tb.shbench", BENCH),
     ]);
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
-    let dir = tmp("espice-real");
-    std::fs::create_dir_all(dir.join("va/inc")).unwrap();
-    std::fs::write(dir.join("va/vhalf.va"), VHALF_VA).unwrap();
-    std::fs::write(dir.join("va/inc/half.vams"), "`define HALF 0.5\n").unwrap();
+    let dir = common::tmp("espice-real");
+    fs::create_dir_all(dir.join("va/inc")).unwrap();
+    fs::write(dir.join("va/vhalf.va"), VHALF_VA).unwrap();
+    fs::write(dir.join("va/inc/half.vams"), "`define HALF 0.5\n").unwrap();
     let mut jobs = Jobs::new();
     jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
-    let (jobs, results, runner) = run_dialect(&p, top, &plan, jobs, &[], Dialect::Espice, |d| {
-        let mut c = RunnerConfig::new(&dir, d);
-        c.cache = dir.join("cache");
-        c.tools.set_sims(&SimCommand::default_for(Dialect::Espice));
-        c.tools.openvaf = "openvaf-not-used".into();
-        c
-    });
+    let (jobs, results, runner) =
+        common::run_dialect(&p, top, &plan, jobs, &[], Dialect::Espice, |d| {
+            let mut c = RunnerConfig::new(&dir, d);
+            c.cache = dir.join("cache");
+            c.tools.set_sims(&SimCommand::default_for(Dialect::Espice));
+            c.tools.openvaf = "openvaf-not-used".into();
+            c
+        });
     let errs: Vec<_> = results.errors().collect();
     assert_eq!(jobs.state(0), State::Done, "{errs:?}");
-    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+    let netlist = fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
     assert!(
         netlist.contains(".hdl \"vgain.va\"\n.hdl \"vhalf.va\"\n")
             && netlist.contains("\nN1 in y vgain_m k=4\n")
@@ -108,7 +109,7 @@ fn espice_simulates_verilog_a_bodies_and_files() {
 #[test]
 #[ignore = "real ESPice + an ASAP7 install (SCHEMIFY_ASAP7_PDK); minutes on a cold cache"]
 fn espice_runs_an_asap7_inverter() {
-    let Some(pdk) = std::env::var_os("SCHEMIFY_ASAP7_PDK").map(std::path::PathBuf::from) else {
+    let Some(pdk) = env::var_os("SCHEMIFY_ASAP7_PDK").map(PathBuf::from) else {
         panic!("set SCHEMIFY_ASAP7_PDK to a pdk-manager ASAP7 install");
     };
     assert!(have_espice(), "espice must be on PATH");
@@ -147,28 +148,29 @@ fn espice_runs_an_asap7_inverter() {
          | VDD vdd 0 0.7\n  | VL lo 0 0\n  | .op\n",
         corners.display()
     );
-    let (p, top) = project(&[("fin.shprim", FIN), ("tb.shbench", &bench)]);
+    let (p, top) = common::project(&[("fin.shprim", FIN), ("tb.shbench", &bench)]);
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
-    let dir = tmp("espice-asap7");
-    std::fs::create_dir_all(dir.join("va")).unwrap();
-    for f in std::fs::read_dir(pdk.join("va/code/bsimcmg/vacode")).unwrap() {
+    let dir = common::tmp("espice-asap7");
+    fs::create_dir_all(dir.join("va")).unwrap();
+    for f in fs::read_dir(pdk.join("va/code/bsimcmg/vacode")).unwrap() {
         let f = f.unwrap().path();
         if f.is_file() {
-            std::fs::copy(&f, dir.join("va").join(f.file_name().unwrap())).unwrap();
+            fs::copy(&f, dir.join("va").join(f.file_name().unwrap())).unwrap();
         }
     }
     let mut jobs = Jobs::new();
     jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
-    let (jobs, results, runner) = run_dialect(&p, top, &plan, jobs, &[], Dialect::Espice, |d| {
-        let mut c = RunnerConfig::new(&dir, d);
-        c.cache = dir.join("cache");
-        c.tools.set_sims(&SimCommand::default_for(Dialect::Espice));
-        c
-    });
+    let (jobs, results, runner) =
+        common::run_dialect(&p, top, &plan, jobs, &[], Dialect::Espice, |d| {
+            let mut c = RunnerConfig::new(&dir, d);
+            c.cache = dir.join("cache");
+            c.tools.set_sims(&SimCommand::default_for(Dialect::Espice));
+            c
+        });
     let errs: Vec<_> = results.errors().collect();
     assert_eq!(jobs.state(0), State::Done, "{errs:?}");
     let job = runner.job_dir(0);
-    let netlist = std::fs::read_to_string(job.join("netlist.cir")).unwrap();
+    let netlist = fs::read_to_string(job.join("netlist.cir")).unwrap();
     assert!(
         netlist.contains("\nNM1 y0 lo 0 0 0 nmos_rvt nfin=4 nf=1 mfactor=2\n")
             && netlist.contains(".hdl \"bsimcmg.va\"\n"),

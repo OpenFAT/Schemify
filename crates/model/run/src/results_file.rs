@@ -10,10 +10,8 @@
 
 use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::results::{JOB_LEVEL, Pass, Results};
-use schemify_abi::text::{push_value, values};
+use schemify_abi::text;
 use schemify_doc::Digest;
-use schemify_expr::{parse_num, write_num};
-use std::fmt::Write;
 
 /// One job record being read: complete when the next record starts.
 struct JobRecord {
@@ -23,9 +21,14 @@ struct JobRecord {
     sample: u32,
     seed: u32,
     sets: Vec<(String, String)>,
-    /// `var`, `value`, `pass` and `error` lines with their line numbers, applied once the
-    /// job has a row.
-    fields: Vec<(usize, Vec<String>)>,
+    /// `var`, `value`, `pass` and `error` lines, applied once the job has a row.
+    fields: Vec<FieldLine>,
+}
+
+/// One attribute line kept for later: its 0-based line number and its values.
+struct FieldLine {
+    line: usize,
+    values: Vec<String>,
 }
 
 /// Writes the run's jobs and results as one line-record file (run spec §4): header,
@@ -34,7 +37,10 @@ struct JobRecord {
 /// # Panics
 ///
 /// Panics if `r` covers jobs `jobs` lacks.
+#[must_use]
 pub fn write_results(jobs: &Jobs, r: &Results) -> String {
+    use std::fmt::Write;
+
     assert!(r.rows() <= jobs.len(), "results for jobs the table lacks");
     let mut out = String::from("schemify 1 results\n  design ");
     out.push_str(&schemify_doc::hex(r.design()));
@@ -58,14 +64,14 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
         for n in names {
             out.push_str(word);
             out.push(' ');
-            push_value(&mut out, n);
+            text::push_value(&mut out, n);
             out.push('\n');
         }
     }
 
     // Jobs, each with its error rows sorted by output (stable: recording order within).
     let mut errs: Vec<(u32, u16, &str)> = r.errors().collect();
-    errs.sort_by_key(|e| (e.0, e.1));
+    errs.sort_by_key(|&(job, output, _)| (job, output));
     let mut e = 0;
     let mut num = String::new();
     for j in 0..jobs.len() {
@@ -88,14 +94,14 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
         for (v, n) in r.vars().iter().enumerate() {
             if let Some(x) = r.var_value(j, v as u16) {
                 num.clear();
-                write_num(&mut num, x);
+                schemify_expr::write_num(&mut num, x);
                 attr(&mut out, "var", &[n, &num]);
             }
         }
         for (o, n) in r.outputs().iter().enumerate() {
             if let Some(x) = r.value(j, o as u16) {
                 num.clear();
-                write_num(&mut num, x);
+                schemify_expr::write_num(&mut num, x);
                 attr(&mut out, "value", &[n, &num]);
             }
         }
@@ -107,16 +113,19 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
             };
             attr(&mut out, "pass", &[&r.outputs()[o as usize], verdict]);
         }
-        while e < errs.len() && errs[e].0 == j {
-            let what = match errs[e].1 {
+        while let Some(&(job, output, message)) = errs.get(e)
+            && job == j
+        {
+            let what = match output {
                 JOB_LEVEL => "-",
                 o => r.outputs()[o as usize].as_str(),
             };
-            attr(&mut out, "error", &[what, errs[e].2]);
+            attr(&mut out, "error", &[what, message]);
             e += 1;
         }
     }
     assert_eq!(e, errs.len(), "every error row belongs to a job");
+    assert!(out.ends_with('\n'), "whole lines");
     out
 }
 
@@ -141,7 +150,7 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
     let (mut outputs, mut specs, mut vars) = (Vec::new(), Vec::new(), Vec::new());
     // Built at the first job record, once the columns are known.
     let mut table: Option<(Jobs, Results)> = None;
-    let mut cur: Option<JobRecord> = None;
+    let mut current: Option<JobRecord> = None;
     let mut header = true;
     for (n, line) in lines {
         if line.trim().is_empty() {
@@ -161,10 +170,10 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
             continue;
         }
         if line.starts_with(' ') {
-            let p = cur
+            let record = current
                 .as_mut()
                 .ok_or_else(|| bad(n, "attribute outside a job"))?;
-            p.attr(n, f)?;
+            record.attr(n, f)?;
             continue;
         }
         header = false;
@@ -184,14 +193,14 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
                         Results::from_columns(design, outputs.clone(), specs.clone(), vars.clone());
                     (Jobs::new(), r)
                 });
-                if let Some(p) = cur.take() {
-                    p.flush(jobs, r)?;
+                if let Some(record) = current.take() {
+                    record.flush(jobs, r)?;
                 }
                 if f[1].parse::<u32>() != Ok(jobs.len()) {
                     return Err(bad(n, "jobs must be numbered 0, 1, 2, …"));
                 }
                 let state = State::from_word(&f[2]).ok_or_else(|| bad(n, "unknown state"))?;
-                cur = Some(JobRecord::new(state));
+                current = Some(JobRecord::new(state));
             }
             _ => return Err(bad(n, "unexpected record")),
         }
@@ -202,10 +211,11 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
             Results::from_columns(design, outputs, specs, vars),
         )
     });
-    if let Some(p) = cur.take() {
-        p.flush(&mut jobs, &mut r)?;
+    if let Some(record) = current.take() {
+        record.flush(&mut jobs, &mut r)?;
     }
-    assert_eq!(r.rows(), jobs.len(), "every job read has a row");
+    // Provable: every flush covers its job.
+    debug_assert_eq!(r.rows(), jobs.len(), "every job read has a row");
     Ok((jobs, r))
 }
 
@@ -230,19 +240,22 @@ impl JobRecord {
         match (f[0].as_str(), f.len()) {
             ("config", 2) => self.config = Some(f[1].clone()),
             ("corner", 2) => self.corner = Some(f[1].clone()),
-            ("sample", 2) => self.sample = f[1].parse().map_err(|_| bad(n, "bad sample"))?,
+            ("sample", 2) => {
+                self.sample = f[1].parse::<u32>().map_err(|_| bad(n, "bad sample"))?;
+            }
             ("seed", 2) => match f[1].parse::<u32>() {
                 Ok(s) if s != 0 => self.seed = s,
                 _ => return Err(bad(n, "bad seed")),
             },
             ("set", 3) => self.sets.push((f[1].clone(), f[2].clone())),
-            _ => self.fields.push((n, f)),
+            _ => self.fields.push(FieldLine { line: n, values: f }),
         }
         Ok(())
     }
 
     /// Appends the job to `jobs` and its values, verdicts and errors to `r`.
     fn flush(self, jobs: &mut Jobs, r: &mut Results) -> Result<(), String> {
+        assert_eq!(r.rows(), jobs.len(), "the previous job flushed its row");
         let sets: Vec<(&str, &str)> = self
             .sets
             .iter()
@@ -258,7 +271,8 @@ impl JobRecord {
             )
             .map_err(|e| e.to_string())?;
         r.ensure(j);
-        for (n, f) in self.fields {
+        assert_eq!(r.rows(), jobs.len(), "jobs are read in order");
+        for FieldLine { line: n, values: f } in self.fields {
             let find = |names: &[String], x: &str| {
                 names
                     .iter()
@@ -267,11 +281,11 @@ impl JobRecord {
             };
             match (f[0].as_str(), f.len()) {
                 ("var", 3) => {
-                    let x = parse_num(&f[2]).map_err(|e| bad(n, &e.to_string()))?;
+                    let x = schemify_expr::parse_num(&f[2]).map_err(|e| bad(n, &e.to_string()))?;
                     r.set_var(j, find(r.vars(), &f[1])?, x);
                 }
                 ("value", 3) => {
-                    let x = parse_num(&f[2]).map_err(|e| bad(n, &e.to_string()))?;
+                    let x = schemify_expr::parse_num(&f[2]).map_err(|e| bad(n, &e.to_string()))?;
                     r.set_value(j, find(r.outputs(), &f[1])?, x);
                 }
                 ("pass", 3) => {
@@ -297,30 +311,35 @@ impl JobRecord {
             }
         }
         jobs.set_state(j, self.state);
-        assert_eq!(r.rows(), jobs.len());
+        assert_eq!(r.rows(), jobs.len(), "one row per job read");
         Ok(())
     }
 }
 
 /// Appends one indented attribute line `  <key> <value>…`.
 fn attr(out: &mut String, key: &str, vals: &[&str]) {
+    assert!(!key.is_empty(), "an attribute line starts with its key");
+    assert!(!key.contains(' '), "a key is one word: `{key}`");
+    assert!(out.ends_with('\n'), "attributes start a line");
     out.push_str("  ");
     out.push_str(key);
     for v in vals {
         out.push(' ');
-        push_value(out, v);
+        text::push_value(out, v);
     }
     out.push('\n');
 }
 
 fn bad(n: usize, why: &str) -> String {
+    assert!(!why.is_empty(), "an error says what is wrong");
     format!("line {}: {why}", n + 1)
 }
 
 /// The values of one line, owned (format spec §2 lexical layer); `None` for a malformed
 /// one or a line without values.
 fn split_values(line: &str) -> Option<Vec<String>> {
-    let v: Vec<String> = values(line)
+    debug_assert!(!line.trim().is_empty(), "blank lines are skipped first");
+    let v: Vec<String> = text::values(line)
         .map(|v| v.ok().map(|v| v.into_owned()))
         .collect::<Option<_>>()?;
     (!v.is_empty()).then_some(v)
@@ -345,7 +364,7 @@ mod tests {
         ];
         let mut line = String::new();
         for v in vals {
-            push_value(&mut line, v);
+            text::push_value(&mut line, v);
             line.push(' ');
         }
         let back = split_values(&line).unwrap();

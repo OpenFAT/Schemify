@@ -17,7 +17,7 @@
 use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::plan::{DistKind, MonteCarlo, Plan};
 use crate::results::{Pass, Results};
-use schemify_expr::{Mode, Program, Scratch, Value, write_num};
+use schemify_expr::{Mode, Program, Scratch, Value};
 use std::sync::OnceLock;
 
 /// Pass rate of one spec over a run's finished Monte Carlo samples.
@@ -37,14 +37,15 @@ pub struct Yield {
 
 /// Appends sample `s` of `m`: one assignment per var with a `dist` (plan order, sorted by
 /// var), each varying its base (run spec §3) by a fresh draw.
-pub(crate) fn sample<'p>(
-    plan: &'p Plan,
+pub(crate) fn sample<'plan>(
+    plan: &'plan Plan,
     corner: Option<&str>,
     m: &MonteCarlo,
     s: u32,
-    assigns: &mut Vec<(&'p str, String)>,
+    assigns: &mut Vec<(&'plan str, String)>,
 ) {
     assert!(s < m.samples, "sample {s} of {}", m.samples);
+    assert_ne!(s, NO_SAMPLE, "a sample index, not the marker");
     let before = assigns.len();
     for d in &plan.dists {
         let z = draw(d.kind, m.seed, s, &d.var);
@@ -59,11 +60,14 @@ pub(crate) fn sample<'p>(
 /// (run spec §3): in `1..=2^30`, pure in `(seed, sample)`. The netlist sets it, so the
 /// simulator's own random functions (PDK `agauss` in `.param` and model cards) draw the
 /// same values for the same sample in every run, corner and sweep point.
+#[must_use]
 pub fn sim_seed(seed: u64, sample: u32) -> u32 {
     // The stream of the empty name: no var is named "" (format names are nonempty).
-    let mut st = stream(seed, sample, "");
-    let s = (splitmix64(&mut st) >> 34) as u32 + 1;
-    assert!((1..=1 << 30).contains(&s));
+    let mut state = stream(seed, sample, "");
+    let s = (splitmix64(&mut state) >> 34) as u32 + 1;
+    // 30 bits plus one: provable, so not a documented panic.
+    debug_assert!(s >= 1, "0 means no seed");
+    debug_assert!(s <= 1 << 30);
     s
 }
 
@@ -75,8 +79,9 @@ pub fn sim_seed(seed: u64, sample: u32) -> u32 {
 /// # Panics
 ///
 /// Panics if `results` has another spec count than `plan` (results of another plan).
+#[must_use]
 pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> {
-    assert_eq!(results.specs(), plan.specs.len());
+    assert_eq!(results.specs(), plan.specs.len(), "results of another plan");
     let mut out: Vec<Yield> = (0..plan.specs.len())
         .map(|k| Yield {
             spec: k as u16,
@@ -87,18 +92,19 @@ pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> 
         })
         .collect();
     for j in 0..jobs.len() {
-        let st = jobs.state(j);
-        if jobs.sample(j) == NO_SAMPLE || !st.finished() || st == State::Cancelled {
+        let state = jobs.state(j);
+        if jobs.sample(j) == NO_SAMPLE || !state.finished() || state == State::Cancelled {
             continue;
         }
         for y in &mut out {
             y.total += 1;
-            y.pass += u32::from(st == State::Done && results.pass(j, y.spec) == Pass::Pass);
+            y.pass += u32::from(state == State::Done && results.pass(j, y.spec) == Pass::Pass);
         }
     }
     for y in &mut out {
         (y.lo, y.hi) = wilson(y.pass, y.total);
         assert!(y.pass <= y.total);
+        assert!(y.total <= jobs.len(), "one count per finished sample");
         assert!(y.lo <= y.hi);
     }
     out
@@ -108,12 +114,12 @@ pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> 
 
 /// The expression a variation applies to: the latest assignment of `var` in this job,
 /// else the corner's last `set` of it, else the var's own expression.
-fn base_expr<'a>(
-    plan: &'a Plan,
+fn base_expr<'text>(
+    plan: &'text Plan,
     corner: Option<&str>,
     var: &str,
-    assigns: &'a [(&str, String)],
-) -> Option<&'a str> {
+    assigns: &'text [(&str, String)],
+) -> Option<&'text str> {
     if let Some((_, x)) = assigns.iter().rev().find(|(v, _)| *v == var) {
         return Some(x);
     }
@@ -127,12 +133,13 @@ fn base_expr<'a>(
 /// `(base)+(spread)*(z)`, or `(base)*(1+(spread)*(z))` when relative: still an
 /// expression, so elab evaluates it in bench scope like any other assignment.
 fn vary_text(base: &str, spread: &str, rel: bool, z: f64) -> String {
-    let mut zt = String::new();
-    write_num(&mut zt, z);
+    assert!(z.is_finite(), "draws are finite");
+    let mut z_text = String::new();
+    schemify_expr::write_num(&mut z_text, z);
     let out = if rel {
-        format!("({base})*(1+({spread})*({zt}))")
+        format!("({base})*(1+({spread})*({z_text}))")
     } else {
-        format!("({base})+({spread})*({zt})")
+        format!("({base})+({spread})*({z_text})")
     };
     assert!(out.len() > base.len() + spread.len());
     out
@@ -141,10 +148,10 @@ fn vary_text(base: &str, spread: &str, rel: bool, z: f64) -> String {
 /// One draw: standard normal for [`DistKind::Gauss`], uniform on `[-1, 1)` for
 /// [`DistKind::Uniform`]. Pure in `(seed, sample, var)`.
 fn draw(kind: DistKind, seed: u64, sample: u32, var: &str) -> f64 {
-    let mut st = stream(seed, sample, var);
+    let mut state = stream(seed, sample, var);
     // u1 in (0, 1] (ln is finite), u2 in [0, 1).
-    let u1 = ((splitmix64(&mut st) >> 11) + 1) as f64 / (1u64 << 53) as f64;
-    let u2 = (splitmix64(&mut st) >> 11) as f64 / (1u64 << 53) as f64;
+    let u1 = ((splitmix64(&mut state) >> 11) + 1) as f64 / (1u64 << 53) as f64;
+    let u2 = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
     assert!(u1 > 0.0);
     assert!(u1 <= 1.0);
     assert!((0.0..1.0).contains(&u2));

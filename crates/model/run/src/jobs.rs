@@ -19,8 +19,7 @@
 //!   crate-only `push_row`, `set_state`
 //! - `pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError>`
 
-use crate::plan::{Plan, PlanError, plan_err};
-use std::fmt::Write;
+use crate::plan::{self, Plan, PlanError, Sweep};
 use std::ops::Range;
 
 /// Most jobs in one run (architecture.md capacity).
@@ -99,9 +98,14 @@ pub struct Jobs {
 ///
 /// A selected config, corner, sweep or Monte Carlo record the plan lacks; a dimension
 /// whose engine feature is compiled out; more than [`JOBS_MAX`] jobs.
+///
+/// # Panics
+///
+/// Panics if a selected sweep has no points or a selected Monte Carlo record no
+/// samples, which [`Plan::read`] never builds.
 pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
     let unknown =
-        |kind: &str, n: &str| plan_err("select", n, format!("the bench has no {kind} `{n}`"));
+        |kind: &str, n: &str| plan::plan_err("select", n, format!("the bench has no {kind} `{n}`"));
     if let Some(c) = select
         .configs
         .iter()
@@ -112,7 +116,7 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
     if let Some(c) = select.corners.iter().find(|c| plan.corner(c).is_none()) {
         return Err(unknown("corner", c));
     }
-    let sweeps = select
+    let sweeps: Vec<&Sweep> = select
         .sweeps
         .iter()
         .map(|n| {
@@ -121,7 +125,7 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
                 .find(|s| s.name == *n)
                 .ok_or_else(|| unknown("sweep", n))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<_, _>>()?;
     let mc = select
         .montecarlo
         .map(|n| {
@@ -129,7 +133,7 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
             found.ok_or_else(|| unknown("montecarlo", n))
         })
         .transpose()?;
-    let feature = |f: &str| plan_err("select", f, format!("built without the `{f}` feature"));
+    let feature = |f: &str| plan::plan_err("select", f, format!("built without the `{f}` feature"));
     if !cfg!(feature = "corners") && select.corners.len() > 1 {
         return Err(feature("corners"));
     }
@@ -147,10 +151,14 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
     let mut radix = vec![configs.len(), corners.len()];
     radix.extend(sweeps.iter().map(|s| s.values.len()));
     radix.push(mc.map_or(1, |m| m.samples) as usize);
+    assert!(
+        radix.iter().all(|&r| r >= 1),
+        "Plan::read gives every sweep a point and every Monte Carlo record a sample: {radix:?}"
+    );
     let total = radix.iter().fold(1u64, |n, &r| n.saturating_mul(r as u64));
     if total > u64::from(JOBS_MAX) {
         let why = format!("{total} jobs exceed {JOBS_MAX}");
-        return Err(plan_err("select", "jobs", why));
+        return Err(plan::plan_err("select", "jobs", why));
     }
 
     let mut jobs = Jobs::new();
@@ -195,6 +203,7 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
         digit.iter().all(|&d| d == 0),
         "the odometer wrapped exactly once"
     );
+    assert!(jobs.states().iter().all(|&s| s == State::Pending));
     Ok(jobs)
 }
 
@@ -210,7 +219,10 @@ impl State {
     ];
 
     /// Returns the state word results files use.
+    #[must_use]
     pub fn word(self) -> &'static str {
+        // The table is indexed by discriminant.
+        const { assert!(State::ALL.len() == State::Cancelled as usize + 1) };
         [
             "pending",
             "queued",
@@ -222,11 +234,13 @@ impl State {
     }
 
     /// Parses [`State::word`]; `None` for any other text.
+    #[must_use]
     pub fn from_word(w: &str) -> Option<State> {
         State::ALL.into_iter().find(|s| s.word() == w)
     }
 
     /// Returns whether the job will not change any more (done, failed or cancelled).
+    #[must_use]
     pub fn finished(self) -> bool {
         matches!(self, State::Done | State::Failed | State::Cancelled)
     }
@@ -234,16 +248,23 @@ impl State {
 
 impl Jobs {
     /// Creates an empty table.
+    #[must_use]
     pub fn new() -> Jobs {
         Jobs::default()
     }
 
     /// Returns the number of jobs.
+    #[must_use]
     pub fn len(&self) -> u32 {
+        debug_assert!(
+            self.config.len() <= JOBS_MAX as usize,
+            "push_row caps the table"
+        );
         self.config.len() as u32
     }
 
     /// Returns whether there are no jobs.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.config.is_empty()
     }
@@ -268,40 +289,76 @@ impl Jobs {
     }
 
     /// Returns job `j`'s config name, `None` for the bench default.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
+    #[must_use]
     pub fn config(&self, j: u32) -> Option<&str> {
+        assert!(j < self.len(), "job {j} of {}", self.len());
         name(&self.configs, self.config[j as usize])
     }
 
     /// Returns job `j`'s corner name, `None` for the bench default.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
+    #[must_use]
     pub fn corner(&self, j: u32) -> Option<&str> {
+        assert!(j < self.len(), "job {j} of {}", self.len());
         name(&self.corners, self.corner[j as usize])
     }
 
     /// Returns job `j`'s Monte Carlo sample index, or [`NO_SAMPLE`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
+    #[must_use]
     pub fn sample(&self, j: u32) -> u32 {
+        assert!(j < self.len(), "job {j} of {}", self.len());
         self.sample[j as usize]
     }
 
     /// Returns job `j`'s simulator random seed (run spec §3: a Monte Carlo sample's, so
     /// the simulator's own random functions draw the same values every run), if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
+    #[must_use]
     pub fn seed(&self, j: u32) -> Option<u32> {
+        assert!(j < self.len(), "job {j} of {}", self.len());
         let s = self.seed[j as usize];
         (s != 0).then_some(s)
     }
 
     /// Returns every job's state, indexed by job.
+    #[must_use]
     pub fn states(&self) -> &[State] {
+        debug_assert_eq!(self.state.len(), self.config.len(), "columns in step");
         &self.state
     }
 
     /// Returns job `j`'s state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
+    #[must_use]
     pub fn state(&self, j: u32) -> State {
+        assert!(j < self.len(), "job {j} of {}", self.len());
         self.state[j as usize]
     }
 
     /// Cancels job `j` if it was never submitted (a caller that prepares jobs lazily, like
     /// the editor, stops a run whose tail never reached a runner; queued and running jobs
     /// go through `Runner::cancel`). Returns whether `j` was pending.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
     pub fn cancel_pending(&mut self, j: u32) -> bool {
         assert!(j < self.len(), "job {j} of {}", self.len());
         let pending = self.state[j as usize] == State::Pending;
@@ -313,7 +370,12 @@ impl Jobs {
     }
 
     /// Iterates job `j`'s `(var, value)` assignments in application order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
     pub fn assignments(&self, j: u32) -> impl Iterator<Item = (&str, &str)> + '_ {
+        assert!(j < self.len(), "job {j} of {}", self.len());
         span(&self.assign_end, j as usize).map(move |a| {
             let var = self.var_names[self.assign_var[a] as usize].as_str();
             (var, &self.vals[span(&self.val_end, a)])
@@ -321,6 +383,11 @@ impl Jobs {
     }
 
     /// Returns the value job `j` assigns to `var` last, if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
+    #[must_use]
     pub fn assigned(&self, j: u32, var: &str) -> Option<&str> {
         self.assignments(j)
             .filter(|(v, _)| *v == var)
@@ -331,7 +398,14 @@ impl Jobs {
     /// Appends job `j`'s canonical key line, `config corner sample var=value…` with `-`
     /// for a default or absent field: part of the design hash (run spec §4) and the label
     /// the app shows for a job.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j >= len()`.
     pub fn write_key(&self, j: u32, out: &mut String) {
+        use std::fmt::Write;
+
+        assert!(j < self.len(), "job {j} of {}", self.len());
         let len = out.len();
         out.push_str(self.config(j).unwrap_or("-"));
         out.push(' ');
@@ -357,14 +431,14 @@ impl Jobs {
         assigns: &[(&str, &str)],
     ) -> Result<u32, PlanError> {
         if self.len() >= JOBS_MAX {
-            return Err(plan_err(
+            return Err(plan::plan_err(
                 "select",
                 "jobs",
                 format!("more than {JOBS_MAX} jobs"),
             ));
         }
         if let Some((v, _)) = assigns.iter().find(|(v, x)| v.is_empty() || x.is_empty()) {
-            return Err(plan_err("select", v, "empty var name or value"));
+            return Err(plan::plan_err("select", v, "empty var name or value"));
         }
         let config = config.map_or(DEFAULT, |c| intern(&mut self.configs, c));
         let corner = corner.map_or(DEFAULT, |c| intern(&mut self.corners, c));
@@ -386,6 +460,8 @@ impl Jobs {
         self.state.push(State::Pending);
         assert_eq!(self.assign_end.len(), self.config.len());
         assert_eq!(self.val_end.len(), self.assign_var.len());
+        assert_eq!(self.state.len(), self.config.len());
+        assert_eq!(self.seed.len(), self.config.len());
         Ok(self.len() - 1)
     }
 
@@ -393,8 +469,10 @@ impl Jobs {
     ///
     /// # Panics
     ///
-    /// Panics if `j` already finished in another state: a finished job never changes.
+    /// Panics if `j >= len()`, or `j` already finished in another state: a finished job
+    /// never changes.
     pub(crate) fn set_state(&mut self, j: u32, s: State) {
+        assert!(j < self.len(), "job {j} of {}", self.len());
         let old = self.state[j as usize];
         assert!(!old.finished() || old == s, "job {j} already {old:?}");
         self.state[j as usize] = s;
@@ -404,15 +482,18 @@ impl Jobs {
 // ---- private ----
 
 /// One dimension: the named entries, or the bench default alone.
-fn dim<'a>(names: &[&'a str]) -> Vec<Option<&'a str>> {
+fn dim<'name>(names: &[&'name str]) -> Vec<Option<&'name str>> {
     if names.is_empty() {
         return vec![None];
     }
-    names.iter().map(|n| Some(*n)).collect()
+    let out: Vec<Option<&str>> = names.iter().map(|n| Some(*n)).collect();
+    assert_eq!(out.len(), names.len());
+    out
 }
 
 /// Row `i`'s range in a CSR whose `ends` hold one past each row's last element.
 fn span(ends: &[u32], i: usize) -> Range<usize> {
+    assert!(i < ends.len(), "row {i} of {}", ends.len());
     let start = if i == 0 { 0 } else { ends[i - 1] as usize };
     let end = ends[i] as usize;
     assert!(start <= end);
@@ -425,10 +506,16 @@ fn intern(names: &mut Vec<String>, n: &str) -> u16 {
     }
     assert!(names.len() < DEFAULT as usize, "name table full");
     names.push(n.to_owned());
+    assert!(names.len() <= DEFAULT as usize, "DEFAULT is never an index");
     (names.len() - 1) as u16
 }
 
 fn name(names: &[String], i: u16) -> Option<&str> {
+    assert!(
+        i == DEFAULT || usize::from(i) < names.len(),
+        "name {i} of {}",
+        names.len()
+    );
     (i != DEFAULT).then(|| names[i as usize].as_str())
 }
 
@@ -476,13 +563,13 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "job 0 already Cancelled")]
     fn finished_states_never_change() {
         let mut jobs = Jobs::new();
         jobs.push(None, None, NO_SAMPLE, &[]).unwrap();
         assert!(jobs.cancel_pending(0));
         assert!(!jobs.cancel_pending(0), "only a pending job cancels");
         jobs.set_state(0, State::Cancelled);
-        let changed = std::panic::catch_unwind(move || jobs.set_state(0, State::Done));
-        assert!(changed.is_err());
+        jobs.set_state(0, State::Done);
     }
 }

@@ -7,36 +7,37 @@
 
 mod common;
 
-use common::{first_of, have_ngspice, project, rc, run, tmp};
-use schemify_elab::{Dialect, no_funcs};
-use schemify_run::{
-    Jobs, OptRun, Pass, Plan, Results, Runner, RunnerConfig, Select, State, design, expand,
-    prepare, read_results, write_results, yield_summary,
-};
+use schemify_elab::Dialect;
+use schemify_run::{Jobs, OptRun, Pass, Plan, Results, Runner, RunnerConfig, Select, State};
+use std::fs;
 
 // ---- private ----
 
 fn var(results: &Results, j: u32, name: &str) -> f64 {
-    let v = results.vars().iter().position(|x| x == name).unwrap() as u16;
-    results.var_value(j, v).unwrap()
+    let v = results
+        .vars()
+        .iter()
+        .position(|x| x == name)
+        .expect("a bench var") as u16;
+    results.var_value(j, v).expect("the job recorded its var")
 }
 
 #[test]
 fn rc_sweep_and_corners_match_the_analytic_response() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let select = Select {
         corners: &["ff", "tt"],
         sweeps: &["rsw"],
         ..Select::default()
     };
-    let jobs = expand(&plan, &select).unwrap();
+    let jobs = schemify_run::expand(&plan, &select).unwrap();
     assert_eq!(jobs.len(), 6, "3 sweep points × 2 corners");
-    let dir = tmp("ngspice-rc");
-    let (jobs, results, runner) = run(&p, top, &plan, jobs, |d| {
+    let dir = common::tmp("ngspice-rc");
+    let (jobs, results, runner) = common::run(&p, top, &plan, jobs, |d| {
         let mut c = RunnerConfig::new(&dir, d);
         c.workers = 4;
         c
@@ -67,18 +68,18 @@ fn rc_sweep_and_corners_match_the_analytic_response() {
     assert_eq!((jobs.corner(0), jobs.corner(3)), (Some("ff"), Some("tt")));
     // The results file round-trips and reloads fresh against the same design.
     let path = runner.save(&jobs, &results).unwrap();
-    let text = std::fs::read_to_string(path).unwrap();
-    let (j2, r2) = read_results(&text).unwrap();
-    assert_eq!(write_results(&j2, &r2), text);
+    let text = fs::read_to_string(path).unwrap();
+    let (j2, r2) = schemify_run::read_results(&text).unwrap();
+    assert_eq!(schemify_run::write_results(&j2, &r2), text);
     assert!(!r2.stale(results.design()));
 }
 
 #[test]
 fn one_worker_and_many_workers_write_identical_results() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let select = Select {
         corners: &["ff", "tt"],
@@ -88,13 +89,19 @@ fn one_worker_and_many_workers_write_identical_results() {
     let texts: Vec<String> = [1u16, 6]
         .into_iter()
         .map(|w| {
-            let dir = tmp(&format!("ngspice-workers-{w}"));
-            let (jobs, results, _) = run(&p, top, &plan, expand(&plan, &select).unwrap(), |d| {
-                let mut c = RunnerConfig::new(&dir, d);
-                c.workers = w;
-                c
-            });
-            write_results(&jobs, &results)
+            let dir = common::tmp(&format!("ngspice-workers-{w}"));
+            let (jobs, results, _) = common::run(
+                &p,
+                top,
+                &plan,
+                schemify_run::expand(&plan, &select).unwrap(),
+                |d| {
+                    let mut c = RunnerConfig::new(&dir, d);
+                    c.workers = w;
+                    c
+                },
+            );
+            schemify_run::write_results(&jobs, &results)
         })
         .collect();
     assert_eq!(texts[0], texts[1]);
@@ -102,16 +109,24 @@ fn one_worker_and_many_workers_write_identical_results() {
 
 #[test]
 fn optimizer_sizes_r_for_a_target_time_constant() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let mut opt = OptRun::new(&plan, "fit").unwrap();
     let mut jobs = Jobs::new();
-    let digest = design(&p, top, &jobs, &[], Dialect::Ngspice, &mut no_funcs).unwrap();
+    let digest = schemify_run::design(
+        &p,
+        top,
+        &jobs,
+        &[],
+        Dialect::Ngspice,
+        &mut schemify_elab::no_funcs,
+    )
+    .unwrap();
     let mut results = Results::new(&plan, digest);
-    let dir = tmp("ngspice-opt");
+    let dir = common::tmp("ngspice-opt");
     let mut runner = Runner::new(RunnerConfig::new(&dir, &digest));
     let mut finished = Vec::new();
     // ask → jobs → tell, one candidate in flight (Nelder–Mead is sequential).
@@ -119,14 +134,14 @@ fn optimizer_sizes_r_for_a_target_time_constant() {
         match opt.step(&mut jobs, &results).unwrap() {
             Some(r) => {
                 for j in r {
-                    let prepared = prepare(
+                    let prepared = schemify_run::prepare(
                         &p,
                         top,
                         &mut jobs,
                         j,
                         &[],
                         Dialect::Ngspice,
-                        &mut no_funcs,
+                        &mut schemify_elab::no_funcs,
                         &mut results,
                     );
                     runner.submit(&mut jobs, &mut results, j, &prepared.expect("netlists"));
@@ -153,20 +168,20 @@ fn optimizer_sizes_r_for_a_target_time_constant() {
 
 #[test]
 fn monte_carlo_yield_over_real_simulations() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
-    let (p, top) = rc();
+    let (p, top) = common::rc();
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let select = Select {
         montecarlo: Some("mc"),
         ..Select::default()
     };
-    let jobs = expand(&plan, &select).unwrap();
-    let dir = tmp("ngspice-mc");
-    let (jobs, results, _) = run(&p, top, &plan, jobs, |d| RunnerConfig::new(&dir, d));
+    let jobs = schemify_run::expand(&plan, &select).unwrap();
+    let dir = common::tmp("ngspice-mc");
+    let (jobs, results, _) = common::run(&p, top, &plan, jobs, |d| RunnerConfig::new(&dir, d));
     // R = 3.3k ± 50 at C = 1u (tt): v(1m) ≈ 0.26 < 0.3, every sample fails the spec.
-    let y = yield_summary(&plan, &jobs, &results);
+    let y = schemify_run::yield_summary(&plan, &jobs, &results);
     eprintln!("monte carlo: {y:?}");
     assert_eq!((y[0].pass, y[0].total), (0, 4));
     assert!(y[0].hi < 0.6);
@@ -188,32 +203,40 @@ fn agauss_bench(seed: u32) -> String {
 
 fn agauss_run(seed: u32, tag: &str) -> (Vec<f64>, String) {
     let bench = agauss_bench(seed);
-    let (p, top) = project(&[("tb.shbench", &bench)]);
-    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
+    let (p, top) = common::project(&[("tb.shbench", &bench)]);
+    let plan = Plan::read(p.doc(top).expect("the bench is open")).expect("the bench reads");
     let select = Select {
         montecarlo: Some("mc"),
         ..Select::default()
     };
-    let dir = tmp(tag);
-    let (jobs, results, runner) = run(&p, top, &plan, expand(&plan, &select).unwrap(), |d| {
-        RunnerConfig::new(&dir, d)
-    });
-    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
-    let want = format!(".option seed={}\n.end\n", jobs.seed(0).unwrap());
+    let dir = common::tmp(tag);
+    let (jobs, results, runner) = common::run(
+        &p,
+        top,
+        &plan,
+        schemify_run::expand(&plan, &select).expect("the plan has record `mc`"),
+        |d| RunnerConfig::new(&dir, d),
+    );
+    let netlist = fs::read_to_string(runner.job_dir(0).join("netlist.cir"))
+        .expect("the job wrote its netlist");
+    let want = format!(
+        ".option seed={}\n.end\n",
+        jobs.seed(0).expect("a Monte Carlo job has a seed")
+    );
     assert!(netlist.ends_with(&want), "{netlist}");
     let values = (0..jobs.len())
         .map(|j| {
             let errs: Vec<_> = results.errors().collect();
             assert_eq!(jobs.state(j), State::Done, "{errs:?}");
-            results.value(j, 0).unwrap()
+            results.value(j, 0).expect("every sample has output `r`")
         })
         .collect();
-    (values, write_results(&jobs, &results))
+    (values, schemify_run::write_results(&jobs, &results))
 }
 
 #[test]
 fn monte_carlo_seeds_make_ngspice_agauss_reproducible() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
     // Without a seed ngspice seeds from its process id: two runs would differ.
@@ -241,24 +264,24 @@ fn monte_carlo_seeds_make_ngspice_agauss_reproducible() {
 
 #[test]
 fn a_relative_corner_lib_is_found_beside_the_bench() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
     let bench = "schemify 1 shbench\n  corner tt\n\ncorner tt\n  lib models/rc.lib tt\n\n\
                  output v \"v(out)\"\n\ncode dut spice\n  | R1 out 0 {rval}\n  | I1 0 out 1m\n  \
                  | .op\n";
-    let (p, top) = project(&[("tb.shbench", bench)]);
+    let (p, top) = common::project(&[("tb.shbench", bench)]);
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
-    let dir = tmp("relative-lib");
-    std::fs::create_dir_all(dir.join("models")).unwrap();
-    std::fs::write(
+    let dir = common::tmp("relative-lib");
+    fs::create_dir_all(dir.join("models")).unwrap();
+    fs::write(
         dir.join("models/rc.lib"),
         "* corner models\n.lib tt\n.param rval=2k\n.endl tt\n",
     )
     .unwrap();
     let mut jobs = Jobs::new();
     jobs.push(None, None, schemify_run::NO_SAMPLE, &[]).unwrap();
-    let (jobs, results, _) = run(&p, top, &plan, jobs, |d| RunnerConfig::new(&dir, d));
+    let (jobs, results, _) = common::run(&p, top, &plan, jobs, |d| RunnerConfig::new(&dir, d));
     let errs: Vec<_> = results.errors().collect();
     assert_eq!(jobs.state(0), State::Done, "{errs:?}");
     let v = results.value(0, 0).unwrap();
@@ -270,11 +293,11 @@ fn a_relative_corner_lib_is_found_beside_the_bench() {
 
 #[test]
 fn a_verilog_a_body_compiles_with_openvaf_and_simulates_through_osdi() {
-    if !have_ngspice() {
+    if !common::have_ngspice() {
         return;
     }
     // OpenVAF-Reloaded (nixpkgs `openvaf`) installs `openvaf-r`.
-    let Some(vaf) = first_of(&["openvaf", "openvaf-r"], "--version") else {
+    let Some(vaf) = common::first_of(&["openvaf", "openvaf-r"], "--version") else {
         return;
     };
     let vres = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\n\
@@ -285,13 +308,13 @@ fn a_verilog_a_body_compiles_with_openvaf_and_simulates_through_osdi() {
     let bench = "schemify 1 shbench\n\ninst 0aaaaa ./vres\n  at 0 0 R0\n  name N1\n\n\
                  label 0bbbba 0 0 R0 out\nlabel 0bbbbb 0 20 R0 0\n\n\
                  output i \"i(v1)\"\n\ncode dut spice\n  | V1 out 0 1\n  | .op\n";
-    let (p, top) = project(&[("vres.shprim", vres), ("tb.shbench", bench)]);
+    let (p, top) = common::project(&[("vres.shprim", vres), ("tb.shbench", bench)]);
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
-    let dir = tmp("openvaf-body");
+    let dir = common::tmp("openvaf-body");
     let mut two = Jobs::new();
     two.push(None, None, schemify_run::NO_SAMPLE, &[]).unwrap();
     two.push(None, None, schemify_run::NO_SAMPLE, &[]).unwrap();
-    let (jobs, results, runner) = run(&p, top, &plan, two, |d| {
+    let (jobs, results, runner) = common::run(&p, top, &plan, two, |d| {
         let mut c = RunnerConfig::new(&dir, d);
         c.cache = dir.join("cache");
         c.tools.openvaf = vaf.to_owned();
@@ -305,7 +328,7 @@ fn a_verilog_a_body_compiles_with_openvaf_and_simulates_through_osdi() {
         assert!((i.abs() - 5e-4).abs() < 5e-9, "i(v1) = {i}");
         assert!(runner.job_dir(j).join("vres.osdi").exists());
     }
-    let netlist = std::fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
+    let netlist = fs::read_to_string(runner.job_dir(0).join("netlist.cir")).unwrap();
     assert!(
         netlist.contains("pre_osdi vres.osdi") && netlist.contains(".model vres_m vres"),
         "{netlist}"
@@ -314,7 +337,7 @@ fn a_verilog_a_body_compiles_with_openvaf_and_simulates_through_osdi() {
         !netlist.contains("endmodule"),
         "the source is compiled, not emitted: {netlist}"
     );
-    let src = std::fs::read_to_string(dir.join("cache/vres.va")).unwrap();
+    let src = fs::read_to_string(dir.join("cache/vres.va")).unwrap();
     assert!(
         src.starts_with("`include \"disciplines.vams\"\nmodule vres(p, n);\n"),
         "{src}"
