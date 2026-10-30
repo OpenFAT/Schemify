@@ -55,6 +55,7 @@ pub(super) fn fixed_points(
     let mut out = Vec::new();
     let unselected = |table: TableId, id: u32| !sel.contains(&ObjKey { table, key: id });
     let inst = doc.instances();
+    assert!(super::instances_in_step(inst), "instance columns in step");
     for i in 0..inst.id.len() {
         if unselected(TableId::Instances, inst.id[i].0) {
             out.extend(super::inst_pins(project, h, doc, i));

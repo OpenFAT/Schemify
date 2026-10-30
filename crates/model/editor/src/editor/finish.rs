@@ -97,6 +97,7 @@ pub(super) fn arc_3(a: Pt, b: Pt, c: Pt) -> Option<ArcFit> {
 
 impl Editor {
     pub(super) fn manhattan_points(&self, from: Pt, to: Pt) -> Vec<Pt> {
+        assert!(self.opts.manhattan <= 2, "a Manhattan mode");
         let mode = if self.opts.orthogonal {
             if (to.0 - from.0).abs() >= (to.1 - from.1).abs() {
                 1
@@ -446,6 +447,10 @@ impl Editor {
             self.session.say("no wire under the pointer");
             return;
         };
+        assert!(
+            (o as usize) < self.scene.objs.len(),
+            "a hit names a scene object"
+        );
         let key = self.scene.objs.key[o as usize];
         if key.table != TableId::Wires {
             self.session.say("no wire under the pointer");

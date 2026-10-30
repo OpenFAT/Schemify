@@ -22,7 +22,8 @@
 //! - `pub fn route`
 //! - `pub enum Junctions`, `pub fn connected`
 //! - `pub fn align`
-//! - `pub(crate) fn wires_in_step`, `pub(crate) fn placed_in_step`
+//! - `pub(crate) fn wires_in_step`, `pub(crate) fn instances_in_step`,
+//!   `pub(crate) fn placed_in_step`
 
 mod cut;
 mod join;
@@ -30,7 +31,9 @@ mod stretch;
 
 use std::collections::HashSet;
 
-use schemify_doc::{Attr, DocHandle, Document, Op, Placed, Project, RecordBuf, TableId, Wires};
+use schemify_doc::{
+    Attr, DocHandle, Document, Instances, Op, Placed, Project, RecordBuf, TableId, Wires,
+};
 use schemify_format::RecordKind;
 
 use crate::geometry::Pt;
@@ -292,6 +295,16 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
 pub(crate) fn wires_in_step(w: &Wires) -> bool {
     let n = w.id.len();
     w.x1.len() == n && w.y1.len() == n && w.x2.len() == n && w.y2.len() == n
+}
+
+/// Whether the instance table's columns are in step.
+pub(crate) fn instances_in_step(t: &Instances) -> bool {
+    let n = t.id.len();
+    t.cell.len() == n
+        && t.name.len() == n
+        && t.x.len() == n
+        && t.y.len() == n
+        && t.orient.len() == n
 }
 
 /// Whether a label, port or text table's columns are in step.

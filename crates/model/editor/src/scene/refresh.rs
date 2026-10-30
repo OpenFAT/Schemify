@@ -91,6 +91,7 @@ impl Build<'_> {
         style: LineStyle,
         o: u32,
     ) {
+        assert!(r >= 0, "a non-negative radius, got {r}");
         self.sc
             .prims
             .arc_styled(c.0, c.1, r, start, sweep, layer, style);

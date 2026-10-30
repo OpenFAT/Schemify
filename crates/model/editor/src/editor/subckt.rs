@@ -222,6 +222,7 @@ fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Cr
         }
     }
     let inst = doc.instances();
+    assert!(wiring::instances_in_step(inst), "instance columns in step");
     for i in 0..inst.id.len() {
         let key = ObjKey {
             table: TableId::Instances,

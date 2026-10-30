@@ -339,6 +339,10 @@ impl Editor {
 pub(super) fn duplicate_names(doc: &Document) -> Duplicates {
     let s = doc.strings();
     let inst = doc.instances();
+    assert!(
+        crate::wiring::instances_in_step(inst),
+        "instance columns in step"
+    );
     let mut by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for i in 0..inst.id.len() {
         by_name.entry(s.get(inst.name[i])).or_default().push(i);
@@ -379,6 +383,10 @@ pub(super) fn duplicate_names(doc: &Document) -> Duplicates {
 /// each group).
 pub(super) fn overlapped(doc: &Document) -> Vec<ObjKey> {
     let inst = doc.instances();
+    assert!(
+        crate::wiring::instances_in_step(inst),
+        "instance columns in step"
+    );
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for i in 0..inst.id.len() {

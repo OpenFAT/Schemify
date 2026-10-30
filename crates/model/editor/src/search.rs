@@ -135,6 +135,10 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
     let s = doc.strings();
     let mut out = Vec::new();
     let inst = doc.instances();
+    assert!(
+        crate::wiring::instances_in_step(inst),
+        "instance columns in step"
+    );
     for i in 0..inst.id.len() {
         let key = ObjKey {
             table: TableId::Instances,

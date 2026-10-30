@@ -165,6 +165,10 @@ impl Editor {
             Ok(bytes) => match self.session.project.external_change(h, &bytes) {
                 Ok(External::Unchanged) => self.session.say("file unchanged"),
                 Ok(e) => {
+                    debug_assert!(
+                        !self.session.project.is_dirty(h),
+                        "a clean document reloads clean"
+                    );
                     self.session.say(format!("reloaded ({e:?})"));
                     self.session.bump(h);
                     self.session.flush_journal(h);
@@ -193,6 +197,10 @@ impl Editor {
     /// Opens recent file `i`: in a tab when it belongs to this project (or one of its local
     /// libraries), else by switching to its project (`switch_project`).
     pub(super) fn open_recent(&mut self, i: usize, reqs: &mut Vec<EditRequest>) {
+        assert!(
+            self.recent.len() <= crate::recent::RECENT_MAX,
+            "the recent list keeps its cap"
+        );
         let Some(path) = self.recent.get(i).cloned() else {
             self.session.say("no recent file");
             return;
