@@ -4,7 +4,10 @@
 //! - `pub fn thousand_prims() -> CanvasPrims`
 //! - `pub fn hundred_k() -> CanvasPrims`
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a subset of the shared fixtures"
+)]
 
 use schemify_canvas::CanvasPrims;
 

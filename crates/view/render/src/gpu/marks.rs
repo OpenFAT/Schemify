@@ -8,9 +8,9 @@
 
 use schemify_canvas::{CanvasPrims, LAYER_DEAD, LAYERS, Marks, PrimKind};
 
-use super::pens::style_word;
-use super::rows::{InstanceRows, arc_fields, edge_fields, edges_of, row, seg_fields};
-use super::{ARC, EDGE, KINDS, LINE, MARKS, RECT, STRIDE};
+use super::pens;
+use super::rows::{self, InstanceRows, Slack};
+use super::{ARC, EDGE, KINDS, LINE, MARKS, RECT, STRIDE, TRI};
 
 /// A mark's stroke: 2 logical px (`canvas::draw_marks`), in 1/16 px.
 const MARK_WIDTH_Q16: u32 = 32;
@@ -51,36 +51,56 @@ impl InstanceRows {
             let run: usize = runs.last().map_or(0, |&r: &usize| r + usize::from(next));
             runs.push(run);
         }
+        debug_assert_eq!(runs.len(), n, "a run per mark");
         let range = |i: usize| runs[i].min(LAYERS - 1);
         let mut count = [[0u32; LAYERS]; KINDS];
-        for i in (0..n).filter(|&i| live(i)) {
+        let live_marks = (0..n).filter(|&i| live(i));
+        for i in live_marks.clone() {
             let k = marks.index[i] as usize;
-            let (kind, rows) = match marks.kind[i] {
+            let (kind, edges) = match marks.kind[i] {
                 PrimKind::Line => (LINE, 1),
                 PrimKind::Rect => (RECT, 1),
                 PrimKind::Arc => (ARC, 1),
-                PrimKind::Polyline => (EDGE, edges_of(&scene.polylines, k, false) as u32),
-                PrimKind::Polygon => (EDGE, edges_of(&scene.polygons, k, true) as u32),
+                PrimKind::Polyline => (
+                    EDGE,
+                    rows::edges_of(&scene.polylines, k, /* closed */ false) as u32,
+                ),
+                PrimKind::Polygon => (
+                    EDGE,
+                    rows::edges_of(&scene.polygons, k, /* closed */ true) as u32,
+                ),
             };
-            count[kind][range(i)] += rows;
+            count[kind][range(i)] += edges;
         }
         let tables = &mut self.tables[MARKS];
         for (kind, t) in tables.iter_mut().enumerate() {
-            t.layout(kind, &count[kind], false);
+            t.layout(kind, &count[kind], Slack::Tight);
         }
-        let style = style_word(MARK_WIDTH_Q16, 0, 0);
+        let style = pens::style_word(MARK_WIDTH_Q16, 0, 0);
         let mut put = |kind: usize, run: usize, fields: &[u32]| {
             let t = &mut tables[kind];
             let s = t.take(run).expect("laid out") as usize;
-            row(&mut t.bytes, STRIDE[kind], s, &fields[..STRIDE[kind] / 4]);
+            rows::row(&mut t.bytes, STRIDE[kind], s, &fields[..STRIDE[kind] / 4]);
         };
-        for i in (0..n).filter(|&i| live(i)) {
+        for i in live_marks {
             let k = marks.index[i] as usize;
             let color = marks.color[i].swap_bytes();
             match marks.kind[i] {
-                PrimKind::Line => put(LINE, range(i), &seg_fields(&scene.lines, k, color, style)),
-                PrimKind::Rect => put(RECT, range(i), &seg_fields(&scene.rects, k, color, style)),
-                PrimKind::Arc => put(ARC, range(i), &arc_fields(&scene.arcs, k, color, style)),
+                PrimKind::Line => put(
+                    LINE,
+                    range(i),
+                    &rows::seg_fields(&scene.lines, k, color, style),
+                ),
+                PrimKind::Rect => put(
+                    RECT,
+                    range(i),
+                    &rows::seg_fields(&scene.rects, k, color, style),
+                ),
+                PrimKind::Arc => put(
+                    ARC,
+                    range(i),
+                    &rows::arc_fields(&scene.arcs, k, color, style),
+                ),
                 PrimKind::Polyline | PrimKind::Polygon => {
                     let closed = marks.kind[i] == PrimKind::Polygon;
                     let p = if closed {
@@ -88,8 +108,12 @@ impl InstanceRows {
                     } else {
                         &scene.polylines
                     };
-                    for j in 0..edges_of(p, k, closed) {
-                        put(EDGE, range(i), &edge_fields(p, k, j, closed, color, style));
+                    for j in 0..rows::edges_of(p, k, closed) {
+                        put(
+                            EDGE,
+                            range(i),
+                            &rows::edge_fields(p, k, j, closed, color, style),
+                        );
                     }
                 }
             }
@@ -98,13 +122,13 @@ impl InstanceRows {
             tables.iter().zip(&count).all(|(t, c)| t.used == *c),
             "every mark placed"
         );
+        assert_eq!(self.count(MARKS, TRI), 0, "a mark never fills");
         self.packed[MARKS] = true;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::TRI;
     use super::*;
 
     fn words(b: &[u8]) -> Vec<u32> {

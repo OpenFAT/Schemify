@@ -9,13 +9,15 @@
 //! - `pub fn draw_rows<P: Painter>(p: &mut P, view: Rect, cam: &Camera, rows: &InstanceRows, src: usize, paths: &mut Paths)`
 //! - `pub(super) fn pixel(v: f64) -> f64`
 
+use std::f64::consts;
+
 use kurbo::{BezPath, Cap, Join, Rect, Stroke};
 
 use schemify_canvas::{Camera, LAYERS};
 
 use super::LOD_PX;
 use crate::gpu::{self, ARC, CLOSED, EDGE, FILL, FIRST, InstanceRows, LINE, PARITY, RECT};
-use crate::painter::{Chains, Painter, push_rect, rgba};
+use crate::painter::{self, Chains, Painter};
 
 /// The paths [`draw_rows`] batches one layer into (reused, so a frame allocates nothing once
 /// they have grown), and the grid's dots.
@@ -32,13 +34,24 @@ pub struct Paths {
     fill_ends: Vec<usize>,
     one: BezPath,
     /// Styled strokes, one path per (width in 1/16 px, dash) seen so far.
-    styled: Vec<(u32, u32, BezPath)>,
+    styled: Vec<Styled>,
     /// Far-zoom rows as the whole pixels their box touches.
     lod: Chains,
     /// The marks of one colour run.
     marks: BezPath,
     pub(super) dots: Chains,
 }
+
+/// The rows of one stroke style: width in 1/16 px, dash, and the path they are batched into.
+#[derive(Debug)]
+struct Styled {
+    q16: u32,
+    dash: u32,
+    path: BezPath,
+}
+
+/// Styles [`Paths`] keeps: a width and a dash per layer at most, a style byte's worth each.
+const STYLES_MAX: usize = LAYERS * 64;
 
 /// Draws source `src` of `rows` (a canvas table, or [`gpu::MARKS`]) into `view` through `cam`
 /// as the CPU paints the canvas: layer by layer, each layer batched into a few paths drawn in
@@ -51,7 +64,8 @@ pub struct Paths {
 ///
 /// # Panics
 ///
-/// Panics on `src ≥ gpu::SOURCES`.
+/// Panics on `src ≥ gpu::SOURCES`, a camera that does not scale up, or a view that is not
+/// finite.
 pub fn draw_rows<P: Painter>(
     p: &mut P,
     view: Rect,
@@ -61,6 +75,8 @@ pub fn draw_rows<P: Painter>(
     paths: &mut Paths,
 ) {
     assert!(src < gpu::SOURCES, "a row source");
+    assert!(cam.scale > 0.0, "a drawable camera, scale {}", cam.scale);
+    assert!(view.is_finite(), "a view on the screen");
     let (ox, oy) = cam.origin(view);
     let s = cam.scale;
     let cull = view.inflate(2.0, 2.0);
@@ -69,6 +85,7 @@ pub fn draw_rows<P: Painter>(
     let at = |x: u32, y: u32| (f64::from(x as i32) * s + ox, f64::from(y as i32) * s + oy);
     let flags = |style: u32| (style >> 20) & 0xf;
     let marks = src == gpu::MARKS;
+    debug_assert!(paths.styled.len() <= STYLES_MAX, "styles are bounded");
     for layer in 0..LAYERS {
         paths.clear();
         // The layer's colour and plain stroke width, from its rows (one of each per layer, the
@@ -116,20 +133,20 @@ pub fn draw_rows<P: Painter>(
             if marks {
                 width = w[5] & 0xffff;
                 let r = Rect::new(snap(x0), snap(y0), snap(x1), snap(y1));
-                push_rect(&mut paths.marks, r);
+                painter::push_rect(&mut paths.marks, r);
                 continue;
             }
             if paths.lod([x0, y0, x1, y1]) {
                 continue;
             }
             if flags(w[5]) & FILL != 0 {
-                push_rect(&mut paths.fill, Rect::new(x0, y0, x1, y1));
+                painter::push_rect(&mut paths.fill, Rect::new(x0, y0, x1, y1));
                 paths.fill_ends.push(paths.fill.elements().len());
             }
             if flags(w[5]) & PARITY != 0 {
                 let (path, o) = paths.styled(w[5]);
                 let (a, b) = (pt_at((x0, y0), o), pt_at((x1, y1), o));
-                push_rect(path, Rect::new(a.0, a.1, b.0, b.1));
+                painter::push_rect(path, Rect::new(a.0, a.1, b.0, b.1));
                 continue;
             }
             width = w[5] & 0xffff;
@@ -177,6 +194,8 @@ pub fn draw_rows<P: Painter>(
             while end < edges.end && flags(rows.row(src, EDGE, end)[5]) & FIRST == 0 {
                 end += 1;
             }
+            debug_assert!(end > k, "each chain takes an edge or more: the walk ends");
+            debug_assert!(end <= edges.end, "a chain inside its layer");
             let chain = k..end;
             k = end;
             let (style, closed) = (first[5], flags(first[5]) & CLOSED != 0);
@@ -190,6 +209,7 @@ pub fn draw_rows<P: Painter>(
             // The chain's points: the first edge's start, then every edge's end (a polygon's
             // last edge ends where it started: that point is the close).
             let n = chain.len() + usize::from(!closed);
+            debug_assert!(n >= 2, "a chain has two points or more");
             let point = |j: usize| {
                 let w = rows.row(src, EDGE, chain.start + j.saturating_sub(1) as u32);
                 if j == 0 {
@@ -264,10 +284,12 @@ pub fn draw_rows<P: Painter>(
                 paths.fill_ends.push(paths.fill.elements().len());
             }
         }
+        debug_assert_eq!(k, edges.end, "the chains cover the layer's edges");
         if color == 0 {
+            debug_assert!(paths.marks.is_empty(), "a mark in view has a colour");
             continue; // nothing of this layer in view
         }
-        let (c, w) = (rgba(color.swap_bytes()), f64::from(width) / 16.0);
+        let (c, w) = (painter::rgba(color.swap_bytes()), f64::from(width) / 16.0);
         if marks {
             if !paths.marks.is_empty() {
                 p.stroke_path(&paths.marks, w, c);
@@ -277,6 +299,7 @@ pub fn draw_rows<P: Painter>(
         // Each closed shape on its own (the GPU fills each instance on its own too).
         let mut at = 0;
         for &end in &paths.fill_ends {
+            debug_assert!(at < end, "each fill is a shape of its own");
             paths.one.truncate(0);
             paths
                 .one
@@ -285,18 +308,22 @@ pub fn draw_rows<P: Painter>(
             at = end;
         }
         debug_assert_eq!(at, paths.fill.elements().len(), "every fill ends a shape");
+        let plain = !paths.closed.is_empty() || !paths.open.is_empty() || !paths.curves.is_empty();
+        if plain {
+            debug_assert!(width > 0, "a plain stroke has its layer's width");
+        }
         if !paths.closed.is_empty() {
-            p.stroke_chains(&paths.closed, true, w, c);
+            p.stroke_chains(&paths.closed, /* closed */ true, w, c);
         }
         if !paths.open.is_empty() {
-            p.stroke_chains(&paths.open, false, w, c);
+            p.stroke_chains(&paths.open, /* closed */ false, w, c);
         }
         if !paths.curves.is_empty() {
             p.stroke_path(&paths.curves, w, c);
         }
-        for (q16, dash, path) in &paths.styled {
-            if !path.is_empty() {
-                p.stroke_styled(path, &stroke_of(*q16, *dash), c);
+        for s in &paths.styled {
+            if !s.path.is_empty() {
+                p.stroke_styled(&s.path, &stroke_of(s.q16, s.dash), c);
             }
         }
         if !paths.lod.is_empty() {
@@ -323,9 +350,11 @@ impl Paths {
         for path in [&mut self.curves, &mut self.fill, &mut self.marks] {
             path.truncate(0);
         }
-        for b in &mut self.styled {
-            b.2.truncate(0);
+        for s in &mut self.styled {
+            s.path.truncate(0);
         }
+        debug_assert!(self.closed.is_empty(), "no chain left");
+        debug_assert!(self.fill.is_empty(), "no fill left");
     }
 
     /// The path that collects the rows of style word `style` (its width and dash; made on
@@ -333,36 +362,48 @@ impl Paths {
     /// width, the pixel edge for an even one, so both stay crisp.
     fn styled(&mut self, style: u32) -> (&mut BezPath, f64) {
         let (q16, dash) = (style & 0xffff, (style >> 16) & 0xf);
+        debug_assert!(q16 > 0, "a styled row has a width");
         let w = f64::from(q16) / 16.0;
         let o = if (w.round() as i64) % 2 == 0 {
             0.0
         } else {
             0.5
         };
-        let at = match self.styled.iter().position(|b| (b.0, b.1) == (q16, dash)) {
+        let at = match self
+            .styled
+            .iter()
+            .position(|s| (s.q16, s.dash) == (q16, dash))
+        {
             Some(at) => at,
             None => {
                 assert!(
-                    self.styled.len() < LAYERS * 64,
+                    self.styled.len() < STYLES_MAX,
                     "styles are a byte per layer"
                 );
-                self.styled.push((q16, dash, BezPath::new()));
+                self.styled.push(Styled {
+                    q16,
+                    dash,
+                    path: BezPath::new(),
+                });
                 self.styled.len() - 1
             }
         };
-        (&mut self.styled[at].2, o)
+        debug_assert_eq!((self.styled[at].q16, self.styled[at].dash), (q16, dash));
+        (&mut self.styled[at].path, o)
     }
 
     /// Notes a row whose screen box `b` is [`LOD_PX`]-small as the whole pixels it touches;
     /// false (nothing noted) when it is larger.
     #[inline]
     fn lod(&mut self, b: [f64; 4]) -> bool {
-        debug_assert!(b[0] <= b[2] && b[1] <= b[3]);
+        debug_assert!(b[0] <= b[2], "an ordered box");
+        debug_assert!(b[1] <= b[3], "an ordered box");
         if b[2] - b[0] > LOD_PX || b[3] - b[1] > LOD_PX {
             return false;
         }
         let (x0, y0) = (pixel(b[0]) as f32, pixel(b[1]) as f32);
         let (x1, y1) = (pixel(b[2]) as f32 + 1.0, pixel(b[3]) as f32 + 1.0);
+        debug_assert!(x1 > x0, "at least the pixel it touches");
         // ponytail: one rect per far-zoom row (overlaps fill once: whole pixels, non-zero);
         // a per-layer pixel mask drawn as runs if the GPU-less far-zoom frame measures slow.
         self.lod.push(&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
@@ -383,9 +424,11 @@ fn radians(m: u32) -> f64 {
 /// which dominated the 100k-primitive frame. Radial error ≤ 2.7e-4 · r (sub-pixel below
 /// r = 3000 px).
 fn push_arc(path: &mut BezPath, cx: f64, cy: f64, r: f64, start: f64, sweep: f64) {
-    let full = sweep.abs() >= std::f64::consts::TAU;
-    let sweep = sweep.clamp(-std::f64::consts::TAU, std::f64::consts::TAU);
-    let n = ((sweep.abs() / std::f64::consts::FRAC_PI_2).ceil() as u32).clamp(1, 4);
+    debug_assert!(r.is_finite(), "a radius on the screen");
+    debug_assert!(sweep.is_finite(), "a sweep in radians");
+    let full = sweep.abs() >= consts::TAU;
+    let sweep = sweep.clamp(-consts::TAU, consts::TAU);
+    let n = ((sweep.abs() / consts::FRAC_PI_2).ceil() as u32).clamp(1, 4);
     let step = sweep / f64::from(n);
     let k = 4.0 / 3.0 * (step / 4.0).tan();
     let (mut sn, mut cs) = start.sin_cos();
@@ -418,6 +461,7 @@ fn snap(v: f64) -> f64 {
 /// (screen coordinates are far inside).
 #[inline]
 fn pixel_i(v: f64) -> i64 {
+    debug_assert!(v.abs() < 9.0e18, "exact below 2^63, got {v}");
     let v = v + 1e-6;
     let t = v as i64;
     t - i64::from((t as f64) > v)
@@ -438,13 +482,16 @@ fn pt_at((x, y): (f64, f64), o: f64) -> (f64, f64) {
 /// The ordered box `[x0, y0, x1, y1]` of two screen points.
 #[inline]
 fn boxed(a: (f64, f64), b: (f64, f64)) -> [f64; 4] {
-    [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)]
+    let bx = [a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)];
+    debug_assert!(bx[0] <= bx[2], "an ordered box");
+    bx
 }
 
 /// The stroke of a styled row's style word: its width (1/16 px), round caps and joins (a thick
 /// zigzag mitres into spikes), dashes and gaps of `2 · dash` px.
 fn stroke_of(q16: u32, dash: u32) -> Stroke {
     assert!(q16 > 0, "zero-width stroke");
+    assert!(dash < 16, "a dash is a nibble of the style word");
     let w = f64::from(q16) / 16.0;
     let stroke = Stroke::new(w).with_caps(Cap::Round).with_join(Join::Round);
     let d = 2.0 * f64::from(dash);

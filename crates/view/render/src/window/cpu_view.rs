@@ -37,6 +37,7 @@ const ID: &str = "schemify-cpu";
 /// browser composites the frame at its next rendering update (~16 ms); 250 ms leaves slack
 /// for a loaded CI runner.
 const PROBE_MS: i32 = 250;
+const _: () = assert!(PROBE_MS > 0, "the probe waits for a composite");
 
 impl CpuView {
     /// Lays a 2D canvas over `window`'s canvas.
@@ -62,6 +63,7 @@ impl CpuView {
     /// Paints one frame of `app` at `w × h` physical pixels (`scale` physical per logical)
     /// and shows it. A size past 65535 or zero draws nothing.
     pub(crate) fn present<A: App>(&mut self, app: &mut A, w: u32, h: u32, scale: f64) {
+        assert!(scale > 0.0, "a positive scale, got {scale}");
         let (Ok(w16), Ok(h16)) = (u16::try_from(w), u16::try_from(h)) else {
             return;
         };
@@ -76,6 +78,8 @@ impl CpuView {
             let _ = s.set_property("height", &format!("{}px", f64::from(h) / scale));
             self.painter = Some(CpuPainter::new(w16, h16, scale));
         }
+        debug_assert_eq!(self.canvas.width(), w, "the overlay is the frame's size");
+        debug_assert_eq!(self.canvas.height(), h, "the overlay is the frame's size");
         let p = self.painter.as_mut().expect("made above");
         p.reset();
         let viewport = super::logical(w, h, scale);

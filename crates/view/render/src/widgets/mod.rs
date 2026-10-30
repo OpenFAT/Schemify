@@ -18,11 +18,10 @@ use vello_cpu::Glyph;
 
 use schemify_ui::{
     Kind, Layer, NO_NODE, NO_TEXT, Prop, RowPaint, Shown, Strings, StyleProp, Sym, TextSystem,
-    UiLayout, UiState, UiTables, row_paint, row_style,
+    UiLayout, UiState, UiTables,
 };
 
-use crate::painter::{Painter, outline, rgba};
-use text::draw_icon;
+use crate::painter::{self, Painter};
 
 pub use text::{draw_math, draw_prose, draw_text};
 
@@ -61,7 +60,7 @@ pub struct RowKey {
     pub epoch: u32,
     /// The check-indicator inset.
     pub indent: f32,
-    /// [`row_paint`]'s colours (hover, active, disabled already applied).
+    /// [`schemify_ui::row_paint`]'s colours (hover, active, disabled already applied).
     pub paint: [u32; 2],
     /// Border, border colour, pad, pad-y, fg, gap, accelerator fg, radius.
     pub style: [u32; 8],
@@ -110,9 +109,10 @@ pub fn row_key(
     let n = &tables.nodes;
     let node = layout.node()[r];
     let i = node as usize;
+    assert!(i < n.len(), "row {r} shows node {node} of the tables");
     let (shown, kind, id) = (layout.shown()[r], n.kind()[i], n.id()[i]);
-    let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
-    let RowPaint { bg, fg } = row_paint(tables, layout, strings, state, r);
+    let style = |prop| schemify_ui::row_style(tables, layout.title_style(), node, shown, prop);
+    let RowPaint { bg, fg } = schemify_ui::row_paint(tables, layout, strings, state, r);
     let (q, c) = (layout.rect()[r], layout.clip()[r]);
     let editing = matches!(kind, Kind::TextInput | Kind::TextArea) && state.focus() == id;
     let editor = state
@@ -120,11 +120,11 @@ pub fn row_key(
         .filter(|_| editing)
         .and_then(|e| e.try_layout().map(|l| (e, l)))
         .map_or([0; 2], |(e, l)| {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{DefaultHasher, Hash, Hasher};
+            let mut h = DefaultHasher::new();
             e.raw_text().hash(&mut h);
             let text = h.finish();
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut h = DefaultHasher::new();
             [l.width(), l.height()].map(f32::to_bits).hash(&mut h);
             if let Some(b) = e.cursor_geometry(1.0) {
                 [b.x0, b.y0, b.x1, b.y1].map(f64::to_bits).hash(&mut h);
@@ -174,7 +174,8 @@ pub fn row_key(
         stale: false,
         pane: 0,
     };
-    debug_assert!(!key.stale && key.pane == 0, "a fresh key");
+    debug_assert!(!key.stale, "a fresh key");
+    debug_assert_eq!(key.pane, 0, "a fresh key");
     key
 }
 
@@ -182,7 +183,14 @@ pub fn row_key(
 /// row's rect, then call with [`Layer::Overlay`] so popups cover the schematic. Each row goes
 /// through [`Painter::ui_row`] (UI source 0 for the main layer, 1 for the overlay), so a
 /// painter that keeps rows repaints only the rows whose [`RowKey`] changed.
-#[allow(clippy::too_many_arguments)]
+///
+/// # Panics
+///
+/// Panics when `layout`'s columns are out of step.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one frame's UI inputs: tables, layout, strings, text, state, layer and scratch"
+)]
 pub fn draw_ui<P: Painter>(
     p: &mut P,
     tables: &UiTables,
@@ -193,17 +201,17 @@ pub fn draw_ui<P: Painter>(
     layer: Layer,
     scratch: &mut UiScratch,
 ) {
-    assert_eq!(layout.rect().len(), layout.len());
-    assert_eq!(layout.clip().len(), layout.len());
+    assert_eq!(layout.rect().len(), layout.len(), "layout columns in step");
+    assert_eq!(layout.clip().len(), layout.len(), "layout columns in step");
     // Rows inside a scroll pane are clipped to it; consecutive rows share one clip layer.
     let mut clipped: Option<schemify_ui::Rect> = None;
     let rows = layout.rows(layer);
+    assert!(rows.end <= layout.len(), "a layer's rows inside the layout");
     let src = match layer {
         Layer::Main => 0,
         Layer::Overlay => 1,
     };
-    let mut r = rows.start;
-    while r < rows.end {
+    for r in rows {
         let clip = layout.clip()[r];
         if clipped != Some(clip).filter(|c| *c != schemify_ui::NO_CLIP) {
             if clipped.take().is_some() {
@@ -216,6 +224,12 @@ pub fn draw_ui<P: Painter>(
         }
         let vis = layout.rect()[r].intersect(&clip);
         let scroller = layout.scroller(r);
+        if scroller != NO_NODE {
+            assert!(
+                usize::from(scroller) < tables.nodes.len(),
+                "row {r}: scroll pane {scroller} is a node"
+            );
+        }
         let row = UiRow {
             key: row_key(tables, layout, strings, text, state, r),
             visible: vis.w > 0.0 && vis.h > 0.0, // else scrolled out of view
@@ -228,7 +242,6 @@ pub fn draw_ui<P: Painter>(
         p.ui_row(src, &row, |p| {
             draw_row(p, tables, layout, strings, text, state, scratch, r);
         });
-        r += 1;
     }
     if clipped.is_some() {
         p.pop_clip();
@@ -249,7 +262,10 @@ pub(crate) fn rect(r: schemify_ui::Rect) -> Rect {
 // ---- private ----
 
 /// Paints row `r` of the layout: background, border, text, indicators and its widget.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one row's inputs: the UI tables, layout, strings, text, state, row and scratch"
+)]
 fn draw_row<P: Painter>(
     p: &mut P,
     tables: &UiTables,
@@ -260,24 +276,26 @@ fn draw_row<P: Painter>(
     scratch: &mut UiScratch,
     r: usize,
 ) {
+    assert!(r < layout.len(), "row {r} of the layout");
     let n = &tables.nodes;
     let node = layout.node()[r];
     let i = node as usize;
+    assert!(i < n.len(), "row {r} shows node {node} of the tables");
     let shown = layout.shown()[r];
     let kind = n.kind()[i];
     let id = n.id()[i];
-    let style = |prop| row_style(tables, layout.title_style(), node, shown, prop);
+    let style = |prop| schemify_ui::row_style(tables, layout.title_style(), node, shown, prop);
     let area = rect(layout.rect()[r]);
-    let RowPaint { bg, fg } = row_paint(tables, layout, strings, state, r);
-    let fg = rgba(fg);
+    let RowPaint { bg, fg } = schemify_ui::row_paint(tables, layout, strings, state, r);
+    let fg = painter::rgba(fg);
     if bg & 0xff != 0 && kind != Kind::Canvas {
-        p.fill_rect(area, rgba(bg));
+        p.fill_rect(area, painter::rgba(bg));
     }
     let border = style(StyleProp::Border);
     if border > 0 {
         let w = f64::from(border);
-        let color = rgba(style(StyleProp::BorderColor));
-        outline(p, &mut scratch.path, area.inset(-w / 2.0), w, color);
+        let color = painter::rgba(style(StyleProp::BorderColor));
+        painter::outline(p, &mut scratch.path, area.inset(-w / 2.0), w, color);
     }
     let pad = f64::from(style(StyleProp::Pad));
     let indent = f64::from(layout.indent()[r]);
@@ -285,7 +303,7 @@ fn draw_row<P: Painter>(
         let y = (area.y0 + area.y1) / 2.0;
         p.fill_rect(
             Rect::new(area.x0 + 2.0, y.floor(), area.x1 - 2.0, y.floor() + 1.0),
-            rgba(style(StyleProp::Fg)),
+            painter::rgba(style(StyleProp::Fg)),
         );
         return;
     }
@@ -307,12 +325,12 @@ fn draw_row<P: Painter>(
         } else {
             area.y0 + (area.height() - f64::from(ed.height())) / 2.0
         };
-        let (x, w) = (area.x0 + pad, f64::from(ed.width()));
+        let x = area.x0 + pad;
         draw_text(p, ed, x, y, fg, scratch);
         if let Some(c) = state.editor().and_then(|e| e.cursor_geometry(1.0)) {
+            debug_assert!(c.y0 <= c.y1, "a caret runs down its line");
             p.fill_rect(Rect::new(x + c.x0, y + c.y0, x + c.x0 + 1.0, y + c.y1), fg);
         }
-        debug_assert!(w >= 0.0);
     } else if label != NO_TEXT {
         let l = text.layout(label);
         let y = if area_kind {
@@ -335,7 +353,7 @@ fn draw_row<P: Painter>(
     if accel != NO_TEXT {
         let l = text.layout(accel);
         let y = area.y0 + (area.height() - f64::from(l.height())) / 2.0;
-        let color = rgba(style(StyleProp::AccelFg));
+        let color = painter::rgba(style(StyleProp::AccelFg));
         draw_text(
             p,
             l,
@@ -347,7 +365,7 @@ fn draw_row<P: Painter>(
     }
     let icon = layout.icon()[r];
     if icon != u32::MAX {
-        draw_icon(p, text.icon_paths(icon), area, (pad, pad_y), fg, scratch);
+        text::draw_icon(p, text.icon_paths(icon), area, (pad, pad_y), fg, scratch);
     }
     if shown == Shown::Cascade || (kind == Kind::Dropdown && shown == Shown::Normal) {
         let (cx, cy) = (area.x1 - pad - 4.0, (area.y0 + area.y1) / 2.0);
@@ -374,14 +392,13 @@ fn draw_row<P: Painter>(
         let b = Rect::new(x, y, x + size, y + size);
         let path = &mut scratch.path;
         path.truncate(0);
+        use kurbo::Shape as _;
         if style(StyleProp::Radius) > 0 {
-            path.extend(kurbo::Shape::path_elements(
-                &kurbo::Circle::new(b.center(), size / 2.0),
-                0.1,
-            ));
+            path.extend(kurbo::Circle::new(b.center(), size / 2.0).path_elements(0.1));
         } else {
-            path.extend(kurbo::Shape::path_elements(&b.inset(-0.5), 0.1));
+            path.extend(b.inset(-0.5).path_elements(0.1));
         }
+        debug_assert!(!path.elements().is_empty(), "a check box has an outline");
         p.stroke_path(path, 1.0, fg);
         if n.is_checked(strings, node) {
             p.fill_rect(b.inset(-2.0), fg);

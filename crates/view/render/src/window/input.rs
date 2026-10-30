@@ -7,7 +7,7 @@
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 
-use schemify_ui::{Button, Chord, InputEvent, Key, Mods};
+use schemify_ui::{Button, Chord, InputEvent, InputEvents, Key, Mods};
 
 use super::{App, Shell};
 
@@ -15,7 +15,9 @@ impl<A: App> Shell<A> {
     /// Queues the input `event` carries (nothing for any other event).
     pub(super) fn input(&mut self, event: WindowEvent) {
         let s = self.scale;
+        assert!(s > 0.0, "a positive scale, got {s}");
         let at = self.pointer;
+        let queued = self.events.events.len();
         match event {
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = mods_of(m.state());
@@ -25,6 +27,8 @@ impl<A: App> Shell<A> {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer = ((position.x / s) as f32, (position.y / s) as f32);
+                debug_assert!(self.pointer.0.is_finite(), "a pointer on the screen");
+                debug_assert!(self.pointer.1.is_finite(), "a pointer on the screen");
                 self.events.push(InputEvent::PointerMove {
                     x: self.pointer.0,
                     y: self.pointer.1,
@@ -75,6 +79,15 @@ impl<A: App> Shell<A> {
             }
             _ => {}
         }
+        // At most an event and its text per window event (a commit ends the preedit first).
+        assert!(
+            self.events.events.len() <= queued + 2,
+            "one window event, one input"
+        );
+        assert!(
+            self.events.events.len() <= InputEvents::CAPACITY,
+            "the input queue is bounded"
+        );
     }
 }
 
@@ -87,6 +100,11 @@ impl<A: App> Shell<A> {
             WKey::Named(n) => named_key(*n),
             _ => None,
         };
+        if let WKey::Character(_) = key
+            && let Some(Key(c)) = k
+        {
+            assert!(c < Key::NAMED, "a character is below the named keys");
+        }
         if let Some(k) = k {
             self.events.push(InputEvent::Key {
                 chord: Chord::new(Mods(self.mods), k),
@@ -99,7 +117,7 @@ impl<A: App> Shell<A> {
 }
 
 fn named_key(n: NamedKey) -> Option<Key> {
-    Some(match n {
+    let key = match n {
         NamedKey::Escape => Key::ESCAPE,
         NamedKey::Enter => Key::ENTER,
         NamedKey::Tab => Key::TAB,
@@ -129,7 +147,9 @@ fn named_key(n: NamedKey) -> Option<Key> {
         NamedKey::F11 => Key::f(11),
         NamedKey::F12 => Key::f(12),
         _ => return None,
-    })
+    };
+    debug_assert!(key == Key(' ' as u32) || key.0 >= Key::NAMED, "a named key");
+    Some(key)
 }
 
 fn mods_of(m: ModifiersState) -> u8 {
@@ -146,5 +166,7 @@ fn mods_of(m: ModifiersState) -> u8 {
     if m.super_key() {
         out |= Mods::SUPER;
     }
+    let all = Mods::CTRL | Mods::SHIFT | Mods::ALT | Mods::SUPER;
+    debug_assert_eq!(out & !all, 0, "only the four modifier bits");
     out
 }

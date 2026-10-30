@@ -22,6 +22,10 @@ use crate::painter::Painter;
 
 /// Draws prose layout `id` ([`TextSystem::prose`]) with its top-left at `at`: code shades,
 /// rules, images, text runs, then formulas.
+///
+/// # Panics
+///
+/// Panics when `id` is not a prose layout of `text`, or its list's columns are out of step.
 pub fn draw_prose<P: Painter>(
     p: &mut P,
     id: u32,
@@ -31,8 +35,31 @@ pub fn draw_prose<P: Painter>(
     scratch: &mut UiScratch,
 ) {
     let list = text.prose_list(id);
-    assert_eq!(list.text_id.len(), list.text_y.len());
-    assert_eq!(list.math_id.len(), list.math_y.len());
+    assert_eq!(
+        list.text_id.len(),
+        list.text_y.len(),
+        "text columns in step"
+    );
+    assert_eq!(
+        list.math_id.len(),
+        list.math_y.len(),
+        "math columns in step"
+    );
+    assert_eq!(
+        list.text_id.len(),
+        list.text_x.len(),
+        "text columns in step"
+    );
+    assert_eq!(
+        list.math_id.len(),
+        list.math_x.len(),
+        "math columns in step"
+    );
+    assert_eq!(
+        list.image_id.len(),
+        list.image_rect.len(),
+        "image columns in step"
+    );
     let r = |q: &[f32; 4]| {
         let (x, y) = (at.0 + f64::from(q[0]), at.1 + f64::from(q[1]));
         Rect::new(x, y, x + f64::from(q[2]), y + f64::from(q[3]))
@@ -115,6 +142,10 @@ pub fn draw_text<P: Painter>(
 }
 
 /// Draws a [`MathList`] (glyphs, rules, delimiter paths) in the space of `at`.
+///
+/// # Panics
+///
+/// Panics when the list's glyph columns are out of step.
 pub fn draw_math<P: Painter>(
     p: &mut P,
     list: &MathList,
@@ -124,12 +155,10 @@ pub fn draw_math<P: Painter>(
     scratch: &mut UiScratch,
 ) {
     let g = list.glyph_id.len();
-    assert!(
-        list.glyph_face.len() == g
-            && list.glyph_x.len() == g
-            && list.glyph_y.len() == g
-            && list.glyph_px.len() == g
-    );
+    assert_eq!(list.glyph_face.len(), g, "glyph columns in step");
+    assert_eq!(list.glyph_x.len(), g, "glyph columns in step");
+    assert_eq!(list.glyph_y.len(), g, "glyph columns in step");
+    assert_eq!(list.glyph_px.len(), g, "glyph columns in step");
     // One run per maximal stretch of glyphs sharing face and size.
     let mut k = 0;
     while k < g {
@@ -172,11 +201,14 @@ pub(super) fn draw_icon<P: Painter>(
     color: Color,
     scratch: &mut UiScratch,
 ) {
+    assert!(pad.0 >= 0.0, "an icon's horizontal padding");
+    assert!(pad.1 >= 0.0, "an icon's vertical padding");
     let side = (area.width() - 2.0 * pad.0).min(area.height() - 2.0 * pad.1);
     if side <= 0.0 {
         return;
     }
     let s = side / f64::from(ICON_BOX);
+    debug_assert!(s > 0.0, "an icon scales up from its box");
     let c = area.center();
     let at = Affine::translate((c.x - side / 2.0, c.y - side / 2.0)) * Affine::scale(s);
     let width = f64::from(ICON_STROKE) * s;

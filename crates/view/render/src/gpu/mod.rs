@@ -115,9 +115,10 @@ pub struct Frame {
     pub grid_color: u32,
 }
 
-/// How a source table changed since the [`InstanceRows`] last packed it.
+/// How a source table changed since the [`InstanceRows`] last packed it; `'diff` borrows the
+/// diff that reports it (`schemify_canvas::CanvasDiff`).
 #[derive(Clone, Copy, Debug)]
-pub enum Change<'a> {
+pub enum Change<'diff> {
     /// Not at all.
     Same,
     /// Beyond what a patch follows (a rebuilt table, a palette change): repack it whole.
@@ -125,13 +126,13 @@ pub enum Change<'a> {
     /// Rows killed (`killed[kind]` in [`schemify_canvas::CanvasPrims::kill`]'s kind order, now on
     /// [`schemify_canvas::LAYER_DEAD`]) and rows appended past the previous length; every other row as it was
     /// (`TableChange::Rows`).
-    Killed(&'a [Vec<u32>; 6]),
+    Killed(&'diff [Vec<u32>; 6]),
     /// Rows removed (old indices) and added (new indices) per kind, as
     /// `CanvasDiff::edits_of` reports them.
     // ponytail: repacked whole (rows after an edit may have moved, so the slot map would need
     // the script replayed); only the decor and the parity extra report edits, and both are
     // small next to the scene. Replay the script into the slot map if a large table does.
-    Edits([(&'a [u32], &'a [u32]); 6]),
+    Edits([(&'diff [u32], &'diff [u32]); 6]),
 }
 
 /// Dirty ranges kept per row array before they merge into one.
@@ -143,12 +144,18 @@ pub(crate) fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>) {
     if r.is_empty() {
         return;
     }
+    assert!(d.len() <= DIRTY_MAX, "dirty ranges bounded");
+    let (start, end) = (r.start, r.end);
     d.push(r);
     if d.len() > DIRTY_MAX {
-        let lo = d.iter().map(|r| r.start).min().expect("ranges");
-        let hi = d.iter().map(|r| r.end).max().expect("ranges");
+        let lo = d.iter().map(|r| r.start).min().unwrap_or(start);
+        let hi = d.iter().map(|r| r.end).max().unwrap_or(end);
         d.clear();
         d.push(lo..hi);
     }
     assert!(d.len() <= DIRTY_MAX, "dirty ranges bounded");
+    debug_assert!(
+        d.iter().any(|q| q.start <= start && end <= q.end),
+        "the new range is noted"
+    );
 }

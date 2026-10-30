@@ -38,7 +38,8 @@
 //!
 //! ```
 //! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
-//! use schemify_render::{CpuPainter, Painter, canvas::*};
+//! use schemify_render::canvas::{CanvasScratch, draw_canvas};
+//! use schemify_render::{CpuPainter, Painter};
 //! use schemify_render::kurbo::Rect;
 //!
 //! let mut prims = CanvasPrims::default();

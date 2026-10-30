@@ -7,12 +7,14 @@
 //! Contents:
 //! - `GpuPainter::stroke`, `GpuPainter::fill`, `GpuPainter::segment` (`pub(super)`)
 
+use std::collections::hash_map::DefaultHasher;
+use std::f64::consts;
 use std::hash::Hasher;
 
 use kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape, Stroke};
 use peniko::Color;
 
-use super::{GpuPainter, MASK_MAX, SEG, What, color_word};
+use super::{GpuPainter, MASK_MAX, SEG, What};
 use crate::Painter;
 use crate::atlas::PATH;
 
@@ -26,7 +28,7 @@ impl GpuPainter<'_> {
     /// Strokes `path` (logical px) in `stroke`: a mask when it is small, else segments. A
     /// transparent colour or a non-positive width draws nothing.
     pub(super) fn stroke(&mut self, path: &BezPath, stroke: &Stroke, color: Color) {
-        let c = color_word(color);
+        let c = super::color_word(color);
         if c >> 24 == 0 || stroke.width <= 0.0 {
             return;
         }
@@ -35,14 +37,17 @@ impl GpuPainter<'_> {
         } else {
             1.0
         };
+        debug_assert!(miter >= 1.0, "a join reaches at least half the width");
         let caps = matches!(stroke.start_cap, Cap::Square) || matches!(stroke.end_cap, Cap::Square);
-        let grow = stroke.width * 0.5 * miter * if caps { std::f64::consts::SQRT_2 } else { 1.0 };
+        let grow = stroke.width * 0.5 * miter * if caps { consts::SQRT_2 } else { 1.0 };
+        debug_assert!(grow > 0.0, "a stroke covers its path");
         let dev = self
             .base
             .transform_rect_bbox(path.bounding_box().inflate(grow, grow));
         if self.clipped_out([dev.x0, dev.y0, dev.x1, dev.y1]) {
             return;
         }
+        debug_assert!(dev.width() >= 0.0, "a device box");
         if dev.width() <= STROKE_MASK_MAX && dev.height() <= STROKE_MASK_MAX {
             self.path_masks(path, Some(stroke), c, dev);
         } else {
@@ -53,7 +58,7 @@ impl GpuPainter<'_> {
     /// Fills `path` (logical px, non-zero): masks, tiled when large. A transparent colour or
     /// an empty path draws nothing.
     pub(super) fn fill(&mut self, path: &BezPath, color: Color) {
-        let c = color_word(color);
+        let c = super::color_word(color);
         if c >> 24 == 0 || path.elements().is_empty() {
             return;
         }
@@ -61,6 +66,7 @@ impl GpuPainter<'_> {
         if self.clipped_out([dev.x0, dev.y0, dev.x1, dev.y1]) {
             return;
         }
+        debug_assert!(dev.width() > 0.0, "a kept fill has width");
         self.path_masks(path, None, c, dev);
     }
 
@@ -68,6 +74,7 @@ impl GpuPainter<'_> {
     /// skipped when it misses the clip.
     pub(super) fn segment(&mut self, s: [f32; 4], hw: f32, color: u32) {
         debug_assert!(hw >= 0.0, "a half width");
+        debug_assert!(s.iter().all(|v| v.is_finite()), "a segment in device px");
         let pad = f64::from(hw) + 1.0;
         let b = [
             f64::from(s[0].min(s[2])) - pad,
@@ -91,12 +98,17 @@ impl GpuPainter<'_> {
     fn path_masks(&mut self, path: &BezPath, stroke: Option<&Stroke>, color: u32, dev: Rect) {
         let (x0, y0) = (dev.x0.floor() as i32 - 1, dev.y0.floor() as i32 - 1);
         let (x1, y1) = (dev.x1.ceil() as i32 + 1, dev.y1.ceil() as i32 + 1);
-        assert!(x0 < x1 && y0 < y1, "a box of pixels");
+        assert!(x0 < x1, "a box of pixels");
+        assert!(y0 < y1, "a box of pixels");
         let shape = path_hash(path, self.base, (x0, y0), stroke);
         let base = self.base;
-        for ty in (y0..y1).step_by(MASK_MAX as usize) {
-            for tx in (x0..x1).step_by(MASK_MAX as usize) {
+        let rows = (y0..y1).step_by(MASK_MAX as usize);
+        for ty in rows {
+            let columns = (x0..x1).step_by(MASK_MAX as usize);
+            for tx in columns {
                 let (w, h) = ((x1 - tx).min(MASK_MAX), (y1 - ty).min(MASK_MAX));
+                debug_assert!(w > 0, "a tile has pixels");
+                debug_assert!(h > 0, "a tile has pixels");
                 let tile = [tx, ty, tx + w, ty + h].map(f64::from);
                 if self.clipped_out(tile) {
                     continue;
@@ -141,6 +153,7 @@ impl GpuPainter<'_> {
     /// Strokes `path` (logical px) as round-capped segments, its dashes applied: a stroke
     /// too large for a mask. Joins are the segments' round caps (`Stroke::new`'s round joins).
     fn path_segments(&mut self, path: &BezPath, stroke: &Stroke, color: u32) {
+        assert!(stroke.width > 0.0, "a visible stroke");
         let hw = (stroke.width * self.device_scale() * 0.5) as f32;
         let base = self.base;
         let mut pts: Vec<Point> = Vec::new();
@@ -171,6 +184,7 @@ impl GpuPainter<'_> {
             kurbo::flatten(dashed, tol, &mut each);
         }
         flush(&mut pts, false);
+        debug_assert!(pts.is_empty(), "every point flushed into a segment");
         for s in segs {
             self.segment(s, hw, color);
         }
@@ -181,9 +195,10 @@ impl GpuPainter<'_> {
 /// [`PATH_STEPS`] per px) and of `stroke` (`None`: a non-zero fill): what decides a path
 /// mask, whatever whole pixel it is drawn at.
 fn path_hash(path: &BezPath, base: Affine, origin: (i32, i32), stroke: Option<&Stroke>) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    debug_assert!(base.is_finite(), "a drawable base transform");
+    let mut h = DefaultHasher::new();
     let o = (f64::from(origin.0), f64::from(origin.1));
-    let pt = |h: &mut std::collections::hash_map::DefaultHasher, p: Point| {
+    let pt = |h: &mut DefaultHasher, p: Point| {
         let p = base * p;
         h.write_i64(((p.x - o.0) * PATH_STEPS).round() as i64);
         h.write_i64(((p.y - o.1) * PATH_STEPS).round() as i64);
@@ -199,20 +214,23 @@ fn path_hash(path: &BezPath, base: Affine, origin: (i32, i32), stroke: Option<&S
                 1
             }
             PathEl::QuadTo(a, b) => {
-                [a, b].into_iter().for_each(|p| pt(&mut h, p));
+                pt(&mut h, a);
+                pt(&mut h, b);
                 2
             }
             PathEl::CurveTo(a, b, c) => {
-                [a, b, c].into_iter().for_each(|p| pt(&mut h, p));
+                pt(&mut h, a);
+                pt(&mut h, b);
+                pt(&mut h, c);
                 3
             }
             PathEl::ClosePath => 4,
         };
         h.write_u8(tag);
     }
-    base.as_coeffs()[..4]
-        .iter()
-        .for_each(|v| h.write_u64(v.to_bits()));
+    for v in &base.as_coeffs()[..4] {
+        h.write_u64(v.to_bits());
+    }
     match stroke {
         None => h.write_u8(0xf),
         Some(s) => {
@@ -222,7 +240,9 @@ fn path_hash(path: &BezPath, base: Affine, origin: (i32, i32), stroke: Option<&S
             h.write_u8(s.start_cap as u8);
             h.write_u8(s.end_cap as u8);
             h.write_u64(s.dash_offset.to_bits());
-            s.dash_pattern.iter().for_each(|d| h.write_u64(d.to_bits()));
+            for d in &s.dash_pattern {
+                h.write_u64(d.to_bits());
+            }
         }
     }
     h.finish()
