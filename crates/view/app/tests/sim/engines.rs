@@ -156,5 +156,5 @@ fn the_espice_dialect_simulates_an_espice_deck() {
     run_to_idle(&mut s);
     let (_, jobs, res) = s.ed.sim().tables().unwrap();
     assert_eq!(jobs.state(0), State::Failed, "an ngspice deck this time");
-    assert!(res.errors().any(|e| e.2.contains("not espice")));
+    assert!(res.errors().any(|e| e.message.contains("not espice")));
 }

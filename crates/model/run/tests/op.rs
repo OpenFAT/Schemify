@@ -130,7 +130,11 @@ fn value(plan: &Plan, r: &Results, o: &str) -> Option<f64> {
 
 fn error(plan: &Plan, r: &Results, o: &str) -> String {
     let k = plan.output(o).expect("the bench has this output");
-    let errs: Vec<&str> = r.errors().filter(|e| e.1 == k).map(|e| e.2).collect();
+    let errs: Vec<&str> = r
+        .errors()
+        .filter(|e| e.output == k)
+        .map(|e| e.message)
+        .collect();
     assert_eq!(errs.len(), 1, "{o}: {errs:?}");
     errs[0].to_owned()
 }

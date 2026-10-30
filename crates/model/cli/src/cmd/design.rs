@@ -165,8 +165,8 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
     }
     print!("{}", run::write_results(&r.jobs, &r.results));
     let failed = r.results.errors().count() > 0;
-    for (j, _, msg) in r.results.errors() {
-        eprintln!("job {j}: {msg}");
+    for e in r.results.errors() {
+        eprintln!("job {}: {}", e.job, e.message);
     }
     let spec_fail = (0..r.jobs.len())
         .any(|j| (0..r.results.specs()).any(|s| matches!(r.results.pass(j, s as u16), Pass::Fail)));

@@ -159,11 +159,11 @@ fn optimizer_sizes_r_for_a_target_time_constant() {
     );
     eprintln!(
         "optimizer: {} evals, best job {best}: R={r:.2} tau={tau:.5e}",
-        opt.opt.n_evals()
+        opt.opt.evaluation_count()
     );
     assert!((r / 1000.0 - 1.0).abs() < 1e-2, "R {r}");
     assert!((tau / 1e-3 - 1.0).abs() < 1e-2, "tau {tau}");
-    assert!(opt.opt.n_evals() <= 40);
+    assert!(opt.opt.evaluation_count() <= 40);
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn monte_carlo_yield_over_real_simulations() {
     let y = schemify_run::yield_summary(&plan, &jobs, &results);
     eprintln!("monte carlo: {y:?}");
     assert_eq!((y[0].pass, y[0].total), (0, 4));
-    assert!(y[0].hi < 0.6);
+    assert!(y[0].high < 0.6);
     for j in 0..jobs.len() {
         let r = var(&results, j, "R");
         assert!((r - 3300.0).abs() < 5.0 * 50.0, "sample {j}: R {r}");

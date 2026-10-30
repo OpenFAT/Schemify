@@ -59,7 +59,10 @@ fn optimize(
         }
     }
     assert!(opt.done(), "the budget ends the loop");
-    assert_eq!(jobs.len(), opt.opt.n_evals() * opt.jobs_per_candidate());
+    assert_eq!(
+        jobs.len(),
+        opt.opt.evaluation_count() * opt.jobs_per_candidate()
+    );
     (opt, jobs)
 }
 
@@ -122,7 +125,7 @@ fn candidates_run_every_config_and_corner_and_score_their_worst() {
     assert_eq!(opt.best_job(), Some(opt.eval_job(best.index)));
     // Every job of a candidate shares its assignment; a failed job fails the evaluation.
     let mut failed = 0;
-    for i in 0..opt.opt.n_evals() {
+    for i in 0..opt.opt.evaluation_count() {
         let e = opt.opt.eval(i).unwrap();
         let first = opt.eval_job(i);
         for j in first..first + 4 {
@@ -134,5 +137,8 @@ fn candidates_run_every_config_and_corner_and_score_their_worst() {
             failed += 1;
         }
     }
-    eprintln!("{} evaluations, {failed} failed", opt.opt.n_evals());
+    eprintln!(
+        "{} evaluations, {failed} failed",
+        opt.opt.evaluation_count()
+    );
 }

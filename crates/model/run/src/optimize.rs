@@ -17,7 +17,7 @@
 //! - `pub struct Param`, `pub struct Objective`, `pub enum Algorithm` (`from_name`),
 //!   `pub struct Evaluation<'a>`, `pub enum OptError`
 //! - `pub struct Optimizer`: `new`, `params`, `objectives`, `ask`, `tell`, `tell_failed`,
-//!   `n_evals`, `eval`, `best`
+//!   `evaluation_count`, `eval`, `best`
 //! - `pub struct OptRun`: `new`, `jobs_per_candidate`, `step`, `done`, `eval_job`,
 //!   `best_job`
 
@@ -80,7 +80,7 @@ pub struct Evaluation<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum OptError {
     /// `tell` got the wrong number of objective values.
-    DimMismatch {
+    CountMismatch {
         /// Objectives declared.
         expected: usize,
         /// Values given.
@@ -158,7 +158,7 @@ impl Algorithm {
 impl fmt::Display for OptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OptError::DimMismatch { expected, got } => {
+            OptError::CountMismatch { expected, got } => {
                 write!(f, "expected {expected} objective values, got {got}")
             }
             OptError::Empty => f.write_str("no params or no objectives"),
@@ -230,7 +230,7 @@ impl Optimizer {
     /// budget is spent. A pure read: asking twice returns the same point.
     #[must_use]
     pub fn ask(&self) -> Option<&[f64]> {
-        if self.n_evals() >= self.budget {
+        if self.evaluation_count() >= self.budget {
             return None;
         }
         let candidate = match &self.search {
@@ -253,7 +253,7 @@ impl Optimizer {
     ///
     /// # Errors
     ///
-    /// [`OptError::DimMismatch`] for the wrong number of values; [`OptError::BudgetSpent`].
+    /// [`OptError::CountMismatch`] for the wrong number of values; [`OptError::BudgetSpent`].
     ///
     /// # Panics
     ///
@@ -261,7 +261,7 @@ impl Optimizer {
     /// must be comparable.
     pub fn tell(&mut self, measured: &[f64]) -> Result<f64, OptError> {
         if measured.len() != self.objectives.len() {
-            return Err(OptError::DimMismatch {
+            return Err(OptError::CountMismatch {
                 expected: self.objectives.len(),
                 got: measured.len(),
             });
@@ -290,7 +290,7 @@ impl Optimizer {
 
     /// Returns the number of evaluations told.
     #[must_use]
-    pub fn n_evals(&self) -> u32 {
+    pub fn evaluation_count(&self) -> u32 {
         debug_assert!(
             self.scores.len() <= self.budget as usize,
             "advance stops at the budget"
@@ -498,7 +498,7 @@ impl OptRun {
         let r = start..jobs.len();
         assert_eq!(r.len(), self.points.len());
         self.pending = Some(r.clone());
-        assert_eq!(self.eval_job.len() as u32, self.opt.n_evals());
+        assert_eq!(self.eval_job.len() as u32, self.opt.evaluation_count());
         Ok(Some(r))
     }
 
@@ -507,7 +507,7 @@ impl OptRun {
     pub fn done(&self) -> bool {
         debug_assert_eq!(
             self.eval_job.len() as u32,
-            self.opt.n_evals(),
+            self.opt.evaluation_count(),
             "`step` records the job of every evaluation it tells"
         );
         self.pending.is_none() && self.opt.ask().is_none()
@@ -522,9 +522,9 @@ impl OptRun {
     #[must_use]
     pub fn eval_job(&self, i: u32) -> u32 {
         assert!(
-            i < self.opt.n_evals(),
+            i < self.opt.evaluation_count(),
             "evaluation {i} of {}",
-            self.opt.n_evals()
+            self.opt.evaluation_count()
         );
         self.eval_job[i as usize]
     }
@@ -534,7 +534,7 @@ impl OptRun {
     pub fn best_job(&self) -> Option<u32> {
         debug_assert_eq!(
             self.eval_job.len() as u32,
-            self.opt.n_evals(),
+            self.opt.evaluation_count(),
             "one job per told"
         );
         self.opt.best().map(|e| self.eval_job[e.index as usize])
@@ -726,7 +726,7 @@ mod tests {
     fn random_improves_a_sphere_inside_bounds() {
         let mut o = opt(Algorithm::Random, &[(-5.0, 5.0, 4.0); 3], Goal::Min, 400);
         run(&mut o, |x| x.iter().map(|v| v * v).sum());
-        assert_eq!(o.n_evals(), 400);
+        assert_eq!(o.evaluation_count(), 400);
         let (first, best) = (o.eval(0).unwrap().score, o.best().unwrap().score);
         assert!(best < first && best < 3.0, "first {first} best {best}");
     }
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(o.ask().unwrap(), x0, "ask is a pure read");
         assert_eq!(
             o.tell(&[1.0, 2.0]),
-            Err(OptError::DimMismatch {
+            Err(OptError::CountMismatch {
                 expected: 1,
                 got: 2
             })

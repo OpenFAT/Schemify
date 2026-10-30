@@ -165,7 +165,7 @@ impl Sim {
                 } else {
                     100.0 * f64::from(y.pass) / f64::from(y.total)
                 };
-                let text = format!("{pct:.0}% ({:.0}–{:.0})", 100.0 * y.lo, 100.0 * y.hi);
+                let text = format!("{pct:.0}% ({:.0}–{:.0})", 100.0 * y.low, 100.0 * y.high);
                 cell(
                     t,
                     &format!("{rid}.s{}", y.spec),
@@ -256,11 +256,12 @@ impl Sim {
             }
         }
         let first_errors = res.errors().take(8);
-        for (e, (j, o, msg)) in first_errors.enumerate() {
-            let what = if o == JOB_LEVEL {
+        for (e, row) in first_errors.enumerate() {
+            let (j, msg) = (row.job, row.message);
+            let what = if row.output == JOB_LEVEL {
                 format!("job {j}: {msg}")
             } else {
-                format!("job {j} {}: {msg}", res.outputs()[o as usize])
+                format!("job {j} {}: {msg}", res.outputs()[usize::from(row.output)])
             };
             cell(
                 t,

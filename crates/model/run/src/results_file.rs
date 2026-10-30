@@ -9,7 +9,7 @@
 //! - `pub fn read_results(text: &str) -> Result<(Jobs, Results), String>`
 
 use crate::jobs::{Jobs, NO_SAMPLE, State};
-use crate::results::{JOB_LEVEL, Pass, Results};
+use crate::results::{ErrorRow, JOB_LEVEL, Pass, Results};
 use schemify_abi::text;
 use schemify_doc::Digest;
 
@@ -70,8 +70,8 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
     }
 
     // Jobs, each with its error rows sorted by output (stable: recording order within).
-    let mut errs: Vec<(u32, u16, &str)> = r.errors().collect();
-    errs.sort_by_key(|&(job, output, _)| (job, output));
+    let mut errs: Vec<ErrorRow<'_>> = r.errors().collect();
+    errs.sort_by_key(|e| (e.job, e.output));
     let mut e = 0;
     let mut num = String::new();
     for j in 0..jobs.len() {
@@ -113,14 +113,14 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
             };
             attr(&mut out, "pass", &[&r.outputs()[o as usize], verdict]);
         }
-        while let Some(&(job, output, message)) = errs.get(e)
-            && job == j
+        while let Some(row) = errs.get(e)
+            && row.job == j
         {
-            let what = match output {
+            let what = match row.output {
                 JOB_LEVEL => "-",
                 o => r.outputs()[o as usize].as_str(),
             };
-            attr(&mut out, "error", &[what, message]);
+            attr(&mut out, "error", &[what, row.message]);
             e += 1;
         }
     }

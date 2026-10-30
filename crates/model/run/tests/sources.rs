@@ -88,7 +88,7 @@ fn verilog_a_compiles_once_into_every_job_or_fails_clearly() {
         c
     });
     assert_eq!(jobs.states(), [State::Failed, State::Failed]);
-    let msg = results.errors().next().unwrap().2.to_owned();
+    let msg = results.errors().next().unwrap().message.to_owned();
     assert!(
         msg.contains("openvaf-not-installed")
             && msg.contains("not found")
@@ -215,7 +215,7 @@ fn a_body_compiles_beside_the_poll_once_for_every_job() {
     );
     let errs: Vec<_> = results.errors().collect();
     assert_eq!(jobs.states(), [State::Queued, State::Queued], "{errs:?}");
-    let progress: Vec<&str> = runner.progress().map(|p| p.1).collect();
+    let progress: Vec<&str> = runner.progress().map(|p| p.line).collect();
     assert_eq!(progress, ["compiling sources"; 2]);
     runner.wait(&plan, &mut jobs, &mut results, &mut finished);
     let errs: Vec<_> = results.errors().collect();
@@ -247,7 +247,8 @@ fn a_body_compiles_beside_the_poll_once_for_every_job() {
     let (plan, mut jobs, mut results, mut runner) = body_run(&dir, &bad);
     runner.wait(&plan, &mut jobs, &mut results, &mut finished);
     assert_eq!(jobs.states(), [State::Failed, State::Failed]);
-    for (_, _, msg) in results.errors() {
+    for e in results.errors() {
+        let msg = e.message;
         assert!(
             msg.contains("syntax error") && msg.contains("failed"),
             "{msg}"
@@ -400,7 +401,7 @@ fn espice_copies_verilog_a_sources_without_compiling() {
             c
         });
     assert_eq!(jobs.states(), [State::Failed]);
-    let msg = results.errors().next().unwrap().2.to_owned();
+    let msg = results.errors().next().unwrap().message.to_owned();
     assert!(msg.contains("vres.va"), "{msg}");
 }
 
@@ -451,13 +452,13 @@ fn espice_copies_verilog_a_includes_beside_the_source() {
     fs::remove_file(va.join("sub/b.inc")).unwrap();
     let (jobs, results, _) = go("missing");
     assert_eq!(jobs.states(), [State::Failed]);
-    let msg = results.errors().next().unwrap().2.to_owned();
+    let msg = results.errors().next().unwrap().message.to_owned();
     assert!(msg.contains("a.inc") && msg.contains("\"b.inc\""), "{msg}");
 
     write("sub/b.inc", "`include \"../../outside.inc\"\n");
     fs::write(dir.join("outside.inc"), "").unwrap();
     let (jobs, results, _) = go("outside");
     assert_eq!(jobs.states(), [State::Failed]);
-    let msg = results.errors().next().unwrap().2.to_owned();
+    let msg = results.errors().next().unwrap().message.to_owned();
     assert!(msg.contains("outside the source's directory"), "{msg}");
 }

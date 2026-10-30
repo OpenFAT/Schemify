@@ -172,7 +172,7 @@ fn simulate_errors(s: &mut Session) -> Vec<String> {
     }
     s.frame(InputEvents::default());
     let (_, _, results) = s.ed.sim().tables().expect("a run");
-    results.errors().map(|e| e.2.to_owned()).collect()
+    results.errors().map(|e| e.message.to_owned()).collect()
 }
 
 /// The editor's Simulate uses the user config's `sim openvaf` (as the CLI's runner does):

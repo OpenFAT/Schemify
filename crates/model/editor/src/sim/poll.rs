@@ -104,7 +104,10 @@ impl Sim {
                         .collect();
                     out.best.push(Best {
                         bench: r.bench,
-                        label: format!("optimize {name}: best of {} evaluations", o.opt.n_evals()),
+                        label: format!(
+                            "optimize {name}: best of {} evaluations",
+                            o.opt.evaluation_count()
+                        ),
                         values,
                     });
                 }
@@ -162,7 +165,7 @@ impl Sim {
                     .map_or("-".to_owned(), |b| schemify_wave::format_si(b.score, 4));
                 format!(
                     "optimize {name}: {} evaluation(s), best score {best}",
-                    o.opt.n_evals()
+                    o.opt.evaluation_count()
                 )
             }
             _ => format!(
@@ -181,10 +184,10 @@ impl Sim {
         if others > 0 {
             let _ = write!(t, " (+{others} other run(s))");
         }
-        if let Some((_, line)) = r.runner.progress().next()
-            && !line.is_empty()
+        if let Some(p) = r.runner.progress().next()
+            && !p.line.is_empty()
         {
-            let _ = write!(t, " — {line}");
+            let _ = write!(t, " — {}", p.line);
         }
         t
     }

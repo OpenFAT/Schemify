@@ -13,6 +13,7 @@
 //!   `pub const WORKERS_MAX: u16`
 //! - `pub struct SimCommand` (`default_for`), `pub struct Tools` (`set_sims`, `sim`),
 //!   `pub struct RunnerConfig` (`new`)
+//! - `pub struct Progress`
 //! - `pub struct Runner`: `new`, `config`, `job_dir`, `submit`, `busy`, `progress`,
 //!   `poll`, `wait`, `cancel`, `cancel_all`, `save`
 
@@ -73,6 +74,15 @@ pub struct Tools {
     pub openvaf: String,
     /// Icarus Verilog (`-o <out> <src>`).
     pub iverilog: String,
+}
+
+/// One job's progress line ([`Runner::progress`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Progress<'runner> {
+    /// The job.
+    pub job: u32,
+    /// Its last stdout line, or a word on what it waits for.
+    pub line: &'runner str,
 }
 
 /// Where and how a runner works.
@@ -281,9 +291,9 @@ impl Runner {
         );
         assert!(self.queue.len() < crate::JOBS_MAX as usize);
         let dir = self.job_dir(j);
-        let text = match self.config.lib_dirs.get(usize::from(p.base.0)) {
+        let text = match self.config.lib_dirs.get(usize::from(p.base.lib)) {
             Some(lib) if !p.relative.is_empty() => {
-                p.resolved(&lib.join(&p.base.1), &self.config.lib_dirs[0])
+                p.resolved(&lib.join(&p.base.dir), &self.config.lib_dirs[0])
             }
             _ => p.netlist.clone(),
         };
@@ -317,11 +327,17 @@ impl Runner {
             || self.cache.busy()
     }
 
-    /// Iterates `(job, progress)` of the jobs holding a worker slot: the last stdout line
-    /// of a running simulator, or that the job waits for its sources to compile.
-    pub fn progress(&self) -> impl Iterator<Item = (u32, &str)> + '_ {
-        let running = self.running.iter().map(|r| (r.job, r.last.as_str()));
-        running.chain(self.waiting.iter().map(|w| (w.job, "compiling sources")))
+    /// Iterates the progress of the jobs holding a worker slot: the last stdout line of a
+    /// running simulator, or that the job waits for its sources to compile.
+    pub fn progress(&self) -> impl Iterator<Item = Progress<'_>> + '_ {
+        let running = self.running.iter().map(|r| Progress {
+            job: r.job,
+            line: r.last.as_str(),
+        });
+        running.chain(self.waiting.iter().map(|w| Progress {
+            job: w.job,
+            line: "compiling sources",
+        }))
     }
 
     /// Advances every job one step without blocking: reaps exited compilers and

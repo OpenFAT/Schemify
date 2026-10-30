@@ -7,7 +7,7 @@
 //!
 //! Contents:
 //! - `pub enum Blocked`, `pub struct Source`, `pub enum Origin`, `pub enum Tool`,
-//!   `pub struct Prepared` (`Prepared::resolved`)
+//!   `pub struct Prepared` (`Prepared::resolved`), `pub struct BenchBase`
 //! - `pub fn design<F: Funcs>(project, top, jobs, env, dialect, funcs) -> Result<Digest, Blocked>`
 //! - `pub fn prepare<F: Funcs>(project, top, jobs, j, env, dialect, funcs, results) -> Option<Prepared>`
 //! - `pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source>`
@@ -71,6 +71,15 @@ pub enum Tool {
     Copy,
 }
 
+/// The bench's place in the project ([`Prepared::base`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BenchBase {
+    /// The library row.
+    pub lib: u8,
+    /// The bench's directory relative to that library.
+    pub dir: String,
+}
+
 /// What a runner needs to simulate one job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prepared {
@@ -84,8 +93,8 @@ pub struct Prepared {
     /// Parallel to [`Prepared::relative`]: the path came from a project variable
     /// (`${PDK_MODELS}/…`), so it is joined onto the project root instead.
     pub project: Vec<bool>,
-    /// The bench's library row and its directory relative to that library.
-    pub base: (u8, String),
+    /// Where the bench lives, for relative corner paths.
+    pub base: BenchBase,
 }
 
 /// One relative corner path in a netlist: its byte range, and whether it came from a
@@ -295,11 +304,16 @@ pub fn prepare<F: Funcs>(
     let from_project: Vec<bool> = paths.iter().map(|p| p.from_project).collect();
     let top = &e.cells[0];
     let base = if top.row == u32::MAX {
-        (0, String::new())
+        BenchBase {
+            lib: 0,
+            dir: String::new(),
+        }
     } else {
         let row = top.row as usize;
-        let dir = project.strings().get(project.cells().dir[row]).to_owned();
-        (project.cells().lib[row], dir)
+        BenchBase {
+            lib: project.cells().lib[row],
+            dir: project.strings().get(project.cells().dir[row]).to_owned(),
+        }
     };
     let p = Prepared {
         netlist: text,

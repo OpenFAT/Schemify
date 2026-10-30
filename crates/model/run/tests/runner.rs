@@ -239,7 +239,7 @@ fn blocked_designs_and_unnetlistable_jobs() {
     );
     assert!(prepared.is_none());
     assert_eq!(jobs.state(j), State::Failed);
-    let (_, _, msg) = results.errors().next().unwrap();
+    let msg = results.errors().next().unwrap().message;
     assert!(msg.contains("E035"), "{msg}");
 }
 
@@ -263,7 +263,7 @@ fn failure(sim: SimCommand, name: &str, timeout: Duration) -> String {
     assert_eq!(jobs.state(0), State::Failed);
     results
         .errors()
-        .map(|e| e.2.to_owned())
+        .map(|e| e.message.to_owned())
         .next()
         .expect("a failed job has an error row")
 }
@@ -298,7 +298,7 @@ fn simulator_failures_fail_the_job_with_a_reason() {
     assert!(
         results
             .errors()
-            .all(|(_, o, m)| o != schemify_run::JOB_LEVEL && m.contains("X004"))
+            .all(|e| e.output != schemify_run::JOB_LEVEL && e.message.contains("X004"))
     );
 }
 

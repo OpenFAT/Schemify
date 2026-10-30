@@ -92,13 +92,13 @@ pub use plan::{
     BUDGET_MAX, Corner, Dist, DistKind, Goal, MonteCarlo, Optimize, Output, Plan, PlanError,
     SAMPLES_MAX, SWEEP_POINTS_MAX, Spec, Sweep, TABLE_MAX, Var,
 };
-pub use prepare::{Blocked, Origin, Prepared, Source, Tool, design, prepare, sources};
-pub use results::{JOB_LEVEL, Pass, Results};
+pub use prepare::{BenchBase, Blocked, Origin, Prepared, Source, Tool, design, prepare, sources};
+pub use results::{ErrorRow, JOB_LEVEL, Pass, Results};
 pub use results_file::{read_results, write_results};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{
-    COMMAND, NETLIST, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, SimCommand, Tools,
-    WORKERS_MAX,
+    COMMAND, NETLIST, Progress, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, SimCommand,
+    Tools, WORKERS_MAX,
 };
 
 /// The simulators a native run starts (run spec §5), in detection order: ESPice first (user

@@ -11,6 +11,7 @@
 //! Contents:
 //! - `pub const JOB_LEVEL: u16`
 //! - `pub enum Pass`
+//! - `pub struct ErrorRow`
 //! - `pub struct Results`: `new`, `design`, `stale`, `outputs`, `specs`, `vars`, `value`,
 //!   `pass`, `var_value`, `errors`, `fail`, `record`; crate-only `from_columns`,
 //!   `spec_outputs`, `rows`, `ensure`, `set_value`, `set_var`, `set_pass`, `error`,
@@ -38,6 +39,17 @@ pub enum Pass {
     Pass,
     /// Outside.
     Fail,
+}
+
+/// One error row of [`Results`]: a job's failure, or one output's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ErrorRow<'results> {
+    /// The job.
+    pub job: u32,
+    /// The output index, or [`JOB_LEVEL`] for a failure of the whole job.
+    pub output: u16,
+    /// What went wrong.
+    pub message: &'results str,
 }
 
 /// Results of one run. Written only by this crate: `prepare` (var values, `op(…)`
@@ -166,8 +178,8 @@ impl Results {
         (!x.is_nan()).then_some(x)
     }
 
-    /// Iterates error rows `(job, output or JOB_LEVEL, message)` in recording order.
-    pub fn errors(&self) -> impl Iterator<Item = (u32, u16, &str)> + '_ {
+    /// Iterates error rows in recording order.
+    pub fn errors(&self) -> impl Iterator<Item = ErrorRow<'_>> + '_ {
         debug_assert_eq!(
             self.error_job.len(),
             self.error_output.len(),
@@ -183,7 +195,11 @@ impl Results {
             .iter()
             .zip(&self.error_output)
             .zip(&self.error_message);
-        rows.map(|((&j, &o), m)| (j, o, m.as_str()))
+        rows.map(|((&job, &output), message)| ErrorRow {
+            job,
+            output,
+            message,
+        })
     }
 
     /// Marks job `j` failed with a job-level message (gate, netlist, compile, simulator,
@@ -197,10 +213,7 @@ impl Results {
         self.ensure(j);
         self.error(j, JOB_LEVEL, msg.into());
         jobs.set_state(j, State::Failed);
-        debug_assert!(
-            self.errors().any(|(job, _, _)| job == j),
-            "the job has its reason"
-        );
+        debug_assert!(self.errors().any(|e| e.job == j), "the job has its reason");
     }
 
     /// Evaluates `plan`'s outputs and specs for job `j` over its raw file `raw` (ngspice

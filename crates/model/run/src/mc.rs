@@ -30,9 +30,9 @@ pub struct Yield {
     /// Finished samples (a failed simulation or a missing output counts as a failure).
     pub total: u32,
     /// Lower end of the 95% Wilson interval of the pass rate.
-    pub lo: f64,
+    pub low: f64,
     /// Upper end.
-    pub hi: f64,
+    pub high: f64,
 }
 
 /// Appends sample `s` of `m`: one assignment per var with a `dist` (plan order, sorted by
@@ -87,8 +87,8 @@ pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> 
             spec: k as u16,
             pass: 0,
             total: 0,
-            lo: 0.0,
-            hi: 1.0,
+            low: 0.0,
+            high: 1.0,
         })
         .collect();
     for j in 0..jobs.len() {
@@ -102,10 +102,10 @@ pub fn yield_summary(plan: &Plan, jobs: &Jobs, results: &Results) -> Vec<Yield> 
         }
     }
     for y in &mut out {
-        (y.lo, y.hi) = wilson(y.pass, y.total);
+        (y.low, y.high) = wilson(y.pass, y.total);
         assert!(y.pass <= y.total);
         assert!(y.total <= jobs.len(), "one count per finished sample");
-        assert!(y.lo <= y.hi);
+        assert!(y.low <= y.high);
     }
     out
 }
