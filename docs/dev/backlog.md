@@ -9,7 +9,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 ## app / editor
 
 - **app**: `scene::diff` (a positional scan per edit) can take the changed records from `Project::applied` instead.
-- Editor gaps vs xschem (after the parity pass, `tests/parity.rs`; gestures in `tests/gestures.rs`): the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app; polygon vertices cannot be inserted (xschem Shift+B1) or deleted (Ctrl+B1), only dragged; a partial wire selection goes stale after its move is undone (rows keep the moved positions) and loses a wire whose stretched end turned into an L (Manhattan mode); layer colors, dim and line width changed in the editor last for the session (`init.lua` keeps them, config spec §3).
+- Editor gaps vs xschem (after the parity pass, app `tests/parity/`; gestures in `tests/gestures.rs`): the web build has no system clipboard (D2 glue) and no exports to disk (OPFS); plugin I/O capabilities fetch/clipboard in the app; polygon vertices cannot be inserted (xschem Shift+B1) or deleted (Ctrl+B1), only dragged; a partial wire selection goes stale after its move is undone (rows keep the moved positions) and loses a wire whose stretched end turned into an L (Manhattan mode); layer colors, dim and line width changed in the editor last for the session (`init.lua` keeps them, config spec §3).
 - **Exports**: PDF/EPS embed whole UI faces (Noto Sans ~190 KB, KaTeX Main ~65 KB when used, ASCII85; twice that as EPS hex) instead of subsets of the glyphs used; their text is placed glyph by glyph (no kerning or ligatures); characters neither face has print `.notdef` (the canvas falls back to system fonts). The export page, PNG scale and package status are commands without default-UI menu rows yet (`options.export_page_size`, `options.png_export_scale`, `file.image_export.png_export_full`, `tools.package_status`).
 - **Make subcircuit** (Ctrl+Shift+H): selected ports stay in the parent (they are its interface); a pin direction is inferred from the moved instance pins on the net (`out` if one drives it, `in` if all are inputs, else `inout`); where no L wire from a new pin to a cut point avoids other nets, a label pair joins them.
 
@@ -145,7 +145,7 @@ iGPU not re-measured since the pipelines landed); flat 1M netlist 0.85–0.93 s;
 
 ## Parity: intentionally dropped
 
-xschem menu items and keys with no meaning in Schemify, removed from the default UI (`ui/default-plugin`) rather than left unresolved. The parity ratchet (`crates/view/app/tests/parity.rs`) holds every remaining name to an implementation; `tests/shell.rs` lists the dropped inventory chords.
+xschem menu items and keys with no meaning in Schemify, removed from the default UI (`ui/default-plugin`) rather than left unresolved. The parity ratchet (`crates/view/app/tests/parity/`) holds every remaining name to an implementation; `tests/shell/` lists the dropped inventory chords.
 
 - File → Start new Xschem process (`x`), Alt+Shift+E / Alt+Shift+I "in a new process": one process with tabs; `x` and the Alt+Shift keys open a new tab instead.
 - Options → Debug mode: logs go to the status line and stderr; there is no Tcl debug level.

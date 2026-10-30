@@ -191,7 +191,7 @@ every row of a changed table), ~1.5 ms in the scene update, and the fingerprint 
 Goal: every interactive frame (pan, zoom, hover, select, drag, typing in a field, opening a
 menu) well under 1 ms of CPU at 100k objects, with no hitch. Measured on `gui-arch-audit`
 (`af27b3f6`), RTX 4060, load average 4–7 (other agents building), by
-`crates/view/app/tests/perf.rs` `frame_times_100k` (pan, zoom, select, edit) and the new
+`crates/view/app/tests/perf/` `frame_times_100k` (pan, zoom, select, edit) and the new
 `interactions_100k` (hover, select, drag, drop, menu, type). Per-step times came from
 temporary `Instant` laps around each spine step; the edit loop was also profiled with
 `perf record`.
@@ -245,7 +245,7 @@ encodes that scene per frame (tiles); the benchmark guards the fallback path.
 - **accesskit**: `access_tree` costs 0.01–0.02 ms and runs only when an assistive client is
   active (`update_if_active`). Not a cost.
 
-### Window path (`crates/view/render/src/window.rs`)
+### Window path (`crates/view/render/src/window/`)
 
 `PresentMode::AutoVsync`. Input is batched: `about_to_wait` runs one `update` per event batch
 and requests a redraw only when it returns true; ticks come only from `wake_ms`, so an idle
@@ -351,7 +351,7 @@ What bounds the rest:
 Goal: every edit frame (delete, undo, redo, the drop of a move, a property change, a wire drawn)
 under 1 ms of CPU at 100k objects, the ticks after it too, and no hitch on the first edit of a
 document. Measured on `main` `c61f0e85` (RTX 4060 host, no GPU columns: CPU only, load 6–8) by
-the new `edit_frames_100k` (`crates/view/app/tests/perf.rs`: a dozen frames of each kind on the
+the new `edit_frames_100k` (`crates/view/app/tests/perf/`: a dozen frames of each kind on the
 `interactions` fixture, zoomed in, each followed by the ticks the editor asks for). Per-step
 times came from temporary `Instant` laps around each spine step.
 
@@ -635,7 +635,7 @@ selected set 0.16, UI 0.13.
 
 Step 0 of [research/render-backend.md](research/render-backend.md) § 5 (migration plan) and
 recommendation 1 of [research/xschem-responsiveness.md](research/xschem-responsiveness.md):
-draw from the newest input. Two commits in `crates/view/render/src/window.rs`: the frame log
+draw from the newest input. Two commits in `crates/view/render/src/window/`: the frame log
 (`render: frame log stamps the newest input and counts updates per frame`) and the loop
 (`render: draw from the newest input: update runs at the granted redraw`).
 
@@ -758,7 +758,7 @@ zoom, hover) to 0.13 / 0.15 / 0.35 ms. Before, `frame_times_100k` failed its zoo
   Intel iGPU for the canvas pass, against vello's 4.10 and 26.2 ms for the same scene encoded
   per frame; the 100k pack takes 4.8–6.7 ms (2.9 MB of rows).
 
-### GPU against CPU (equivalence, `crates/view/render/tests/gpu.rs`)
+### GPU against CPU (equivalence, `crates/view/render/tests/gpu/`)
 
 Mean |Δ| per channel / pixels off by more than 96 levels, identical on the RTX 4060 and the
 Intel iGPU (tolerance: mean ≤ 1.0, at most 0.1% of pixels off):
@@ -817,7 +817,7 @@ load ≈ 8–18. CPU update+paint, then GPU, p50 / p95 / p99 ms:
   the 0.05 ms.
 - **Rows written by a pan or zoom: zero.** The zoom report uploads 0 KiB; the pan report's
   7 003 KiB is the first frame's whole canvas, which falls in it. Headless oracle:
-  `a_pan_or_zoom_frame_writes_no_instance_bytes` (app `tests/canvas.rs`: the frames' dirty row
+  `a_pan_or_zoom_frame_writes_no_instance_bytes` (app `tests/canvas/`: the frames' dirty row
   bytes are 0 while the camera moves; a delete writes rows).
 - Resident memory over the select-all rounds is flat in both (389 MiB before, 432 after, ±0
   across rounds); the 43 MiB offset was not investigated beyond that (the GPU path allocates
@@ -886,7 +886,7 @@ and the one pass). p50 / p95 / p99 ms:
 - `render/tests/perf.rs` `scene_build_100k_primitives` (now the GPU painter's frame build:
   UI shell, 100k rows unchanged, labels): 0.03 ms median, against vello's scene encode before.
 
-GPU against CPU for the batch (`render/tests/gpu.rs`, RTX 4060; tolerance mean ≤ 0.5/255 and
+GPU against CPU for the batch (`render/tests/gpu/`, RTX 4060; tolerance mean ≤ 0.5/255 and
 no pixel off by more than 96 for text and UI; the canvas kinds keep their step-1 bounds):
 
 | Scene | mean | far |

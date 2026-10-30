@@ -112,7 +112,7 @@ editable text field.
 - In the same frame as an edit: `doc::apply_edits` → recompute → D20 write-back (§6) → UI
   compose (the page) → scene build. Symbol texts (`stext W={eng(W)}`) of instances render the
   evaluated param values, so `W = W_in` shows the var's value on the canvas.
-- Measured (D39, `tests/perf.rs`, release): a var edit with 1000 dependent instance overrides,
+- Measured (D39, app `tests/perf/`, release): a var edit with 1000 dependent instance overrides,
   through the page field, is 1.4 ms per frame; 1.5 ms when the var calls a `gmid` function and
   its cache is rewritten.
 

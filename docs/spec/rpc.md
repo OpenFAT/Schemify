@@ -5,7 +5,7 @@ Implements D27's "one JSON-RPC command stream (stdio/socket) over the same comma
 - **`schemify rpc [--listen <socket>]`**, the headless core: no editor, no window. Its methods are the CLI's commands and a stateless document edit (§3.1).
 - **`schemify-gui --rpc <socket>`** (also through `schemify edit … --rpc <socket>`): the running editor. Its methods are the editor's command table: every core command and every plugin command, exactly what menus, keys, Lua keymaps and plugins name (§3.2).
 
-Implementation: `crates/model/cli/src/rpc.rs` (codec, framing, sockets, the headless server), `crates/model/editor/src/rpc.rs` (the editor's methods) and `crates/view/app/src/serve.rs` (its socket server). No JSON dependency: the codec is a few hundred lines with its own oracles (§8).
+Implementation: `crates/model/cli/src/rpc/json.rs` (the codec), `rpc/wire.rs` (framing and the JSON-RPC envelope, shared by both servers), `rpc/socket.rs` (sockets), `crates/model/cli/src/rpc.rs` (the headless server), `crates/model/editor/src/rpc.rs` (the editor's methods) and `crates/view/app/src/serve.rs` (its socket server). No JSON dependency: the codec is a few hundred lines with its own oracles (§8).
 
 ## 1. Transport and framing
 

@@ -269,7 +269,7 @@ The GPU does the per-pixel work. The CPU loops that touch every row are few. Tri
 
 | Loop | Where | Size | Dependency | Verdict |
 |---|---|---|---|---|
-| Waveform min/max per pixel column | `wave/src/decimate.rs` `minmax` | 10^6 samples | accumulator | **already vectorized** (8 lane accumulators over `chunks_exact`, `minpd`/`maxpd` checked in the asm, scalar oracle kept) |
+| Waveform min/max per pixel column | `wave/src/decimate.rs` `minmax` (crate-private: reached through the public `decimate`) | 10^6 samples | accumulator | **already vectorized** (8 lane accumulators over `chunks_exact`, `minpd`/`maxpd` checked in the asm, scalar oracle kept) |
 | Whole-table pack | `gpu.rs` `repack` | 10^5–10^6 rows, on open, palette change, `Change::All` | scatter by layer (each row's slot is `start[l] + used[l]++`) | **restructure first**, see below; the scatter is an output-shape wall |
 | Row hashing for the diff | `canvas/src/damage.rs` `fold`/`mix` | 10^5 rows, ~1 ms | a chain within a row, none across rows | lanes across rows exist for the fixed-width kinds, but `mix` is a 64-bit multiply, which AVX2 has no packed form of (AVX-512 does). Scalar until a measured need, as the module's own triage says |
 | Mask alpha extraction | `batch.rs` `Raster::run` (`pix.data().iter().map(\|p\| p.a)`) | ≤ 96² px a mask, ~32 masks a frame | none | autovectorizes as a deinterleave; the mask's cost is `vello_cpu`'s raster (8–12 µs). Not worth hand SIMD |
