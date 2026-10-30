@@ -82,7 +82,8 @@ A `var <name> <expr>` block shows as one row: `name = [expr] = value`, where `[e
 editable text field.
 
 - **Value text:** a `num` in engineering notation, 4 significant digits, with the SI prefix glued
-  to the `unit` attribute (`3.881µm`, `20µA`, `23.87MHz`); `int`, `bool` and `str` in canonical
+  to the `unit` attribute (`3.881µm`, `20µA`, `23.87MHz`); outside `eng()`'s suffix range
+  (expr §5) scientific notation before the unit (`1e-20m`); `int`, `bool` and `str` in canonical
   text followed by the unit (`15 1/V`).
 - **Status (D13 colours):** in range: `docs-value` (green in the default theme). `min`/`max`
   (expressions in the cell scope, format §4) violated: `docs-value-bad` (red) with the reason

@@ -1,13 +1,15 @@
 //! Engineering-prefix formatting for axis ticks and readouts (`3.3n`, `12k`, `-4.7µ`).
 //!
 //! Display-only: the prefixes are the SI ones (`M` is mega), unlike SPICE input where `M` is
-//! milli. Parsing user input goes through `schemify_expr::parse_num` (spec expr §2).
+//! milli. Parsing user input goes through `schemify_expr::parse_num` (spec expr §2). The
+//! range rule is `eng()`'s (spec expr §5), so a label and an `eng()` value agree.
 //!
 //! Contents:
 //! - `pub fn format_si(value: f64, digits: usize) -> String`
 
-/// Prefixes from the largest down; values under `p` fall through to `f` (femto), where the
-/// mantissa grows (`0.001f`) as in `eng()` (spec expr §5).
+use core::ops::Range;
+
+/// Prefixes from the largest down; values under `p` fall through to `f` (femto).
 const PREFIXES: [(f64, &str); 9] = [
     (1e12, "T"),
     (1e9, "G"),
@@ -20,10 +22,17 @@ const PREFIXES: [(f64, &str); 9] = [
     (1e-12, "p"),
 ];
 
+/// Decimal exponents (of the value rounded to its digits) shown with a prefix: the mantissa
+/// grows at most three digits past the table's ends (`0.001f`, `999999T`); outside it is
+/// scientific notation, so a label stays narrow.
+const PREFIX_EXPONENTS: Range<i32> = -18..18;
+
 /// Formats `value` with `digits` significant digits (clamped to 1..=17) and an engineering
 /// prefix: `3.3e-9` → `"3.3n"`, `1.2e4` → `"12k"`, `999.96e3` → `"1M"` (rounding carries into
-/// the next prefix). Below femto the mantissa grows and keeps its digits (`1e-20` →
-/// `"0.00001f"`). Zero (either sign) is `"0"`; NaN and infinities print as Rust does
+/// the next prefix). Past the table's ends the mantissa grows up to three digits (`0.001f`,
+/// `999999T`), then the text is scientific (`1e-20`, `4.941e-324`, `1e18`), and it rounds
+/// toward zero where rounding up would pass `f64::MAX`. Every finite value is at most
+/// `digits + 7` bytes. Zero (either sign) is `"0"`; NaN and infinities print as Rust does
 /// (`"NaN"`, `"inf"`).
 #[must_use]
 pub fn format_si(value: f64, digits: usize) -> String {
@@ -34,6 +43,9 @@ pub fn format_si(value: f64, digits: usize) -> String {
         return format!("{value}");
     }
     let digits = digits.clamp(1, 17);
+    if !PREFIX_EXPONENTS.contains(&rounded_exponent(value, digits)) {
+        return scientific(value, digits);
+    }
     let mut k = PREFIXES
         .iter()
         .position(|(s, _)| value.abs() >= *s)
@@ -43,7 +55,7 @@ pub fn format_si(value: f64, digits: usize) -> String {
         debug_assert!(k <= PREFIXES.len(), "a prefix, or femto past the table");
         let (scale, prefix) = PREFIXES.get(k).copied().unwrap_or((1e-15, "f"));
         let scaled = value / scale;
-        // Below femto `scaled` is under 1: its leading zeros are decimals too (`0.00001f`).
+        // Below femto `scaled` is under 1: its leading zeros are decimals too (`0.001f`).
         let lead = scaled.abs().log10().floor() as i32;
         let decimals = (digits as i32 - 1 - lead).max(0) as usize;
         let s = format!("{scaled:.decimals$}");
@@ -57,6 +69,7 @@ pub fn format_si(value: f64, digits: usize) -> String {
             text.bytes().any(|b| (b'1'..=b'9').contains(&b)),
             "a nonzero value keeps a nonzero digit: {text}"
         );
+        debug_assert!(text.len() <= digits + 7, "{text} is wider than its bound");
         return text;
     }
     unreachable!("a carry moves up one prefix, then fits")
@@ -64,7 +77,36 @@ pub fn format_si(value: f64, digits: usize) -> String {
 
 // ---- private ----
 
-/// Strips trailing fractional zeros ("1.500" → "1.5", "2.000" → "2").
+/// The decimal exponent of `value` rounded to `digits` significant digits, so a carry
+/// (999.95e15 → 1e18) counts.
+fn rounded_exponent(value: f64, digits: usize) -> i32 {
+    assert!((1..=17).contains(&digits), "digits {digits} outside 1..=17");
+    let rounded = format!("{:.*e}", digits - 1, value.abs());
+    let (_, exponent) = rounded.split_once('e').expect("LowerExp has an exponent");
+    exponent.parse().expect("LowerExp exponent is an integer")
+}
+
+/// `value` in scientific notation with `digits` significant digits and trailing mantissa
+/// zeros trimmed (`4.941e-324`, `-1e20`); truncated where rounding would pass `f64::MAX`.
+fn scientific(value: f64, digits: usize) -> String {
+    assert!((1..=17).contains(&digits), "digits {digits} outside 1..=17");
+    let mut text = format!("{value:.*e}", digits - 1);
+    if text.parse::<f64>().is_ok_and(f64::is_infinite) {
+        let full = format!("{value:.16e}");
+        let (mantissa, exponent) = full.split_once('e').expect("LowerExp has an exponent");
+        let keep = digits + 1 + usize::from(value < 0.0);
+        text = format!("{}e{exponent}", &mantissa[..keep]);
+    }
+    let (mantissa, exponent) = text.split_once('e').expect("LowerExp has an exponent");
+    let out = format!("{}e{exponent}", trim_zeros(mantissa));
+    debug_assert!(
+        out.parse::<f64>().is_ok_and(f64::is_finite),
+        "{out} reads back finite"
+    );
+    out
+}
+
+/// Strips trailing fractional zeros ("1.500" → "1.5", "2.000" → "2", "1." → "1").
 fn trim_zeros(s: &str) -> &str {
     if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.')
@@ -88,57 +130,103 @@ mod tests {
         assert_eq!(format_si(999.96e3, 3), "1M");
         assert_eq!(format_si(-0.0, 3), "0");
         assert_eq!(format_si(4e-16, 2), "0.4f");
+        assert_eq!(format_si(9.9996e-16, 4), "1f", "rounding carries to 1");
         assert_eq!(format_si(1.5e15, 3), "1500T", "nothing above tera");
         assert_eq!(format_si(f64::NAN, 3), "NaN");
         assert_eq!(format_si(f64::NEG_INFINITY, 3), "-inf");
         assert_eq!(format_si(1234.5, 0), "1k", "digits clamp to at least one");
     }
 
-    /// Regression: below femto the mantissa grows and keeps its digits, as `eng()` does
-    /// (spec expr §5: `0.001f`); it once rounded to "0.000" and lost every digit ("0f").
+    /// Regression: below femto the mantissa once lost every digit ("0f"), and a fix that let
+    /// it grow ran to hundreds of characters. Three digits past either end of the table
+    /// (`0.001f`, `999999T`), then scientific notation; the edges are decided after rounding.
     #[test]
-    fn below_femto_keeps_its_digits() {
-        assert_eq!(format_si(1e-20, 4), "0.00001f");
-        assert_eq!(format_si(-1.234e-19, 4), "-0.0001234f");
-        assert_eq!(format_si(9.9996e-16, 4), "1f", "rounding carries to 1");
-        let tiny = format_si(f64::from_bits(1), 4);
-        assert!(
-            tiny.starts_with("0.000") && tiny.ends_with("4941f"),
-            "{tiny}"
-        );
+    fn beyond_the_prefixes_is_scientific() {
+        let cases: [(f64, usize, &str); 16] = [
+            (1e-20, 4, "1e-20"),
+            (-1.234e-19, 4, "-1.234e-19"),
+            (1e-18, 4, "0.001f"),
+            (-1e-18, 1, "-0.001f"),
+            (9.99e-19, 3, "9.99e-19"),
+            (9.9996e-19, 4, "0.001f"),
+            (999.94e15, 4, "999940T"), // the integer part keeps its digits, as `1500T`
+            (999.95e15, 4, "1e18"),
+            (1e18, 4, "1e18"),
+            (1e300, 4, "1e300"),
+            (f64::from_bits(1), 4, "4.941e-324"),
+            (f64::MIN_POSITIVE, 3, "2.23e-308"),
+            (f64::MAX, 4, "1.797e308"),
+            (f64::MAX, 1, "1e308"),
+            (-f64::MAX, 17, "-1.7976931348623157e308"),
+            (f64::MAX, 3, "1.79e308"),
+        ];
+        for (x, digits, want) in cases {
+            assert_eq!(format_si(x, digits), want, "{x:e} at {digits} digits");
+        }
     }
 
-    /// Round trip over the whole normal range: the text reads back (mantissa times the SI
-    /// prefix's spec value) within half a unit of the last kept digit.
+    /// Every finite value at every digit count: at most `digits + 7` bytes, and the text reads
+    /// back through `schemify_expr::parse_num` (SPICE's `meg` for the SI `M`) within half a
+    /// unit of its last digit (a whole unit where `f64::MAX` truncates), plus half the
+    /// smallest subnormal.
     #[test]
-    fn every_finite_value_reads_back() {
-        let prefix = |c: char| match c {
-            'T' => 1e12,
-            'G' => 1e9,
-            'M' => 1e6,
-            'k' => 1e3,
-            'm' => 1e-3,
-            'µ' => 1e-6,
-            'n' => 1e-9,
-            'p' => 1e-12,
-            'f' => 1e-15,
-            _ => 1.0,
-        };
-        for e in -307..=18 {
-            for m in [1.0, 1.5, 4.7, 9.99949, 9.9996] {
-                for digits in 1..=6 {
-                    let v = m * 10f64.powi(e);
-                    let text = format_si(-v, digits);
-                    let last = text.chars().last().expect("never empty");
-                    let scale = prefix(last);
-                    let mantissa = text.trim_end_matches(|c: char| !c.is_ascii_digit());
-                    let back: f64 = mantissa.parse().expect("the mantissa is a number");
-                    let tol = 0.5001 * 10f64.powi(1 - digits as i32) * v;
+    fn every_finite_value_is_narrow_and_reads_back() {
+        let edges = [1e-18, 1e18, f64::MIN_POSITIVE, f64::MAX, f64::from_bits(1)];
+        let neighbours = edges.iter().flat_map(|x| {
+            let b = x.to_bits();
+            [b - 1, b, b + 1].map(f64::from_bits)
+        });
+        let sweep =
+            (-324..=308).flat_map(|e| [1.0, 1.5, 4.7, 9.99949, 9.9996].map(|m| m * 10f64.powi(e)));
+        let values: Vec<f64> = sweep
+            .chain(neighbours)
+            .filter(|v| v.is_finite() && *v != 0.0)
+            .collect();
+        for v in values {
+            for digits in 1..=17 {
+                for x in [v, -v] {
+                    let text = format_si(x, digits);
+                    assert!(text.len() <= digits + 7, "{x:e} at {digits}: {text}");
+                    let spice = match text.strip_suffix('M') {
+                        Some(m) => format!("{m}meg"),
+                        None => text.clone(),
+                    };
+                    let back = schemify_expr::parse_num(&spice).expect("the text is a number");
+                    let unit = if v > 1e308 { 1.0 } else { 0.5 };
+                    let tol = unit * 10f64.powi(1 - digits as i32) * v + 4.0 * f64::EPSILON * v;
                     assert!(
-                        (back * scale + v).abs() <= tol,
-                        "{v:e} at {digits} digits: {text}"
+                        (back - x).abs() <= tol + f64::from_bits(1),
+                        "{x:e} at {digits} digits: {text} read back as {back:e}"
                     );
                 }
+            }
+        }
+    }
+
+    /// Outside the prefix range the label is `eng()`'s text, character for character.
+    #[test]
+    fn scientific_text_agrees_with_eng() {
+        use schemify_expr::{Mode, Program, Scratch, Value};
+
+        for x in [
+            1e-20,
+            -4.2e-300,
+            f64::from_bits(7),
+            1e18,
+            -2.5e200,
+            f64::MAX,
+        ] {
+            for digits in [1, 3, 4, 17] {
+                let mut canonical = String::new();
+                schemify_expr::write_num(&mut canonical, x);
+                let src = format!("eng({canonical}, {digits})");
+                let prog = Program::compile(&src, Mode::Scalar).expect("eng compiles");
+                let mut scratch = Scratch::default();
+                let eng = prog.eval(&[], &mut scratch).expect("eng is total");
+                let Value::Str(eng) = eng else {
+                    panic!("eng returns a str: {eng:?}")
+                };
+                assert_eq!(format_si(x, digits), eng, "{src}");
             }
         }
     }
