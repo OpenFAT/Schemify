@@ -3,7 +3,8 @@
 //!
 //! Contents:
 //! - `pub const READ_ANY: &str`
-//! - `pub struct Installed { name, wasm, grants, denied, unused, fuel, lazy_cmd, lazy_event }`
+//! - `pub struct Installed { name, wasm, grants, denied, unused, fuel, lazy_command, lazy_event }`,
+//!   `Installed::is_lazy`
 //! - `pub fn locate(&PackSpec, &Paths) -> Result<Installed, String>`
 //! - `pub fn installed(&Table, &Paths) -> (Vec<Installed>, Vec<String>)`
 //! - for `pack`: `struct Module`, `Installed::grant_notes`, `fn package_dir`, `fn locate_in`
@@ -36,9 +37,18 @@ pub struct Installed {
     /// Spec `fuel`, else the manifest's, else `None` (the host default).
     pub fuel: Option<u64>,
     /// Commands that load it lazily.
-    pub lazy_cmd: Vec<String>,
+    pub lazy_command: Vec<String>,
     /// Events that load it lazily.
     pub lazy_event: Vec<Event>,
+}
+
+impl Installed {
+    /// Returns whether the plugin waits for a command or an event before it loads
+    /// ([`PackSpec::is_lazy`] of its spec).
+    #[must_use]
+    pub fn is_lazy(&self) -> bool {
+        !self.lazy_command.is_empty() || !self.lazy_event.is_empty()
+    }
 }
 
 /// A module found in a package directory: its file, requested grants (`None` without a
@@ -106,7 +116,7 @@ pub fn locate(spec: &PackSpec, paths: &Paths) -> Result<Installed, String> {
         denied,
         unused,
         fuel: spec.fuel.or(m.fuel),
-        lazy_cmd: spec.lazy_cmd.clone(),
+        lazy_command: spec.lazy_command.clone(),
         lazy_event: spec.lazy_event.clone(),
     })
 }

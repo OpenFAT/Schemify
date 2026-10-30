@@ -10,13 +10,13 @@
 //!   `LINE_WIDTH_TENTHS_MIN`, `LINE_WIDTH_TENTHS_MAX`
 //! - `pub struct Table`, `Table::sim(&self, kind: SimKind) -> Option<&Sim>`,
 //!   `Table::assert_invariants(&self)`
-//! - `pub struct Opts` (`impl Default`), `Opts::assert_in_domain(&self)`
-//! - `pub struct FnId`, `pub enum Target`
+//! - `pub struct Options` (`impl Default`), `Options::assert_in_domain(&self)`
+//! - `pub struct Hook`, `pub struct FnId`, `pub enum Target`
 //! - `pub struct Keymaps`, `Keymaps::records(&self) -> String`
 //! - `pub enum SimKind`, `SimKind::ALL`, `SimKind::SIMULATORS`, `SimKind::word(self)`
 //! - `pub struct Sim`
 //! - `pub enum Source`, `Source::word(&self)`
-//! - `pub struct PackSpec`
+//! - `pub struct PackSpec`, `PackSpec::is_lazy(&self) -> bool`
 //! - `pub enum Event`, `Event::ALL`, `Event::word(self)`, `Event::from_word(word: &str)`
 //! - `pub enum Level`, `pub enum Request`
 //! - `pub fn fn_of_command(name: &str) -> Option<FnId>`
@@ -51,7 +51,7 @@ pub(crate) const LINE_WIDTH_TENTHS_MAX: u8 = 100;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Table {
     /// Options.
-    pub opts: Opts,
+    pub opts: Options,
     /// Keymaps, at most [`KEYMAPS_MAX`].
     pub keymaps: Keymaps,
     /// Program per [`SimKind`] (index = position in [`SimKind::ALL`]); `None` = the default.
@@ -59,12 +59,21 @@ pub struct Table {
     /// Package specs in declaration order, names unique, at most [`PACKS_MAX`].
     pub packs: Vec<PackSpec>,
     /// Event hooks in registration order, at most [`HOOKS_MAX`].
-    pub hooks: Vec<(Event, FnId)>,
+    pub hooks: Vec<Hook>,
+}
+
+/// One `schemify.on(event, function)` registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hook {
+    /// The event it waits for.
+    pub event: Event,
+    /// The Lua function it runs.
+    pub function: FnId,
 }
 
 /// Options (`schemify.opt.<key>`, spec §3), in the table's units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Opts {
+pub struct Options {
     /// Snap step, milli-units in `[1, 10^9]`.
     pub snap: i32,
     /// Grid step, milli-units in `[1, 10^9]`.
@@ -109,7 +118,7 @@ pub struct Keymaps {
     /// Bound command or function.
     pub target: Vec<Target>,
     /// `opts.desc`, empty when absent.
-    pub desc: Vec<String>,
+    pub description: Vec<String>,
 }
 
 /// The external programs of run spec §5.
@@ -176,9 +185,17 @@ pub struct PackSpec {
     /// Per-event fuel override in `[10^6, 10^11]`.
     pub fuel: Option<u64>,
     /// Commands that load the plugin on first use; empty with `lazy_event` = eager.
-    pub lazy_cmd: Vec<String>,
+    pub lazy_command: Vec<String>,
     /// Events that load the plugin on first delivery.
     pub lazy_event: Vec<Event>,
+}
+
+impl PackSpec {
+    /// Returns whether the plugin waits for a command or an event before it loads.
+    #[must_use]
+    pub fn is_lazy(&self) -> bool {
+        !self.lazy_command.is_empty() || !self.lazy_event.is_empty()
+    }
 }
 
 /// Events a hook or a lazy package can wait for (plugin ABI §6 wire words).
@@ -239,8 +256,8 @@ const _: () = assert!(SimKind::ALL.len() == SimKind::Spectre as usize + 1);
 const _: () = assert!(Event::ALL.len() == Event::RunDone as usize + 1);
 const _: () = assert!(SimKind::SIMULATORS.len() + 2 == SimKind::ALL.len());
 
-/// The default options (spec §3); [`Opts::default`] returns them.
-const OPTS_DEFAULT: Opts = Opts {
+/// The default options (spec §3); [`Options::default`] returns them.
+const OPTS_DEFAULT: Options = Options {
     snap: 10_000,
     grid: 20_000,
     show_grid: true,
@@ -279,7 +296,7 @@ impl Table {
     pub(crate) fn assert_invariants(&self) {
         let keymaps = &self.keymaps;
         assert_eq!(keymaps.chord.len(), keymaps.target.len());
-        assert_eq!(keymaps.chord.len(), keymaps.desc.len());
+        assert_eq!(keymaps.chord.len(), keymaps.description.len());
         assert!(keymaps.chord.len() <= KEYMAPS_MAX);
         assert!(self.packs.len() <= PACKS_MAX);
         assert!(self.hooks.len() <= HOOKS_MAX);
@@ -312,7 +329,7 @@ impl Table {
     }
 }
 
-impl Opts {
+impl Options {
     /// Asserts each option lies in the domain `schemify.opt` lets through (spec §3).
     pub(crate) fn assert_in_domain(&self) {
         assert!(
@@ -338,7 +355,7 @@ impl Opts {
     }
 }
 
-impl Default for Opts {
+impl Default for Options {
     fn default() -> Self {
         OPTS_DEFAULT
     }
@@ -355,7 +372,7 @@ impl Keymaps {
     pub fn records(&self) -> String {
         use std::fmt::Write as _;
         assert_eq!(self.chord.len(), self.target.len());
-        assert_eq!(self.chord.len(), self.desc.len());
+        assert_eq!(self.chord.len(), self.description.len());
         let mut out = String::new();
         let rows = self.chord.iter().zip(&self.target);
         for (chord, target) in rows {
@@ -471,7 +488,7 @@ mod tests {
         let keys = Keymaps {
             chord: vec!["F5".into(), "w".into()],
             target: vec![Target::Function(FnId(42)), Target::Command("x.y".into())],
-            desc: vec![String::new(), "d".into()],
+            description: vec![String::new(), "d".into()],
         };
         let text = keys.records();
         assert_eq!(text, "key F5 user.lua.42\nkey w x.y\n");

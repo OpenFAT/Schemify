@@ -255,7 +255,7 @@ fn named(
         source,
         grant,
         fuel,
-        lazy_cmd: lazy.cmd,
+        lazy_command: lazy.cmd,
         lazy_event: lazy.event,
     };
     // `pack_spec` checked each field; the row this crate stores holds them.
@@ -264,6 +264,6 @@ fn named(
         assert!(fuel <= FUEL_MAX.unsigned_abs());
     }
     assert!(spec.grant.iter().all(|g| lua::is_word(g, WORD_MAX)));
-    assert!(spec.lazy_cmd.iter().all(|c| lua::is_word(c, WORD_MAX)));
+    assert!(spec.lazy_command.iter().all(|c| lua::is_word(c, WORD_MAX)));
     Ok(spec)
 }

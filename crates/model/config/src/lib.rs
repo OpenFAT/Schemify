@@ -62,8 +62,9 @@ mod table;
 
 pub use cli::{GUI_USAGE, Launch, Startup};
 pub use table::{
-    Event, FnId, HOOKS_MAX, KEYMAPS_MAX, Keymaps, Level, Opts, PACKS_MAX, PackSpec, REQUESTS_MAX,
-    Request, SIM_ENV_MAX, Sim, SimKind, Source, Table, Target, USER_LAYERS, fn_of_command,
+    Event, FnId, HOOKS_MAX, Hook, KEYMAPS_MAX, Keymaps, Level, Options, PACKS_MAX, PackSpec,
+    REQUESTS_MAX, Request, SIM_ENV_MAX, Sim, SimKind, Source, Table, Target, USER_LAYERS,
+    fn_of_command,
 };
 
 /// Lua VM instructions per call (spec §4).
@@ -201,9 +202,9 @@ impl Config {
             assert_ne!(name, "event", "`ev.event` is the event's name, not a field");
         }
         let mut hooks: Vec<FnId> = Vec::new();
-        for &(hook_event, f) in &self.table.hooks {
-            if hook_event == event {
-                hooks.push(f);
+        for hook in &self.table.hooks {
+            if hook.event == event {
+                hooks.push(hook.function);
             }
         }
         assert!(hooks.len() <= HOOKS_MAX);

@@ -66,7 +66,7 @@ impl Host {
                     let (found, pack_notes) = pack::installed(user.table(), &paths);
                     notes.extend(pack_notes);
                     for p in found {
-                        if p.lazy_cmd.is_empty() && p.lazy_event.is_empty() {
+                        if !p.is_lazy() {
                             load_installed(&mut plugins, &mut hashes, &mut notes, &p);
                         } else {
                             lazy.push(p);

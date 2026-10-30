@@ -7,8 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use schemify_config::{
-    Config, Event, FnId, HOOKS_MAX, Keymaps, Level, Opts, PackSpec, REQUESTS_MAX, Request, Sim,
-    SimKind, Source, Startup, Table, Target, USER_LAYERS,
+    Config, Event, FnId, HOOKS_MAX, Hook, Keymaps, Level, Options, PackSpec, REQUESTS_MAX, Request,
+    Sim, SimKind, Source, Startup, Table, Target, USER_LAYERS,
 };
 
 use crate::{SHA, errors, run};
@@ -66,17 +66,17 @@ schemify.pack.add {{
         source,
         grant: Vec::new(),
         fuel: None,
-        lazy_cmd: Vec::new(),
+        lazy_command: Vec::new(),
         lazy_event: Vec::new(),
     };
     let want = Table {
-        opts: Opts {
+        opts: Options {
             snap: 5_000,
             grid: 25_500,
             show_grid: false,
             light: true,
             simulator: Some(SimKind::Espice),
-            ..Opts::default()
+            ..Options::default()
         },
         keymaps: Keymaps {
             chord: vec!["Ctrl+S".into(), "F5".into()],
@@ -84,7 +84,7 @@ schemify.pack.add {{
                 Target::Command("file.save_as".into()),
                 Target::Function(FnId(0)),
             ],
-            desc: vec![String::new(), String::new()],
+            description: vec![String::new(), String::new()],
         },
         sims,
         packs: vec![
@@ -99,7 +99,7 @@ schemify.pack.add {{
                 )
             },
             PackSpec {
-                lazy_cmd: vec!["eye.open".into()],
+                lazy_command: vec!["eye.open".into()],
                 lazy_event: vec![Event::DocOpened],
                 ..spec(
                     "eye",
@@ -121,9 +121,14 @@ schemify.pack.add {{
                 },
             ),
         ],
-        hooks: vec![(Event::Saved, FnId(1))],
+        hooks: vec![Hook {
+            event: Event::Saved,
+            function: FnId(1),
+        }],
     };
     assert_eq!(cfg.table(), &want);
+    let lazy: Vec<bool> = cfg.table().packs.iter().map(PackSpec::is_lazy).collect();
+    assert_eq!(lazy, [false, true, false, false], "only `eye` waits");
     assert_eq!(
         cfg.table().keymaps.records(),
         "key Ctrl+S file.save_as\nkey F5 user.lua.0\n"
@@ -138,7 +143,7 @@ fn options_read_back_and_defaults_hold() {
     );
     assert!(out.is_empty(), "{out:?}");
     assert_eq!(cfg.table().opts.grid, 40_000);
-    assert_eq!(cfg.table().opts.snap, Opts::default().snap);
+    assert_eq!(cfg.table().opts.snap, Options::default().snap);
     // Clean: nothing runs, nothing is set.
     let (clean, out) = Config::load(&Startup::Clean);
     assert!(out.is_empty() && clean.root().is_none());
@@ -168,7 +173,7 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
     assert_eq!(o.layer_colors, want);
     assert_eq!((o.dim, o.line_width_tenths), (25, 15));
     // Defaults: no colour, no dimming, one pixel.
-    let d = Opts::default();
+    let d = Options::default();
     assert_eq!(
         (d.layer_colors, d.dim, d.line_width_tenths),
         ([None; USER_LAYERS], 0, 10)
@@ -195,7 +200,7 @@ fn canvas_options_set_read_back_and_reject_bad_values() {
         let e = errors(&out);
         assert_eq!(e.len(), 1, "{bad}: {out:?}");
         assert!(e[0].contains("bad value"), "{bad}: {}", e[0]);
-        assert_eq!(cfg.table().opts, Opts::default(), "{bad}");
+        assert_eq!(cfg.table().opts, Options::default(), "{bad}");
     }
 }
 
@@ -442,7 +447,7 @@ fn bad_arguments_are_located_errors_that_set_nothing() {
     // `opts.desc` is kept; a number converts to a command argument string.
     let (cfg, out) =
         run("schemify.keymap.set('w', 'x.y', { desc = 'wire' })\nschemify.cmd('x.y', 5)");
-    assert_eq!(cfg.table().keymaps.desc, vec!["wire".to_owned()]);
+    assert_eq!(cfg.table().keymaps.description, vec!["wire".to_owned()]);
     let cmd = Request::Command {
         name: "x.y".into(),
         args: "5".into(),

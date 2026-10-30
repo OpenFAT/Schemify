@@ -13,7 +13,8 @@ use omnilua::{Function, Lua, Table as LuaTable, Value};
 use crate::lua::{self, Shared};
 use crate::table::{LINE_WIDTH_TENTHS_MAX, LINE_WIDTH_TENTHS_MIN, STEP_MAX, STEP_MIN};
 use crate::{
-    Event, HOOKS_MAX, KEYMAPS_MAX, Level, Request, SIM_ENV_MAX, Sim, SimKind, Target, USER_LAYERS,
+    Event, HOOKS_MAX, Hook, KEYMAPS_MAX, Level, Request, SIM_ENV_MAX, Sim, SimKind, Target,
+    USER_LAYERS,
 };
 
 /// An error string for the prelude to raise, or `None` on success.
@@ -222,10 +223,10 @@ fn keymap_set(_: &Lua, state: &Shared, (chord, target, opts): (Value, Value, Val
     let mut state = state.borrow_mut();
     let keymaps = &mut state.table.keymaps;
     assert_eq!(keymaps.chord.len(), keymaps.target.len());
-    assert_eq!(keymaps.chord.len(), keymaps.desc.len());
+    assert_eq!(keymaps.chord.len(), keymaps.description.len());
     if let Some(i) = keymaps.chord.iter().position(|c| *c == chord) {
         keymaps.target[i] = target;
-        keymaps.desc[i] = description;
+        keymaps.description[i] = description;
         return Ok(None);
     }
     if keymaps.chord.len() >= KEYMAPS_MAX {
@@ -233,9 +234,9 @@ fn keymap_set(_: &Lua, state: &Shared, (chord, target, opts): (Value, Value, Val
     }
     keymaps.chord.push(chord);
     keymaps.target.push(target);
-    keymaps.desc.push(description);
+    keymaps.description.push(description);
     assert_eq!(keymaps.chord.len(), keymaps.target.len());
-    assert_eq!(keymaps.chord.len(), keymaps.desc.len());
+    assert_eq!(keymaps.chord.len(), keymaps.description.len());
     assert!(keymaps.chord.len() <= KEYMAPS_MAX);
     Ok(None)
 }
@@ -278,7 +279,10 @@ fn on(_: &Lua, state: &Shared, (event, f): (Value, Value)) -> Raised {
     };
     let mut state = state.borrow_mut();
     let hooks = &mut state.table.hooks;
-    hooks.push((event, id));
+    hooks.push(Hook {
+        event,
+        function: id,
+    });
     assert!(hooks.len() <= HOOKS_MAX);
     Ok(None)
 }

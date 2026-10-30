@@ -408,7 +408,8 @@ impl Runtime {
                 assert!(usize::from(f.0) < kept, "keymap function {} not kept", f.0);
             }
         }
-        for &(_, f) in &table.hooks {
+        for hook in &table.hooks {
+            let f = hook.function;
             assert!(usize::from(f.0) < kept, "hook function {} not kept", f.0);
         }
         (table, out)

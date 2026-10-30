@@ -37,7 +37,7 @@ impl Host {
                 .table()
                 .hooks
                 .iter()
-                .any(|h| h.0 == schemify_config::Event::Load)
+                .any(|h| h.event == schemify_config::Event::Load)
             {
                 let keys = self.user.table().keymaps.clone();
                 let out = self.user.fire(schemify_config::Event::Load, &[]);

@@ -14,7 +14,7 @@ use super::Editor;
 use super::canvas::USER_LAYERS;
 use super::dialog::{Dialog, TextFor};
 use crate::export::Page;
-use schemify_config::Opts;
+use schemify_config::Options;
 
 /// Interaction options (xschem Options/View state).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,7 +230,7 @@ impl Editor {
 
 /// The user config's layer colors (`schemify.opt.layer_colors`, config spec §3) as the
 /// editor's `(layer, 0xRRGGBB)` overrides, by layer.
-pub(super) fn user_layer_colors(o: &Opts) -> Vec<(u8, u32)> {
+pub(super) fn user_layer_colors(o: &Options) -> Vec<(u8, u32)> {
     let out: Vec<(u8, u32)> = o
         .layer_colors
         .iter()

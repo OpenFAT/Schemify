@@ -30,7 +30,7 @@ fn spec(name: &str, source: Source) -> PackSpec {
         source,
         grant: Vec::new(),
         fuel: None,
-        lazy_cmd: Vec::new(),
+        lazy_command: Vec::new(),
         lazy_event: Vec::new(),
     }
 }

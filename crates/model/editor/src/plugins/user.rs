@@ -54,7 +54,7 @@ impl Host {
         let Some(i) = self
             .lazy
             .iter()
-            .position(|p| p.lazy_cmd.iter().any(|c| c == name))
+            .position(|p| p.lazy_command.iter().any(|c| c == name))
         else {
             return false;
         };
@@ -145,7 +145,7 @@ impl Host {
             "every kept note was counted"
         );
         self.wake_lazy(event);
-        if self.user.table().hooks.iter().any(|h| h.0 == event) {
+        if self.user.table().hooks.iter().any(|h| h.event == event) {
             let keys = self.user.table().keymaps.clone();
             let out = self.user.fire(event, &fields);
             self.absorb(out, &keys);
