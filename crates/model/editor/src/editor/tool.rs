@@ -230,6 +230,7 @@ impl Editor {
         let ctrl = self.mods & Mods::CTRL != 0;
         match ev {
             InputEvent::PointerMove { x, y } => {
+                assert!(x.is_finite() && y.is_finite(), "a pointer position");
                 let prev = self.pointer;
                 self.pointer = (x, y);
                 if let Some(p) = self.pan {
@@ -246,6 +247,10 @@ impl Editor {
                         let (dx, dy) = (x - at.0, y - at.1);
                         if dx * dx + dy * dy >= DRAG_PX * DRAG_PX {
                             let (world, hit, at) = (*world, *hit, *at);
+                            assert!(
+                                hit.is_none_or(|o| (o as usize) < self.scene.objs.len()),
+                                "a press hit names a scene object"
+                            );
                             // The press already selected what it hit (unless Alt), so a drag
                             // that starts on an object moves the selection (intuitive mode).
                             let keys = self.session.level().map_or(&[][..], |l| &l.sel);
@@ -297,6 +302,7 @@ impl Editor {
                 true
             }
             InputEvent::PointerDown { x, y, button } => {
+                assert!(x.is_finite() && y.is_finite(), "a pointer position");
                 self.pointer = (x, y);
                 if self.space_pan {
                     self.space_pan = false;
@@ -430,6 +436,7 @@ impl Editor {
                 true
             }
             InputEvent::PointerUp { x, y, button } => {
+                assert!(x.is_finite() && y.is_finite(), "a pointer position");
                 self.pointer = (x, y);
                 match button {
                     Button::Middle => {
@@ -481,13 +488,18 @@ impl Editor {
                             [from.0, from.1, to.0, to.1],
                             touch,
                         );
+                        debug_assert!(
+                            hits.iter().all(|&o| (o as usize) < self.scene.objs.len()),
+                            "box hits name scene objects"
+                        );
                         let sel = if unselect {
                             self.unselected(&hits)
                         } else {
                             let keys = hits.iter().map(|&o| self.scene.objs.key[o as usize]);
-                            let mut sel = match additive {
-                                true => self.selection().to_vec(),
-                                false => Vec::new(),
+                            let mut sel = if additive {
+                                self.selection().to_vec()
+                            } else {
+                                Vec::new()
                             };
                             sel.extend(keys);
                             sel
@@ -506,6 +518,7 @@ impl Editor {
                 true
             }
             InputEvent::Wheel { x, y, dy, .. } => {
+                assert!(dy.is_finite(), "a wheel step");
                 let v = self.canvas_rect();
                 let mut cam = self.camera();
                 if shift {

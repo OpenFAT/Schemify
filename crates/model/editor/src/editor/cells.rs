@@ -27,6 +27,7 @@ impl Editor {
     /// new file in place of the old one. Unsaved edits of the old file move to the new one:
     /// the old document is closed and its journal dropped, so it is not offered for recovery.
     pub(super) fn save_as(&mut self, h: DocHandle, rel: &str, symbol: bool) {
+        assert!(!rel.trim().is_empty(), "a file name to save as");
         let Some(doc) = self.session.project.doc(h) else {
             return;
         };
@@ -79,6 +80,7 @@ impl Editor {
                 return;
             }
         };
+        assert_ne!(new, h, "a file that did not exist opens as a new document");
         let view = if symbol {
             View::Symbol
         } else {

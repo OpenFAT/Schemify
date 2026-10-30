@@ -217,6 +217,14 @@ impl Editor {
             },
             _ => {}
         }
+        assert!(
+            self.opts.snap > 0 && self.opts.grid > 0,
+            "a positive snap and grid"
+        );
+        assert!(
+            self.opts.width_tenths >= 1 && self.opts.dim <= 100,
+            "a visible line width, a dim factor in [0, 1]"
+        );
     }
 }
 

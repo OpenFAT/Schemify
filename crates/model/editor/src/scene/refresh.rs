@@ -476,6 +476,22 @@ fn remove_object(sc: &mut Scene, key: ObjKey) {
 fn fit_boxes(sc: &mut Scene, from: [usize; 6]) {
     let p = &sc.prims;
     let o = &sc.owner;
+    let rows = [
+        p.lines.x0.len(),
+        p.rects.x0.len(),
+        p.arcs.cx.len(),
+        p.polylines.end.len(),
+        p.polygons.end.len(),
+        p.texts.x.len(),
+    ];
+    assert!(
+        from.iter().zip(rows).all(|(&f, n)| f <= n),
+        "fits from existing rows: {from:?} of {rows:?}"
+    );
+    assert!(
+        o.cols().iter().zip(rows).all(|(c, n)| c.len() == n),
+        "an owner per primitive row"
+    );
     let objs = &mut sc.objs;
     let mut grow = |owner: u32, x0: i32, y0: i32, x1: i32, y1: i32| {
         if owner == u32::MAX || objs.seg[owner as usize] {

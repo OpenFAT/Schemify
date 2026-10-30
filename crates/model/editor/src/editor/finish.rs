@@ -265,6 +265,10 @@ impl Editor {
             self.session.say(e);
             return;
         }
+        assert!(
+            keys.len() <= ops.len(),
+            "one selected key per inserted record at most"
+        );
         self.commit(reqs, h, label, ops);
         if !keys.is_empty() {
             self.set_selection(keys);

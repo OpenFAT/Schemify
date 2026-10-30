@@ -362,6 +362,7 @@ impl Sim {
             }
         }
         let k = self.index_of(top).expect("a run of this bench");
+        assert!(self.runs.len() <= RUNS_MAX, "make_room keeps the run cap");
         let r = &mut self.runs[k];
         let opt = |s: &str| (!s.is_empty()).then(|| s.to_owned());
         let (config, corner) = (opt(&req.config), opt(&req.corner));
@@ -376,6 +377,7 @@ impl Sim {
             .push(config.as_deref(), corner.as_deref(), NO_SAMPLE, &vary)
         {
             Ok(j) => {
+                assert!(j < r.run.jobs.len(), "a pushed job is a row of its run");
                 r.plugin_jobs.push((j, req.plugin));
                 r.saved = false;
                 self.table.dirty |= self.shown == Some(top);

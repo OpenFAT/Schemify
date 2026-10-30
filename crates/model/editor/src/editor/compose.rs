@@ -376,6 +376,7 @@ impl Editor {
         }
         self.contribute_integration(&mut t);
         self.contribute_parity(&mut t);
+        debug_assert!(t.ends_with('\n'), "the contribution is whole record lines");
         (t, graphs)
     }
 }

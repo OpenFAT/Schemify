@@ -114,6 +114,14 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
             _ => {}
         }
     }
+    assert!(
+        li == p.lines.len() && ri == p.rects.len() && ai == p.arcs.len(),
+        "every line, rect and arc primitive paired with its graphic row"
+    );
+    assert!(
+        pi == p.polys.len() && ti == p.texts.len(),
+        "every polygon and text primitive paired with its graphic row"
+    );
     let pins = doc.pins();
     let s = doc.strings();
     for i in 0..pins.x.len() {
