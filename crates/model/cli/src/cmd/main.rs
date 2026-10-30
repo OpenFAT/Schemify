@@ -13,8 +13,9 @@ mod files;
 mod publish;
 mod serve;
 
+use std::env;
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use schemify_config::{Config, Level, Request, Startup};
 
@@ -67,6 +68,7 @@ pub const USAGE_ERROR: u8 = 2;
 pub type Exit = Result<u8, u8>;
 
 /// Prints [`USAGE`] on stderr and returns [`USAGE_ERROR`].
+#[must_use]
 pub fn usage() -> u8 {
     eprint!("{USAGE}");
     USAGE_ERROR
@@ -75,7 +77,7 @@ pub fn usage() -> u8 {
 // ---- private ----
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = env::args().skip(1).collect();
     let (start, first) = match Startup::parse(&args) {
         Ok(s) => s,
         Err(e) => {
@@ -83,6 +85,7 @@ fn main() -> ExitCode {
             return ExitCode::from(USAGE_ERROR);
         }
     };
+    assert!(first <= args.len(), "the command index lies within argv");
     let Some(command) = args.get(first) else {
         return ExitCode::from(usage());
     };
@@ -146,13 +149,13 @@ fn report_requests(out: &[Request]) {
 /// and the remaining arguments; returns its exit code (2 when it cannot start or its code
 /// does not fit a byte).
 fn edit(start: &Startup, args: &[String]) -> u8 {
-    let name = format!("schemify-gui{}", std::env::consts::EXE_SUFFIX);
-    let sibling = std::env::current_exe()
+    let name = format!("schemify-gui{}", env::consts::EXE_SUFFIX);
+    let sibling = env::current_exe()
         .ok()
         .map(|p| p.with_file_name(&name))
         .filter(|p| p.is_file());
     let program = sibling.unwrap_or_else(|| PathBuf::from(&name));
-    let status = std::process::Command::new(&program)
+    let status = Command::new(&program)
         .args(start.flags())
         .args(args)
         .status();

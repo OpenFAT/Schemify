@@ -20,6 +20,7 @@
 //! - `const FILES_MAX`, `BYTES_MAX`, `IMPORT_BYTES_MAX`, `PROJECTS`; `type Files`
 //! - `struct Vfs`: `new`, `read`, `is_dir`, `exists`, `mtime`, `mkdirs`, `write`, `append`,
 //!   `remove`, `replace_tree`, `load`, `next_stale`, `has_stale`, `list`, `import_plan`
+//! - `struct ImportPlan { dir, files }`
 //! - `fn key(&Path) -> String`
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,8 +47,8 @@ pub(crate) type Files = Vec<(String, Vec<u8>)>;
 /// The table. Directories are explicit (OPFS has empty directories); `/` always exists.
 #[derive(Debug)]
 pub(crate) struct Vfs {
-    /// Bytes and modification time (s) per file path.
-    files: BTreeMap<String, (Vec<u8>, u64)>,
+    /// Bytes and modification time per file path.
+    files: BTreeMap<String, File>,
     /// Directory paths.
     dirs: BTreeSet<String>,
     /// Total bytes in `files`.
@@ -56,7 +57,23 @@ pub(crate) struct Vfs {
     /// path changed again moves to the back in O(log n).
     stale: BTreeMap<u64, String>,
     stale_at: BTreeMap<String, u64>,
-    seq: u64,
+    sequence: u64,
+}
+
+/// Where an imported project goes, from [`Vfs::import_plan`].
+#[derive(Debug)]
+pub(crate) struct ImportPlan {
+    /// The new project directory under [`PROJECTS`], free when planned.
+    pub(crate) dir: String,
+    /// The entries, relative to `dir`.
+    pub(crate) files: Files,
+}
+
+/// One file of the table.
+#[derive(Debug)]
+struct File {
+    bytes: Vec<u8>,
+    mtime_s: u64,
 }
 
 /// The table key of `path`: absolute, `/`-separated, without `.` or `..` (a relative path
@@ -73,8 +90,16 @@ pub(crate) fn key(path: &Path) -> String {
         }
     }
     let k = format!("/{}", parts.join("/"));
-    debug_assert!(k == "/" || !k.ends_with('/'));
+    assert!(k.starts_with('/'));
+    assert!(k == "/" || !k.ends_with('/'));
+    assert!(!k.contains("//"), "{k}: an empty component survived");
     k
+}
+
+impl Default for Vfs {
+    fn default() -> Vfs {
+        Vfs::new()
+    }
 }
 
 impl Vfs {
@@ -86,25 +111,36 @@ impl Vfs {
             bytes: 0,
             stale: BTreeMap::new(),
             stale_at: BTreeMap::new(),
-            seq: 0,
+            sequence: 0,
         }
     }
 
     /// A file's bytes.
     pub(crate) fn read(&self, key: &str) -> Option<&[u8]> {
-        self.files.get(key).map(|f| f.0.as_slice())
+        assert_key(key);
+        let bytes = self.files.get(key).map(|f| f.bytes.as_slice());
+        if bytes.is_some() {
+            assert!(
+                !self.dirs.contains(key),
+                "{key}: both a file and a directory"
+            );
+        }
+        bytes
     }
 
     pub(crate) fn is_dir(&self, key: &str) -> bool {
+        assert_key(key);
         self.dirs.contains(key)
     }
 
     pub(crate) fn exists(&self, key: &str) -> bool {
+        assert_key(key);
         self.files.contains_key(key) || self.dirs.contains(key)
     }
 
     pub(crate) fn mtime(&self, key: &str) -> Option<u64> {
-        self.files.get(key).map(|f| f.1)
+        assert_key(key);
+        self.files.get(key).map(|f| f.mtime_s)
     }
 
     /// Creates directory `key` and its ancestors (not queued: OPFS directories are created
@@ -114,9 +150,15 @@ impl Vfs {
     ///
     /// `key` or an ancestor is a file.
     pub(crate) fn mkdirs(&mut self, key: &str) -> Result<(), String> {
+        assert_key(key);
         let mut at = Some(key);
         let mut todo = Vec::new();
         while let Some(k) = at {
+            // Each step drops one component, so the walk ends at `/` at the latest.
+            assert!(
+                todo.len() <= key.len(),
+                "{key}: parent walk does not shrink"
+            );
             if self.files.contains_key(k) {
                 return Err(format!("{k}: not a directory"));
             }
@@ -137,8 +179,10 @@ impl Vfs {
     ///
     /// `key` is a directory, an ancestor is a file, or the table would pass [`BYTES_MAX`].
     pub(crate) fn write(&mut self, key: &str, bytes: Vec<u8>, now_s: u64) -> Result<(), String> {
+        let len = bytes.len();
         self.put(key, bytes, now_s)?;
         self.mark(key);
+        assert_eq!(self.read(key).map(<[u8]>::len), Some(len));
         Ok(())
     }
 
@@ -149,7 +193,9 @@ impl Vfs {
     /// As [`Vfs::write`].
     pub(crate) fn append(&mut self, key: &str, bytes: &[u8], now_s: u64) -> Result<(), String> {
         let mut all = self.read(key).map(<[u8]>::to_vec).unwrap_or_default();
+        let before = all.len();
         all.extend_from_slice(bytes);
+        assert_eq!(all.len(), before + bytes.len());
         self.write(key, all, now_s)
     }
 
@@ -159,12 +205,18 @@ impl Vfs {
     ///
     /// No such file (a directory is not removed).
     pub(crate) fn remove(&mut self, key: &str) -> Result<(), String> {
-        let (bytes, _) = self
+        assert_key(key);
+        let file = self
             .files
             .remove(key)
             .ok_or_else(|| format!("{key}: no such file"))?;
-        self.bytes -= bytes.len();
+        assert!(
+            file.bytes.len() <= self.bytes,
+            "{key}: the byte total lost track of this file"
+        );
+        self.bytes -= file.bytes.len();
         self.mark(key);
+        assert!(!self.files.contains_key(key));
         Ok(())
     }
 
@@ -182,7 +234,8 @@ impl Vfs {
         files: Files,
         now_s: u64,
     ) -> Result<(), String> {
-        assert!(dir.starts_with('/') && dir != "/", "replace_tree: {dir}");
+        assert!(dir.starts_with('/'), "replace_tree: {dir} is not a key");
+        assert_ne!(dir, "/", "replace_tree: the root holds every project");
         let prefix = format!("{dir}/");
         let old: Vec<String> = self
             .files
@@ -197,6 +250,7 @@ impl Vfs {
         for (rel, bytes) in files {
             self.write(&format!("{prefix}{rel}"), bytes, now_s)?;
         }
+        assert!(self.bytes <= BYTES_MAX);
         Ok(())
     }
 
@@ -209,7 +263,9 @@ impl Vfs {
         if self.files.len() >= FILES_MAX {
             return Err(format!("more than {FILES_MAX} files"));
         }
-        self.put(key, bytes, mtime_s)
+        self.put(key, bytes, mtime_s)?;
+        assert!(self.files.len() <= FILES_MAX);
+        Ok(())
     }
 
     /// The next path whose OPFS copy is stale, in the order of each path's last change (a
@@ -217,11 +273,14 @@ impl Vfs {
     /// The flusher writes the path's current bytes, or removes it when it has none.
     pub(crate) fn next_stale(&mut self) -> Option<String> {
         let (_, key) = self.stale.pop_first()?;
-        self.stale_at.remove(&key);
+        let at = self.stale_at.remove(&key);
+        assert!(at.is_some(), "{key}: queued without its reverse index");
+        assert_eq!(self.stale.len(), self.stale_at.len());
         Some(key)
     }
 
     pub(crate) fn has_stale(&self) -> bool {
+        debug_assert_eq!(self.stale.len(), self.stale_at.len());
         !self.stale.is_empty()
     }
 
@@ -231,6 +290,8 @@ impl Vfs {
     ///
     /// Cost: O(descendants) per directory visited.
     pub(crate) fn list(&self, dir: &str, depth: u32, skip: &[String], out: &mut Vec<PathBuf>) {
+        assert_key(dir);
+        assert!(depth <= LIST_DEPTH_MAX);
         if !self.dirs.contains(dir) {
             return;
         }
@@ -244,7 +305,8 @@ impl Vfs {
         let files = self.files.range::<str, _>(range).map(|(k, _)| k);
         let dirs = self.dirs.range::<str, _>(range);
         let mut names: BTreeSet<&str> = BTreeSet::new();
-        for k in files.take_while(under).chain(dirs.take_while(under)) {
+        let descendants = files.take_while(under).chain(dirs.take_while(under));
+        for k in descendants {
             let rest = &k[prefix.len()..];
             if let Some(name) = rest.split('/').next().filter(|n| !n.is_empty()) {
                 names.insert(name);
@@ -266,6 +328,7 @@ impl Vfs {
                 out.push(PathBuf::from(path));
             }
         }
+        assert!(out.len() <= LIST_FILES_MAX);
     }
 
     /// Where an imported project goes and its files (web spec §3): `__MACOSX/` dropped, a
@@ -279,11 +342,7 @@ impl Vfs {
     /// No files, more than [`LIST_FILES_MAX`] files or [`IMPORT_BYTES_MAX`] bytes, an entry
     /// path that is absolute or has an empty, `.` or `..` segment, a `\`, `:` or NUL (the
     /// archive is refused whole: it is a trust boundary), or 99 projects of that name.
-    pub(crate) fn import_plan(
-        &self,
-        hint: &str,
-        mut entries: Files,
-    ) -> Result<(String, Files), String> {
+    pub(crate) fn import_plan(&self, hint: &str, mut entries: Files) -> Result<ImportPlan, String> {
         entries.retain(|(p, _)| !p.starts_with("__MACOSX/"));
         if entries.is_empty() {
             return Err("no files to import".into());
@@ -331,28 +390,50 @@ impl Vfs {
             })
             .find(|d| !self.exists(d))
             .ok_or_else(|| format!("99 projects named {name} already"))?;
-        assert!(
-            entries
-                .iter()
-                .all(|(p, _)| !p.is_empty() && !p.starts_with('/'))
-        );
-        Ok((dir, entries))
+        assert!(!self.exists(&dir));
+        for (p, _) in &entries {
+            assert!(
+                !p.is_empty(),
+                "the shared top directory was an entry itself"
+            );
+            assert!(!p.starts_with('/'));
+        }
+        Ok(ImportPlan {
+            dir,
+            files: entries,
+        })
     }
 }
 
 // ---- private ----
 
+/// Asserts that `key` is a table key, as [`key`] makes them.
+fn assert_key(key: &str) {
+    assert!(
+        key.starts_with('/'),
+        "{key}: not a table key (see `vfs::key`)"
+    );
+    assert!(key == "/" || !key.ends_with('/'), "{key}: trailing `/`");
+}
+
 /// The parent directory key of `key`; `None` for `/`.
 fn parent(key: &str) -> Option<&str> {
-    match key.rsplit_once('/')? {
+    assert!(key.starts_with('/'));
+    let up = match key.rsplit_once('/')? {
         (_, "") => None,
         ("", _) => Some("/"),
         (p, _) => Some(p),
+    };
+    if let Some(p) = up {
+        assert!(p.len() < key.len());
     }
+    up
 }
 
 /// `dir/name` for a directory key.
 fn child(dir: &str, name: &str) -> String {
+    assert!(!name.is_empty());
+    assert!(!name.contains('/'), "{name}: one component, not a path");
     if dir == "/" {
         format!("/{name}")
     } else {
@@ -366,23 +447,31 @@ impl Vfs {
             return Err(format!("{key}: is a directory"));
         }
         let dir = parent(key).ok_or("/: is a directory")?;
-        let old = self.files.get(key).map_or(0, |f| f.0.len());
+        let old = self.files.get(key).map_or(0, |f| f.bytes.len());
+        assert!(old <= self.bytes);
         let after = self.bytes - old + bytes.len();
         if after > BYTES_MAX {
             return Err(format!("{key}: web storage full ({} MiB)", BYTES_MAX >> 20));
         }
         self.mkdirs(dir)?;
         self.bytes = after;
-        self.files.insert(key.to_owned(), (bytes, mtime_s));
+        self.files.insert(key.to_owned(), File { bytes, mtime_s });
+        assert!(self.bytes <= BYTES_MAX);
         Ok(())
     }
 
     fn mark(&mut self, key: &str) {
-        if let Some(old) = self.stale_at.insert(key.to_owned(), self.seq) {
-            self.stale.remove(&old);
+        if let Some(old) = self.stale_at.insert(key.to_owned(), self.sequence) {
+            let gone = self.stale.remove(&old);
+            assert_eq!(
+                gone.as_deref(),
+                Some(key),
+                "the reverse index points elsewhere"
+            );
         }
-        self.stale.insert(self.seq, key.to_owned());
-        self.seq += 1;
+        let fresh = self.stale.insert(self.sequence, key.to_owned());
+        assert!(fresh.is_none(), "sequence number {} reused", self.sequence);
+        self.sequence += 1;
         assert_eq!(self.stale.len(), self.stale_at.len());
     }
 }
@@ -390,6 +479,9 @@ impl Vfs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::fs;
+    use std::process;
 
     /// A hosted project's refresh replaces its whole tree, hidden runs included, and
     /// leaves sibling projects alone.
@@ -425,14 +517,14 @@ mod tests {
     /// xorshift64*: seed-replayable inputs without a dependency.
     struct Rng(u64);
     impl Rng {
-        fn next(&mut self) -> u64 {
+        fn next_u64(&mut self) -> u64 {
             self.0 ^= self.0 >> 12;
             self.0 ^= self.0 << 25;
             self.0 ^= self.0 >> 27;
             self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
         }
         fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
-            xs[(self.next() % xs.len() as u64) as usize]
+            xs[(self.next_u64() % xs.len() as u64) as usize]
         }
     }
 
@@ -457,10 +549,9 @@ mod tests {
     #[test]
     fn behaves_like_the_native_file_system() {
         for seed in 1..=40u64 {
-            let root =
-                std::env::temp_dir().join(format!("schemify-vfs-{}-{seed}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
-            std::fs::create_dir_all(&root).expect("temp dir");
+            let root = env::temp_dir().join(format!("schemify-vfs-{}-{seed}", process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("temp dir");
             let native = |k: &str| root.join(&k[1..]);
             let mut v = Vfs::new();
             let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
@@ -468,7 +559,7 @@ mod tests {
                 let k = rng.pick(PATHS);
                 let bytes = format!("{seed}:{step}").into_bytes();
                 let ctx = format!("seed {seed} step {step} {k}");
-                match rng.next() % 6 {
+                match rng.next_u64() % 6 {
                     0 | 1 => assert_eq!(
                         v.write(k, bytes.clone(), 1).is_ok(),
                         super::super::imp::write_atomic(&native(k), &bytes).is_ok(),
@@ -488,11 +579,7 @@ mod tests {
                 }
                 for &p in PATHS {
                     let n = native(p);
-                    assert_eq!(
-                        v.read(p),
-                        std::fs::read(&n).ok().as_deref(),
-                        "read {p} ({ctx})"
-                    );
+                    assert_eq!(v.read(p), fs::read(&n).ok().as_deref(), "read {p} ({ctx})");
                     assert_eq!(v.is_dir(p), n.is_dir(), "is_dir {p} ({ctx})");
                     assert_eq!(v.exists(p), n.exists(), "exists {p} ({ctx})");
                 }
@@ -521,7 +608,7 @@ mod tests {
                     assert_eq!(got, want, "list {dir} ({ctx})");
                 }
             }
-            let _ = std::fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&root);
         }
     }
 
@@ -583,7 +670,7 @@ mod tests {
     fn imports_strip_the_shared_top_directory_and_refuse_unsafe_paths() {
         let mut v = Vfs::new();
         let e = |p: &str| (p.to_owned(), p.as_bytes().to_vec());
-        let (dir, files) = v
+        let ImportPlan { dir, files } = v
             .import_plan(
                 "inv-main",
                 vec![
@@ -599,13 +686,13 @@ mod tests {
         assert_eq!(files[0].1, b"inv/top.shcomp", "bytes kept");
         // No shared directory: the hint names it; taken names get a suffix.
         v.mkdirs("/projects/my_design").expect("mkdirs");
-        let (dir, files) = v
+        let ImportPlan { dir, files } = v
             .import_plan("my design", vec![e("a.shcomp"), e("b/c.shcomp")])
             .expect("imports");
         assert_eq!(dir, "/projects/my_design-2");
         assert_eq!(files.len(), 2);
-        let (dir, _) = v.import_plan("..", vec![e("x")]).expect("imports");
-        assert_eq!(dir, "/projects/project");
+        let plan = v.import_plan("..", vec![e("x")]).expect("imports");
+        assert_eq!(plan.dir, "/projects/project");
         for bad in [
             "../etc/passwd",
             "/abs",

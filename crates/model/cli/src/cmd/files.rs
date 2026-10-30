@@ -5,10 +5,12 @@
 //! Contents: `fn fmt(&[String]) -> Exit`, `fn merge_driver(&[String]) -> Exit`,
 //! `fn diff(&[String]) -> Exit`, `fn git_setup(&[String]) -> Exit`.
 
+use std::fs;
 use std::path::Path;
+use std::process::Command;
 
-use schemify_cli::platform::{self, write_atomic};
-use schemify_format as format;
+use schemify_cli::platform;
+use schemify_format::{self as format, ChangeKind, Document, Parts};
 
 use crate::{DESIGN_ERROR, Exit, OK, USAGE_ERROR, usage};
 
@@ -16,7 +18,11 @@ use crate::{DESIGN_ERROR, Exit, OK, USAGE_ERROR, usage};
 /// does not parse is reported and skipped; a read or write failure stops at once.
 pub fn fmt(args: &[String]) -> Exit {
     let check = args.iter().any(|a| a == "--check");
-    let files: Vec<&String> = args.iter().filter(|a| *a != "--check").collect();
+    let files: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| *a != "--check")
+        .collect();
     if files.is_empty() {
         return Err(usage());
     }
@@ -79,19 +85,36 @@ pub fn diff(args: &[String]) -> Exit {
     let mut out = String::new();
     for c in &d.changes {
         let (sign, doc, r) = match c.kind {
-            format::ChangeKind::Added => ('+', &bd, c.b),
-            format::ChangeKind::Removed => ('-', &ad, c.a),
-            format::ChangeKind::Changed => ('~', &bd, c.b),
+            ChangeKind::Added => ('+', &bd, c.b),
+            ChangeKind::Removed => ('-', &ad, c.a),
+            ChangeKind::Changed => ('~', &bd, c.b),
         };
+        assert_ne!(r, format::NONE, "{sign} change without its record");
+        if c.kind == ChangeKind::Changed {
+            assert_ne!(
+                c.parts,
+                Parts::default(),
+                "a changed record differs somewhere"
+            );
+        } else {
+            assert_eq!(c.parts, Parts::default(), "only a changed record has parts");
+            assert!(c.keys.is_empty(), "only a changed record has keys");
+        }
         let (k1, k2) = doc.record_key(r);
         out.push(sign);
         out.push(' ');
         out.push_str(doc.record_word(r));
-        for k in [k1, k2].into_iter().filter(|k| !k.is_empty()) {
+        let key_words = [k1, k2].into_iter().filter(|k| !k.is_empty());
+        for k in key_words {
             out.push(' ');
             out.push_str(k);
         }
-        if c.kind == format::ChangeKind::Changed {
+        if c.kind == ChangeKind::Changed {
+            assert!(c.keys.start <= c.keys.end);
+            assert!(
+                c.keys.end as usize <= d.keys.len(),
+                "a change's keys lie in the diff's key table"
+            );
             push_changed_parts(
                 &mut out,
                 c.parts,
@@ -119,16 +142,14 @@ pub fn git_setup(args: &[String]) -> Exit {
         ("merge.schemify.driver", "schemify merge-driver %O %A %B %P"),
     ];
     for (key, value) in settings {
-        let status = std::process::Command::new("git")
-            .args(["config", key, value])
-            .status();
+        let status = Command::new("git").args(["config", key, value]).status();
         if !matches!(status, Ok(s) if s.success()) {
             eprintln!("git config {key} failed (is this a git clone?)");
             return Err(USAGE_ERROR);
         }
     }
     let path = Path::new(".gitattributes");
-    let mut text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut text = fs::read_to_string(path).unwrap_or_default();
     let before = text.len();
     for ext in ["shprim", "shcomp", "shbench"] {
         let line = format!("*.{ext} merge=schemify");
@@ -141,8 +162,9 @@ pub fn git_setup(args: &[String]) -> Exit {
         text.push_str(&line);
         text.push('\n');
     }
+    assert!(text.len() >= before, "lines are only added");
     if text.len() != before
-        && let Err(e) = std::fs::write(path, text)
+        && let Err(e) = fs::write(path, text)
     {
         eprintln!(".gitattributes: {e}");
         return Err(USAGE_ERROR);
@@ -163,7 +185,7 @@ fn read(path: &str) -> Result<Vec<u8>, u8> {
 
 /// Parses `bytes` read from `path`; diagnostics are printed as `path:line:col: …` and the
 /// failure becomes [`DESIGN_ERROR`].
-fn parse<'b>(path: &str, bytes: &'b [u8]) -> Result<format::Document<'b>, u8> {
+fn parse<'bytes>(path: &str, bytes: &'bytes [u8]) -> Result<Document<'bytes>, u8> {
     format::parse(bytes).map_err(|e| {
         for d in &e.diagnostics {
             eprintln!("{path}:{d}");
@@ -174,7 +196,7 @@ fn parse<'b>(path: &str, bytes: &'b [u8]) -> Result<format::Document<'b>, u8> {
 
 /// Writes `bytes` to `path` atomically; an I/O error is printed and becomes [`USAGE_ERROR`].
 fn write(path: &str, bytes: &[u8]) -> Result<(), u8> {
-    write_atomic(Path::new(path), bytes).map_err(|e| {
+    platform::write_atomic(Path::new(path), bytes).map_err(|e| {
         eprintln!("{e}");
         USAGE_ERROR
     })
@@ -182,13 +204,20 @@ fn write(path: &str, bytes: &[u8]) -> Result<(), u8> {
 
 /// Appends ` [fields] [text] [comments] [attrs: k1, k2]` for the parts a changed record
 /// differs in.
-fn push_changed_parts(out: &mut String, parts: format::Parts, keys: &[&str]) {
+fn push_changed_parts(out: &mut String, parts: Parts, keys: &[&str]) {
+    if !keys.is_empty() {
+        assert!(
+            parts.contains(Parts::ATTRS),
+            "attribute keys differ only with ATTRS"
+        );
+    }
     let names = [
-        (format::Parts::FIELDS, "fields"),
-        (format::Parts::VERBATIM, "text"),
-        (format::Parts::COMMENTS, "comments"),
+        (Parts::FIELDS, "fields"),
+        (Parts::VERBATIM, "text"),
+        (Parts::COMMENTS, "comments"),
     ];
-    for (_, name) in names.into_iter().filter(|(p, _)| parts.contains(*p)) {
+    let differing = names.into_iter().filter(|(p, _)| parts.contains(*p));
+    for (_, name) in differing {
         out.push_str(" [");
         out.push_str(name);
         out.push(']');

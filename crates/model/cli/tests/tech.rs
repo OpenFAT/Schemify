@@ -7,9 +7,12 @@
 
 mod common;
 
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::{schemify, scratch};
+use schemify_doc::TechMap;
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech");
 const MAPS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech/maps");
@@ -17,13 +20,14 @@ const MAPS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tech/map
 // ---- private ----
 
 fn copy_tree(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for e in std::fs::read_dir(from).unwrap().flatten() {
+    fs::create_dir_all(to).expect("the scratch dir is writable");
+    let entries = fs::read_dir(from).expect("the fixture exists");
+    for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
             copy_tree(&p, &to.join(e.file_name()));
         } else {
-            std::fs::copy(&p, to.join(e.file_name())).unwrap();
+            fs::copy(&p, to.join(e.file_name())).expect("the fixture copies");
         }
     }
 }
@@ -32,9 +36,9 @@ fn copy_tree(from: &Path, to: &Path) {
 fn project(name: &str, manifest: &str) -> PathBuf {
     let dir = scratch(name);
     copy_tree(Path::new(FIXTURE), &dir);
-    std::fs::remove_dir_all(dir.join("golden")).ok();
+    fs::remove_dir_all(dir.join("golden")).ok();
     copy_tree(Path::new(MAPS), &dir.join("maps"));
-    std::fs::write(dir.join("schemify.project"), manifest).unwrap();
+    fs::write(dir.join("schemify.project"), manifest).expect("the scratch dir is writable");
     dir
 }
 
@@ -46,11 +50,12 @@ fn manifest(family: &str, lib: &str) -> String {
 
 fn golden(name: &str, text: &str) {
     let path = Path::new(FIXTURE).join("golden").join(name);
-    if std::env::var_os("SCHEMIFY_BLESS").is_some() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, text).unwrap();
+    if env::var_os("SCHEMIFY_BLESS").is_some() {
+        let parent = path.parent().expect("a golden lives in a directory");
+        fs::create_dir_all(parent).expect("the golden dir is writable");
+        fs::write(&path, text).expect("the golden is writable");
     }
-    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{name}: bless it"));
+    let want = fs::read_to_string(&path).unwrap_or_else(|_| panic!("{name}: bless it"));
     assert_eq!(text, want, "{name}");
 }
 
@@ -103,8 +108,8 @@ fn tech_cells_take_their_pdk_cells_spectre_format() {
 #[test]
 fn shipped_maps_parse() {
     for family in ["sky130", "gf180mcu", "ihp-sg13g2", "freepdk45", "asap7"] {
-        let bytes = std::fs::read(Path::new(MAPS).join(format!("{family}.map"))).unwrap();
-        let map = schemify_doc::TechMap::parse(&bytes).expect(family);
+        let bytes = fs::read(Path::new(MAPS).join(format!("{family}.map"))).unwrap();
+        let map = TechMap::parse(&bytes).expect(family);
         assert_eq!(map.pdk, family);
         for class in ["nmos", "pmos"] {
             assert!(map.find(class, "core").is_some(), "{family} {class}");
@@ -127,15 +132,15 @@ fn refused_without_technology_or_class() {
     );
     // A flavor the map lacks.
     let dir = project("flavor", &manifest("sky130", "sky130_fd_pr"));
-    let inv = std::fs::read_to_string(dir.join("inv.shcomp")).unwrap();
+    let inv = fs::read_to_string(dir.join("inv.shcomp")).unwrap();
     let lvt = inv.replacen("  nf 2\n", "  nf 2\n  flavor lvt\n", 1);
-    std::fs::write(dir.join("inv.shcomp"), lvt).unwrap();
+    fs::write(dir.join("inv.shcomp"), lvt).unwrap();
     let (code, text) = schemify(&dir, &["netlist", "inv.shcomp"]);
     assert_ne!(code, 0, "{text}");
     assert!(text.contains("sky130 has no lvt pmos"), "{text}");
     // Not a technology class.
     let bjt = inv.replacen("tech:nmos", "tech:npn", 1);
-    std::fs::write(dir.join("inv.shcomp"), bjt).unwrap();
+    fs::write(dir.join("inv.shcomp"), bjt).unwrap();
     let (code, text) = schemify(&dir, &["netlist", "inv.shcomp"]);
     assert_ne!(code, 0, "{text}");
     assert!(text.contains("`npn` is not a technology class"), "{text}");
@@ -155,10 +160,10 @@ fn asap7_fins_round_exact_multiples_down() {
         ("1n", 1),
     ] {
         let dir = project(&format!("fins-{nfin}"), &manifest("asap7", "asap7"));
-        let inv = std::fs::read_to_string(dir.join("inv.shcomp")).unwrap();
+        let inv = fs::read_to_string(dir.join("inv.shcomp")).unwrap();
         // The nmos (nf 1): its width becomes `w`.
         let inv = inv.replacen("  w 1u\n", &format!("  w {w}\n"), 1);
-        std::fs::write(dir.join("inv.shcomp"), inv).unwrap();
+        fs::write(dir.join("inv.shcomp"), inv).unwrap();
         let (code, text) = schemify(&dir, &["netlist", "inv.shcomp"]);
         assert_eq!(code, 0, "{w}: {text}");
         let line = text

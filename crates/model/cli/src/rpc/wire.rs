@@ -7,6 +7,7 @@
 //! - `pub const PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS,
 //!   INTERNAL_ERROR, DESIGN_ERROR, IO_ERROR: i32`
 //! - `pub struct Request { id, method, params }`
+//! - `pub struct MethodError { code, message }`, `MethodError::new`
 //! - `pub enum Frame { Line, TooLong, End }`
 //! - `pub fn decode(&[u8]) -> Result<Request, String>`
 //! - `pub fn result(&Json, &Json) -> String`, `pub fn error(&Json, i32, &str) -> String`,
@@ -49,6 +50,16 @@ pub struct Request {
     pub params: Json,
 }
 
+/// A method's failure, answered with [`error`]: a code ([`METHOD_NOT_FOUND`],
+/// [`INVALID_PARAMS`], [`DESIGN_ERROR`], …) and a message for the client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MethodError {
+    /// The error response's `code`.
+    pub code: i32,
+    /// The error response's `message`.
+    pub message: String,
+}
+
 /// What [`read_frame`] read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Frame {
@@ -67,7 +78,10 @@ pub enum Frame {
 /// The response line to send instead (with its `\n`): [`PARSE_ERROR`] for bytes that are not
 /// UTF-8 JSON, [`INVALID_REQUEST`] for JSON that is not a JSON-RPC 2.0 request object (a
 /// batch array included). Its id is the request's when one could be read, else `null`.
-/// Never panics.
+///
+/// # Panics
+///
+/// Never on any input: the assert checks the decoder's own id handling.
 pub fn decode(line: &[u8]) -> Result<Request, String> {
     let Ok(text) = std::str::from_utf8(line) else {
         return Err(error(&Json::Null, PARSE_ERROR, "the line is not UTF-8"));
@@ -93,20 +107,31 @@ pub fn decode(line: &[u8]) -> Result<Request, String> {
     if !matches!(params, Json::Arr(_) | Json::Obj(_)) {
         return invalid("\"params\" must be an array or an object");
     }
-    Ok(Request {
+    let req = Request {
         id,
         method: method.to_owned(),
         params,
-    })
+    };
+    if req.id.is_some() {
+        assert!(id_ok, "an answered request has a usable id");
+    }
+    Ok(req)
 }
 
 /// The response line (with its `\n`) for a successful call.
+#[must_use]
 pub fn result(id: &Json, result: &Json) -> String {
     frame(&[("id", id), ("result", result)])
 }
 
 /// The response line (with its `\n`) for a failed call.
+///
+/// # Panics
+///
+/// Panics if `code` is 0 (the code of no failure).
+#[must_use]
 pub fn error(id: &Json, code: i32, message: &str) -> String {
+    assert_ne!(code, 0, "an error response names a failure");
     let err = Json::obj(vec![
         ("code", Json::Num(f64::from(code))),
         ("message", Json::Str(message.to_owned())),
@@ -115,7 +140,13 @@ pub fn error(id: &Json, code: i32, message: &str) -> String {
 }
 
 /// A notification line (with its `\n`) from the server: `method` with `params`, no id.
+///
+/// # Panics
+///
+/// Panics if `method` is empty.
+#[must_use]
 pub fn notification(method: &str, params: &Json) -> String {
+    assert!(!method.is_empty(), "a notification names its method");
     frame(&[
         ("method", &Json::Str(method.to_owned())),
         ("params", params),
@@ -128,6 +159,10 @@ pub fn notification(method: &str, params: &Json) -> String {
 /// # Errors
 ///
 /// The reader's I/O errors.
+///
+/// # Panics
+///
+/// Never on any input: the asserts check the framing's own bookkeeping.
 pub fn read_frame<R: BufRead>(input: &mut R, buf: &mut Vec<u8>) -> io::Result<Frame> {
     buf.clear();
     let (mut any, mut too_long) = (false, false);
@@ -142,6 +177,7 @@ pub fn read_frame<R: BufRead>(input: &mut R, buf: &mut Vec<u8>) -> io::Result<Fr
             Some(i) => (i + 1, true),
             None => (chunk.len(), false),
         };
+        assert!(take > 0, "each pass consumes input");
         if !too_long && buf.len() + take > LINE_MAX + 1 {
             too_long = true;
             buf.clear();
@@ -175,13 +211,28 @@ pub fn read_frame<R: BufRead>(input: &mut R, buf: &mut Vec<u8>) -> io::Result<Fr
         buf.pop();
     }
     assert!(buf.len() <= LINE_MAX);
+    debug_assert!(!buf.contains(&b'\n'), "a frame is one line");
     Ok(Frame::Line)
+}
+
+impl MethodError {
+    /// A failure with `code` and `message`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `code` is 0 (the code of no failure).
+    #[must_use]
+    pub fn new(code: i32, message: String) -> MethodError {
+        assert_ne!(code, 0, "a method error names a failure");
+        MethodError { code, message }
+    }
 }
 
 // ---- private ----
 
 /// `{"jsonrpc":"2.0",<members>}\n`, written in place: no copy of the member values.
 fn frame(members: &[(&str, &Json)]) -> String {
+    assert!(!members.is_empty(), "a frame carries more than its version");
     let mut out = String::from("{\"jsonrpc\":\"2.0\"");
     for (k, v) in members {
         out.push(',');
@@ -190,6 +241,7 @@ fn frame(members: &[(&str, &Json)]) -> String {
         json::write(v, &mut out);
     }
     out.push_str("}\n");
+    assert!(out.ends_with('\n'));
     assert_eq!(out.matches('\n').count(), 1, "one frame is one line");
     out
 }

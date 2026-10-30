@@ -3,6 +3,10 @@
 //!
 //! Contents: `fn rpc(&Startup, &[String]) -> Exit`, `fn mcp(&Startup, &[String]) -> Exit`.
 
+use std::env;
+use std::io::{self, BufReader};
+
+use schemify_cli::platform;
 use schemify_cli::rpc::{self, Headless};
 use schemify_config::Startup;
 
@@ -14,16 +18,12 @@ use crate::{Exit, OK, USAGE_ERROR, usage};
 pub fn rpc(start: &Startup, args: &[String]) -> Exit {
     let h = headless(start);
     let served = match args {
-        [] => rpc::serve(
-            &mut std::io::stdin().lock(),
-            &mut std::io::stdout().lock(),
-            &h,
-        ),
+        [] => rpc::serve(&mut io::stdin().lock(), &mut io::stdout().lock(), &h),
         [flag, addr] if flag == "--listen" => rpc::listen(addr).and_then(|listener| {
             // A server: runs until the listener fails; a client's I/O error ends only it.
             loop {
                 let mut stream = listener.accept()?;
-                let mut input = std::io::BufReader::new(stream.try_clone()?);
+                let mut input = BufReader::new(stream.try_clone()?);
                 if let Err(e) = rpc::serve(&mut input, &mut stream, &h) {
                     eprintln!("rpc client: {e}");
                 }
@@ -43,7 +43,7 @@ pub fn mcp(start: &Startup, args: &[String]) -> Exit {
         return Err(usage());
     }
     let h = headless(start);
-    let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
+    let (stdin, stdout) = (io::stdin(), io::stdout());
     schemify_cli::mcp::serve(&mut stdin.lock(), &mut stdout.lock(), &h)
         .map(|()| OK)
         .map_err(|e| {
@@ -57,8 +57,8 @@ pub fn mcp(start: &Startup, args: &[String]) -> Exit {
 /// The headless methods of this process: this binary runs the CLI ones, with `start`'s flags.
 fn headless(start: &Startup) -> Headless {
     Headless {
-        exe: std::env::current_exe().ok(),
+        exe: env::current_exe().ok(),
         flags: start.flags(),
-        seed: schemify_cli::platform::seed(),
+        seed: platform::seed(),
     }
 }

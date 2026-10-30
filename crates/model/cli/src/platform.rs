@@ -24,6 +24,12 @@
 //! - environment: `pub fn args`, `env_var`, `state_dir`, `unix_ms`, `seed`
 
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
+
+use schemify_config::dirs::{self, Dir};
 
 // WASI (the CLI under a wasm runtime, CI's determinism job) has `std::fs`: it takes the native
 // path. Only the browser (`wasm32-unknown-unknown`) lacks a file system.
@@ -59,7 +65,7 @@ pub const CLIPBOARD_BYTES_MAX: usize = 64 << 20;
 #[derive(Debug)]
 pub struct Spawned {
     #[cfg(not(target_arch = "wasm32"))]
-    rx: std::sync::mpsc::Receiver<(i32, Vec<u8>)>,
+    receiver: Receiver<(i32, Vec<u8>)>,
     #[cfg(not(target_arch = "wasm32"))]
     taken: bool,
     #[cfg(target_arch = "wasm32")]
@@ -75,10 +81,14 @@ pub struct Spawned {
 ///
 /// # Panics
 ///
-/// Panics if `argv` is empty.
+/// Panics if `argv` is empty or its binary is the empty string.
+#[must_use]
 pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
     assert!(!argv.is_empty(), "spawn needs a binary");
-    imp::spawn(cwd, argv, stdin)
+    assert!(!argv[0].is_empty(), "spawn needs a binary name");
+    let (status, out) = imp::spawn(cwd, argv, stdin);
+    assert!(status >= -2, "status {status}: below `-E_GONE`");
+    (status, out)
 }
 
 /// Starts [`spawn`] without waiting: the child runs and its pipes drain on a worker thread
@@ -88,18 +98,23 @@ pub fn spawn(cwd: &Path, argv: &[String], stdin: &[u8]) -> (i32, Vec<u8>) {
 ///
 /// # Panics
 ///
-/// Panics if `argv` is empty.
+/// Panics if `argv` is empty or its binary is the empty string.
+#[must_use]
 pub fn spawn_start(cwd: &Path, argv: Vec<String>, stdin: Vec<u8>) -> Spawned {
     assert!(!argv.is_empty(), "spawn needs a binary");
+    assert!(!argv[0].is_empty(), "spawn needs a binary name");
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (sender, receiver) = mpsc::channel();
         let cwd = cwd.to_path_buf();
         // A failed send means the editor dropped the request (it shut down): nothing to do.
-        std::thread::spawn(move || {
-            let _ = tx.send(imp::spawn(&cwd, &argv, &stdin));
+        thread::spawn(move || {
+            let _ = sender.send(imp::spawn(&cwd, &argv, &stdin));
         });
-        Spawned { rx, taken: false }
+        Spawned {
+            receiver,
+            taken: false,
+        }
     }
     #[cfg(target_arch = "wasm32")]
     {
@@ -112,21 +127,24 @@ pub fn spawn_start(cwd: &Path, argv: Vec<String>, stdin: Vec<u8>) -> Spawned {
 impl Spawned {
     /// The child's `(status, stdout + stderr)` once it exited; `None` while it runs. Returns
     /// the result once; later calls return `None`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the worker reports a status below `-E_GONE` (a bug in `spawn`).
     pub fn try_finish(&mut self) -> Option<(i32, Vec<u8>)> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.taken {
                 return None;
             }
-            let r = match self.rx.try_recv() {
+            let r = match self.receiver.try_recv() {
                 Ok(r) => r,
-                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(TryRecvError::Empty) => return None,
                 // The worker died without sending (only on OOM): a failure, reported once.
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    (-1, b"spawn worker vanished".to_vec())
-                }
+                Err(TryRecvError::Disconnected) => (-1, b"spawn worker vanished".to_vec()),
             };
             self.taken = true;
+            assert!(r.0 >= -2, "status {}: below `-E_GONE`", r.0);
             Some(r)
         }
         #[cfg(target_arch = "wasm32")]
@@ -152,15 +170,26 @@ pub fn read(path: &Path) -> Result<Vec<u8>, String> {
 /// # Errors
 ///
 /// The OS error, prefixed with the path.
+///
+/// # Panics
+///
+/// Panics if the platform side returns more than `max` bytes (a bug there).
 pub fn read_tail(path: &Path, max: u64) -> Result<(Vec<u8>, bool), String> {
     let (bytes, cut) = imp::read_tail(path, max)?;
     assert!(bytes.len() as u64 <= max);
+    // A cut tail is a full one: bytes are left out only when `max` of them were kept.
+    assert!(
+        !cut || bytes.len() as u64 == max,
+        "a cut tail of {} bytes",
+        bytes.len()
+    );
     Ok((bytes, cut))
 }
 
 /// The program's arguments after its name. On the web, where there is no command line, the
 /// URL fragment is the one argument: `index.html#/projects/inv/top.shcomp` opens that cell,
 /// `#/projects/inv` that project (percent-decoded; empty without a fragment, web spec §1).
+#[must_use]
 pub fn args() -> Vec<String> {
     imp::args()
 }
@@ -195,22 +224,31 @@ pub fn export(path: &Path, bytes: &[u8]) -> Result<(), String> {
 ///
 /// A file cannot be read, the archive is past the zip limits ([`crate::zip::write`]), or
 /// the export fails.
+///
+/// # Panics
+///
+/// Panics if a listed file is not under `root` (a bug in [`list_files`]).
 pub fn export_project(root: &Path) -> Result<PathBuf, String> {
     let name = root
         .file_name()
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty())
         .unwrap_or("project");
+    assert!(!name.is_empty());
+    assert!(
+        !name.contains(['/', '\\']),
+        "{name}: a file name, not a path"
+    );
     let files = list_files(root, &[]);
     let mut names = Vec::with_capacity(files.len());
     let mut bytes = Vec::with_capacity(files.len());
     for f in &files {
-        let Some(rel) = crate::libs::rel_path(root, f) else {
-            continue;
-        };
+        let rel = crate::libs::rel_path(root, f).expect("list_files lists under its root");
         names.push(format!("{name}/{rel}"));
         bytes.push(read(f)?);
     }
+    assert_eq!(names.len(), files.len());
+    assert_eq!(names.len(), bytes.len());
     let entries: Vec<(&str, &[u8])> = names
         .iter()
         .map(String::as_str)
@@ -222,7 +260,7 @@ pub fn export_project(root: &Path) -> Result<PathBuf, String> {
         .join("export")
         .join(format!("{name}.zip"));
     export(&out, &zip)?;
-    assert_eq!(names.len(), bytes.len());
+    assert!(out.starts_with(root));
     Ok(out)
 }
 
@@ -239,13 +277,21 @@ pub fn import_project(folder: bool) -> Result<(), String> {
 }
 
 /// Returns whether `path` exists.
+#[must_use]
 pub fn exists(path: &Path) -> bool {
     imp::exists(path)
 }
 
 /// Returns whether `path` is a directory.
+#[must_use]
 pub fn is_dir(path: &Path) -> bool {
-    imp::is_dir(path)
+    let dir = imp::is_dir(path);
+    debug_assert!(
+        !dir || exists(path),
+        "{}: a directory that does not exist",
+        path.display()
+    );
+    dir
 }
 
 /// Writes `bytes` atomically (temp file + rename), creating parent directories, so a crash
@@ -256,7 +302,9 @@ pub fn is_dir(path: &Path) -> bool {
 ///
 /// The OS error, prefixed with the path.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    imp::write_atomic(path, bytes)
+    imp::write_atomic(path, bytes)?;
+    debug_assert!(exists(path), "{}: written but missing", path.display());
+    Ok(())
 }
 
 /// Appends `bytes` to `path`, creating it and its directories.
@@ -265,7 +313,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 ///
 /// The OS error, prefixed with the path.
 pub fn append(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    imp::append(path, bytes)
+    imp::append(path, bytes)?;
+    debug_assert!(exists(path), "{}: appended but missing", path.display());
+    Ok(())
 }
 
 /// Deletes a file.
@@ -290,6 +340,7 @@ pub fn remove_tree(path: &Path) -> Result<(), String> {
 
 /// The value of environment variable `name`, `None` when unset or not UTF-8; always `None`
 /// on the web (a page has no environment).
+#[must_use]
 pub fn env_var(name: &str) -> Option<String> {
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     return std::env::var(name).ok();
@@ -301,6 +352,7 @@ pub fn env_var(name: &str) -> Option<String> {
 }
 
 /// Modification time in seconds since the Unix epoch; `None` when unknown.
+#[must_use]
 pub fn mtime_unix_s(path: &Path) -> Option<u64> {
     imp::mtime_unix_s(path)
 }
@@ -327,12 +379,22 @@ pub fn clipboard_set(text: &str) -> Result<(), String> {
 ///
 /// No clipboard program answered, or the text is not UTF-8; on the web also
 /// [`CLIPBOARD_PENDING`], or the browser refused the read (permission).
+///
+/// # Panics
+///
+/// Panics if the platform side returns more than [`CLIPBOARD_BYTES_MAX`] bytes (a bug there).
 pub fn clipboard_get() -> Result<String, String> {
-    imp::clipboard_get()
+    let text = imp::clipboard_get()?;
+    assert!(
+        text.len() <= CLIPBOARD_BYTES_MAX,
+        "the clipboard read is capped"
+    );
+    Ok(text)
 }
 
 /// True once after a pending web clipboard read finished: the caller repeats the paste
 /// that got [`CLIPBOARD_PENDING`]. Always false natively.
+#[must_use]
 pub fn clipboard_ready() -> bool {
     imp::clipboard_ready()
 }
@@ -340,35 +402,57 @@ pub fn clipboard_ready() -> bool {
 /// Milliseconds until the caller should poll again without input because the browser owes
 /// an answer ([`clipboard_ready`]); `None` when nothing is pending (always natively), so an
 /// idle editor sleeps (D39).
+///
+/// # Panics
+///
+/// Panics if the platform side asks for a zero wait (a bug there: the frame loop would spin).
+#[must_use]
 pub fn wake_ms() -> Option<u32> {
-    imp::wake_ms()
+    let ms = imp::wake_ms();
+    assert_ne!(ms, Some(0), "a zero wait would spin the frame loop");
+    ms
 }
 
 /// The user state directory, `stdpath("state")` of the config spec §1 (honours
 /// `SCHEMIFY_APPNAME`): the recent-files list lives here; `/state` on the web. `None` when
 /// the environment names none.
+#[must_use]
 pub fn state_dir() -> Option<PathBuf> {
-    schemify_config::dirs::here(schemify_config::dirs::Dir::State).ok()
+    dirs::here(Dir::State).ok()
 }
 
 /// Lists regular files under `dir` recursively in sorted order, skipping hidden entries,
 /// `target`, and the directories in `skip`. Bounded by [`LIST_FILES_MAX`] files and
 /// [`LIST_DEPTH_MAX`] levels.
+///
+/// # Panics
+///
+/// Panics if the platform side lists past [`LIST_FILES_MAX`] or out of order (a bug there).
+#[must_use]
 pub fn list_files(dir: &Path, skip: &[&Path]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     imp::list(dir, 0, skip, &mut out);
     assert!(out.len() <= LIST_FILES_MAX);
+    // Depth-first over sorted children is component order, which is `Path`'s order; a file
+    // is listed once.
+    assert!(
+        out.windows(2).all(|w| w[0] < w[1]),
+        "{}: listing out of order or repeated",
+        dir.display()
+    );
     out
 }
 
 /// Milliseconds since the Unix epoch (journal stamps, file times); the browser's clock on
 /// the web; 0 under WASI, which has no clock in CI's determinism runs.
+#[must_use]
 pub fn unix_ms() -> u64 {
     imp::unix_ms()
 }
 
 /// A seed for id generation (D9): clock and process id natively, `Math.random` on the web,
 /// so two sessions editing one file do not draw the same ids.
+#[must_use]
 pub fn seed() -> u64 {
     imp::seed()
 }

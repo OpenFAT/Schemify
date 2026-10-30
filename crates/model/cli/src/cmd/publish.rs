@@ -5,10 +5,16 @@
 //! Contents: `fn publish(&[String]) -> Exit`.
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
 #[cfg(not(target_arch = "wasm32"))]
-use schemify_cli::{hosted, spines};
+use schemify_cli::hosted::{self, Bench, HostedProject, JobCounts};
+#[cfg(not(target_arch = "wasm32"))]
+use schemify_cli::{libs, platform, spines};
 
 use crate::Exit;
 #[cfg(target_arch = "wasm32")]
@@ -36,14 +42,14 @@ pub fn publish(args: &[String]) -> Exit {
     let (Some(site), false) = (out, dirs.is_empty()) else {
         return Err(usage());
     };
-    let mut index: Vec<(String, Vec<hosted::Bench>)> = Vec::with_capacity(dirs.len());
+    let mut index: Vec<HostedProject> = Vec::with_capacity(dirs.len());
     for dir in &dirs {
-        let (name, benches) = publish_one(dir, &site, &index)?;
-        index.push((name, benches));
+        let project = publish_one(dir, &site, &index)?;
+        index.push(project);
     }
     assert_eq!(index.len(), dirs.len());
     let page = site.join("projects").join("index.html");
-    fail(&page, std::fs::write(&page, hosted::index_html(&index)))?;
+    fail(&page, fs::write(&page, hosted::index_html(&index)))?;
     Ok(OK)
 }
 
@@ -57,14 +63,10 @@ pub fn publish(_: &[String]) -> Exit {
 // ---- private ----
 
 /// Publishes the project at `dir` into `site` beside the projects of `index`; returns its
-/// name and benches for the index page.
+/// row of the index page.
 #[cfg(not(target_arch = "wasm32"))]
-fn publish_one(
-    dir: &Path,
-    site: &Path,
-    index: &[(String, Vec<hosted::Bench>)],
-) -> Result<(String, Vec<hosted::Bench>), u8> {
-    let root = schemify_cli::libs::absolute(dir);
+fn publish_one(dir: &Path, site: &Path, index: &[HostedProject]) -> Result<HostedProject, u8> {
+    let root = libs::absolute(dir);
     if !root.join("schemify.project").is_file() {
         eprintln!("{}: no schemify.project", dir.display());
         return Err(USAGE_ERROR);
@@ -80,18 +82,19 @@ fn publish_one(
         );
         return Err(USAGE_ERROR);
     }
-    if index.iter().any(|(n, _)| *n == name) {
+    assert!(!name.is_empty(), "`project_name` refuses an empty name");
+    if index.iter().any(|p| p.name == name) {
         eprintln!("{}: a second project named `{name}`", dir.display());
         return Err(USAGE_ERROR);
     }
     // Read every file before the site is touched.
-    let mut paths = schemify_cli::platform::list_files(&root, &[]);
+    let mut paths = platform::list_files(&root, &[]);
     walk_files(&root.join(".schemify").join("runs"), &mut paths);
     let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(paths.len());
     for p in &paths {
         let rel = p.strip_prefix(&root).expect("listed under root");
         let rel = rel.to_string_lossy().replace('\\', "/");
-        files.push((rel, fail(p, std::fs::read(p))?));
+        files.push((rel, fail(p, fs::read(p))?));
     }
     if files.len() > hosted::FILES_MAX {
         eprintln!("{name}: more than {} files", hosted::FILES_MAX);
@@ -99,30 +102,28 @@ fn publish_one(
     }
     // Replace the published copy whole.
     let dest = site.join("projects").join(&name);
-    let _ = std::fs::remove_dir_all(&dest);
+    assert!(dest.starts_with(site), "a project lands inside the site");
+    let _ = fs::remove_dir_all(&dest);
     let manifest = hosted::manifest(&files);
     for (rel, bytes) in &files {
         let to = dest.join(rel);
         let written = to
             .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(&to, bytes));
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&to, bytes));
         fail(&to, written)?;
     }
-    fail(
-        &dest,
-        std::fs::write(dest.join(hosted::MANIFEST), &manifest),
-    )?;
-    let benches: Vec<hosted::Bench> = files
+    fail(&dest, fs::write(dest.join(hosted::MANIFEST), &manifest))?;
+    let benches: Vec<Bench> = files
         .iter()
         .filter(|(rel, _)| rel.ends_with(".shbench") && !rel.starts_with(".schemify/"))
-        .map(|(rel, _)| hosted::Bench {
+        .map(|(rel, _)| Bench {
             path: rel.clone(),
             jobs: newest_run_jobs(&root, &root.join(rel)),
         })
         .collect();
     println!("{name}: {} files", files.len());
-    Ok((name, benches))
+    Ok(HostedProject { name, benches })
 }
 
 /// Every file under `dir`, recursively and in sorted order, hidden ones included (a run
@@ -130,7 +131,11 @@ fn publish_one(
 /// (the caller refuses that many).
 #[cfg(not(target_arch = "wasm32"))]
 fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    assert!(
+        out.len() <= hosted::FILES_MAX + 1,
+        "the caller stopped at the cap"
+    );
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
@@ -145,44 +150,47 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(p);
         }
     }
+    // A push happens only at or below the cap, so the walk stops one file past it.
+    assert!(out.len() <= hosted::FILES_MAX + 1);
 }
 
-/// `(done, failed)` jobs of the newest saved run of the bench at `bench` (by its results
-/// file's time), from the `bench` sidecars (run spec §7a); `None` without one.
+/// The jobs of the newest saved run of the bench at `bench` (by its results file's time),
+/// from the `bench` sidecars (run spec §7a); `None` without one.
 #[cfg(not(target_arch = "wasm32"))]
-fn newest_run_jobs(root: &Path, bench: &Path) -> Option<(u32, u32)> {
+fn newest_run_jobs(root: &Path, bench: &Path) -> Option<JobCounts> {
     let (o, _) = spines::open_file(bench, 0).ok()?;
     let name = spines::bench_name(
         &o.project,
         |lib| o.lib_dir.get(usize::from(lib))?.as_deref(),
         bench,
     )?;
-    let runs = std::fs::read_dir(root.join(".schemify").join("runs")).ok()?;
+    let runs = fs::read_dir(root.join(".schemify").join("runs")).ok()?;
     let (_, results) = runs
         .flatten()
         .map(|e| e.path())
-        .filter(|d| std::fs::read_to_string(d.join(spines::BENCH)).is_ok_and(|s| s.trim() == name))
+        .filter(|d| fs::read_to_string(d.join(spines::BENCH)).is_ok_and(|s| s.trim() == name))
         .filter_map(|d| {
             let results = d.join(schemify_run::RESULTS);
-            let t = std::fs::metadata(&results)
-                .and_then(|m| m.modified())
-                .ok()?;
-            Some((t, results))
+            let modified = fs::metadata(&results).and_then(|m| m.modified()).ok()?;
+            Some((modified, results))
         })
         .max()?;
-    let text = std::fs::read_to_string(results).ok()?;
+    let text = fs::read_to_string(results).ok()?;
     let jobs = |end: &str| {
         text.lines()
             .filter(|l| l.starts_with("job ") && l.ends_with(end))
             .count() as u32
     };
-    Some((jobs(" done"), jobs(" failed")))
+    Some(JobCounts {
+        done: jobs(" done"),
+        failed: jobs(" failed"),
+    })
 }
 
 /// Prints `<path>: <error>` for a failed I/O step and turns it into [`USAGE_ERROR`].
 #[cfg(not(target_arch = "wasm32"))]
-fn fail<T>(path: &Path, r: std::io::Result<T>) -> Result<T, u8> {
-    r.map_err(|e| {
+fn fail<T>(path: &Path, result: io::Result<T>) -> Result<T, u8> {
+    result.map_err(|e| {
         eprintln!("{}: {e}", path.display());
         USAGE_ERROR
     })

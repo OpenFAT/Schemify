@@ -13,12 +13,16 @@
 //!
 //! Contents:
 //! - `pub const MANIFEST: &str`, `pub const STAMP: &str`, `pub const FILES_MAX: usize`
-//! - `pub struct Bench { path, jobs }`
+//! - `pub struct ManifestRow { path, digest }`
+//! - `pub struct HostedProject { name, benches }`, `pub struct Bench { path, jobs }`,
+//!   `pub struct JobCounts { done, failed }`
 //! - `pub fn manifest(&[(String, Vec<u8>)]) -> String`
-//! - `pub fn parse(&str) -> Result<Vec<(String, String)>, String>`
+//! - `pub fn parse(&str) -> Result<Vec<ManifestRow>, String>`
 //! - `pub fn matches(&str, &[u8]) -> bool`
 //! - `pub fn project_name(&str) -> Option<&str>`
-//! - `pub fn index_html(&[(String, Vec<Bench>)]) -> String`
+//! - `pub fn index_html(&[HostedProject]) -> String`
+
+use std::fmt::Write as _;
 
 use schemify_doc::{hex, sha256};
 
@@ -30,13 +34,41 @@ pub const STAMP: &str = ".schemify/hosted";
 /// Files one hosted project may list (the import limit, web spec §3).
 pub const FILES_MAX: usize = 1 << 16;
 
+/// One row of a manifest, as [`parse`] returns it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManifestRow {
+    /// Path relative to the project root; safe (no `..`, absolute or empty segment).
+    pub path: String,
+    /// The file's SHA-256, 64 lowercase hex digits.
+    pub digest: String,
+}
+
+/// One published project on the index page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostedProject {
+    /// The project directory's name; a valid [`project_name`].
+    pub name: String,
+    /// Its benches, in listing order.
+    pub benches: Vec<Bench>,
+}
+
 /// One published bench on the index page: its path in the project and the jobs of its
 /// newest saved run (`None` when it was never simulated).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bench {
     /// Path relative to the project root (`lib/tb.shbench`).
     pub path: String,
-    /// `(done, failed)` job counts of the newest run.
-    pub jobs: Option<(u32, u32)>,
+    /// Job counts of the newest run.
+    pub jobs: Option<JobCounts>,
+}
+
+/// How the jobs of one run ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JobCounts {
+    /// Jobs that finished.
+    pub done: u32,
+    /// Jobs that failed.
+    pub failed: u32,
 }
 
 /// The page head and style of [`index_html`].
@@ -66,6 +98,7 @@ site publishes a new version of it.</p>
 ///
 /// Panics if a path is unsafe (empty, absolute, an empty, `.` or `..` segment, or a `\`,
 /// `:` or NUL) or listed twice.
+#[must_use]
 pub fn manifest(files: &[(String, Vec<u8>)]) -> String {
     let mut rows: Vec<(&str, String)> = files
         .iter()
@@ -81,24 +114,27 @@ pub fn manifest(files: &[(String, Vec<u8>)]) -> String {
     );
     let mut out = String::new();
     for (p, h) in rows {
-        out.push_str(&h);
-        out.push_str("  ");
-        out.push_str(p);
-        out.push('\n');
+        writeln!(out, "{h}  {p}").expect("writing to a String");
     }
+    assert_eq!(out.lines().count(), files.len(), "one line per file");
     out
 }
 
-/// The `(relative path, hex digest)` rows of manifest `text`.
+/// The rows of manifest `text`, in its order.
 ///
 /// # Errors
 ///
 /// A line that is not `<64 lowercase hex>  <path>`, an unsafe or repeated path, or more
 /// than [`FILES_MAX`] rows: the whole manifest is refused (a trust boundary: nothing is
 /// written).
-pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
-    let mut rows: Vec<(String, String)> = Vec::new();
-    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.is_empty()) {
+///
+/// # Panics
+///
+/// Never on any input: the assert checks the row cap this function enforces.
+pub fn parse(text: &str) -> Result<Vec<ManifestRow>, String> {
+    let mut rows: Vec<ManifestRow> = Vec::new();
+    let lines = text.lines().enumerate().filter(|(_, l)| !l.is_empty());
+    for (n, line) in lines {
         if rows.len() >= FILES_MAX {
             return Err(format!("more than {FILES_MAX} files"));
         }
@@ -111,9 +147,12 @@ pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
         if !safe_path(p) {
             return Err(format!("{MANIFEST}:{}: {p:?}: unsafe path", n + 1));
         }
-        rows.push((p.to_owned(), h.to_owned()));
+        rows.push(ManifestRow {
+            path: p.to_owned(),
+            digest: h.to_owned(),
+        });
     }
-    let mut names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    let mut names: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
     names.sort_unstable();
     if names.windows(2).any(|w| w[0] == w[1]) {
         return Err(format!("{MANIFEST}: a path listed twice"));
@@ -123,13 +162,22 @@ pub fn parse(text: &str) -> Result<Vec<(String, String)>, String> {
 }
 
 /// Whether `bytes` are the file a manifest row lists with digest `hex_digest`.
+///
+/// # Panics
+///
+/// Panics if `hex_digest` is not 64 hex digits long (a digest [`parse`] accepted is).
+#[must_use]
 pub fn matches(hex_digest: &str, bytes: &[u8]) -> bool {
-    hex(&sha256(bytes)) == hex_digest
+    assert_eq!(hex_digest.len(), 64, "a SHA-256 digest from `parse`");
+    let digest = hex(&sha256(bytes));
+    assert_eq!(digest.len(), hex_digest.len());
+    digest == hex_digest
 }
 
 /// The project a page URL argument names (`/projects/<name>` or a path below it), when the
 /// name is one a project directory can have: `A–Z a–z 0–9 . _ -`, not starting with `.`,
 /// at most 64 characters.
+#[must_use]
 pub fn project_name(arg: &str) -> Option<&str> {
     let rest = arg.strip_prefix("/projects/")?;
     let name = rest.split('/').next()?;
@@ -145,7 +193,12 @@ pub fn project_name(arg: &str) -> Option<&str> {
 /// The page `schemify publish` writes at `<site>/projects/index.html`: each project with a
 /// link per bench into the editor one directory up (`../#/projects/<name>/<bench>`), and
 /// how its newest run went. Plain HTML, no script: the editor does the work.
-pub fn index_html(projects: &[(String, Vec<Bench>)]) -> String {
+///
+/// # Panics
+///
+/// Panics if a project's name is not a valid [`project_name`].
+#[must_use]
+pub fn index_html(projects: &[HostedProject]) -> String {
     let esc = |t: &str| {
         t.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -153,34 +206,42 @@ pub fn index_html(projects: &[(String, Vec<Bench>)]) -> String {
             .replace('"', "&quot;")
     };
     let mut body = String::new();
-    for (name, benches) in projects {
+    for HostedProject { name, benches } in projects {
         assert!(
             project_name(&format!("/projects/{name}")).is_some(),
-            "{name}"
+            "{name}: the publisher checks names before listing them"
         );
-        body.push_str(&format!(
-            "<h2><a href=\"../#/projects/{n}\">{n}</a></h2>\n<ul>\n",
+        writeln!(
+            body,
+            "<h2><a href=\"../#/projects/{n}\">{n}</a></h2>\n<ul>",
             n = esc(name)
-        ));
+        )
+        .expect("writing to a String");
         if benches.is_empty() {
             body.push_str("<li>no benches</li>\n");
         }
         for b in benches {
             let status = match b.jobs {
                 None => "not simulated".to_owned(),
-                Some((done, 0)) => format!("{done} job{} done", if done == 1 { "" } else { "s" }),
-                Some((done, failed)) => format!("{failed} of {} jobs failed", done + failed),
+                Some(JobCounts { done, failed: 0 }) => {
+                    format!("{done} job{} done", if done == 1 { "" } else { "s" })
+                }
+                Some(JobCounts { done, failed }) => {
+                    format!("{failed} of {} jobs failed", done + failed)
+                }
             };
             let class = match b.jobs {
-                Some((_, 0)) => "ok",
+                Some(JobCounts { failed: 0, .. }) => "ok",
                 Some(_) => "fail",
                 None => "none",
             };
-            body.push_str(&format!(
-                "<li><a href=\"../#/projects/{n}/{p}\">{p}</a> <span class=\"{class}\">{status}</span></li>\n",
+            writeln!(
+                body,
+                "<li><a href=\"../#/projects/{n}/{p}\">{p}</a> <span class=\"{class}\">{status}</span></li>",
                 n = esc(name),
                 p = esc(&b.path),
-            ));
+            )
+            .expect("writing to a String");
         }
         body.push_str("</ul>\n");
     }
@@ -218,15 +279,15 @@ mod tests {
         ]);
         let text = manifest(&f);
         let rows = parse(&text).unwrap();
-        let paths: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        let paths: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
         assert_eq!(
             paths,
             [".schemify/runs/x/results", "a.shbench", "lib/b.shcomp"]
         );
-        for (p, h) in &rows {
-            let bytes = &f.iter().find(|x| &x.0 == p).unwrap().1;
-            assert!(matches(h, bytes));
-            assert!(!matches(h, b"tampered"));
+        for ManifestRow { path, digest } in &rows {
+            let bytes = &f.iter().find(|x| &x.0 == path).unwrap().1;
+            assert!(matches(digest, bytes));
+            assert!(!matches(digest, b"tampered"));
         }
         assert_eq!(manifest(&f), text, "deterministic");
     }
@@ -253,23 +314,23 @@ mod tests {
 
     #[test]
     fn index_links_each_bench_and_escapes_paths() {
-        let html = index_html(&[(
-            "demo".to_owned(),
-            vec![
+        let html = index_html(&[HostedProject {
+            name: "demo".to_owned(),
+            benches: vec![
                 Bench {
                     path: "tb/a.shbench".into(),
-                    jobs: Some((2, 0)),
+                    jobs: Some(JobCounts { done: 2, failed: 0 }),
                 },
                 Bench {
                     path: "tb/<b>.shbench".into(),
-                    jobs: Some((1, 1)),
+                    jobs: Some(JobCounts { done: 1, failed: 1 }),
                 },
                 Bench {
                     path: "tb/c.shbench".into(),
                     jobs: None,
                 },
             ],
-        )]);
+        }]);
         assert!(html.contains("href=\"../#/projects/demo/tb/a.shbench\""));
         assert!(html.contains("2 jobs done"));
         assert!(html.contains("1 of 2 jobs failed"));

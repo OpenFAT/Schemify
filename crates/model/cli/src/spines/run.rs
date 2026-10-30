@@ -14,11 +14,13 @@
 //!   Dialect, &mut F, impl FnOnce(&Digest) -> RunnerConfig) -> Result<Run, String>`
 //! - `Run::submit_next`, `Run::poll`, `Run::idle`, `Run::cancel`, `Run::save`
 
+use std::fmt::{self, Debug, Formatter};
+use std::fs;
 use std::path::PathBuf;
 
 use schemify_doc::{Digest, DocHandle, Project};
 use schemify_elab::{Dialect, Funcs, Request};
-use schemify_run::{Jobs, Plan, Results, Runner, RunnerConfig, Select, State};
+use schemify_run::{Blocked, Jobs, Plan, Results, Runner, RunnerConfig, Select, State};
 
 use super::{Cells, SIMULATORS, elaborate_all};
 
@@ -55,8 +57,8 @@ pub struct Run {
 /// The run spine up to submission (run spec §1–§4): opens every cell each selected config
 /// reaches, reads the plan, expands `select` (`None`: no jobs, for an optimizer or plugin
 /// requests that push their own), gates and hashes the design for `dialect`, and creates the
-/// results and the runner (`cfg` builds its configuration from the digest; an espice run
-/// starts `Tools::espice`). Jobs are not prepared yet.
+/// results and the runner (`runner_config` builds its configuration from the digest; an
+/// espice run starts `Tools::espice`). Jobs are not prepared yet.
 ///
 /// Cost: one [`elaborate_all`] per selected config (at least one), then the gate's.
 ///
@@ -75,7 +77,7 @@ pub fn start_run<C: Cells, F: Funcs>(
     env: &[(&str, &str)],
     dialect: Dialect,
     funcs: &mut F,
-    cfg: impl FnOnce(&Digest) -> RunnerConfig,
+    runner_config: impl FnOnce(&Digest) -> RunnerConfig,
 ) -> Result<Run, String> {
     assert!(SIMULATORS.contains(&dialect));
     // Open every cell each selected config reaches (configs select different impls, so
@@ -104,11 +106,11 @@ pub fn start_run<C: Cells, F: Funcs>(
     };
     let digest =
         schemify_run::design(project, top, &jobs, env, dialect, funcs).map_err(|b| match b {
-            schemify_run::Blocked::NeedsOpen(rows) => format!("cells not open: rows {rows:?}"),
-            schemify_run::Blocked::Violations(v) => format!("run blocked: {}", v.join("; ")),
+            Blocked::NeedsOpen(rows) => format!("cells not open: rows {rows:?}"),
+            Blocked::Violations(v) => format!("run blocked: {}", v.join("; ")),
         })?;
     let results = Results::new(&plan, digest);
-    let mut config = cfg(&digest);
+    let mut config = runner_config(&digest);
     config.dialect = dialect;
     let run = Run {
         plan,
@@ -122,6 +124,9 @@ pub fn start_run<C: Cells, F: Funcs>(
         dialect,
     };
     assert!(run.next <= run.jobs.len());
+    if select.is_none() {
+        assert_eq!(run.jobs.len(), 0, "no selection expands to no jobs");
+    }
     Ok(run)
 }
 
@@ -131,6 +136,10 @@ impl Run {
     /// [`Run::finished`]. Returns how many jobs were handled.
     ///
     /// Cost: one elaboration and one emission per job.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Run::next`] was moved past the job table.
     pub fn submit_next<F: Funcs>(
         &mut self,
         project: &Project,
@@ -180,7 +189,12 @@ impl Run {
 
     /// Advances the runner without blocking (`Runner::poll`), appending finished jobs to
     /// [`Run::finished`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Run::next`] was moved past the job table.
     pub fn poll(&mut self) {
+        assert!(self.next <= self.jobs.len());
         self.runner.poll(
             &self.plan,
             &mut self.jobs,
@@ -190,12 +204,20 @@ impl Run {
     }
 
     /// Whether every job is submitted and none is queued or running.
+    #[must_use]
     pub fn idle(&self) -> bool {
+        debug_assert!(self.next <= self.jobs.len());
         self.next >= self.jobs.len() && !self.runner.busy()
     }
 
     /// Cancels every queued and running job and every job not yet submitted.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`Run::next`] was moved past the job table, or the runner stays busy after
+    /// cancelling everything (a bug in `run`).
     pub fn cancel(&mut self) {
+        assert!(self.next <= self.jobs.len());
         self.runner.cancel_all(&mut self.jobs);
         for j in self.next..self.jobs.len() {
             self.jobs.cancel_pending(j);
@@ -210,6 +232,10 @@ impl Run {
     /// # Errors
     ///
     /// The file system's, as text.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the runner saved its results outside a run directory (a bug in `run`).
     pub fn save(&self, bench: &str) -> Result<PathBuf, String> {
         let path = self
             .runner
@@ -219,13 +245,13 @@ impl Run {
             .parent()
             .expect("results live in the run dir")
             .to_path_buf();
-        std::fs::write(dir.join(BENCH), format!("{bench}\n")).map_err(|e| e.to_string())?;
+        fs::write(dir.join(BENCH), format!("{bench}\n")).map_err(|e| e.to_string())?;
         Ok(dir)
     }
 }
 
-impl std::fmt::Debug for Run {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Run {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Run")
             .field("jobs", &self.jobs.len())
             .field("next", &self.next)

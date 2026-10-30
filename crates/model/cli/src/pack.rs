@@ -23,10 +23,13 @@ mod lock;
 
 pub use locate::{Installed, READ_ANY, installed, locate};
 
+use std::fmt::Display;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use schemify_config::{Config, PackSpec, Source, dirs};
+use schemify_config::dirs::{self, Dir};
+use schemify_config::{Config, PACKS_MAX, PackSpec, Source};
 use schemify_doc::{hex, sha256};
 
 use locate::{locate_in, package_dir};
@@ -56,7 +59,7 @@ pub struct Report {
 }
 
 /// How far a sync may move an installed package.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     /// Install missing ones (at the locked commit when known); leave installed ones.
     Sync,
@@ -66,8 +69,29 @@ enum Mode {
     Restore,
 }
 
+/// A package's lock row, as [`install`] compares against it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LockedRow {
+    /// The commit or URL the row pins.
+    resolved: String,
+    /// The module's SHA-256, 64 lowercase hex digits.
+    hash: String,
+}
+
+/// What [`install`] did to one package.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Outcome {
+    /// The commit, URL or directory installed.
+    resolved: String,
+    /// The module's SHA-256, 64 lowercase hex digits.
+    hash: String,
+    /// The report line's text.
+    what: String,
+}
+
 /// `schemify pack <command>` on the user config's specs; prints the report and returns the
 /// exit code (0 ok, 1 a package failed, 2 usage or no config).
+#[must_use]
 pub fn main(config: &Config, args: &[String]) -> u8 {
     let [command] = args else {
         eprintln!("usage: schemify pack sync|update|restore|clean|status");
@@ -99,21 +123,41 @@ pub fn main(config: &Config, args: &[String]) -> u8 {
 }
 
 /// Installs missing packages and writes their lock rows (config spec §5 `sync`).
+///
+/// # Panics
+///
+/// Panics if `specs` holds more than [`PACKS_MAX`] packages (the config refuses more).
+#[must_use]
 pub fn sync(specs: &[PackSpec], paths: &Paths) -> Report {
     run(specs, paths, Mode::Sync)
 }
 
 /// Moves every package to its spec's newest state and rewrites the lock rows.
+///
+/// # Panics
+///
+/// As [`sync`].
+#[must_use]
 pub fn update(specs: &[PackSpec], paths: &Paths) -> Report {
     run(specs, paths, Mode::Update)
 }
 
 /// Makes every listed package exactly what the lockfile says.
+///
+/// # Panics
+///
+/// As [`sync`].
+#[must_use]
 pub fn restore(specs: &[PackSpec], paths: &Paths) -> Report {
     run(specs, paths, Mode::Restore)
 }
 
 /// Deletes package directories no spec names and drops their lock rows.
+///
+/// # Panics
+///
+/// Never: the asserts check the report's own counts.
+#[must_use]
 pub fn clean(specs: &[PackSpec], paths: &Paths) -> Report {
     let mut report = Report::default();
     let listed = |n: &str| {
@@ -121,7 +165,7 @@ pub fn clean(specs: &[PackSpec], paths: &Paths) -> Report {
             .iter()
             .any(|s| s.name == n && !matches!(s.source, Source::Path(_)))
     };
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(&paths.pack)
+    let mut entries: Vec<PathBuf> = fs::read_dir(&paths.pack)
         .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
         .unwrap_or_default();
     entries.sort();
@@ -132,7 +176,7 @@ pub fn clean(specs: &[PackSpec], paths: &Paths) -> Report {
         if !p.is_dir() || name.starts_with('.') || listed(&name) {
             continue;
         }
-        match std::fs::remove_dir_all(&p) {
+        match fs::remove_dir_all(&p) {
             Ok(()) => report.ok(&name, "removed"),
             Err(e) => report.fail(&name, e),
         }
@@ -149,11 +193,17 @@ pub fn clean(specs: &[PackSpec], paths: &Paths) -> Report {
         }
         Err(e) => report.fail(LOCKFILE, e),
     }
+    assert!(report.failed as usize <= report.lines.len());
     report
 }
 
 /// One line per package: kind, resolved source, state, grants (config spec §5 `status`).
 /// A package that is not installed counts as failed.
+///
+/// # Panics
+///
+/// Never: the assert checks that every spec got its line.
+#[must_use]
 pub fn status(specs: &[PackSpec], paths: &Paths) -> Report {
     let mut report = Report::default();
     let lock = match read_lock(&paths.lock) {
@@ -170,7 +220,7 @@ pub fn status(specs: &[PackSpec], paths: &Paths) -> Report {
             (Err(_), _) => "missing".to_owned(),
             (Ok(m), None) => format!("unlocked{}", m.grant_notes()),
             (Ok(m), Some(r)) => {
-                let hash = std::fs::read(&m.wasm)
+                let hash = fs::read(&m.wasm)
                     .map(|b| hex(&sha256(&b)))
                     .unwrap_or_default();
                 let s = if hash == lock.hash[r] {
@@ -191,6 +241,10 @@ pub fn status(specs: &[PackSpec], paths: &Paths) -> Report {
         }
     }
     assert_eq!(report.lines.len(), specs.len());
+    assert!(
+        report.failed as usize <= specs.len(),
+        "one failure per spec at most"
+    );
     report
 }
 
@@ -205,7 +259,7 @@ impl Paths {
         let root = config
             .root()
             .ok_or("no user config (--clean, or no config directory)")?;
-        let data = dirs::here(dirs::Dir::Data)?;
+        let data = dirs::here(Dir::Data)?;
         Ok(Paths {
             pack: data.join("pack"),
             lock: root.join(LOCKFILE),
@@ -216,19 +270,24 @@ impl Paths {
 // ---- private ----
 
 impl Report {
-    fn ok(&mut self, name: &str, what: impl std::fmt::Display) {
+    fn ok(&mut self, name: &str, what: impl Display) {
         self.lines.push(format!("{name}: {what}"));
+        assert!(self.failed as usize <= self.lines.len());
     }
 
-    fn fail(&mut self, name: &str, what: impl std::fmt::Display) {
+    fn fail(&mut self, name: &str, what: impl Display) {
         self.lines.push(format!("{name}: error: {what}"));
         self.failed += 1;
+        assert!(
+            self.failed as usize <= self.lines.len(),
+            "a failure has its line"
+        );
     }
 }
 
 /// `sync`, `update` and `restore`: [`install`] per spec in spec order, then the lock rows.
 fn run(specs: &[PackSpec], paths: &Paths, mode: Mode) -> Report {
-    assert!(specs.len() <= schemify_config::PACKS_MAX);
+    assert!(specs.len() <= PACKS_MAX, "the config caps the specs");
     let mut report = Report::default();
     let mut lock = match read_lock(&paths.lock) {
         Ok(l) => l,
@@ -239,9 +298,16 @@ fn run(specs: &[PackSpec], paths: &Paths, mode: Mode) -> Report {
     };
     for spec in specs {
         let row = lock.find("plugin", &spec.name);
-        let locked = row.map(|r| (lock.resolved[r].clone(), lock.hash[r].clone()));
+        let locked = row.map(|r| LockedRow {
+            resolved: lock.resolved[r].clone(),
+            hash: lock.hash[r].clone(),
+        });
         match install(spec, paths, mode, locked.as_ref()) {
-            Ok((resolved, hash, what)) => {
+            Ok(Outcome {
+                resolved,
+                hash,
+                what,
+            }) => {
                 set_row(&mut lock, &spec.name, spec.source.word(), &resolved, &hash);
                 report.ok(&spec.name, what);
             }
@@ -252,16 +318,20 @@ fn run(specs: &[PackSpec], paths: &Paths, mode: Mode) -> Report {
         report.fail(LOCKFILE, e);
     }
     assert!(report.lines.len() >= specs.len());
+    assert!(
+        report.lines.len() <= specs.len() + 1,
+        "one line per spec, plus the lockfile's"
+    );
     report
 }
 
-/// Installs or moves one package; returns (resolved, wasm sha256, what happened).
+/// Installs or moves one package.
 fn install(
     spec: &PackSpec,
     paths: &Paths,
     mode: Mode,
-    locked: Option<&(String, String)>,
-) -> Result<(String, String, String), String> {
+    locked: Option<&LockedRow>,
+) -> Result<Outcome, String> {
     let dir = package_dir(spec, paths);
     let (resolved, what) = match &spec.source {
         Source::Path(p) => {
@@ -273,11 +343,11 @@ fn install(
         Source::Git { url, rev } => {
             let fresh = !dir.join(".git").exists();
             if fresh {
-                std::fs::create_dir_all(&paths.pack).map_err(|e| e.to_string())?;
+                fs::create_dir_all(&paths.pack).map_err(|e| e.to_string())?;
                 git(&paths.pack, &["clone", "--quiet", url, &spec.name])?;
             }
             let target = match (mode, locked) {
-                (Mode::Restore, Some((commit, _))) => Some(commit.clone()),
+                (Mode::Restore, Some(row)) => Some(row.resolved.clone()),
                 (Mode::Update, _) => {
                     if !fresh {
                         git(&dir, &["fetch", "--quiet", "--tags", "origin"])?;
@@ -285,7 +355,7 @@ fn install(
                     Some(newest(&dir, rev.as_deref())?)
                 }
                 // Sync, or restore without a lock row: install missing ones only.
-                (_, Some((commit, _))) if fresh => Some(commit.clone()),
+                (_, Some(row)) if fresh => Some(row.resolved.clone()),
                 _ if fresh => Some(newest(&dir, rev.as_deref())?),
                 _ => None,
             };
@@ -308,7 +378,7 @@ fn install(
         }
         Source::Url { url, sha256: want } => {
             let file = dir.join(format!("{}.wasm", spec.name));
-            let have = std::fs::read(&file).ok().map(|b| hex(&sha256(&b)));
+            let have = fs::read(&file).ok().map(|b| hex(&sha256(&b)));
             if have.as_deref() == Some(want.as_str()) {
                 (url.clone(), "ok".to_owned())
             } else {
@@ -318,21 +388,24 @@ fn install(
         }
     };
     let module = locate_in(&dir, &spec.name)?;
-    let bytes =
-        std::fs::read(&module.wasm).map_err(|e| format!("{}: {e}", module.wasm.display()))?;
+    let bytes = fs::read(&module.wasm).map_err(|e| format!("{}: {e}", module.wasm.display()))?;
     let hash = hex(&sha256(&bytes));
     if mode == Mode::Restore
-        && let Some((_, want)) = locked
-        && *want != hash
+        && let Some(row) = locked
+        && row.hash != hash
     {
         return Err(format!(
             "content {} differs from the lock {}",
             short(&hash),
-            short(want)
+            short(&row.hash)
         ));
     }
     assert_eq!(hash.len(), 64);
-    Ok((resolved, hash, what))
+    Ok(Outcome {
+        resolved,
+        hash,
+        what,
+    })
 }
 
 /// The commit `rev` names after a fetch (a remote branch first, then a tag or commit); the
@@ -342,6 +415,7 @@ fn newest(dir: &Path, rev: Option<&str>) -> Result<String, String> {
         None => vec!["origin/HEAD".to_owned()],
         Some(r) => vec![format!("origin/{r}"), r.to_owned()],
     };
+    assert!(!candidates.is_empty());
     for c in &candidates {
         let spec = format!("{c}^{{commit}}");
         if let Ok(commit) = git(dir, &["rev-parse", "--verify", "--quiet", &spec]) {
@@ -355,7 +429,12 @@ fn newest(dir: &Path, rev: Option<&str>) -> Result<String, String> {
 /// `want`, and only then moves it to `file` (inside `dir`). On a mismatch nothing is
 /// installed and the temp file is deleted.
 fn download(url: &str, want: &str, pack: &Path, dir: &Path, file: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(pack).map_err(|e| e.to_string())?;
+    assert_eq!(want.len(), 64, "the config checked `sha256`");
+    assert!(
+        file.starts_with(dir),
+        "the module lands in its package directory"
+    );
+    fs::create_dir_all(pack).map_err(|e| e.to_string())?;
     let name = dir
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -367,22 +446,22 @@ fn download(url: &str, want: &str, pack: &Path, dir: &Path, file: &Path) -> Resu
         .output()
         .map_err(|e| format!("cannot run curl: {e}"))?;
     if !out.status.success() {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = fs::remove_file(&tmp);
         return Err(format!(
             "curl: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let bytes = std::fs::read(&tmp).map_err(|e| e.to_string())?;
+    let bytes = fs::read(&tmp).map_err(|e| e.to_string())?;
     let got = hex(&sha256(&bytes));
     if got != want {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = fs::remove_file(&tmp);
         return Err(format!(
             "sha256 mismatch: got {got}, want {want}; nothing installed"
         ));
     }
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, file).map_err(|e| e.to_string())?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    fs::rename(&tmp, file).map_err(|e| e.to_string())?;
     assert!(file.is_file());
     Ok(())
 }
@@ -406,5 +485,6 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 /// The first 12 characters of a commit or content hash, for report lines.
 fn short(hash: &str) -> &str {
+    debug_assert!(hash.is_ascii(), "{hash}: a hex hash");
     &hash[..hash.len().min(12)]
 }

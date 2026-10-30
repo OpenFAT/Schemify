@@ -5,11 +5,12 @@
 //! Contents: `pub fn core(&Path) -> Command`, `pub fn schemify(&Path, &[&str]) -> (i32,
 //! String)`, `pub fn scratch(&str) -> PathBuf`.
 
-// Each test crate uses a subset of these helpers.
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses a subset of these helpers")]
 
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{self, Command};
 
 /// The core binary, run in `dir` with its config and data directories under `dir/.xdg`.
 pub fn core(dir: &Path) -> Command {
@@ -24,20 +25,23 @@ pub fn core(dir: &Path) -> Command {
 /// Runs the core in `dir` with `args`; returns its exit code and stdout followed by stderr.
 pub fn schemify(dir: &Path, args: &[&str]) -> (i32, String) {
     let out = core(dir).args(args).output().expect("binary runs");
-    let text =
-        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
     (out.status.code().expect("not killed"), text)
 }
 
 /// An empty directory `schemify-<test crate>-<name>-<pid>` under the temp dir; `name` is
 /// unique within its test crate.
 pub fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
+    let dir = env::temp_dir().join(format!(
         "schemify-{}-{name}-{}",
         env!("CARGO_CRATE_NAME"),
-        std::process::id()
+        process::id()
     ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("the temp dir is writable");
     dir
 }
