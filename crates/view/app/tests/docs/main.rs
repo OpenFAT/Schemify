@@ -14,7 +14,10 @@ use schemify_elab::{CellState, Val};
 use schemify_expr::{Scratch, Template, Value};
 
 /// The OTA fixture's module, as the manifest loads it.
-const WASM: &[u8] = include_bytes!("../fixtures/ota/plugins/gmid_lut.wasm");
+const WASM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/ota/plugins/gmid_lut.wasm"
+));
 
 fn open(tag: &str) -> Session {
     let mut s = Session::open("ota", "ota.shcomp", tag, Ui::Default);

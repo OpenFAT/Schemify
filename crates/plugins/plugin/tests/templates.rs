@@ -40,7 +40,7 @@ fn misbehaves(wasm: &[u8]) -> Option<String> {
                 args: "",
             },
         )
-        .unwrap();
+        .expect("one command event fits the queue");
     deliver(&mut plugins, &events, &mut snap, &mut queues);
     let texts: Vec<&str> = queues.logs.iter().map(|l| l.text.as_str()).collect();
     if texts != ["2 single-connection nets: c, d"] {

@@ -10,10 +10,14 @@ const SDK: &str = concat!(env!("SCHEMIFY_ROOT"), "/crates/protocol/abi/sdk");
 /// Every library under `sdk/`, by directory name; each must have a conformance guest.
 fn libs() -> Vec<String> {
     let mut libs: Vec<String> = std::fs::read_dir(SDK)
-        .unwrap()
-        .map(|e| e.unwrap())
+        .expect("the sdk directory is in the repository")
+        .map(|e| e.expect("a readable sdk entry"))
         .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().into_string().unwrap())
+        .map(|e| {
+            e.file_name()
+                .into_string()
+                .expect("sdk directory names are UTF-8")
+        })
         .collect();
     libs.sort();
     assert!(libs.len() >= 5, "libraries: {libs:?}");
@@ -61,7 +65,9 @@ impl World {
     fn send(&mut self, events: &[Event<'_>]) {
         let mut queue = PluginEvents::new();
         for e in events {
-            queue.push(Some(self.id), e).unwrap();
+            queue
+                .push(Some(self.id), e)
+                .expect("a test event fits the queue");
         }
         deliver(&mut self.plugins, &queue, &mut self.snap, &mut self.queues);
     }
@@ -73,12 +79,18 @@ impl World {
 
     fn faults(&self) -> Vec<String> {
         let faults = self.plugins.health().faults();
-        faults.iter().map(|f| format!("{:?} {}", f.code, f.detail)).collect()
+        faults
+            .iter()
+            .map(|f| format!("{:?} {}", f.code, f.detail))
+            .collect()
     }
 }
 
 fn info(texts: &[&str]) -> Vec<(Level, String)> {
-    texts.iter().map(|t| (Level::Info, (*t).to_owned())).collect()
+    texts
+        .iter()
+        .map(|t| (Level::Info, (*t).to_owned()))
+        .collect()
 }
 
 #[test]
@@ -161,7 +173,10 @@ fn records_are_written_like_the_rust_sdk() {
         }]);
         let marks = w.plugins.composed().of(Kind::Annotations);
         assert_eq!(marks.len(), 1, "{lib}");
-        assert_eq!((&*marks[0].scope, &*marks[0].text), ("erc pass", "mark R1 warn \"hi\""));
+        assert_eq!(
+            (&*marks[0].scope, &*marks[0].text),
+            ("erc pass", "mark R1 warn \"hi\"")
+        );
         let edits: Vec<_> = w
             .queues
             .edits
@@ -190,7 +205,11 @@ fn records_are_written_like_the_rust_sdk() {
         let vary = [("vdd", "1.8"), ("w", "two words")].map(|(a, b)| (a.into(), b.into()));
         assert_eq!(run[0].vary, vary, "{lib}");
         assert_eq!(
-            w.queues.timers.iter().map(|t| (t.id, t.ms)).collect::<Vec<_>>(),
+            w.queues
+                .timers
+                .iter()
+                .map(|t| (t.id, t.ms))
+                .collect::<Vec<_>>(),
             [(7, 250)],
             "{lib}"
         );
@@ -229,7 +248,9 @@ fn functions_answer_like_the_rust_sdk() {
         let mut w = World::new(lib);
         let mut call = |fn_id, args| {
             let mut result = String::new();
-            w.plugins.call(w.id, fn_id, args, &mut result).map(|()| result)
+            w.plugins
+                .call(w.id, fn_id, args, &mut result)
+                .map(|()| result)
         };
         assert_eq!(call(0, "3 4"), Ok("7".into()), "{lib}");
         assert_eq!(call(0, "-10 4"), Ok("-6".into()), "{lib}");

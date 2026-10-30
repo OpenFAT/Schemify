@@ -222,7 +222,16 @@ fn render(ckt: &Ckt, style: Style) -> String {
     out.push_str(&lines.concat());
     if style.upper {
         // Paths stay case-sensitive.
-        out = out.lines().map(|l| if l.starts_with(".lib") { l.to_string() } else { l.to_uppercase() } + "\n").collect();
+        let mut upper = String::with_capacity(out.len());
+        for line in out.lines() {
+            if line.starts_with(".lib") {
+                upper.push_str(line);
+            } else {
+                upper.push_str(&line.to_uppercase());
+            }
+            upper.push('\n');
+        }
+        out = upper;
     }
     out.push_str(".control\nrun\nwrite out.raw\n.endc\n.end\n");
     out

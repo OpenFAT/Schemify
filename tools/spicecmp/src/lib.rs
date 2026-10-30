@@ -111,6 +111,7 @@ pub struct Report {
 
 impl Report {
     /// True when no section differs.
+    #[must_use]
     pub fn is_equal(&self) -> bool {
         self.diffs.is_empty()
     }
@@ -124,6 +125,7 @@ const SHOWN_MAX: usize = 25;
 /// Never panics on any input: unparseable lines become directives plus a
 /// warning. Cost: O(n log n) per refinement round, at most `devices + nets`
 /// rounds (in practice the circuit's diameter).
+#[must_use]
 pub fn compare(a: &str, b: &str, opts: &Options) -> Report {
     let (a, b) = (alias(a, opts), alias(b, opts));
     let (na, nb) = (parse::parse(&a), parse::parse(&b));
