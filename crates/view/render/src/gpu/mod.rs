@@ -45,7 +45,7 @@
 //! - `pub const KINDS`, `TRI`, `RECT`, `ARC`, `LINE`, `EDGE`, `STRIDE`, `SOURCES`, `MARKS`,
 //!   `OVERLAY`; style flags `FILL`, `PARITY`, `FIRST`, `CLOSED`
 //! - `pub struct Frame`, `pub enum Change`
-//! - `pub use rows::InstanceRows`, `pub use pipelines::Pipelines`
+//! - `pub use rows::InstanceRows`, `pub use pipelines::Pipelines`, `pub use pass::BatchUploaded`
 //! - `pub(crate) fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>)`
 
 mod ear;
@@ -61,6 +61,7 @@ use kurbo::Rect;
 
 use schemify_canvas::Camera;
 
+pub use pass::BatchUploaded;
 pub use pipelines::Pipelines;
 pub use rows::InstanceRows;
 

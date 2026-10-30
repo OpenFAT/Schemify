@@ -6,6 +6,7 @@
 //! Contents:
 //! - `Pipelines::upload`, `Pipelines::upload_batch`, `Pipelines::take_uploaded`,
 //!   `Pipelines::take_batch_uploaded`, `Pipelines::draw`
+//! - `pub struct BatchUploaded`
 
 use std::mem;
 
@@ -17,6 +18,15 @@ use crate::batch::{self, Batch, Stage, What};
 use super::pipelines::{self, Pipelines, TexelRect, UNIFORM_BYTES};
 use super::rows::BYTES_MAX;
 use super::{Frame, InstanceRows, SOURCES, TRI};
+
+/// Bytes [`Pipelines::upload_batch`] wrote ([`Pipelines::take_batch_uploaded`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchUploaded {
+    /// Glyph atlas texture bytes.
+    pub atlas: u64,
+    /// Batch instance buffer bytes.
+    pub instances: u64,
+}
 
 impl Pipelines {
     /// Writes the rows' dirty ranges to their buffers (a buffer too small is replaced by one
@@ -185,13 +195,12 @@ impl Pipelines {
         mem::take(&mut self.uploaded)
     }
 
-    /// Atlas bytes and batch instance bytes written by [`Pipelines::upload_batch`] since the
-    /// last call.
-    pub fn take_batch_uploaded(&mut self) -> (u64, u64) {
-        (
-            mem::take(&mut self.atlas_uploaded),
-            mem::take(&mut self.instances_uploaded),
-        )
+    /// Bytes written by [`Pipelines::upload_batch`] since the last call.
+    pub fn take_batch_uploaded(&mut self) -> BatchUploaded {
+        BatchUploaded {
+            atlas: mem::take(&mut self.atlas_uploaded),
+            instances: mem::take(&mut self.instances_uploaded),
+        }
     }
 
     /// Draws one frame into `target` (a `size`-px texture of these pipelines' format) as one

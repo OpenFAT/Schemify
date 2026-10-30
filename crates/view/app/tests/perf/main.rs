@@ -303,11 +303,11 @@ impl Bench {
         self.rows.frame = None; // the render took it; without a GPU nobody does
         if measure == Measure::Record {
             self.cpu.push(cpu);
-            if let Some(((v, g), (atlas, instances))) = rendered {
+            if let Some(((v, g), uploaded)) = rendered {
                 self.render.push(v);
                 self.gpu_ms.push(g);
-                self.atlas.push(atlas as f64 / 1024.0);
-                self.instances.push(instances as f64 / 1024.0);
+                self.atlas.push(uploaded.atlas as f64 / 1024.0);
+                self.instances.push(uploaded.instances as f64 / 1024.0);
             }
         }
     }

@@ -276,15 +276,15 @@ impl<A: App> Shell<A> {
                 && let Some(InputSpan { oldest, newest }) = self.shown
             {
                 let ms = |t: Instant| (now - t).as_secs_f64() * 1e3;
-                let (atlas, instances) = gpu.pipes.take_batch_uploaded();
+                let uploaded = gpu.pipes.take_batch_uploaded();
                 eprintln!(
                     "frame: input to present {:.2} ms oldest, {:.2} ms newest, {} updates, period {:.2} ms, atlas {} B, instances {} B",
                     ms(oldest),
                     ms(newest),
                     self.updates,
                     self.presented.map_or(0.0, ms),
-                    atlas,
-                    instances
+                    uploaded.atlas,
+                    uploaded.instances
                 );
             }
             (self.shown, self.updates, self.presented) = (None, 0, Some(now));
