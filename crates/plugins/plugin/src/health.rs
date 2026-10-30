@@ -36,11 +36,13 @@ pub struct Health {
 
 impl Health {
     /// Returns the most recent faults, oldest first, at most [`FAULTS_MAX`].
+    #[must_use]
     pub fn faults(&self) -> &VecDeque<Fault> {
         &self.faults
     }
 
     /// Returns how many faults were dropped to keep the ring bounded (saturating).
+    #[must_use]
     pub fn dropped(&self) -> u32 {
         self.dropped
     }
@@ -48,11 +50,13 @@ impl Health {
     /// Returns how many faults were ever recorded: a reader that remembers it finds the
     /// faults recorded since as the last `recorded() - seen` of [`Health::faults`] (fewer if
     /// the ring dropped some meanwhile).
+    #[must_use]
     pub fn recorded(&self) -> u64 {
         self.recorded
     }
 
     /// Returns every record of the current composition that a later plugin overrode.
+    #[must_use]
     pub fn overrides(&self) -> &[Override] {
         &self.overrides
     }
@@ -72,5 +76,9 @@ impl Health {
         self.recorded += 1;
         debug_assert!(self.faults.len() <= FAULTS_MAX);
         debug_assert!(self.recorded >= self.faults.len() as u64);
+        debug_assert!(
+            u64::from(self.dropped) < self.recorded,
+            "only recorded faults drop"
+        );
     }
 }

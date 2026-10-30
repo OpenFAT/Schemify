@@ -9,11 +9,10 @@
 
 use schemify_abi::{Code, Output, text};
 
-use crate::contributions::{set_records, truncate};
 use crate::{
-    CONTRIBUTION_BYTES_MAX, Contributions, EDITS_MAX, EditRequest, LOG_BYTES_MAX, LOGS_MAX,
-    LogEntry, PluginId, REJECT_ECHO_BYTES, RUNS_MAX, RequestQueues, RunRequest, Snapshots,
-    TIMER_MS_MAX, TIMERS_MAX, TimerRequest,
+    CONTRIBUTION_BYTES_MAX, CONTRIBUTIONS_MAX, Contributions, EDITS_MAX, EditRequest,
+    LOG_BYTES_MAX, LOGS_MAX, LogEntry, PluginId, REJECT_ECHO_BYTES, RUNS_MAX, RequestQueues,
+    RunRequest, Snapshots, TIMER_MS_MAX, TIMERS_MAX, TimerRequest, contributions,
 };
 
 /// One rejected output record (§8). Goes to the health report and, unless it arose while
@@ -55,17 +54,21 @@ pub fn intake(
         chunks += 1;
         match accept(plugin, chunk, snapshots, contributions, queues) {
             Ok(()) => accepted += 1,
-            Err(code) => rejections.push(Rejection {
-                plugin,
-                code,
-                record: chunk[..chunk.len().min(REJECT_ECHO_BYTES)].into(),
-            }),
+            Err(code) => {
+                let record: Box<[u8]> = Box::from(&chunk[..chunk.len().min(REJECT_ECHO_BYTES)]);
+                rejections.push(Rejection {
+                    plugin,
+                    code,
+                    record,
+                });
+            }
         }
     }
     debug_assert_eq!(
         accepted as usize + rejections.len() - rejected_before,
         chunks
     );
+    debug_assert!(contributions.len() <= CONTRIBUTIONS_MAX);
     accepted
 }
 
@@ -76,7 +79,7 @@ fn accept(
     plugin: PluginId,
     chunk: &[u8],
     snapshots: &Snapshots,
-    contributions: &mut Contributions,
+    table: &mut Contributions,
     queues: &mut RequestQueues,
 ) -> Result<(), Code> {
     let chunk = std::str::from_utf8(chunk).map_err(|_| Code::Parse)?;
@@ -85,8 +88,8 @@ fn accept(
             if body.len() > CONTRIBUTION_BYTES_MAX {
                 return Err(Code::Space);
             }
-            set_records(kind, &body)?;
-            contributions.set(plugin, kind, &scope, &body)
+            contributions::set_records(kind, &body)?;
+            table.set(plugin, kind, &scope, &body)
         }
         Output::Edit {
             doc,
@@ -98,14 +101,14 @@ fn accept(
                 return Err(Code::Gone);
             }
             let label = label.into_owned();
-            let req = EditRequest {
+            let request = EditRequest {
                 plugin,
                 doc,
                 mode,
                 label,
                 ops,
             };
-            push_bounded(&mut queues.edits, EDITS_MAX, req)
+            push_bounded(&mut queues.edits, EDITS_MAX, request)
         }
         Output::Run {
             bench,
@@ -113,17 +116,17 @@ fn accept(
             corner,
             vary,
         } => {
-            let req = RunRequest {
+            let request = RunRequest {
                 plugin,
                 bench: bench.into_owned(),
                 config: config.into_owned(),
                 corner: corner.into_owned(),
                 vary: vary
                     .into_iter()
-                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                    .map(|(name, value)| (name.into_owned(), value.into_owned()))
                     .collect(),
             };
-            push_bounded(&mut queues.runs, RUNS_MAX, req)
+            push_bounded(&mut queues.runs, RUNS_MAX, request)
         }
         Output::Timer { ms, .. } if ms > TIMER_MS_MAX => Err(Code::Range),
         Output::Timer { id, ms } => push_bounded(
@@ -132,7 +135,7 @@ fn accept(
             TimerRequest { plugin, id, ms },
         ),
         Output::Log { level, text } => {
-            let text = truncate(&text, LOG_BYTES_MAX).to_owned();
+            let text = contributions::truncate(&text, LOG_BYTES_MAX).to_owned();
             let entry = LogEntry {
                 plugin,
                 level,
@@ -145,6 +148,7 @@ fn accept(
 
 /// Appends `item` unless `queue` holds `max` already.
 fn push_bounded<T>(queue: &mut Vec<T>, max: usize, item: T) -> Result<(), Code> {
+    debug_assert!(max > 0);
     // A worker's staged logs may already sit past `max` (`Plugins` reserves room per event).
     if queue.len() >= max {
         return Err(Code::Space);

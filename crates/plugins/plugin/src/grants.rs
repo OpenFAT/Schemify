@@ -36,37 +36,51 @@ impl Grants {
     ///
     /// `E_PARSE` for any grant [`Cap::parse_grant`] rejects.
     pub fn parse(grants: &[&str]) -> Result<Grants, Code> {
-        let mut g = Grants::default();
+        let mut parsed = Grants::default();
         for grant in grants {
             let (cap, arg) = Cap::parse_grant(grant).ok_or(Code::Parse)?;
-            g.caps |= 1 << cap as u8;
+            parsed.caps |= 1 << cap as u8;
             let list = match cap {
-                Cap::Spawn => &mut g.spawn,
-                Cap::ReadEnv => &mut g.read_env,
+                Cap::Spawn => &mut parsed.spawn,
+                Cap::ReadEnv => &mut parsed.read_env,
                 Cap::ReadProject | Cap::WriteProject | Cap::Network | Cap::Clipboard => continue,
             };
-            if !list.iter().any(|b| &**b == arg) {
-                list.push(arg.into());
+            if !list.iter().any(|listed| &**listed == arg) {
+                list.push(Box::from(arg));
             }
         }
-        debug_assert_eq!(g.has(Cap::Spawn), !g.spawn.is_empty());
-        debug_assert_eq!(g.has(Cap::ReadEnv), !g.read_env.is_empty());
-        Ok(g)
+        debug_assert_eq!(parsed.has(Cap::Spawn), !parsed.spawn.is_empty());
+        debug_assert_eq!(parsed.has(Cap::ReadEnv), !parsed.read_env.is_empty());
+        debug_assert!(parsed.spawn.len() + parsed.read_env.len() <= grants.len());
+        Ok(parsed)
     }
 
     /// Returns whether `cap` is granted (for `spawn`: for at least one binary).
+    #[must_use]
     pub fn has(&self, cap: Cap) -> bool {
         self.caps & (1 << cap as u8) != 0
     }
 
     /// Returns whether spawning exactly `binary` is granted.
+    #[must_use]
     pub fn may_spawn(&self, binary: &str) -> bool {
-        self.spawn.iter().any(|b| &**b == binary)
+        let granted = self.spawn.iter().any(|listed| &**listed == binary);
+        debug_assert!(
+            !granted || self.has(Cap::Spawn),
+            "a listed binary sets the bit"
+        );
+        granted
     }
 
     /// Returns whether reading under environment variable `name` is granted (`read:<name>`).
+    #[must_use]
     pub fn may_read_env(&self, name: &str) -> bool {
-        self.read_env.iter().any(|v| &**v == name)
+        let granted = self.read_env.iter().any(|listed| &**listed == name);
+        debug_assert!(
+            !granted || self.has(Cap::ReadEnv),
+            "a listed name sets the bit"
+        );
+        granted
     }
 }
 
@@ -79,6 +93,8 @@ impl Grants {
 /// `argv[0]` that is not exactly a granted binary; `E_PARSE` for the wrong number of
 /// arguments.
 pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code> {
+    debug_assert_eq!(grants.has(Cap::Spawn), !grants.spawn.is_empty());
+    debug_assert_eq!(grants.has(Cap::ReadEnv), !grants.read_env.is_empty());
     let arity_ok = match op {
         IoOp::FsRead | IoOp::FsList | IoOp::FsWrite | IoOp::FsRemove | IoOp::Fetch => {
             args.len() == 1
@@ -102,8 +118,13 @@ pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code>
         IoOp::Fetch => grants.has(Cap::Network) && !args[0].is_empty(),
         IoOp::ClipboardGet | IoOp::ClipboardSet => grants.has(Cap::Clipboard),
     };
-    // A spawn grant implies the capability bit (the `Grants` invariant).
-    debug_assert!(!(op == IoOp::Spawn && allowed) || grants.has(op.cap()));
+    // Positive space: every allow but a `${NAME}` read holds the operation's capability bit;
+    // the spawn bit follows from the `Grants` invariant.
+    if cfg!(debug_assertions) && allowed {
+        let env_read = matches!(op, IoOp::FsRead | IoOp::FsList) && env_path(&args[0]).is_some();
+        debug_assert!(env_read || grants.has(op.cap()));
+        debug_assert!(!env_read || grants.has(Cap::ReadEnv));
+    }
     if allowed { Ok(()) } else { Err(Code::Denied) }
 }
 
@@ -111,17 +132,23 @@ pub fn authorize(grants: &Grants, op: IoOp, args: &[String]) -> Result<(), Code>
 /// variable and the path below its directory (`""` for the directory itself). `None` when
 /// `path` does not start with `${`, names no valid variable ([`Cap::env_name`]) or continues
 /// with anything but a project-relative path.
+#[must_use]
 pub fn env_path(path: &str) -> Option<(&str, &str)> {
     let rest = path.strip_prefix("${")?;
     let (name, rest) = rest.split_once('}')?;
     if !Cap::env_name(name) {
         return None;
     }
-    let rel = match rest {
+    let relative = match rest {
         "" => "",
-        r => r.strip_prefix('/').filter(|r| project_relative(r))?,
+        below => below.strip_prefix('/').filter(|r| project_relative(r))?,
     };
-    Some((name, rel))
+    debug_assert!(!name.is_empty());
+    debug_assert!(
+        name.len() + relative.len() + 3 <= path.len(),
+        "`${{`, `}}` and the parts"
+    );
+    Some((name, relative))
 }
 
 // ---- private ----
@@ -143,34 +170,47 @@ fn removable(path: &str) -> bool {
 /// A project-relative path. A segment starting with `${` is refused, so it can never be
 /// mistaken for (or shadow) a `read:<NAME>` path ([`env_path`]).
 fn project_relative(path: &str) -> bool {
-    path.len() <= PATH_BYTES_MAX
+    let relative = path.len() <= PATH_BYTES_MAX
         && !path.contains(['\\', ':', '\0'])
-        && path
-            .split('/')
-            .all(|seg| !seg.is_empty() && seg != "." && seg != ".." && !seg.starts_with("${"))
+        && path.split('/').all(|segment| {
+            !segment.is_empty() && segment != "." && segment != ".." && !segment.starts_with("${")
+        });
+    debug_assert!(
+        !relative || !path.is_empty(),
+        "the empty path has one empty segment"
+    );
+    debug_assert!(
+        !relative || !path.starts_with('/'),
+        "an absolute path starts empty"
+    );
+    relative
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn args(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
     }
 
     /// `fs_remove` (§5): granted by `write_project`, only strictly inside `.schemify/`, never
     /// a manifest or lockfile, never through `..`.
     #[test]
     fn fs_remove_is_scoped_to_the_tool_directory() {
-        let w = Grants::parse(&["write_project"]).unwrap();
-        let r = Grants::parse(&["read_project"]).unwrap();
+        let writer = Grants::parse(&["write_project"]).unwrap();
+        let reader = Grants::parse(&["read_project"]).unwrap();
         for ok in [
             ".schemify/pdks/sky130/abc",
             ".schemify/pdks/x/y/STATE",
             ".schemify/a",
         ] {
-            assert_eq!(authorize(&w, IoOp::FsRemove, &args(&[ok])), Ok(()), "{ok}");
-            let denied = authorize(&r, IoOp::FsRemove, &args(&[ok]));
+            assert_eq!(
+                authorize(&writer, IoOp::FsRemove, &args(&[ok])),
+                Ok(()),
+                "{ok}"
+            );
+            let denied = authorize(&reader, IoOp::FsRemove, &args(&[ok]));
             assert_eq!(denied, Err(Code::Denied), "{ok}");
         }
         for bad in [
@@ -187,20 +227,28 @@ mod tests {
             ".schemifyx/a",
             ".schemify//a",
         ] {
-            let got = authorize(&w, IoOp::FsRemove, &args(&[bad]));
+            let got = authorize(&writer, IoOp::FsRemove, &args(&[bad]));
             assert_eq!(got, Err(Code::Denied), "{bad}");
         }
-        assert_eq!(authorize(&w, IoOp::FsRemove, &[]), Err(Code::Parse));
+        assert_eq!(authorize(&writer, IoOp::FsRemove, &[]), Err(Code::Parse));
     }
 
     /// `read:<NAME>` grants reads (and listings) under `${NAME}/` only, for exactly the
     /// granted names; writes never take an env path; `read_project` does not cover one.
     #[test]
     fn env_reads_follow_their_grants() {
-        let g = Grants::parse(&["read:PDK_ROOT", "write_project"]).unwrap();
+        let grants = Grants::parse(&["read:PDK_ROOT", "write_project"]).unwrap();
         for ok in ["${PDK_ROOT}", "${PDK_ROOT}/sky130A/libs.tech/xschem/x.sym"] {
-            assert_eq!(authorize(&g, IoOp::FsRead, &args(&[ok])), Ok(()), "{ok}");
-            assert_eq!(authorize(&g, IoOp::FsList, &args(&[ok])), Ok(()), "{ok}");
+            assert_eq!(
+                authorize(&grants, IoOp::FsRead, &args(&[ok])),
+                Ok(()),
+                "{ok}"
+            );
+            assert_eq!(
+                authorize(&grants, IoOp::FsList, &args(&[ok])),
+                Ok(()),
+                "{ok}"
+            );
         }
         for bad in [
             "${HOME}/.ssh/id_rsa",
@@ -211,10 +259,10 @@ mod tests {
             "${PDK_ROOT",
             "lib/a.shcomp",
         ] {
-            let got = authorize(&g, IoOp::FsRead, &args(&[bad]));
+            let got = authorize(&grants, IoOp::FsRead, &args(&[bad]));
             assert_eq!(got, Err(Code::Denied), "{bad}");
         }
-        let write = authorize(&g, IoOp::FsWrite, &args(&["${PDK_ROOT}/x"]));
+        let write = authorize(&grants, IoOp::FsWrite, &args(&["${PDK_ROOT}/x"]));
         assert_eq!(write, Err(Code::Denied));
         let project = Grants::parse(&["read_project"]).unwrap();
         let list = authorize(&project, IoOp::FsList, &args(&["${PDK_ROOT}/x"]));
@@ -226,9 +274,9 @@ mod tests {
 
     #[test]
     fn authorize_follows_grants_and_paths() {
-        let g = Grants::parse(&["read_project", "spawn:ngspice"]).unwrap();
+        let grants = Grants::parse(&["read_project", "spawn:ngspice"]).unwrap();
         assert_eq!(
-            authorize(&g, IoOp::FsRead, &args(&["lib/a.shcomp"])),
+            authorize(&grants, IoOp::FsRead, &args(&["lib/a.shcomp"])),
             Ok(())
         );
         for bad in [
@@ -241,35 +289,42 @@ mod tests {
             "a\\b",
             "",
         ] {
-            let got = authorize(&g, IoOp::FsRead, &args(&[bad]));
+            let got = authorize(&grants, IoOp::FsRead, &args(&[bad]));
             assert_eq!(got, Err(Code::Denied), "{bad}");
         }
         assert_eq!(
-            authorize(&g, IoOp::FsWrite, &args(&["a"])),
+            authorize(&grants, IoOp::FsWrite, &args(&["a"])),
             Err(Code::Denied)
         );
         assert_eq!(
-            authorize(&g, IoOp::Spawn, &args(&["ngspice", "-b"])),
+            authorize(&grants, IoOp::Spawn, &args(&["ngspice", "-b"])),
             Ok(())
         );
-        let path = authorize(&g, IoOp::Spawn, &args(&["/usr/bin/ngspice"]));
+        let path = authorize(&grants, IoOp::Spawn, &args(&["/usr/bin/ngspice"]));
         assert_eq!(path, Err(Code::Denied));
         assert_eq!(
-            authorize(&g, IoOp::Spawn, &args(&["sh"])),
+            authorize(&grants, IoOp::Spawn, &args(&["sh"])),
             Err(Code::Denied)
         );
-        assert_eq!(authorize(&g, IoOp::Spawn, &[]), Err(Code::Parse));
-        let fetch = authorize(&g, IoOp::Fetch, &args(&["https://x"]));
+        assert_eq!(authorize(&grants, IoOp::Spawn, &[]), Err(Code::Parse));
+        let fetch = authorize(&grants, IoOp::Fetch, &args(&["https://x"]));
         assert_eq!(fetch, Err(Code::Denied));
-        assert_eq!(authorize(&g, IoOp::ClipboardGet, &[]), Err(Code::Denied));
+        assert_eq!(
+            authorize(&grants, IoOp::ClipboardGet, &[]),
+            Err(Code::Denied)
+        );
     }
 
     #[test]
     fn grants_parse_and_dedupe() {
-        let g = Grants::parse(&["spawn:a", "spawn:a", "spawn:b", "read:X"]).unwrap();
-        assert!(g.has(Cap::Spawn) && g.has(Cap::ReadEnv) && !g.has(Cap::Network));
-        assert_eq!(g.spawn.len(), 2);
-        assert!(g.may_spawn("b") && !g.may_spawn("c") && g.may_read_env("X"));
+        let grants = Grants::parse(&["spawn:a", "spawn:a", "spawn:b", "read:X"]).unwrap();
+        assert!(grants.has(Cap::Spawn));
+        assert!(grants.has(Cap::ReadEnv));
+        assert!(!grants.has(Cap::Network));
+        assert_eq!(grants.spawn.len(), 2);
+        assert!(grants.may_spawn("b"));
+        assert!(!grants.may_spawn("c"));
+        assert!(grants.may_read_env("X"));
         assert_eq!(Grants::parse(&["root"]), Err(Code::Parse));
         assert_eq!(Grants::parse(&["spawn"]), Err(Code::Parse));
     }
