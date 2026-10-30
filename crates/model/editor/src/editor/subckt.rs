@@ -63,9 +63,17 @@ struct Crossing {
     net: u32,
 }
 
-/// What `make_subcircuit` writes and commits: (new file, its text, the parent's ops, port
-/// count).
-type Plan = (PathBuf, String, Vec<Op>, usize);
+/// What `make_subcircuit` writes and commits.
+struct Plan {
+    /// The new cell's file.
+    file: PathBuf,
+    /// Its text.
+    text: String,
+    /// The parent's ops: the selection out, the instance and its wiring in.
+    ops: Vec<Op>,
+    /// Ports of the new cell.
+    ports: usize,
+}
 
 impl Editor {
     /// Symbol → Make schematic and symbol from selected components: the selected schematic
@@ -121,7 +129,12 @@ impl Editor {
             let mut ids = Ids::new(&mut self.rng);
             plan(doc, cell, &sel, &path, centre, width, &mut ids)
         };
-        let (file, text, ops, ports) = match made {
+        let Plan {
+            file,
+            text,
+            ops,
+            ports,
+        } = match made {
             Ok(m) => m,
             Err(e) => {
                 self.session.say(format!("make subcircuit: {e}"));
@@ -136,6 +149,7 @@ impl Editor {
         self.symbols.clear();
         self.symbols_key = None;
         self.invalidate_cells();
+        assert!(!ops.is_empty(), "the selection leaves the parent");
         self.commit(reqs, h, "make subcircuit", ops);
         self.set_selection(Vec::new());
         self.set_partial(Vec::new());
@@ -155,6 +169,7 @@ impl Editor {
 fn crossings(doc: &Document, cell: &CellState, sel: &HashSet<ObjKey>) -> (Vec<Crossing>, Side) {
     let n = &cell.nets;
     let w = doc.wires();
+    assert!(wiring::wires_in_step(w), "wire columns in step");
     assert_eq!(
         n.wire_net.len(),
         w.id.len(),
@@ -305,6 +320,7 @@ fn touches(q: Pt, outside: &Side) -> bool {
 /// [`PITCH`]) where none of its `pins` (instance-local, orientation `R0`) touches the outside
 /// geometry; `None` when every candidate does.
 fn free_spot(centre: Pt, pins: &[Pt], outside: &Side) -> Option<Pt> {
+    const { assert!(RINGS > 0, "a ring around the centre") };
     for ring in 0..=RINGS {
         for i in -ring..=ring {
             for j in -ring..=ring {
@@ -497,5 +513,10 @@ fn plan(
         ops.iter().any(|o| matches!(o, Op::Insert { .. })),
         "the instance replaces the selection"
     );
-    Ok((file, text, ops, cuts.len()))
+    Ok(Plan {
+        file,
+        text,
+        ops,
+        ports: cuts.len(),
+    })
 }

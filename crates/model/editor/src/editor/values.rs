@@ -276,6 +276,11 @@ impl Editor {
         let id = docs::editor_id(row);
         // Typing reaches the page before the focus test: one batch may type and click away.
         let typed = Cmd::FieldTyped.name();
+        assert_eq!(
+            cmds.node.len(),
+            cmds.command.len(),
+            "request columns in step"
+        );
         for i in 0..cmds.len() {
             let s = &self.shell.strings;
             if s.get(cmds.command[i]) == typed

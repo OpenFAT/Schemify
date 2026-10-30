@@ -301,6 +301,7 @@ fn map_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
             map_pair(f, 3, x)?;
         }
         RecordKind::Label | RecordKind::Port | RecordKind::Text => {
+            assert!(f.len() >= 4, "{:?} record: id, x, y, orient", rec.kind);
             map_pair(f, 1, x)?;
             map_orient(&mut f[3], x)?;
         }
@@ -312,6 +313,7 @@ fn map_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
         }
         RecordKind::Circle => map_pair(f, 0, x)?,
         RecordKind::Arc => {
+            assert!(f.len() >= 5, "arc record: x, y, r, start, sweep");
             map_pair(f, 0, x)?;
             // The sweep is invariant (a mirror moves the start instead), so its text stays.
             let (a, s) = (f[3].parse::<f64>().ok()?, f[4].parse::<f64>().ok()?);
@@ -325,6 +327,7 @@ fn map_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
             }
         }
         RecordKind::Stext => {
+            assert!(f.len() >= 3, "stext record: x, y, orient");
             map_pair(f, 0, x)?;
             map_orient(&mut f[2], x)?;
         }

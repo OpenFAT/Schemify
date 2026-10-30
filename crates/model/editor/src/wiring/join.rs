@@ -105,6 +105,7 @@ pub fn join_trim(project: &Project, h: DocHandle, ids: &mut Ids<'_>) -> Vec<Op> 
         .collect();
     anchors.retain(|p| !labels.contains(p));
     let w = doc.wires();
+    assert!(super::wires_in_step(w), "wire columns in step");
     let s = doc.strings();
     let ends = |r: usize| [(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])];
     // Groups: (line, attributes) → rows, ordered (BTreeMap) so ids are drawn deterministically.

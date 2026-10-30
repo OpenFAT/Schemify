@@ -22,6 +22,7 @@
 //! - `pub fn route`
 //! - `pub enum Junctions`, `pub fn connected`
 //! - `pub fn align`
+//! - `pub(crate) fn wires_in_step`, `pub(crate) fn placed_in_step`
 
 mod cut;
 mod join;
@@ -29,7 +30,7 @@ mod stretch;
 
 use std::collections::HashSet;
 
-use schemify_doc::{Attr, DocHandle, Document, Op, Project, RecordBuf, TableId};
+use schemify_doc::{Attr, DocHandle, Document, Op, Placed, Project, RecordBuf, TableId, Wires};
 use schemify_format::RecordKind;
 
 use crate::geometry::Pt;
@@ -138,6 +139,7 @@ pub fn connected(
         return Vec::new();
     };
     let w = doc.wires();
+    assert!(wires_in_step(w), "wire columns in step");
     let ends = |r: usize| [(w.x1[r], w.y1[r]), (w.x2[r], w.y2[r])];
     // Wire-end index: point → wire rows.
     let mut at: Vec<(Pt, usize)> = (0..w.id.len())
@@ -205,6 +207,7 @@ pub fn connected(
         (TableId::Labels, doc.labels()),
         (TableId::Ports, doc.ports()),
     ] {
+        assert!(placed_in_step(t), "{table:?} columns in step");
         for i in 0..t.id.len() {
             let p = (t.x[i], t.y[i]);
             if visited_pts.contains(&p) || on_seen(p) {
@@ -282,6 +285,19 @@ pub fn align(doc: &Document, sel: &[ObjKey], snap_m: i32) -> Vec<Op> {
         }
     }
     ops
+}
+
+/// Whether the wire table's columns are in step: the `doc` invariant every scan here
+/// indexes by.
+pub(crate) fn wires_in_step(w: &Wires) -> bool {
+    let n = w.id.len();
+    w.x1.len() == n && w.y1.len() == n && w.x2.len() == n && w.y2.len() == n
+}
+
+/// Whether a label, port or text table's columns are in step.
+pub(crate) fn placed_in_step(t: &Placed) -> bool {
+    let n = t.id.len();
+    t.x.len() == n && t.y.len() == n && t.orient.len() == n && t.text.len() == n
 }
 
 // ---- private ----

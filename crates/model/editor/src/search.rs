@@ -186,6 +186,10 @@ fn hits(doc: &Document, q: &Query) -> Vec<Hit> {
         if !q.wants(field) {
             continue;
         }
+        assert!(
+            crate::wiring::placed_in_step(t),
+            "{table:?} columns in step"
+        );
         for i in 0..t.id.len() {
             let text = s.get(t.text[i]);
             if q.hit(text) {

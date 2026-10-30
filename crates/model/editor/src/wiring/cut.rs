@@ -22,6 +22,7 @@ use crate::scene::ObjKey;
 /// Never: the asserts check each cut wire gives a put and an insert at least.
 pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> Vec<Op> {
     let w = doc.wires();
+    assert!(super::wires_in_step(w), "wire columns in step");
     let s = doc.strings();
     let mut ops = Vec::new();
     let mut cut = 0;
@@ -71,6 +72,10 @@ pub fn break_at(doc: &Document, points: &[Pt], ids: &mut Ids<'_>) -> Vec<Op> {
 /// Xschem "Remove wires running through selected inst. pins": cuts wires at the pins of the
 /// selected instances, then deletes every piece whose two ends are pins of one selected
 /// instance (a wire shorting across the symbol).
+///
+/// # Panics
+///
+/// Never: `doc` keeps the wire table's columns in step.
 pub fn remove_through(
     project: &Project,
     h: DocHandle,
@@ -118,6 +123,7 @@ pub fn remove_through(
     }
     // Uncut wires that already run from pin to pin of one instance.
     let w = doc.wires();
+    assert!(super::wires_in_step(w), "wire columns in step");
     let s = doc.strings();
     for r in 0..w.id.len() {
         let id = w.id[r].text(s);
@@ -125,6 +131,14 @@ pub fn remove_through(
             ops.push(Op::Delete(Target::new(RecordKind::Wire, &id)));
         }
     }
+    debug_assert!(
+        ops.iter().all(|op| match op {
+            Op::Delete(t) | Op::Put { target: t, .. } => t.kind == RecordKind::Wire,
+            Op::Insert { rec, .. } => rec.kind == RecordKind::Wire,
+            _ => true,
+        }),
+        "only wires are cut or removed"
+    );
     ops
 }
 

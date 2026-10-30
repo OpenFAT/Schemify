@@ -40,9 +40,11 @@ enum Change {
 impl Wiring {
     /// The wiring of every wire row of `w` (bulk: one sort, not an insert per end).
     pub(super) fn of(w: &Wires) -> Wiring {
+        assert!(crate::wiring::wires_in_step(w), "wire columns in step");
         let mut out = Wiring::default();
         for i in 0..w.id.len() {
             let p = [w.x1[i], w.y1[i], w.x2[i], w.y2[i]];
+            debug_assert!((p[0], p[1]) <= (p[2], p[3]), "`doc` normalizes wire ends");
             out.xy.extend([(p[0], p[1]), (p[2], p[3])]);
             out.runs(p, Change::Add);
         }

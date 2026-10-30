@@ -64,6 +64,7 @@ pub(super) fn fixed_points(
         (TableId::Labels, doc.labels()),
         (TableId::Ports, doc.ports()),
     ] {
+        assert!(super::placed_in_step(t), "{table:?} columns in step");
         for i in 0..t.id.len() {
             if unselected(table, t.id[i].0) {
                 out.push((t.x[i], t.y[i]));
@@ -135,6 +136,7 @@ pub fn stretch(
     moved.dedup();
     let is_moved = |p: Pt| moved.binary_search(&p).is_ok();
     let w = doc.wires();
+    assert!(super::wires_in_step(w), "wire columns in step");
     let s = doc.strings();
     let budget = ADDED_PER_OBJECT * (sel.len() + m.ends.len()).max(1);
     let mut added = 0usize;
