@@ -13,7 +13,8 @@ fn parse_oracle(data: &[u8]) {
             assert_eq!(schemify_format::write(&again), text, "write is not idempotent");
         }
         Err(e) => {
-            assert!(!e.diagnostics.is_empty() && e.diagnostics.len() <= 64);
+            assert!(!e.diagnostics.is_empty());
+            assert!(e.diagnostics.len() <= 64, "the reader caps errors at 64");
             assert!(e.diagnostics.iter().all(|d| !d.code.is_warning()));
         }
     }

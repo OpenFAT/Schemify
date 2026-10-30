@@ -1,11 +1,11 @@
 //! Verbatim line merge (diff3): base, ours and theirs line blocks → merged lines as
-//! `(side, line index)` (spec §8 "Verbatim lines merge line by line").
+//! [`Pick`]s of (side, line index) (spec §8 "Verbatim lines merge line by line").
 //!
 //! Contents:
-//! - `pub(crate) fn diff3(o: &[&str], a: &[&str], b: &[&str]) -> Option<Vec<(u8, u32)>>`
+//! - `pub(crate) fn diff3(o: &[&str], a: &[&str], b: &[&str]) -> Option<Vec<Pick>>`
 
 use crate::document::NONE;
-use crate::merge::{A, B, O};
+use crate::merge::{A, B, O, Pick};
 
 /// Largest LCS table [`diff3`] aligns (cells = (base lines + 1) × (side lines + 1) after
 /// the common prefix and suffix): 8 MiB of `u16`.
@@ -14,21 +14,25 @@ const ALIGN_CELLS_MAX: usize = 1 << 22;
 /// Line-level three-way merge of one verbatim block (diff3). Lines of `o` that `a` and
 /// `b` both keep, at matching positions, split the blocks into stable and changed runs;
 /// a changed run takes the side that changed it (both identically: `a`'s). Returns the
-/// merged lines as `(side, line index within that side's block)`, or `None` when both
+/// merged lines as picks of (side, line index within that side's block), or `None` when both
 /// sides changed one run differently or a block is too large to align
 /// ([`ALIGN_CELLS_MAX`]).
 ///
 /// Symmetric in `a` and `b`: the alignments `o`–`a` and `o`–`b` are computed alike and
 /// independently. Cost: O(n) plus O(n·m) of the changed middles (bounded).
-pub(crate) fn diff3(o: &[&str], a: &[&str], b: &[&str]) -> Option<Vec<(u8, u32)>> {
+pub(crate) fn diff3(o: &[&str], a: &[&str], b: &[&str]) -> Option<Vec<Pick>> {
     let (ma, mb) = (align(o, a)?, align(o, b)?);
-    assert!(ma.len() == o.len() && mb.len() == o.len());
-    let mut out: Vec<(u8, u32)> = Vec::with_capacity(a.len().max(b.len()));
+    assert_eq!(ma.len(), o.len(), "one match slot per base line");
+    assert_eq!(mb.len(), o.len(), "one match slot per base line");
+    let mut out: Vec<Pick> = Vec::with_capacity(a.len().max(b.len()));
     let (mut lo, mut la, mut lb) = (0usize, 0usize, 0usize);
     loop {
         // Stable run: base lines both sides keep at the next positions.
         while lo < o.len() && ma[lo] == la as u32 && mb[lo] == lb as u32 {
-            out.push((O as u8, lo as u32));
+            out.push(Pick {
+                side: O as u8,
+                index: lo as u32,
+            });
             (lo, la, lb) = (lo + 1, la + 1, lb + 1);
         }
         // The next base line both sides keep ends the changed run (or the blocks end).
@@ -37,7 +41,9 @@ pub(crate) fn diff3(o: &[&str], a: &[&str], b: &[&str]) -> Option<Vec<(u8, u32)>
             Some(j) => (j, ma[j] as usize, mb[j] as usize),
             None => (o.len(), a.len(), b.len()),
         };
-        assert!(eo >= lo && ea >= la && eb >= lb, "alignments are monotone");
+        assert!(eo >= lo, "alignments are monotone");
+        assert!(ea >= la, "alignments are monotone");
+        assert!(eb >= lb, "alignments are monotone");
         let (co, ca, cb) = (&o[lo..eo], &a[la..ea], &b[lb..eb]);
         let (side, from, to) = if ca == co {
             (B, lb, eb)
@@ -46,16 +52,19 @@ pub(crate) fn diff3(o: &[&str], a: &[&str], b: &[&str]) -> Option<Vec<(u8, u32)>
         } else {
             return None;
         };
-        out.extend((from..to).map(|i| (side as u8, i as u32)));
+        let run = (from..to).map(|i| Pick {
+            side: side as u8,
+            index: i as u32,
+        });
+        out.extend(run);
         (lo, la, lb) = (eo, ea, eb);
         if sync.is_none() {
             break;
         }
     }
-    assert!(
-        lo == o.len() && la == a.len() && lb == b.len(),
-        "every line consumed"
-    );
+    assert_eq!(lo, o.len(), "every base line consumed");
+    assert_eq!(la, a.len(), "every line of ours consumed");
+    assert_eq!(lb, b.len(), "every line of theirs consumed");
     Some(out)
 }
 
@@ -79,9 +88,14 @@ fn align(o: &[&str], x: &[&str]) -> Option<Vec<u32>> {
         .count();
     let (mo, mx) = (&o[prefix..o.len() - suffix], &x[prefix..x.len() - suffix]);
     let (n, m) = (mo.len(), mx.len());
+    assert!(
+        prefix + suffix <= o.len().min(x.len()),
+        "prefix and suffix do not overlap"
+    );
     if (n + 1) * (m + 1) > ALIGN_CELLS_MAX {
         return None;
     }
+    assert!(n.min(m) < 1 << 11, "LCS lengths fit u16 under the cell cap");
     // lcs[i * (m + 1) + j] = LCS length of mo[i..] and mx[j..]; it fits u16 because
     // min(n, m) < 2^11 under the cell cap.
     let mut lcs = vec![0u16; (n + 1) * (m + 1)];

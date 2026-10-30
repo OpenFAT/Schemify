@@ -5,15 +5,15 @@
 mod common;
 
 use common::Rng;
-use common::docgen::gen_doc;
+use common::docgen;
 use proptest::prelude::*;
-use schemify_format::{
-    ChangeKind, Document, FileKind, IdRng, Orient, RecordKind, diff, fresh_id, merge3, parse, write,
-};
+use schemify_format as format;
+use schemify_format::{ChangeKind, Document, FileKind, IdRng, Orient, RecordKind};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Cases of `merge_is_total` where all three sides parsed (checked to be non-vacuous).
-static PARSED_ALL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static PARSED_ALL: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Debug, PartialEq)]
 enum Obj {
@@ -58,7 +58,7 @@ enum Edit {
 #[test]
 fn merge_is_total_is_not_vacuous() {
     // proptest runs the cases of `merge_is_total` in its own test; run a few here.
-    let before = PARSED_ALL.load(std::sync::atomic::Ordering::Relaxed);
+    let before = PARSED_ALL.load(Ordering::Relaxed);
     let mut runner = proptest::test_runner::TestRunner::deterministic();
     runner
         .run(
@@ -69,7 +69,7 @@ fn merge_is_total_is_not_vacuous() {
             },
         )
         .unwrap();
-    let hits = PARSED_ALL.load(std::sync::atomic::Ordering::Relaxed) - before;
+    let hits = PARSED_ALL.load(Ordering::Relaxed) - before;
     assert!(hits >= 64, "only {hits}/256 cases parsed all three sides");
 }
 
@@ -159,7 +159,7 @@ fn render(m: &Model) -> Document<'static> {
 }
 
 fn text(m: &Model) -> String {
-    write(&render(m))
+    format::write(&render(m))
 }
 
 fn grid(rng: &mut Rng) -> i32 {
@@ -167,7 +167,7 @@ fn grid(rng: &mut Rng) -> i32 {
 }
 
 fn new_id(rng: &mut Rng, used: &mut BTreeSet<String>) -> String {
-    let id = fresh_id(&mut IdRng::new(rng.next()), |c| used.contains(c))
+    let id = format::fresh_id(&mut IdRng::new(rng.next()), |c| used.contains(c))
         .as_str()
         .to_string();
     used.insert(id.clone());
@@ -207,19 +207,19 @@ fn new_obj(rng: &mut Rng) -> Obj {
 /// An edit of one object that touches only `unit`: 0 = geometry/name, 1 = params.
 fn edit_of(rng: &mut Rng, id: &str, o: &Obj, unit: u8) -> Edit {
     match (o, unit) {
-        (Obj::Inst { .. }, 0) => Edit::Move(id.into(), grid(rng), grid(rng)),
+        (Obj::Inst { .. }, 0) => Edit::Move(id.to_string(), grid(rng), grid(rng)),
         (Obj::Inst { params, .. }, _) => {
             let key = if rng.chance(50) {
                 params[0].0.clone()
             } else {
                 rng.word(&["nf", "m", "model"]).to_string()
             };
-            Edit::Param(id.into(), key, format!("{}", rng.below(100)))
+            Edit::Param(id.to_string(), key, format!("{}", rng.below(100)))
         }
         (Obj::Wire { c }, _) => {
-            Edit::MoveWire(id.into(), [c[0], c[1] + 10_000, c[2], c[3] + 10_000])
+            Edit::MoveWire(id.to_string(), [c[0], c[1] + 10_000, c[2], c[3] + 10_000])
         }
-        (Obj::Label { .. }, _) => Edit::Rename(id.into(), format!("net{}", rng.below(50))),
+        (Obj::Label { .. }, _) => Edit::Rename(id.to_string(), format!("net{}", rng.below(50))),
     }
 }
 
@@ -229,7 +229,7 @@ fn scenario(seed: u64) -> (Model, Vec<Edit>, Vec<Edit>) {
     let mut rng = Rng::new(seed);
     let mut used = BTreeSet::new();
     let mut o = Model {
-        doc: "bench".into(),
+        doc: "bench".to_string(),
         objs: BTreeMap::new(),
     };
     for _ in 0..rng.below(25) {
@@ -271,8 +271,8 @@ fn scenario(seed: u64) -> (Model, Vec<Edit>, Vec<Edit>) {
         }
     }
     match rng.below(4) {
-        0 => a.push(Edit::Doc("ours".into())),
-        1 => b.push(Edit::Doc("theirs".into())),
+        0 => a.push(Edit::Doc("ours".to_string())),
+        1 => b.push(Edit::Doc("theirs".to_string())),
         _ => {}
     }
     (o, a, b)
@@ -280,7 +280,9 @@ fn scenario(seed: u64) -> (Model, Vec<Edit>, Vec<Edit>) {
 
 fn applied(m: &Model, edits: &[Edit]) -> Model {
     let mut m = m.clone();
-    edits.iter().for_each(|e| apply(&mut m, e));
+    for e in edits {
+        apply(&mut m, e);
+    }
     m
 }
 
@@ -293,11 +295,11 @@ proptest! {
         let (ma, mb) = (applied(&o, &ea), applied(&o, &eb));
         let expected = text(&applied(&ma, &eb));
         let (to, ta, tb) = (text(&o), text(&ma), text(&mb));
-        let (po, pa, pb) = (parse(to.as_bytes()).unwrap(), parse(ta.as_bytes()).unwrap(), parse(tb.as_bytes()).unwrap());
-        let ab = merge3(&po, &pa, &pb);
+        let (po, pa, pb) = (format::parse(to.as_bytes()).unwrap(), format::parse(ta.as_bytes()).unwrap(), format::parse(tb.as_bytes()).unwrap());
+        let ab = format::merge3(&po, &pa, &pb);
         prop_assert_eq!(ab.conflicts, 0, "\n{}", ab.text);
         prop_assert_eq!(&ab.text, &expected);
-        let ba = merge3(&po, &pb, &pa);
+        let ba = format::merge3(&po, &pb, &pa);
         prop_assert_eq!(&ba.text, &ab.text, "not commutative");
     }
 
@@ -305,10 +307,10 @@ proptest! {
     fn merge_with_an_unchanged_side_is_the_other_side(seed in any::<u64>()) {
         let mut rng = Rng::new(seed);
         let kind = if seed.is_multiple_of(2) { FileKind::Shcomp } else { FileKind::Shbench };
-        let (to, ta) = (write(&gen_doc(&mut rng, kind)), write(&gen_doc(&mut rng, kind)));
-        let (o, a) = (parse(to.as_bytes()).unwrap(), parse(ta.as_bytes()).unwrap());
+        let (to, ta) = (format::write(&docgen::gen_doc(&mut rng, kind)), format::write(&docgen::gen_doc(&mut rng, kind)));
+        let (o, a) = (format::parse(to.as_bytes()).unwrap(), format::parse(ta.as_bytes()).unwrap());
         for (x, y, z) in [(&o, &a, &o), (&o, &o, &a), (&o, &a, &a), (&a, &a, &a)] {
-            let m = merge3(x, y, z);
+            let m = format::merge3(x, y, z);
             prop_assert_eq!(m.conflicts, 0);
             prop_assert_eq!(&m.text, &ta);
         }
@@ -327,8 +329,8 @@ proptest! {
         let (o, ea, _) = scenario(seed);
         let ma = applied(&o, &ea);
         let (to, ta) = (text(&o), text(&ma));
-        let (po, pa) = (parse(to.as_bytes()).unwrap(), parse(ta.as_bytes()).unwrap());
-        let d = diff(&po, &pa);
+        let (po, pa) = (format::parse(to.as_bytes()).unwrap(), format::parse(ta.as_bytes()).unwrap());
+        let d = format::diff(&po, &pa);
         let changed: BTreeSet<String> = ma.objs.iter().filter(|(id, x)| o.objs.get(*id).is_some_and(|y| y != *x)).map(|(id, _)| id.clone()).collect();
         let added: BTreeSet<String> = ma.objs.keys().filter(|id| !o.objs.contains_key(*id)).cloned().collect();
         let removed: BTreeSet<String> = o.objs.keys().filter(|id| !ma.objs.contains_key(*id)).cloned().collect();
@@ -341,7 +343,7 @@ proptest! {
         prop_assert_eq!(of(ChangeKind::Changed), changed);
         prop_assert_eq!(of(ChangeKind::Added), added);
         prop_assert_eq!(of(ChangeKind::Removed), removed);
-        prop_assert!(diff(&pa, &pa).changes.is_empty());
+        prop_assert!(format::diff(&pa, &pa).changes.is_empty());
     }
 }
 
@@ -353,7 +355,9 @@ fn merge_is_total_body(seed: u64, junk: Vec<u8>) {
     } else {
         FileKind::Shbench
     };
-    let mut texts: Vec<String> = (0..3).map(|_| write(&gen_doc(&mut rng, kind))).collect();
+    let mut texts: Vec<String> = (0..3)
+        .map(|_| format::write(&docgen::gen_doc(&mut rng, kind)))
+        .collect();
     // Sometimes splice junk into one side; duplicate a wire (same id, W001) in another.
     if seed.is_multiple_of(3) {
         let at = rng.below(texts[1].len() as u64) as usize;
@@ -372,15 +376,15 @@ fn merge_is_total_body(seed: u64, junk: Vec<u8>) {
     }
     let docs: Vec<_> = texts
         .iter()
-        .filter_map(|t| parse(t.as_bytes()).ok())
+        .filter_map(|t| format::parse(t.as_bytes()).ok())
         .collect();
     if docs.len() == 3 {
-        PARSED_ALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        PARSED_ALL.fetch_add(1, Ordering::Relaxed);
         let (o, a, b) = (&docs[0], &docs[1], &docs[2]);
-        let m = merge3(o, a, b);
+        let m = format::merge3(o, a, b);
         assert_eq!(m.conflicts > 0, m.text.contains("\n=======\n"));
-        assert_eq!(merge3(o, a, o).text, write(a));
-        assert_eq!(merge3(o, o, b).text, write(b));
-        assert!(diff(a, a).changes.is_empty());
+        assert_eq!(format::merge3(o, a, o).text, format::write(a));
+        assert_eq!(format::merge3(o, o, b).text, format::write(b));
+        assert!(format::diff(a, a).changes.is_empty());
     }
 }

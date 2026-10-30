@@ -4,7 +4,8 @@
 //! Contents:
 //! - `pub fn gen_doc(rng: &mut Rng, kind: FileKind) -> Document<'static>`
 
-use super::{Rng, comment, coord, new_id, orient, unique_value, value, verbatim_line};
+use crate::common;
+use crate::common::Rng;
 use schemify_format::{Document, FileKind, RecordKind};
 use std::collections::BTreeSet;
 
@@ -14,7 +15,7 @@ pub fn gen_doc(rng: &mut Rng, kind: FileKind) -> Document<'static> {
     let mut d = Document::new(kind);
     let two_impls = kind == FileKind::Shcomp && rng.chance(40);
     if rng.chance(50) {
-        let v = value(rng);
+        let v = common::value(rng);
         attr(&mut d, "doc", &[&v]);
     }
     if two_impls {
@@ -35,7 +36,7 @@ pub fn gen_doc(rng: &mut Rng, kind: FileKind) -> Document<'static> {
         maybe_comment(rng, &mut d);
         d.push_field("sp");
         for _ in 0..rng.below(3) {
-            d.push_verbatim(&verbatim_line(rng));
+            d.push_verbatim(&common::verbatim_line(rng));
         }
     }
     if kind == FileKind::Shbench {
@@ -43,7 +44,7 @@ pub fn gen_doc(rng: &mut Rng, kind: FileKind) -> Document<'static> {
     }
     let _ = insts;
     for _ in 0..rng.below(3) {
-        d.push_eof_comment(&comment(rng));
+        d.push_eof_comment(&common::comment(rng));
     }
     d
 }
@@ -52,7 +53,7 @@ pub fn gen_doc(rng: &mut Rng, kind: FileKind) -> Document<'static> {
 
 fn maybe_comment(rng: &mut Rng, d: &mut Document<'_>) {
     for _ in 0..(if rng.chance(20) { rng.below(3) } else { 0 }) {
-        d.push_comment(&comment(rng));
+        d.push_comment(&common::comment(rng));
     }
 }
 
@@ -67,7 +68,7 @@ fn attr(d: &mut Document<'_>, key: &str, values: &[&str]) {
 fn unknown_attr(rng: &mut Rng, d: &mut Document<'_>) {
     if rng.chance(15) {
         let key = rng.word(&["zz-extra", "x.future", "v2:hint"]).to_string();
-        let v = value(rng);
+        let v = common::value(rng);
         attr(d, &key, &[&v]);
     }
 }
@@ -86,11 +87,11 @@ fn symbol(rng: &mut Rng, d: &mut Document<'_>, two_impls: bool, names: &mut BTre
             0 => {
                 d.begin_record(RecordKind::Pin);
                 maybe_comment(rng, d);
-                let name = unique_value(rng, names);
+                let name = common::unique_value(rng, names);
                 d.push_field(&name);
                 d.push_field(rng.word(&["in", "out", "inout"]));
-                d.push_field_coord(coord(rng));
-                d.push_field_coord(coord(rng));
+                d.push_field_coord(common::coord(rng));
+                d.push_field_coord(common::coord(rng));
                 if rng.chance(30) {
                     attr(d, "domain", &[rng.word(&["analog", "digital", "real"])]);
                 }
@@ -102,8 +103,8 @@ fn symbol(rng: &mut Rng, d: &mut Document<'_>, two_impls: bool, names: &mut BTre
             1 => {
                 d.begin_record(RecordKind::Param);
                 maybe_comment(rng, d);
-                let name = unique_value(rng, names);
-                let default = value(rng);
+                let name = common::unique_value(rng, names);
+                let default = common::value(rng);
                 d.push_field(&name);
                 d.push_field(&default);
                 if rng.chance(40) {
@@ -114,11 +115,11 @@ fn symbol(rng: &mut Rng, d: &mut Document<'_>, two_impls: bool, names: &mut BTre
                     );
                 }
                 if rng.chance(30) {
-                    let v = value(rng);
+                    let v = common::value(rng);
                     attr(d, "doc", &[&v]);
                 }
                 if rng.chance(30) {
-                    let (x, y) = (value(rng), value(rng));
+                    let (x, y) = (common::value(rng), common::value(rng));
                     attr(d, "choices", &[&x, &y, "c"]);
                 }
                 unknown_attr(rng, d);
@@ -133,7 +134,7 @@ fn symbol(rng: &mut Rng, d: &mut Document<'_>, two_impls: bool, names: &mut BTre
                 maybe_comment(rng, d);
                 d.push_field("sp");
                 d.push_field("spice");
-                let t = value(rng);
+                let t = common::value(rng);
                 attr(d, "format", &["spice", &t]);
                 attr(d, "format", &["cdl", "X{name}"]);
                 attr(d, "model", &["nfet"]);
@@ -158,7 +159,7 @@ fn symbol(rng: &mut Rng, d: &mut Document<'_>, two_impls: bool, names: &mut BTre
             _ => 2,
         };
         for _ in 0..coords {
-            d.push_field_coord(coord(rng));
+            d.push_field_coord(common::coord(rng));
         }
         match kind {
             RecordKind::Arc => {
@@ -166,8 +167,8 @@ fn symbol(rng: &mut Rng, d: &mut Document<'_>, two_impls: bool, names: &mut BTre
                 d.push_field("-90.5");
             }
             RecordKind::Stext => {
-                d.push_field(orient(rng).as_str());
-                let t = value(rng);
+                d.push_field(common::orient(rng).as_str());
+                let t = common::value(rng);
                 d.push_field(&t);
                 if rng.chance(50) {
                     attr(d, "size", &["0.2"]);
@@ -224,7 +225,7 @@ fn schematic(
         } else {
             3
         }) as usize;
-        let mut v: Vec<String> = (0..n).map(|_| new_id(rng, ids)).collect();
+        let mut v: Vec<String> = (0..n).map(|_| common::new_id(rng, ids)).collect();
         v.sort();
         by_kind.push((k, v));
     }
@@ -241,15 +242,15 @@ fn schematic(
                         .to_string();
                     d.push_field(&cell);
                     d.push_attr("at");
-                    d.push_value_coord(coord(rng));
-                    d.push_value_coord(coord(rng));
-                    d.push_value(orient(rng).as_str());
-                    let name = value(rng);
+                    d.push_value_coord(common::coord(rng));
+                    d.push_value_coord(common::coord(rng));
+                    d.push_value(common::orient(rng).as_str());
+                    let name = common::value(rng);
                     attr(d, "name", &[&name]);
                     let mut keys = vec!["W", "L", "nf", "m", "model", "x.y", "a-b:c"];
                     rng.shuffle(&mut keys);
                     for key in &keys[..rng.below(4) as usize] {
-                        let v = value(rng);
+                        let v = common::value(rng);
                         attr(d, key, &[&v]);
                     }
                     if rng.chance(20) {
@@ -258,8 +259,8 @@ fn schematic(
                     }
                 }
                 RecordKind::Wire => {
-                    let (x1, y1) = (coord(rng), coord(rng));
-                    let (mut x2, y2) = (coord(rng), coord(rng));
+                    let (x1, y1) = (common::coord(rng), common::coord(rng));
+                    let (mut x2, y2) = (common::coord(rng), common::coord(rng));
                     if (x1, y1) == (x2, y2) {
                         x2 = x2.wrapping_add(1);
                     }
@@ -276,18 +277,18 @@ fn schematic(
                     }
                 }
                 RecordKind::Label | RecordKind::Port | RecordKind::Text => {
-                    d.push_field_coord(coord(rng));
-                    d.push_field_coord(coord(rng));
-                    d.push_field(orient(rng).as_str());
-                    let t = value(rng);
+                    d.push_field_coord(common::coord(rng));
+                    d.push_field_coord(common::coord(rng));
+                    d.push_field(common::orient(rng).as_str());
+                    let t = common::value(rng);
                     d.push_field(&t);
                     if *k == RecordKind::Text && rng.chance(30) {
                         attr(d, "size", &["0.4"]);
                     }
                 }
                 RecordKind::Noconn => {
-                    d.push_field_coord(coord(rng));
-                    d.push_field_coord(coord(rng));
+                    d.push_field_coord(common::coord(rng));
+                    d.push_field_coord(common::coord(rng));
                 }
                 RecordKind::Constraint => {
                     d.push_field(rng.word(&["match", "symmetry", "plugin.thing"]));
@@ -295,7 +296,7 @@ fn schematic(
                         attr(d, "member", &[m]);
                     }
                     if rng.chance(50) {
-                        let v = value(rng);
+                        let v = common::value(rng);
                         attr(d, "tolerance", &[&v]);
                     }
                 }
@@ -303,7 +304,7 @@ fn schematic(
                     let target = insts.first().cloned().unwrap_or_else(|| "0".to_string());
                     d.push_field(&target);
                     d.push_field("W");
-                    let reason = value(rng);
+                    let reason = common::value(rng);
                     attr(d, "reason", &[&reason]);
                 }
             }
@@ -318,16 +319,16 @@ fn docs(rng: &mut Rng, d: &mut Document<'_>, ids: &mut BTreeSet<String>) {
         if rng.chance(50) {
             d.begin_record(RecordKind::Prose);
             maybe_comment(rng, d);
-            let id = new_id(rng, ids);
+            let id = common::new_id(rng, ids);
             d.push_field(&id);
             for _ in 0..rng.below(4) {
-                d.push_verbatim(&verbatim_line(rng));
+                d.push_verbatim(&common::verbatim_line(rng));
             }
         } else {
             d.begin_record(RecordKind::Var);
             maybe_comment(rng, d);
-            let name = unique_value(rng, &mut vars);
-            let expr = value(rng);
+            let name = common::unique_value(rng, &mut vars);
+            let expr = common::value(rng);
             d.push_field(&name);
             d.push_field(&expr);
             if rng.chance(40) {
@@ -352,7 +353,7 @@ fn bench(rng: &mut Rng, d: &mut Document<'_>) {
     for k in kinds {
         let mut used = BTreeSet::new();
         let mut names: Vec<String> = (0..rng.below(3))
-            .map(|_| unique_value(rng, &mut used))
+            .map(|_| common::unique_value(rng, &mut used))
             .collect();
         names.sort();
         for name in names {
@@ -377,14 +378,14 @@ fn bench(rng: &mut Rng, d: &mut Document<'_>) {
                     attr(d, "goal", &["power", "target", "1m"]);
                 }
                 RecordKind::Output => {
-                    let e = value(rng);
+                    let e = common::value(rng);
                     d.push_field(&e);
                 }
                 RecordKind::Spec => attr(d, "min", &["60"]),
                 _ => {
                     d.push_field(rng.word(&["spice", "ngspice", "python"]));
                     for _ in 0..rng.below(4) {
-                        d.push_verbatim(&verbatim_line(rng));
+                        d.push_verbatim(&common::verbatim_line(rng));
                     }
                 }
             }

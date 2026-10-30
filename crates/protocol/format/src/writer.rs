@@ -12,9 +12,8 @@
 //! - `pub(crate) fn write_spans(doc, spans: &[ConflictSpan], eof_split: Option<u32>, out)`
 
 use crate::document::{Document, NONE};
-use crate::lex::is_bare_byte;
+use crate::lex;
 use crate::schema::{RANK_MAX, RecordKind};
-use std::fmt::Write as _;
 
 /// Records `first .. first + ours` are our side of a conflict and the next `theirs`
 /// records are theirs; the writer wraps them in conflict markers.
@@ -40,25 +39,36 @@ const MARK_THEIRS: &str = ">>>>>>> theirs\n";
 /// Deterministic: equal documents (see [`Document`]'s `PartialEq`) give equal bytes.
 /// Cost: O(n) for a document already in canonical order, O(n log n) otherwise.
 ///
+/// # Panics
+///
+/// Panics if `doc` lacks its header record (never true for a parsed or built one).
+///
 /// # Examples
 ///
 /// ```
-/// use schemify_format::{Document, FileKind, RecordKind, write};
+/// use schemify_format as format;
+/// use schemify_format::{Document, FileKind, RecordKind};
 /// let mut doc = Document::new(FileKind::Config);
 /// doc.begin_record(RecordKind::Set);
 /// doc.push_field("title");
 /// doc.push_field("my bench");
-/// assert_eq!(write(&doc), "schemify 1 config\n\nset title \"my bench\"\n");
+/// assert_eq!(format::write(&doc), "schemify 1 config\n\nset title \"my bench\"\n");
 /// ```
+#[must_use]
 pub fn write(doc: &Document<'_>) -> String {
     let mut out = String::with_capacity(doc.arena.len() + doc.src.len() + 64);
     write_into(doc, &mut out);
-    assert!(out.starts_with("schemify ") && out.ends_with('\n'));
+    assert!(out.starts_with("schemify "), "the header is written first");
+    assert!(out.ends_with('\n'));
     out
 }
 
 /// Appends the canonical form of `doc` to `out` (see [`write()`]), so a caller writing many
 /// records (the doc journal) reuses one buffer.
+///
+/// # Panics
+///
+/// As [`write()`].
 pub fn write_into(doc: &Document<'_>, out: &mut String) {
     let before = out.len();
     write_spans(doc, &[], None, out);
@@ -73,8 +83,10 @@ pub(crate) fn write_spans(
     eof_split: Option<u32>,
     out: &mut String,
 ) {
-    assert!(
-        doc.record_count() >= 1 && doc.record_kind(0) == RecordKind::Header,
+    assert!(doc.record_count() >= 1, "document lacks a header");
+    assert_eq!(
+        doc.record_kind(0),
+        RecordKind::Header,
         "document lacks a header"
     );
     let start_len = out.len();
@@ -129,7 +141,8 @@ pub(crate) fn write_spans(
         }
     }
     write_eof(doc, eof_split, out);
-    assert!(out.len() > start_len && out.ends_with('\n'));
+    assert!(out.len() > start_len);
+    assert!(out.ends_with('\n'), "the output ends with a newline");
 }
 
 // ---- private ----
@@ -155,6 +168,7 @@ fn emission_order(doc: &Document<'_>) -> Vec<u32> {
     // Stable, and each key is computed once instead of twice per comparison.
     order.sort_by_cached_key(|&r| key(r));
     assert_eq!(order.len(), doc.record_count() as usize);
+    assert_eq!(order.first(), Some(&0), "the header is written first");
     order
 }
 
@@ -217,20 +231,31 @@ fn write_eof(doc: &Document<'_>, eof_split: Option<u32>, out: &mut String) {
     }
     out.push('\n');
     let Some(split) = eof_split.map(|s| s as usize) else {
-        eof.iter().for_each(|c| push_comment(c, out));
+        for c in &eof {
+            push_comment(c, out);
+        }
         return;
     };
-    assert!(split <= eof.len());
+    assert!(split <= eof.len(), "the split lies inside the comments");
     out.push_str(MARK_OURS);
-    eof[..split].iter().for_each(|c| push_comment(c, out));
+    for c in &eof[..split] {
+        push_comment(c, out);
+    }
     out.push_str(MARK_SPLIT);
-    eof[split..].iter().for_each(|c| push_comment(c, out));
+    for c in &eof[split..] {
+        push_comment(c, out);
+    }
     out.push_str(MARK_THEIRS);
+    assert!(out.ends_with(MARK_THEIRS));
 }
 
 /// Appends `#text` as one line.
 fn push_comment(text: &str, out: &mut String) {
-    assert!(!text.contains(['\n', '\r']) && !text.ends_with([' ', '\t']));
+    assert!(!text.contains(['\n', '\r']), "a comment is one line");
+    assert!(
+        !text.ends_with([' ', '\t']),
+        "the writer emits no trailing whitespace"
+    );
     out.push('#');
     out.push_str(text);
     out.push('\n');
@@ -240,6 +265,8 @@ fn push_comment(text: &str, out: &mut String) {
 /// `\n`, `\t`, and `\u{hex}` (lowercase, no leading zeros) for CR, other C0 controls
 /// and DEL.
 fn push_value(v: &str, out: &mut String) {
+    use std::fmt::Write as _;
+
     let before = out.len();
     if !needs_quotes(v) {
         out.push_str(v);
@@ -277,7 +304,7 @@ fn push_value(v: &str, out: &mut String) {
 /// byte that is not a bare-value byte.
 fn needs_quotes(v: &str) -> bool {
     let b = v.as_bytes();
-    b.is_empty() || b[0] == b'#' || b[0] == b'|' || !b.iter().all(|&c| is_bare_byte(c))
+    b.is_empty() || b[0] == b'#' || b[0] == b'|' || !b.iter().all(|&c| lex::is_bare_byte(c))
 }
 
 #[cfg(test)]

@@ -6,21 +6,22 @@ mod common;
 
 use common::Rng;
 use proptest::prelude::*;
-use schemify_format::{ChangeKind, Document, Parts, RecordKind, diff, merge3, parse};
+use schemify_format as format;
+use schemify_format::{ChangeKind, Document, Parts, RecordKind};
 
 const INST: &str = "schemify 1 shbench\n\ninst 0abc ./ota\n  at 0 0 R0\n  name X1\n  W 1\n";
 
 // ---- private ----
 
-fn p(text: &str) -> Document<'_> {
-    parse(text.as_bytes()).unwrap_or_else(|e| panic!("{e}\n{text}"))
+fn parsed(text: &str) -> Document<'_> {
+    format::parse(text.as_bytes()).unwrap_or_else(|e| panic!("{e}\n{text}"))
 }
 
 #[test]
 fn same_attribute_changed_differently_conflicts() {
     let a = INST.replace("W 1", "W 2");
     let b = INST.replace("W 1", "W 3");
-    let m = merge3(&p(INST), &p(&a), &p(&b));
+    let m = format::merge3(&parsed(INST), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 1);
     let ours = "inst 0abc ./ota\n  at 0 0 R0\n  name X1\n  W 2\n";
     let theirs = "inst 0abc ./ota\n  at 0 0 R0\n  name X1\n  W 3\n";
@@ -34,14 +35,14 @@ fn same_attribute_changed_differently_conflicts() {
 fn delete_against_modify_conflicts() {
     let deleted = "schemify 1 shbench\n";
     let moved = INST.replace("at 0 0", "at 10 0");
-    let m = merge3(&p(INST), &p(deleted), &p(&moved));
+    let m = format::merge3(&parsed(INST), &parsed(deleted), &parsed(&moved));
     assert_eq!(m.conflicts, 1);
     assert!(
         m.text.contains("<<<<<<< ours\n=======\ninst 0abc"),
         "{}",
         m.text
     );
-    let m = merge3(&p(INST), &p(&moved), &p(deleted));
+    let m = format::merge3(&parsed(INST), &parsed(&moved), &parsed(deleted));
     assert!(
         m.text.contains("  W 1\n=======\n>>>>>>> theirs\n"),
         "{}",
@@ -54,9 +55,9 @@ fn colliding_new_ids_reid_theirs_and_its_references() {
     let o = "schemify 1 shbench\n";
     let a = "schemify 1 shbench\n\nwire 7zzzzz 0 0 10 0\n";
     let b = "schemify 1 shbench\n\ninst 7zzzzz ./x\n  at 0 0 R0\n  name X1\n\nwaive 1wv000 7zzzzz W\n  reason ok\n";
-    let m = merge3(&p(o), &p(a), &p(b));
+    let m = format::merge3(&parsed(o), &parsed(a), &parsed(b));
     assert_eq!(m.conflicts, 0, "{}", m.text);
-    let merged = p(&m.text);
+    let merged = parsed(&m.text);
     let inst = (0..merged.record_count())
         .find(|&r| merged.record_kind(r) == RecordKind::Inst)
         .unwrap();
@@ -71,9 +72,13 @@ fn colliding_new_ids_reid_theirs_and_its_references() {
         "reference follows the re-id"
     );
     assert!(m.text.contains("wire 7zzzzz"));
-    assert_eq!(merge3(&p(o), &p(a), &p(b)), m, "re-id is deterministic");
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(a), &parsed(b)),
+        m,
+        "re-id is deterministic"
+    );
     // Identical additions are one record, not a collision.
-    assert_eq!(merge3(&p(o), &p(a), &p(a)).text, a);
+    assert_eq!(format::merge3(&parsed(o), &parsed(a), &parsed(a)).text, a);
 }
 
 #[test]
@@ -82,9 +87,12 @@ fn graphics_merge_as_one_block() {
     let a = o.replace("line 0 0 1 1", "line 0 0 1 5");
     let b = o.replace("rect 0 0 2 2", "rect 0 0 2 9");
     let pin = o.replace("pin A in 0 0", "pin A in 5 5");
-    assert_eq!(merge3(&p(o), &p(&a), &p(&pin)).conflicts, 0);
-    assert_eq!(merge3(&p(o), &p(&a), &p(&a)).text, a);
-    let m = merge3(&p(o), &p(&a), &p(&b));
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(&a), &parsed(&pin)).conflicts,
+        0
+    );
+    assert_eq!(format::merge3(&parsed(o), &parsed(&a), &parsed(&a)).text, a);
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 1);
     assert!(m.text.contains("<<<<<<< ours\nline 0 0 1 5\n\nrect 0 0 2 2\n=======\nline 0 0 1 1\n\nrect 0 0 2 9\n>>>>>>> theirs\n"), "{}", m.text);
 }
@@ -94,8 +102,8 @@ fn concurrent_named_adds_keep_file_order_and_commute() {
     let o = "schemify 1 shprim\n\npin A in 0 0\npin Z in 0 9\n\nimpl sp spice\n";
     let a = o.replace("pin Z", "pin M in 0 5\npin Z");
     let b = o.replace("pin Z", "pin K in 0 4\npin Z");
-    let ab = merge3(&p(o), &p(&a), &p(&b));
-    let ba = merge3(&p(o), &p(&b), &p(&a));
+    let ab = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
+    let ba = format::merge3(&parsed(o), &parsed(&b), &parsed(&a));
     assert_eq!(ab.conflicts, 0);
     assert_eq!(ab.text, ba.text);
     assert!(
@@ -107,22 +115,31 @@ fn concurrent_named_adds_keep_file_order_and_commute() {
     // Both reordering differently is a conflict over the rank.
     let ra = "schemify 1 shprim\n\npin Z in 0 9\npin A in 0 0\n\nimpl sp spice\n";
     let rb = "schemify 1 shprim\n\nimpl sp spice\n\npin A in 0 0\npin Z in 0 9\n";
-    assert_eq!(merge3(&p(o), &p(ra), &p(rb)).conflicts, 1);
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(ra), &parsed(rb)).conflicts,
+        1
+    );
     // One side reordering wins.
-    assert_eq!(merge3(&p(o), &p(ra), &p(o)).text, ra);
+    assert_eq!(format::merge3(&parsed(o), &parsed(ra), &parsed(o)).text, ra);
 }
 
 #[test]
 fn concurrent_param_adds_on_one_instance_commute() {
     let a = INST.replace("  W 1\n", "  W 1\n  nf 2\n");
     let b = INST.replace("  W 1\n", "  W 1\n  L 5\n");
-    let ab = merge3(&p(INST), &p(&a), &p(&b));
+    let ab = format::merge3(&parsed(INST), &parsed(&a), &parsed(&b));
     assert_eq!(ab.conflicts, 0);
-    assert_eq!(ab.text, merge3(&p(INST), &p(&b), &p(&a)).text);
+    assert_eq!(
+        ab.text,
+        format::merge3(&parsed(INST), &parsed(&b), &parsed(&a)).text
+    );
     assert!(ab.text.ends_with("  W 1\n  L 5\n  nf 2\n"), "{}", ab.text);
     // Same key, different values: conflict.
     let c = INST.replace("  W 1\n", "  W 1\n  nf 3\n");
-    assert_eq!(merge3(&p(INST), &p(&a), &p(&c)).conflicts, 1);
+    assert_eq!(
+        format::merge3(&parsed(INST), &parsed(&a), &parsed(&c)).conflicts,
+        1
+    );
 }
 
 #[test]
@@ -130,7 +147,7 @@ fn repeatable_attributes_merge_per_first_value() {
     let o = "schemify 1 shbench\n\ncorner tt\n  lib m.lib tt\n  set vdd 1.8\n";
     let a = o.replace("set vdd 1.8", "set vdd 1.8\n  set temp 27");
     let b = o.replace("set vdd 1.8", "set vdd 1.9");
-    let m = merge3(&p(o), &p(&a), &p(&b));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 0, "{}", m.text);
     assert!(
         m.text
@@ -147,7 +164,7 @@ fn header_comments_and_eof_merge() {
     let b = o
         .replace("  doc d\n", "  doc d\n  category amp\n")
         .replace("# note", "# better note");
-    let m = merge3(&p(o), &p(&a), &p(&b));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 0);
     assert_eq!(
         m.text,
@@ -155,7 +172,7 @@ fn header_comments_and_eof_merge() {
     );
     let ea = o.replace("# end", "# a");
     let eb = o.replace("# end", "# b");
-    let m = merge3(&p(o), &p(&ea), &p(&eb));
+    let m = format::merge3(&parsed(o), &parsed(&ea), &parsed(&eb));
     assert_eq!(m.conflicts, 1);
     assert!(
         m.text
@@ -171,8 +188,11 @@ fn adjacent_verbatim_line_changes_conflict() {
     let o = "schemify 1 shbench\n\ncode ctl spice\n  | .op\n  | .end\n";
     let a = o.replace(".op", ".tran 1n 1u");
     let b = o.replace(".end", ".endc");
-    assert_eq!(merge3(&p(o), &p(&a), &p(o)).text, a);
-    assert_eq!(merge3(&p(o), &p(&a), &p(&b)).conflicts, 1);
+    assert_eq!(format::merge3(&parsed(o), &parsed(&a), &parsed(o)).text, a);
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(&a), &parsed(&b)).conflicts,
+        1
+    );
 }
 
 #[test]
@@ -180,27 +200,36 @@ fn verbatim_lines_merge_line_by_line() {
     let o = "schemify 1 shbench\n\ncode ctl spice\n  | .op\n  | * keep\n  | .end\n";
     let a = o.replace(".op", ".tran 1n 1u");
     let b = o.replace(".end", ".endc");
-    let m = merge3(&p(o), &p(&a), &p(&b));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 0, "{}", m.text);
     assert_eq!(m.text, a.replace(".end", ".endc"));
-    assert_eq!(merge3(&p(o), &p(&b), &p(&a)).text, m.text);
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(&b), &parsed(&a)).text,
+        m.text
+    );
     // An insertion and a deletion in different runs, and the same change on both sides.
     let ins = o.replace("  | .op\n", "  | .op\n  | .save all\n");
     let del = o.replace("  | .end\n", "");
-    let m = merge3(&p(o), &p(&ins), &p(&del));
+    let m = format::merge3(&parsed(o), &parsed(&ins), &parsed(&del));
     assert_eq!(m.conflicts, 0, "{}", m.text);
     assert_eq!(m.text, ins.replace("  | .end\n", ""));
-    assert_eq!(merge3(&p(o), &p(&a), &p(&a)).text, a);
+    assert_eq!(format::merge3(&parsed(o), &parsed(&a), &parsed(&a)).text, a);
     // Negative space: one line changed differently, or different lines inserted at one
     // place, conflicts; the same insertion on both sides is taken once.
     let mine = o.replace("* keep", "* mine");
     let yours = o.replace("* keep", "* yours");
-    assert_eq!(merge3(&p(o), &p(&mine), &p(&yours)).conflicts, 1);
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(&mine), &parsed(&yours)).conflicts,
+        1
+    );
     let other = o.replace("  | .op\n", "  | .op\n  | .save v(out)\n");
-    assert_eq!(merge3(&p(o), &p(&ins), &p(&other)).conflicts, 1);
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(&ins), &parsed(&other)).conflicts,
+        1
+    );
     let both = format!("{}  | .print\n", ins.trim_end_matches("  | .end\n"));
     let both = format!("{both}  | .end\n");
-    let m = merge3(&p(o), &p(&ins), &p(&both));
+    let m = format::merge3(&parsed(o), &parsed(&ins), &parsed(&both));
     assert_eq!((m.conflicts, m.text.as_str()), (0, both.as_str()));
 }
 
@@ -258,11 +287,11 @@ proptest! {
             t
         };
         let (to, ta, tb) = (doc(&base), doc(&join(&ea, &base[k + 1..])), doc(&join(&base[..k], &eb)));
-        let (po, pa, pb) = (p(&to), p(&ta), p(&tb));
-        let m = merge3(&po, &pa, &pb);
+        let (po, pa, pb) = (parsed(&to), parsed(&ta), parsed(&tb));
+        let m = format::merge3(&po, &pa, &pb);
         prop_assert_eq!(m.conflicts, 0, "{}", m.text);
         prop_assert_eq!(&m.text, &doc(&join(&ea, &eb)));
-        prop_assert_eq!(&merge3(&po, &pb, &pa).text, &m.text);
+        prop_assert_eq!(&format::merge3(&po, &pb, &pa).text, &m.text);
     }
 }
 
@@ -272,18 +301,21 @@ fn a_clean_merge_that_breaks_kind_rules_conflicts_on_the_interface() {
     let o = "schemify 1 shcomp\n\npin A in 0 0\n\nimpl sch schematic\n";
     let a = o.replace("impl sch", "impl main");
     let b = o.replace("impl sch", "impl top");
-    let m = merge3(&p(o), &p(&a), &p(&b));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 1, "{}", m.text);
     assert_eq!(
         m.text,
         "schemify 1 shcomp\n\n<<<<<<< ours\npin A in 0 0\n\nimpl main schematic\n=======\npin A in 0 0\n\nimpl top schematic\n>>>>>>> theirs\n"
     );
-    assert_eq!(merge3(&p(o), &p(&b), &p(&a)).conflicts, 1);
+    assert_eq!(
+        format::merge3(&parsed(o), &parsed(&b), &parsed(&a)).conflicts,
+        1
+    );
     // Each side deletes the other's last-but-one pin: no pin is left.
     let o = "schemify 1 shprim\n\npin A in 0 0\npin B out 1 0\n\nimpl s spice\n";
     let a = o.replace("pin A in 0 0\n", "");
     let b = o.replace("pin B out 1 0\n", "");
-    let m = merge3(&p(o), &p(&a), &p(&b));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 1, "{}", m.text);
     assert!(
         m.text.contains("<<<<<<< ours\npin B out 1 0\n"),
@@ -292,9 +324,9 @@ fn a_clean_merge_that_breaks_kind_rules_conflicts_on_the_interface() {
     );
     // Positive space: rank-1 changes that keep the rules stay clean.
     let c = o.replace("pin B out 1 0\n", "pin B out 1 0\npin C out 2 0\n");
-    let m = merge3(&p(o), &p(&a), &p(&c));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&c));
     assert_eq!(m.conflicts, 0, "{}", m.text);
-    assert!(parse(m.text.as_bytes()).is_ok());
+    assert!(format::parse(m.text.as_bytes()).is_ok());
 }
 
 #[test]
@@ -304,7 +336,7 @@ fn unknown_records_merge_in_newer_versions() {
     let b = o
         .replace("name X1", "name X2")
         .replace("hologram h1 1\n", "hologram h1 1\n\nhologram h2 0\n");
-    let m = merge3(&p(o), &p(&a), &p(&b));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(&b));
     assert_eq!(m.conflicts, 0, "{}", m.text);
     assert!(
         m.text
@@ -318,7 +350,7 @@ fn unknown_records_merge_in_newer_versions() {
 fn duplicate_ids_merge_by_occurrence() {
     let o = "schemify 1 shbench\n\nwire 0abc 0 0 1 0\n\nlabel 0abc 0 0 R0 n\n";
     let a = o.replace("R0 n", "R0 m");
-    let m = merge3(&p(o), &p(&a), &p(o));
+    let m = format::merge3(&parsed(o), &parsed(&a), &parsed(o));
     assert_eq!((m.conflicts, m.text.as_str()), (0, a.as_str()));
 }
 
@@ -329,9 +361,9 @@ fn an_added_id_duplicated_in_theirs_is_re_ided_once() {
     let o = "schemify 1 shbench\n";
     let a = "schemify 1 shbench\n\nwire 0abc 0 0 1 0\n";
     let b = "schemify 1 shbench\n\nwire 0abc 0 0 2 0\n\nlabel 0abc 0 0 R0 n\n";
-    let m = merge3(&p(o), &p(a), &p(b));
+    let m = format::merge3(&parsed(o), &parsed(a), &parsed(b));
     assert_eq!(m.conflicts, 0, "{}", m.text);
-    let merged = p(&m.text);
+    let merged = parsed(&m.text);
     assert_eq!(merged.record_count(), 4);
     assert_eq!(
         merged.warnings().len(),
@@ -346,8 +378,8 @@ fn an_added_id_duplicated_in_theirs_is_re_ided_once() {
 fn diff_names_changed_attribute_keys() {
     let a = "schemify 1 shbench\n\ninst 0abc ./ota\n  at 0 0 R0\n  name X1\n  W 1\n  L 2\n";
     let b = "schemify 1 shbench\n\ninst 0abc ./ota\n  at 0 0 R0\n  name X1\n  W 3\n  nf 2\n";
-    let (pa, pb) = (p(a), p(b));
-    let d = diff(&pa, &pb);
+    let (pa, pb) = (parsed(a), parsed(b));
+    let d = format::diff(&pa, &pb);
     assert_eq!(d.changes.len(), 1);
     let c = &d.changes[0];
     assert_eq!((c.kind, c.parts), (ChangeKind::Changed, Parts::ATTRS));

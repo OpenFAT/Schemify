@@ -7,23 +7,29 @@
 //!
 //! Contents:
 //! - `pub(crate) const DIAGNOSTICS_MAX: usize`
-//! - `pub(crate) fn lex(src: &str) -> Result<(Document<'_>, Vec<Diagnostic>), Diagnostic>`
+//! - `pub(crate) fn lex<'src>(src: &'src str, diagnostics: &mut Vec<Diagnostic>)
+//!   -> Result<Document<'src>, Diagnostic>`
 //! - `pub(crate) fn is_bare_byte(c: u8) -> bool`
 
 use crate::diag::{Code, Diagnostic, NO_RECORD};
-use crate::document::{Document, Str, VERSION, is_word_byte};
+use crate::document;
+use crate::document::{Document, Str, UnknownWord, VERSION};
 use crate::schema::{FileKind, RecordKind};
 
 /// Errors collected before the reader stops looking for more.
 pub(crate) const DIAGNOSTICS_MAX: usize = 64;
 
-/// Error position inside one line: (byte index, detail).
-type LexError = (usize, &'static str);
+/// An error inside one line.
+struct LexError {
+    /// Byte index within the line.
+    col: usize,
+    detail: &'static str,
+}
 
 /// Lexing state of one file: the document being filled and the line errors.
-struct Lexer<'s> {
-    doc: Document<'s>,
-    diags: Vec<Diagnostic>,
+struct Lexer<'src, 'out> {
+    doc: Document<'src>,
+    diagnostics: &'out mut Vec<Diagnostic>,
     /// Comments waiting for the next record.
     pending: Vec<Str>,
     /// Inside a rejected record: its indented lines are dropped, not misattributed.
@@ -31,18 +37,27 @@ struct Lexer<'s> {
 }
 
 /// Lexes the whole file: the header (whose failure is the only diagnostic), then every
-/// line. Returns the document and the line errors (at most [`DIAGNOSTICS_MAX`]).
-pub(crate) fn lex(src: &str) -> Result<(Document<'_>, Vec<Diagnostic>), Diagnostic> {
+/// line. Returns the document and appends the line errors (at most [`DIAGNOSTICS_MAX`])
+/// to `diagnostics`, which must be empty.
+pub(crate) fn lex<'src>(
+    src: &'src str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Document<'src>, Diagnostic> {
+    assert!(diagnostics.is_empty(), "lexing starts the diagnostics");
     let (doc, body) = lex_header(src)?;
     let mut lexer = Lexer {
         doc,
-        diags: Vec::new(),
+        diagnostics,
         pending: Vec::new(),
         skipping: false,
     };
     lexer.lex_lines(body);
-    assert!(lexer.diags.len() <= DIAGNOSTICS_MAX);
-    Ok((lexer.doc, lexer.diags))
+    assert!(lexer.diagnostics.len() <= DIAGNOSTICS_MAX);
+    assert!(
+        lexer.pending.is_empty(),
+        "trailing comments became end-of-file comments"
+    );
+    Ok(lexer.doc)
 }
 
 /// Returns whether `c` may appear in a bare value (spec `bchar`, bytewise; bytes of
@@ -102,20 +117,22 @@ fn lex_header(src: &str) -> Result<(Document<'_>, usize), Diagnostic> {
     // Stored canonical (`01` → `1`) so the writer needs no special case for the header.
     let v = doc.intern(&number.to_string());
     let k = doc.intern(file_kind.word());
-    doc.push_field_str(v);
-    doc.push_field_str(k);
+    doc.push_field_str(v, 0);
+    doc.push_field_str(k, 0);
     assert_eq!(doc.record_count(), 1);
-    assert!(body <= src.len() && body > 8);
+    assert!(body <= src.len());
+    assert!(body > 8, "line 2 starts after `schemify `");
     Ok((doc, body))
 }
 
-impl<'s> Lexer<'s> {
+impl Lexer<'_, '_> {
     fn lex_lines(&mut self, body: usize) {
         let src = self.doc.src;
-        assert!(body <= src.len() && self.doc.record_count() == 1);
+        assert!(body <= src.len());
+        assert_eq!(self.doc.record_count(), 1, "only the header is lexed yet");
         let mut pos = body;
         let mut line_no: u32 = 1;
-        while pos < src.len() && self.diags.len() < DIAGNOSTICS_MAX {
+        while pos < src.len() && self.diagnostics.len() < DIAGNOSTICS_MAX {
             line_no += 1;
             let end = src[pos..].find('\n').map_or(src.len(), |i| pos + i);
             let text_end = if end > pos && src.as_bytes()[end - 1] == b'\r' {
@@ -130,17 +147,15 @@ impl<'s> Lexer<'s> {
         self.doc.eof_comments.append(&mut self.pending);
         assert!(self.pending.is_empty());
         assert!(
-            self.diags.len() <= DIAGNOSTICS_MAX,
+            self.diagnostics.len() <= DIAGNOSTICS_MAX,
             "at most one error per line, loop stops at the cap"
         );
     }
 
     fn error(&mut self, code: Code, line: u32, col: usize, detail: &'static str) {
-        assert!(
-            line >= 2 && !code.is_warning(),
-            "lexer errors follow the header"
-        );
-        self.diags.push(Diagnostic {
+        assert!(line >= 2, "lexer errors follow the header");
+        assert!(!code.is_warning(), "the lexer reports errors only");
+        self.diagnostics.push(Diagnostic {
             code,
             line,
             col: col as u32 + 1,
@@ -151,7 +166,8 @@ impl<'s> Lexer<'s> {
 
     fn lex_line(&mut self, start: usize, end: usize, line_no: u32) {
         let src = self.doc.src;
-        assert!(start <= end && end <= src.len());
+        assert!(start <= end);
+        assert!(end <= src.len());
         let line = &src[start..end];
         assert!(
             end == src.len() || matches!(src.as_bytes()[end], b'\n' | b'\r'),
@@ -181,11 +197,15 @@ impl<'s> Lexer<'s> {
     }
 
     fn lex_record(&mut self, start: usize, line: &str, line_no: u32) {
-        assert!(!line.is_empty() && !line.starts_with([' ', '\t']));
+        assert!(!line.is_empty());
+        assert!(
+            !line.starts_with([' ', '\t']),
+            "a record line starts in column 0"
+        );
         self.skipping = true;
         let word_end = match lex_word(line.as_bytes(), 0) {
             Ok(e) => e,
-            Err((col, detail)) => return self.error(Code::E028, line_no, col, detail),
+            Err(e) => return self.error(Code::E028, line_no, e.col, e.detail),
         };
         // Values lex straight into the field pool; a rejected line truncates them away.
         let first = self.doc.fields.len();
@@ -193,7 +213,7 @@ impl<'s> Lexer<'s> {
         let lexed = lex_values(start, line, word_end, &mut doc.arena, &mut doc.fields);
         let word = &line[..word_end];
         let kind = match (lexed, doc.kind.lookup(word)) {
-            (Err((col, detail)), _) => Err((Code::E028, col, detail)),
+            (Err(e), _) => Err((Code::E028, e.col, e.detail)),
             (Ok(()), Some(k)) => Ok(k),
             // A newer version (spec §5) or a journal (no known words): kept as written.
             (Ok(()), None) if doc.version > VERSION || doc.kind == FileKind::Journal => {
@@ -210,10 +230,12 @@ impl<'s> Lexer<'s> {
             }
         };
         let r = self.doc.begin(kind, line_no);
-        self.doc.rec_field_start[r as usize] = first as u32;
+        self.doc.record_field_start[r as usize] = first as u32;
         if kind == RecordKind::Unknown {
-            let w = Str::src(start, start + word_end);
-            self.doc.unknown_words.push((r, w));
+            self.doc.unknown_words.push(UnknownWord {
+                record: r,
+                word: Str::src(start, start + word_end),
+            });
         }
         self.doc.comments.append(&mut self.pending);
         assert!(self.doc.field_spans(r).len() <= line.len());
@@ -221,18 +243,18 @@ impl<'s> Lexer<'s> {
     }
 
     fn lex_attr(&mut self, start: usize, line: &str, indent: usize, line_no: u32) {
-        assert!(indent > 0 && indent < line.len() && !self.skipping);
+        assert!(indent > 0, "an attribute line is indented");
+        assert!(indent < line.len(), "a blank line is not an attribute");
+        assert!(!self.skipping);
         let key_end = match lex_word(line.as_bytes(), indent) {
             Ok(e) => e,
-            Err((col, detail)) => return self.error(Code::E028, line_no, col, detail),
+            Err(e) => return self.error(Code::E028, line_no, e.col, e.detail),
         };
         let first = self.doc.attr_values.len();
         let doc = &mut self.doc;
-        if let Err((col, detail)) =
-            lex_values(start, line, key_end, &mut doc.arena, &mut doc.attr_values)
-        {
+        if let Err(e) = lex_values(start, line, key_end, &mut doc.arena, &mut doc.attr_values) {
             self.doc.attr_values.truncate(first);
-            return self.error(Code::E028, line_no, col, detail);
+            return self.error(Code::E028, line_no, e.col, e.detail);
         }
         let key = Str::src(start + indent, start + key_end);
         let a = self.doc.push_attr_str(key, line_no);
@@ -242,7 +264,8 @@ impl<'s> Lexer<'s> {
 
     fn lex_verbatim(&mut self, start: usize, line: &str, indent: usize, line_no: u32) {
         assert_eq!(line.as_bytes()[indent], b'|');
-        assert!(indent > 0 && !self.skipping);
+        assert!(indent > 0, "a verbatim line is indented");
+        assert!(!self.skipping);
         let rest = &line[indent + 1..];
         let (off, text) = match rest.strip_prefix(' ') {
             Some(t) => (indent + 2, t),
@@ -276,6 +299,10 @@ fn lex_values(
     out: &mut Vec<Str>,
 ) -> Result<(), LexError> {
     assert!(i <= line.len());
+    assert!(
+        start + line.len() < 1 << 31,
+        "source spans address 2^31 bytes"
+    );
     let before = out.len();
     let b = line.as_bytes();
     loop {
@@ -288,19 +315,28 @@ fn lex_values(
             return Ok(());
         }
         if i == ws {
-            return Err((i, "values must be separated by whitespace"));
+            return Err(LexError {
+                col: i,
+                detail: "values must be separated by whitespace",
+            });
         }
         if b[i] == b'"' {
             i = lex_quoted(start, line, i, arena, out)?;
             continue;
         }
         if b[i] == b'#' || b[i] == b'|' {
-            return Err((i, "a bare value cannot start with `#` or `|`; quote it"));
+            return Err(LexError {
+                col: i,
+                detail: "a bare value cannot start with `#` or `|`; quote it",
+            });
         }
         let value_start = i;
         while i < b.len() && b[i] != b' ' && b[i] != b'\t' {
             if !is_bare_byte(b[i]) {
-                return Err((i, "character not allowed in a bare value; quote it"));
+                return Err(LexError {
+                    col: i,
+                    detail: "character not allowed in a bare value; quote it",
+                });
             }
             i += 1;
         }
@@ -331,7 +367,8 @@ fn lex_quoted(
     arena.push_str(&line[q + 1..i]);
     match unescape(line, i, q, arena) {
         Ok(close) => {
-            assert!(close > q && b[close] == b'"');
+            assert!(close > q);
+            assert_eq!(b[close], b'"', "unescape stops at the closing quote");
             out.push(Str::arena_tail(arena, arena_start));
             Ok(close + 1)
         }
@@ -346,20 +383,33 @@ fn lex_quoted(
 /// returns the index of the closing quote.
 fn unescape(line: &str, mut i: usize, q: usize, arena: &mut String) -> Result<usize, LexError> {
     let b = line.as_bytes();
-    assert!(i > q && i <= b.len());
+    assert!(i > q, "unescaping starts after the opening quote");
+    assert!(i <= b.len());
     while i < b.len() {
         match b[i] {
             b'"' => return Ok(i),
-            b'\r' => return Err((i, "bare CR in a quoted value")),
+            b'\r' => {
+                return Err(LexError {
+                    col: i,
+                    detail: "bare CR in a quoted value",
+                });
+            }
             b'\\' => {
                 let (c, len) = match b.get(i + 1) {
                     Some(b'"') => ('"', 2),
                     Some(b'\\') => ('\\', 2),
                     Some(b'n') => ('\n', 2),
                     Some(b't') => ('\t', 2),
-                    Some(b'u') => unicode_escape(&b[i..])
-                        .ok_or((i, "`\\u{...}` needs 1-6 hex digits naming a Unicode scalar"))?,
-                    _ => return Err((i, "unknown escape; use \\\" \\\\ \\n \\t or \\u{...}")),
+                    Some(b'u') => unicode_escape(&b[i..]).ok_or(LexError {
+                        col: i,
+                        detail: "`\\u{...}` needs 1-6 hex digits naming a Unicode scalar",
+                    })?,
+                    _ => {
+                        return Err(LexError {
+                            col: i,
+                            detail: "unknown escape; use \\\" \\\\ \\n \\t or \\u{...}",
+                        });
+                    }
                 };
                 arena.push(c);
                 i += len;
@@ -373,11 +423,15 @@ fn unescape(line: &str, mut i: usize, q: usize, arena: &mut String) -> Result<us
             }
         }
     }
-    Err((q, "unterminated quoted value"))
+    Err(LexError {
+        col: q,
+        detail: "unterminated quoted value",
+    })
 }
 
 /// Decodes `\u{h...}` at the start of `b`; returns the char and the escape's byte length.
 fn unicode_escape(b: &[u8]) -> Option<(char, usize)> {
+    assert!(b.starts_with(b"\\u"), "called at a `\\u` escape");
     if b.get(2) != Some(&b'{') {
         return None;
     }
@@ -399,18 +453,22 @@ fn unicode_escape(b: &[u8]) -> Option<(char, usize)> {
 /// Lexes a word starting at byte `i`; returns its end, which is whitespace or the line end.
 fn lex_word(b: &[u8], i: usize) -> Result<usize, LexError> {
     if !b.get(i).is_some_and(u8::is_ascii_alphabetic) {
-        return Err((
-            i,
-            "expected a word (a letter, then letters, digits, `_ - . :`)",
-        ));
+        return Err(LexError {
+            col: i,
+            detail: "expected a word (a letter, then letters, digits, `_ - . :`)",
+        });
     }
     let mut j = i + 1;
-    while j < b.len() && is_word_byte(b[j]) {
+    while j < b.len() && document::is_word_byte(b[j]) {
         j += 1;
     }
     if j < b.len() && b[j] != b' ' && b[j] != b'\t' {
-        return Err((j, "character not allowed in a word"));
+        return Err(LexError {
+            col: j,
+            detail: "character not allowed in a word",
+        });
     }
-    assert!(j > i && j <= b.len());
+    assert!(j > i, "a word has at least one letter");
+    assert!(j <= b.len());
     Ok(j)
 }

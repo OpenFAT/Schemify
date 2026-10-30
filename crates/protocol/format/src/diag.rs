@@ -12,7 +12,7 @@ use std::fmt;
 /// `E030` (override of a computed param) need more than one file and are reported by
 /// the `doc` and checker layers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(missing_docs)] // meanings are in `Code::meaning` and spec §7
+#[allow(missing_docs, reason = "meanings are in `Code::meaning` and spec §7")]
 pub enum Code {
     E021,
     E022,
@@ -67,28 +67,65 @@ const CODES: [(&str, &str); 10] = [
     ("W001", "duplicate id"),
 ];
 
+// `Code as usize` indexes `CODES`, and every code is a letter and three digits.
+const _: () = {
+    assert!(
+        Code::W001 as usize == CODES.len() - 1,
+        "CODES has one row per Code"
+    );
+    let mut i = 0;
+    while i < CODES.len() {
+        assert!(CODES[i].0.len() == 4, "a code is a letter and three digits");
+        i += 1;
+    }
+};
+
 impl Code {
     /// Returns the code as written in diagnostics and the spec (`"E022"`).
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         CODES[self as usize].0
     }
 
     /// Returns the spec §7 meaning.
+    #[must_use]
     pub fn meaning(self) -> &'static str {
-        CODES[self as usize].1
+        let meaning = CODES[self as usize].1;
+        debug_assert!(!meaning.is_empty(), "every code has a spec meaning");
+        meaning
     }
 
     /// Returns whether the code is a warning; warnings never fail a parse.
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that the variant agrees with its text's `W` prefix.
+    #[must_use]
     pub fn is_warning(self) -> bool {
         let warning = self == Code::W001;
         assert_eq!(warning, self.as_str().starts_with('W'));
+        if !warning {
+            assert!(
+                self.as_str().starts_with('E'),
+                "a code is an error or a warning"
+            );
+        }
         warning
     }
 }
 
 impl ParseError {
     /// Returns whether any diagnostic has `code`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `diagnostics` is empty: a parse error carries at least one error.
+    #[must_use]
     pub fn has(&self, code: Code) -> bool {
+        assert!(
+            !self.diagnostics.is_empty(),
+            "a ParseError carries at least one error"
+        );
         self.diagnostics.iter().any(|d| d.code == code)
     }
 }

@@ -8,19 +8,40 @@
 //! Contents:
 //! - `pub fn parse(bytes: &[u8]) -> Result<Document<'_>, ParseError>`
 //! - `pub fn parse_prefix(bytes: &[u8], max_rank: u8) -> Result<Document<'_>, ParseError>`
-//! - `pub(crate) fn check_kind_rules(doc: &Document<'_>, diags: &mut Vec<Diagnostic>)`
+//! - `pub(crate) fn check_kind_rules(doc: &Document<'_>, diagnostics: &mut Vec<Diagnostic>)`
 
-use crate::builder::push_coord;
+use crate::builder;
 use crate::diag::{Code, Diagnostic, NO_RECORD, ParseError};
-use crate::document::{Document, NONE, Str, is_word_byte, resolve};
-use crate::id::id_sort_key;
-use crate::lex::{DIAGNOSTICS_MAX, lex};
-use crate::schema::{FileKind, KeyRule, RANK_MAX, RecordKind, Shape, shape_arity};
+use crate::document;
+use crate::document::{Document, NONE, Str};
+use crate::id;
+use crate::id::IdRow;
+use crate::lex;
+use crate::lex::DIAGNOSTICS_MAX;
+use crate::scalar;
+use crate::schema;
+use crate::schema::{FileKind, KeyRule, RANK_MAX, RecordKind, Shape};
 
 /// Largest file the reader accepts (spec §2, `E021`).
 const MAX_FILE_BYTES: usize = 1 << 30;
 /// UTF-8 byte order mark, rejected (`E028`).
-const BOM: &[u8] = b"\xEF\xBB\xBF";
+const BOM: &[u8] = b"\xef\xbb\xbf";
+
+/// The first offending value of a [`check_shape`] call.
+struct ShapeError {
+    /// Index of the value within its list; [`NONE`] for an arity error.
+    value: u32,
+    code: Code,
+    detail: &'static str,
+}
+
+/// One name-keyed record in the duplicate check, ordered by kind, name, then position.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct NameRow<'doc> {
+    kind: RecordKind,
+    name: (&'doc str, &'doc str),
+    record: u32,
+}
 
 /// Parses a whole file into a [`Document`] that borrows unescaped values from `bytes`.
 ///
@@ -58,15 +79,33 @@ pub fn parse(bytes: &[u8]) -> Result<Document<'_>, ParseError> {
 /// # Errors
 ///
 /// As [`parse`], for the prefix.
+///
+/// # Panics
+///
+/// Panics if `max_rank` is above the highest rank (6).
 pub fn parse_prefix(bytes: &[u8], max_rank: u8) -> Result<Document<'_>, ParseError> {
+    assert!(
+        max_rank <= RANK_MAX,
+        "rank {max_rank} is not a section rank"
+    );
     let cut = prefix_len(bytes, max_rank);
-    parse_with(&bytes[..cut], MAX_FILE_BYTES, max_rank)
+    assert!(cut <= bytes.len());
+    let parsed = parse_with(&bytes[..cut], MAX_FILE_BYTES, max_rank);
+    if let Ok(doc) = &parsed {
+        let mut kinds = (1..doc.record_count()).map(|r| doc.record_kind(r));
+        assert!(
+            kinds.all(|k| k == RecordKind::Unknown || k.rank() <= max_rank),
+            "the cut drops every record above rank {max_rank}"
+        );
+    }
+    parsed
 }
 
 /// Spec §4 kind rules (`E025`): `.shprim` has ≥ 1 pin and ≥ 1 impl, none schematic;
 /// `.shcomp` has exactly one schematic impl; more than one impl needs a `default`.
-pub(crate) fn check_kind_rules(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) {
+pub(crate) fn check_kind_rules(doc: &Document<'_>, diagnostics: &mut Vec<Diagnostic>) {
     assert_eq!(doc.record_kind(0), RecordKind::Header);
+    let before = diagnostics.len();
     let (mut pins, mut impls, mut schematic) = (0u32, 0u32, 0u32);
     for r in 0..doc.record_count() {
         match doc.record_kind(r) {
@@ -79,7 +118,7 @@ pub(crate) fn check_kind_rules(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) 
         }
     }
     let mut report = |detail| {
-        diags.push(Diagnostic {
+        diagnostics.push(Diagnostic {
             code: Code::E025,
             line: 1,
             col: 1,
@@ -98,32 +137,42 @@ pub(crate) fn check_kind_rules(doc: &Document<'_>, diags: &mut Vec<Diagnostic>) 
     if cell && impls > 1 && doc.find_attr(0, "default").is_none() {
         report("more than one impl needs a `default` header attribute");
     }
+    assert!(schematic <= impls, "a schematic impl is an impl");
+    if !cell {
+        assert_eq!(diagnostics.len(), before, "kind rules bind cells only");
+    }
 }
 
 // ---- private ----
 
 /// Parses `bytes` (at most `limit` of them) keeping records of rank `<= max_rank`.
 fn parse_with(bytes: &[u8], limit: usize, max_rank: u8) -> Result<Document<'_>, ParseError> {
-    assert!(limit <= MAX_FILE_BYTES && max_rank <= RANK_MAX);
+    assert!(limit <= MAX_FILE_BYTES);
+    assert!(max_rank <= RANK_MAX);
     let fail = |d: Diagnostic| ParseError {
         diagnostics: vec![d],
     };
     let src = utf8(bytes, limit).map_err(fail)?;
-    let (mut doc, mut diags) = lex(src).map_err(fail)?;
-    if diags.len() < DIAGNOSTICS_MAX {
-        check_records(&mut doc, &mut diags);
-        check_keys(&mut doc, &mut diags);
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut doc = lex::lex(src, &mut diagnostics).map_err(fail)?;
+    if diagnostics.len() < DIAGNOSTICS_MAX {
+        check_records(&mut doc, &mut diagnostics);
+        check_keys(&mut doc, &mut diagnostics);
         if max_rank >= 1 {
-            check_kind_rules(&doc, &mut diags);
+            check_kind_rules(&doc, &mut diagnostics);
         }
     }
-    if diags.is_empty() {
+    if diagnostics.is_empty() {
         assert!(doc.warnings.iter().all(|d| d.code.is_warning()));
         return Ok(doc);
     }
-    sort_diags(&mut diags);
-    diags.truncate(DIAGNOSTICS_MAX);
-    Err(ParseError { diagnostics: diags })
+    sort_diagnostics(&mut diagnostics);
+    diagnostics.truncate(DIAGNOSTICS_MAX);
+    assert!(
+        diagnostics.iter().all(|d| !d.code.is_warning()),
+        "warnings never fail a parse"
+    );
+    Err(ParseError { diagnostics })
 }
 
 /// Returns the byte offset of the first line starting a record of rank `> max_rank`.
@@ -146,7 +195,7 @@ fn prefix_len(bytes: &[u8], max_rank: u8) -> usize {
         if line.first().is_some_and(u8::is_ascii_alphabetic) {
             let w = line
                 .iter()
-                .position(|&c| !is_word_byte(c))
+                .position(|&c| !document::is_word_byte(c))
                 .unwrap_or(line.len());
             let word = std::str::from_utf8(&line[..w]).expect("word bytes are ASCII");
             if kind.lookup(word).is_some_and(|k| k.rank() > max_rank) {
@@ -169,6 +218,7 @@ fn utf8(bytes: &[u8], limit: usize) -> Result<&str, Diagnostic> {
         record: NO_RECORD,
         detail,
     };
+    assert!(limit <= MAX_FILE_BYTES);
     if bytes.len() > limit {
         return Err(at(Code::E021, 1, 1, "file exceeds 2^30 bytes"));
     }
@@ -177,6 +227,10 @@ fn utf8(bytes: &[u8], limit: usize) -> Result<&str, Diagnostic> {
     }
     std::str::from_utf8(bytes).map_err(|e| {
         let bad = e.valid_up_to();
+        assert!(
+            bad < bytes.len(),
+            "an invalid sequence lies inside the bytes"
+        );
         let line = 1 + bytes[..bad].iter().filter(|&&b| b == b'\n').count();
         let line_start = bytes[..bad]
             .iter()
@@ -187,9 +241,9 @@ fn utf8(bytes: &[u8], limit: usize) -> Result<&str, Diagnostic> {
     })
 }
 
-fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
+fn check_records(doc: &mut Document<'_>, diagnostics: &mut Vec<Diagnostic>) {
     assert_eq!(doc.record_kind(0), RecordKind::Header);
-    let diags_before = diags.len();
+    let diagnostics_before = diagnostics.len();
     let mut rank_max = 0u8;
     let mut coords: Vec<Option<i32>> = Vec::new();
     doc.field_milli = vec![0; doc.fields.len()];
@@ -210,7 +264,7 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
         };
         if kind != RecordKind::Header {
             if schema.rank < rank_max {
-                diags.push(diag(
+                diagnostics.push(diag(
                     Code::E023,
                     1,
                     "record of a lower rank after a higher-rank record",
@@ -220,7 +274,7 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
             let f = doc.field_range(r);
             let fields = &mut doc.fields[f.clone()];
             let milli = &mut doc.field_milli[f.clone()];
-            if let Err((i, code, detail)) = check_shape(
+            if let Err(e) = check_shape(
                 &schema.fields,
                 doc.src,
                 &mut doc.arena,
@@ -228,19 +282,19 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
                 milli,
                 &mut coords,
             ) {
-                let col = if i == NONE {
+                let col = if e.value == NONE {
                     1
                 } else {
-                    column(doc, doc.fields[f.start + i as usize])
+                    column(doc, doc.fields[f.start + e.value as usize])
                 };
-                diags.push(diag(code, col, detail));
+                diagnostics.push(diag(e.code, col, e.detail));
             }
             // Spec §4: a wire has length, and is written `(x1, y1) < (x2, y2)`.
             if kind == RecordKind::Wire
                 && let [_, Some(x1), Some(y1), Some(x2), Some(y2)] = coords[..]
             {
                 if (x1, y1) == (x2, y2) {
-                    diags.push(diag(Code::E026, 1, "wire endpoints are equal"));
+                    diagnostics.push(diag(Code::E026, 1, "wire endpoints are equal"));
                 } else if (x2, y2) < (x1, y1) {
                     for (a, b) in [(1, 3), (2, 4)] {
                         doc.fields.swap(f.start + a, f.start + b);
@@ -251,7 +305,7 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
             }
         }
         if doc.verbatim(r).len() > 0 && !schema.verbatim {
-            diags.push(diag(
+            diagnostics.push(diag(
                 Code::E029,
                 1,
                 "this record kind takes no `|` verbatim lines",
@@ -268,13 +322,13 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
                 ..diag(code, col, detail)
             };
             if seen & (1 << i) != 0 && !attr.repeat {
-                diags.push(at(Code::E024, column(doc, key), "attribute given twice"));
+                diagnostics.push(at(Code::E024, column(doc, key), "attribute given twice"));
             }
             seen |= 1 << i;
             let v = doc.value_range(a);
             let values = &mut doc.attr_values[v.clone()];
             let milli = &mut doc.value_milli[v.clone()];
-            if let Err((vi, code, detail)) = check_shape(
+            if let Err(e) = check_shape(
                 &attr.shape,
                 doc.src,
                 &mut doc.arena,
@@ -282,35 +336,36 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
                 milli,
                 &mut coords,
             ) {
-                let span = if vi == NONE {
+                let span = if e.value == NONE {
                     key
                 } else {
-                    doc.attr_values[v.start + vi as usize]
+                    doc.attr_values[v.start + e.value as usize]
                 };
-                diags.push(at(code, column(doc, span), detail));
+                diagnostics.push(at(e.code, column(doc, span), e.detail));
             }
         }
         for (i, attr) in schema.attrs.iter().enumerate() {
             if attr.required && seen & (1 << i) == 0 {
-                diags.push(diag(Code::E029, 1, "missing required attribute"));
+                diagnostics.push(diag(Code::E029, 1, "missing required attribute"));
             }
         }
         if kind == RecordKind::Shape
             && let Some(form) = doc.field(r, 1)
-            && shape_arity(form, doc.fields(r).len().saturating_sub(2)) == Some(false)
+            && schema::shape_arity(form, doc.fields(r).len().saturating_sub(2)) == Some(false)
         {
-            diags.push(diag(
+            diagnostics.push(diag(
                 Code::E029,
                 1,
                 "wrong number of values for this shape form",
             ));
         }
     }
+    let found = &diagnostics[diagnostics_before..];
     assert!(
-        diags[diags_before..]
-            .iter()
-            .all(|d| d.record != NO_RECORD && !d.code.is_warning())
+        found.iter().all(|d| d.record != NO_RECORD),
+        "record checks name the record"
     );
+    assert!(found.iter().all(|d| !d.code.is_warning()));
     assert_eq!(doc.field_milli.len(), doc.fields.len());
     assert_eq!(doc.value_milli.len(), doc.attr_values.len());
 }
@@ -320,8 +375,7 @@ fn check_records(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
 /// Fills `coords` with each slot's milli-units (`None` for other and bad values) and
 /// `milli`, the values' slice of the document's coordinate column, with the same (0 for
 /// `None`); every value is visited even after an error, so a wire's endpoints are known
-/// whenever its arity is right. Returns the first offending value index ([`NONE`] for an
-/// arity error) with its code.
+/// whenever its arity is right. Returns the first offending value.
 fn check_shape(
     shape: &Shape,
     src: &str,
@@ -329,24 +383,36 @@ fn check_shape(
     values: &mut [Str],
     milli: &mut [i32],
     coords: &mut Vec<Option<i32>>,
-) -> Result<(), (u32, Code, &'static str)> {
-    assert_eq!(milli.len(), values.len());
+) -> Result<(), ShapeError> {
+    assert_eq!(
+        milli.len(),
+        values.len(),
+        "a value list and its coordinate column"
+    );
     coords.clear();
     shape
         .check_arity(values.len())
-        .map_err(|detail| (NONE, Code::E029, detail))?;
+        .map_err(|detail| ShapeError {
+            value: NONE,
+            code: Code::E029,
+            detail,
+        })?;
     let mut first = Ok(());
     for (i, s) in values.iter_mut().enumerate() {
         let ty = shape.ty(i).expect("arity checked above");
-        let text = resolve(src, arena, *s);
+        let text = document::resolve(src, arena, *s);
         let coord = match ty.check(text) {
             Ok(Some(m)) if !is_shortest_coord(text) => {
-                *s = push_coord(arena, m);
+                *s = builder::push_coord(arena, m);
                 Some(m)
             }
             Ok(coord) => coord,
             Err((code, detail)) => {
-                first = first.and(Err((i as u32, code, detail)));
+                first = first.and(Err(ShapeError {
+                    value: i as u32,
+                    code,
+                    detail,
+                }));
                 None
             }
         };
@@ -367,10 +433,10 @@ fn column(doc: &Document<'_>, s: Str) -> u32 {
 }
 
 /// Sorts diagnostics by (line, column, code), stably: the crate's one diagnostic sort.
-fn sort_diags(diags: &mut [Diagnostic]) {
-    diags.sort_by_key(|d| (d.line, d.col, d.code));
+fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
+    diagnostics.sort_by_key(|d| (d.line, d.col, d.code));
     assert!(
-        diags
+        diagnostics
             .windows(2)
             .all(|w| (w[0].line, w[0].col) <= (w[1].line, w[1].col))
     );
@@ -378,21 +444,24 @@ fn sort_diags(diags: &mut [Diagnostic]) {
 
 /// Reports duplicate ids (`W001`, into the document's warnings) and duplicate names
 /// within a kind (`E024`). Cost: two sorts, O(n log n) in records, near O(n) on canonical files.
-fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
+fn check_keys(doc: &mut Document<'_>, diagnostics: &mut Vec<Diagnostic>) {
     assert!(doc.warnings.is_empty(), "keys are checked once per parse");
-    let mut ids: Vec<(u128, u32)> = Vec::new();
-    let mut names: Vec<(RecordKind, &str, &str, u32)> = Vec::new();
+    let mut ids: Vec<IdRow> = Vec::new();
+    let mut names: Vec<NameRow<'_>> = Vec::new();
     for r in 0..doc.record_count() {
         let kind = doc.record_kind(r);
         match kind.key() {
             KeyRule::Id if kind != RecordKind::Unknown => {
-                if let Some(key) = doc.field(r, 0).and_then(id_sort_key) {
-                    ids.push((key, r));
+                if let Some(key) = doc.field(r, 0).and_then(id::id_sort_key) {
+                    ids.push(IdRow { key, record: r });
                 }
             }
             KeyRule::Name | KeyRule::TypeName if kind != RecordKind::Unknown => {
-                let (k0, k1) = doc.record_key(r);
-                names.push((kind, k0, k1, r));
+                names.push(NameRow {
+                    kind,
+                    name: doc.record_key(r),
+                    record: r,
+                });
             }
             _ => {}
         }
@@ -402,35 +471,39 @@ fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
     ids.sort();
     names.sort();
     let mut warnings = Vec::new();
-    for w in ids.windows(2) {
-        if w[0].0 == w[1].0 {
-            let line = doc.record_line(w[1].1);
+    for pair in ids.windows(2) {
+        let (earlier, later) = (pair[0], pair[1]);
+        if earlier.key == later.key {
             warnings.push(Diagnostic {
                 code: Code::W001,
-                line,
+                line: doc.record_line(later.record),
                 col: 1,
-                record: w[1].1,
+                record: later.record,
                 detail: "id already used earlier in the file",
             });
         }
     }
-    for w in names.windows(2) {
-        if (w[0].0, w[0].1, w[0].2) == (w[1].0, w[1].1, w[1].2) {
-            let line = doc.record_line(w[1].3);
-            diags.push(Diagnostic {
+    for pair in names.windows(2) {
+        let (earlier, later) = (pair[0], pair[1]);
+        if (earlier.kind, earlier.name) == (later.kind, later.name) {
+            diagnostics.push(Diagnostic {
                 code: Code::E024,
-                line,
+                line: doc.record_line(later.record),
                 col: 1,
-                record: w[1].3,
+                record: later.record,
                 detail: "name already used by this record kind",
             });
         }
     }
-    sort_diags(&mut warnings); // all W001 at column 1: by line
+    sort_diagnostics(&mut warnings); // all W001 at column 1: by line
+    assert!(warnings.iter().all(|d| d.code == Code::W001));
     assert!(
-        warnings
-            .iter()
-            .all(|d| d.code == Code::W001 && d.record != NO_RECORD)
+        warnings.iter().all(|d| d.record != NO_RECORD),
+        "a duplicate names its record"
+    );
+    assert!(
+        warnings.len() < ids.len().max(1),
+        "the first use of an id is no duplicate"
     );
     doc.warnings = warnings;
 }
@@ -438,6 +511,7 @@ fn check_keys(doc: &mut Document<'_>, diags: &mut Vec<Diagnostic>) {
 /// Returns whether a valid coordinate literal is already its shortest decimal: no `-0`,
 /// no leading zeros, and 1–3 fractional digits not ending in `0`.
 fn is_shortest_coord(t: &str) -> bool {
+    debug_assert!(scalar::is_number(t), "only called on validated coordinates");
     let body = t.strip_prefix('-').unwrap_or(t).as_bytes();
     let dot = body.iter().position(|&c| c == b'.');
     let whole = &body[..dot.unwrap_or(body.len())];
@@ -450,7 +524,6 @@ fn is_shortest_coord(t: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scalar::{format_coord, parse_coord};
 
     #[test]
     fn shortest_coord_predicate_matches_the_formatter() {
@@ -472,7 +545,7 @@ mod tests {
             "0.0",
         ] {
             let mut canonical = String::new();
-            format_coord(parse_coord(t).unwrap(), &mut canonical);
+            scalar::format_coord(scalar::parse_coord(t).unwrap(), &mut canonical);
             assert_eq!(is_shortest_coord(t), canonical == t, "{t}");
         }
     }

@@ -7,6 +7,7 @@
 //! - `pub(crate) const ID_LEN_MAX: usize`, `pub(crate) const FNV_OFFSET: u64`
 //! - `pub struct IdRng`, `IdRng::new`, `IdRng::for_import`
 //! - `pub struct NewId`, `NewId::as_str`
+//! - `pub(crate) struct IdRow`
 //! - `pub fn is_id(s: &str) -> bool`
 //! - `pub fn fresh_id(rng: &mut IdRng, taken: impl FnMut(&str) -> bool) -> NewId`
 //! - `pub(crate) fn id_sort_key(s: &str) -> Option<u128>`
@@ -29,6 +30,14 @@ pub struct IdRng {
     state: u64,
 }
 
+/// An id-keyed record, ordered by its id's sort key, then by position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct IdRow {
+    /// [`id_sort_key`] of the record's id.
+    pub(crate) key: u128,
+    pub(crate) record: u32,
+}
+
 /// A generated 6-char id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NewId([u8; ID_LEN_NEW]);
@@ -37,8 +46,19 @@ pub struct NewId([u8; ID_LEN_NEW]);
 const DRAWS_MAX: u32 = 64;
 
 /// Returns whether `s` is a legal id: 1–13 chars from [`ID_ALPHABET`].
+#[must_use]
 pub fn is_id(s: &str) -> bool {
-    (1..=ID_LEN_MAX).contains(&s.len()) && s.bytes().all(|b| digit(b).is_some())
+    let legal = (1..=ID_LEN_MAX).contains(&s.len()) && s.bytes().all(|b| digit(b).is_some());
+    // Two code paths decide legality: this predicate and the sort-key packer.
+    debug_assert_eq!(
+        legal,
+        id_sort_key(s).is_some(),
+        "is_id disagrees with id_sort_key"
+    );
+    if legal {
+        debug_assert!(s.is_ascii(), "the id alphabet is ASCII");
+    }
+    legal
 }
 
 /// Draws 6-char ids from `rng` until `taken` reports one unused (the editor's
@@ -55,7 +75,7 @@ pub fn fresh_id(rng: &mut IdRng, mut taken: impl FnMut(&str) -> bool) -> NewId {
             ID_ALPHABET[((bits >> (5 * i)) & 31) as usize]
         }));
         if !taken(id.as_str()) {
-            assert!(is_id(id.as_str()));
+            assert!(is_id(id.as_str()), "a drawn id is legal");
             return id;
         }
     }
@@ -79,7 +99,7 @@ pub(crate) fn id_sort_key(s: &str) -> Option<u128> {
         key = key << 5 | u128::from(d);
     }
     let key = key << 4 | b.len() as u128;
-    assert!(key & 0xf != 0, "length nibble set");
+    assert_ne!(key & 0xf, 0, "length nibble set");
     assert!(key >> 69 == 0, "13 digits and a length use 69 bits");
     Some(key)
 }
@@ -95,6 +115,7 @@ pub(crate) fn fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
 
 impl IdRng {
     /// Creates a generator from a seed (e.g. OS entropy in the editor, a fixed value in tests).
+    #[must_use]
     pub fn new(seed: u64) -> IdRng {
         IdRng { state: seed }
     }
@@ -103,6 +124,7 @@ impl IdRng {
     /// re-importing an unchanged library yields the same ids (research §3.3). The seed
     /// is FNV-1a over the path bytes followed by `ordinal` little-endian. Draw with
     /// [`fresh_id`] so collisions between ordinals are redrawn deterministically.
+    #[must_use]
     pub fn for_import(source_path: &str, ordinal: u32) -> IdRng {
         let hash = fnv1a64(FNV_OFFSET, source_path.as_bytes());
         IdRng::new(fnv1a64(hash, &ordinal.to_le_bytes()))
@@ -111,10 +133,13 @@ impl IdRng {
 
 impl NewId {
     /// Returns the id text.
+    ///
+    /// # Panics
+    ///
+    /// Never for an id from [`fresh_id`]: its bytes come from [`ID_ALPHABET`].
+    #[must_use]
     pub fn as_str(&self) -> &str {
-        let s = std::str::from_utf8(&self.0).expect("id bytes are ASCII");
-        assert_eq!(s.len(), ID_LEN_NEW);
-        s
+        std::str::from_utf8(&self.0).expect("id bytes come from the ASCII alphabet")
     }
 }
 
@@ -122,7 +147,7 @@ impl NewId {
 
 /// Returns the value of Crockford digit `b`, `None` outside [`ID_ALPHABET`].
 fn digit(b: u8) -> Option<u8> {
-    match b {
+    let value = match b {
         b'0'..=b'9' => Some(b - b'0'),
         b'a'..=b'h' => Some(b - b'a' + 10),
         b'j' | b'k' => Some(b - b'j' + 18),
@@ -130,7 +155,11 @@ fn digit(b: u8) -> Option<u8> {
         b'p'..=b't' => Some(b - b'p' + 22),
         b'v'..=b'z' => Some(b - b'v' + 27),
         _ => None,
-    }
+    };
+    // Pairs the match with the alphabet table it decodes.
+    debug_assert!(value.is_none_or(|d| ID_ALPHABET[usize::from(d)] == b));
+    debug_assert_eq!(value.is_some(), ID_ALPHABET.contains(&b));
+    value
 }
 
 impl IdRng {

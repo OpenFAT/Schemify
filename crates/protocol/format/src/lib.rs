@@ -16,16 +16,17 @@
 //! Parse, read, edit through the builder, and write canonically:
 //!
 //! ```
-//! use schemify_format::{parse, parse_coord, write, Document, Orient, RecordKind};
+//! use schemify_format as format;
+//! use schemify_format::{Document, Orient, RecordKind};
 //!
 //! let text = "schemify 1 shbench\n  doc \"OTA bench\"\n\ninst 2kq9vd ./ota5t\n  at 0 -12.5 R0\n  name X1\n";
-//! let doc = parse(text.as_bytes())?;
-//! assert_eq!(write(&doc), text); // canonical input is a fixed point
+//! let doc = format::parse(text.as_bytes())?;
+//! assert_eq!(format::write(&doc), text); // canonical input is a fixed point
 //!
 //! let inst = 1;
 //! assert_eq!(doc.record_kind(inst), RecordKind::Inst);
-//! let at = doc.find_attr(inst, "at").unwrap();
-//! assert_eq!(doc.attr_value(at, 1).map(parse_coord), Some(Ok(-12_500)));
+//! let at = doc.find_attr(inst, "at").expect("an inst has an `at` line");
+//! assert_eq!(doc.attr_value(at, 1).map(format::parse_coord), Some(Ok(-12_500)));
 //!
 //! // Build a document from scratch, e.g. from the `doc` crate's tables.
 //! let mut out = Document::new(doc.kind());
@@ -41,7 +42,7 @@
 //! out.push_field(Orient::R0.as_str());
 //! out.push_field("tail");
 //! // Endpoints are normalized; kinds are separated by a blank line.
-//! assert_eq!(write(&out), "schemify 1 shbench\n\nwire 0d2k1m 0 0 10 0\n\nlabel 2ma7xe 0 0 R0 tail\n");
+//! assert_eq!(format::write(&out), "schemify 1 shbench\n\nwire 0d2k1m 0 0 10 0\n\nlabel 2ma7xe 0 0 R0 tail\n");
 //! # Ok::<(), schemify_format::ParseError>(())
 //! ```
 

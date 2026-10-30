@@ -19,9 +19,10 @@
 //! - `pub fn shape_arity(form: &str, n: usize) -> Option<bool>`
 
 use crate::diag::Code;
-use crate::id::is_id;
+use crate::id;
 use crate::records::{FILE_RECORDS, RECORDS};
-use crate::scalar::{CoordError, Orient, is_number, parse_coord};
+use crate::scalar;
+use crate::scalar::{CoordError, Orient};
 
 /// The file kinds of spec §1, named by the third word of the header line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -52,7 +53,10 @@ pub enum FileKind {
 /// before `wire`, rank 6 `corner` before `config`), so it follows the spec tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
-#[allow(missing_docs)] // each variant is the spec record of the same name
+#[allow(
+    missing_docs,
+    reason = "each variant is the spec record of the same name"
+)]
 pub enum RecordKind {
     /// Line 1, `schemify <version> <kind>`, with header attributes.
     Header,
@@ -223,14 +227,25 @@ const FILE_WORDS: [&str; 8] = [
 /// Whether `n` values may follow `shape <id> <form>`: 4 for `line`/`rect` (two corners), 5
 /// for `arc` (center, radius, start and sweep degrees), 3 for `circle`, an even count ≥ 4
 /// for `poly`. `None` for a form outside [`SHAPE_FORMS`].
+#[must_use]
 pub fn shape_arity(form: &str, n: usize) -> Option<bool> {
     let ok = match form {
         "line" | "rect" => n == 4,
         "arc" => n == 5,
         "circle" => n == 3,
         "poly" => n >= 4 && n.is_multiple_of(2),
-        _ => return None,
+        _ => {
+            debug_assert!(
+                !SHAPE_FORMS.contains(&form),
+                "every listed form has an arity"
+            );
+            return None;
+        }
     };
+    debug_assert!(
+        SHAPE_FORMS.contains(&form),
+        "every form with an arity is listed"
+    );
     Some(ok)
 }
 
@@ -248,11 +263,23 @@ impl FileKind {
     ];
 
     /// Returns the header word (`shcomp`, `project`, ...).
+    #[must_use]
     pub fn word(self) -> &'static str {
-        FILE_WORDS[self as usize]
+        let word = FILE_WORDS[self as usize];
+        debug_assert_eq!(
+            FileKind::ALL[self as usize],
+            self,
+            "ALL is in declaration order"
+        );
+        word
     }
 
     /// Parses a header kind word; `None` for anything not in spec §1.
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that the word table is in declaration order.
+    #[must_use]
     pub fn from_word(word: &str) -> Option<FileKind> {
         let i = FILE_WORDS.iter().position(|w| *w == word)?;
         let kind = FileKind::ALL[i];
@@ -262,47 +289,92 @@ impl FileKind {
 
     /// Returns the record kinds this file kind allows, in canonical writer order.
     /// The header is always allowed and is not listed.
+    #[must_use]
     pub fn records(self) -> &'static [RecordKind] {
-        FILE_RECORDS[self as usize]
+        let records = FILE_RECORDS[self as usize];
+        debug_assert!(!records.contains(&RecordKind::Header));
+        debug_assert!(!records.contains(&RecordKind::Unknown));
+        records
     }
 
     /// Resolves a record word for this file kind. Words outside the kind's list are
     /// `None`, even if another file kind knows them (`pin` in a `.shbench` is unknown).
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that the result is a kind a file may contain.
+    #[must_use]
     pub fn lookup(self, word: &str) -> Option<RecordKind> {
         let kind = self.records().iter().copied().find(|k| k.word() == word);
-        assert!(kind.is_none_or(|k| k != RecordKind::Header && k != RecordKind::Unknown));
+        assert_ne!(
+            kind,
+            Some(RecordKind::Header),
+            "the header is not looked up"
+        );
+        assert_ne!(kind, Some(RecordKind::Unknown), "`Unknown` has no word");
         kind
     }
 
     /// Returns whether the writer sorts rank `rank` of this file kind by (kind, key).
     pub(crate) fn rank_sorted(self, rank: u8) -> bool {
-        assert!(rank <= RANK_MAX);
-        self.records()
+        assert!(rank <= RANK_MAX, "rank {rank} is not a section rank");
+        let sorted = self
+            .records()
             .iter()
-            .any(|k| k.rank() == rank && k.schema().sorted)
+            .any(|k| k.rank() == rank && k.schema().sorted);
+        if rank == RANK_POSITIONAL {
+            assert!(!sorted, "positional records have no sort key");
+        }
+        sorted
     }
 }
 
 impl RecordKind {
     /// Returns this kind's schema row.
+    #[must_use]
     pub fn schema(self) -> &'static RecordSchema {
         &RECORDS[self as usize]
     }
 
     /// Returns the record word (`"schemify"` for the header, `""` for `Unknown`).
+    #[must_use]
     pub fn word(self) -> &'static str {
-        self.schema().word
+        let word = self.schema().word;
+        debug_assert_eq!(word.is_empty(), self == RecordKind::Unknown);
+        word
     }
 
     /// Returns the section rank; `Unknown` returns [`RANK_INHERIT`] because its rank is
     /// that of the record before it.
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that only `Unknown` lacks a section rank.
+    #[must_use]
     pub fn rank(self) -> u8 {
-        self.schema().rank
+        let rank = self.schema().rank;
+        if self == RecordKind::Unknown {
+            assert_eq!(rank, RANK_INHERIT);
+        } else {
+            assert!(rank <= RANK_MAX, "{self:?} has rank {rank}");
+        }
+        rank
     }
 
     /// Returns how records of this kind are identified for duplicate checks, merge and diff.
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that the header alone has the header key rule.
+    #[must_use]
     pub fn key(self) -> KeyRule {
-        self.schema().key
+        let key = self.schema().key;
+        assert_eq!(
+            key == KeyRule::Header,
+            self == RecordKind::Header,
+            "the header is keyed by itself"
+        );
+        key
     }
 }
 
@@ -319,7 +391,7 @@ impl Ty {
         let (ok, detail) = match self {
             Ty::Any => (true, ""),
             Ty::Coord => {
-                return parse_coord(v).map(Some).map_err(|e| match e {
+                return scalar::parse_coord(v).map(Some).map_err(|e| match e {
                     CoordError::NotNumber => (Code::E029, "expected a coordinate number"),
                     CoordError::NotRepresentable => (
                         Code::E022,
@@ -328,10 +400,13 @@ impl Ty {
                 });
             }
             Ty::Id | Ty::IdRef => (
-                is_id(v),
+                id::is_id(v),
                 "expected an id (1-13 lowercase Crockford base32 chars)",
             ),
-            Ty::Number => (is_number(v), "expected a number `-?digits(.digits)?`"),
+            Ty::Number => (
+                scalar::is_number(v),
+                "expected a number `-?digits(.digits)?`",
+            ),
             Ty::Orient => (
                 Orient::parse(v).is_some(),
                 "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
@@ -342,6 +417,10 @@ impl Ty {
         if ok {
             Ok(None)
         } else {
+            debug_assert!(
+                !detail.is_empty(),
+                "every rejection names the expected form"
+            );
             Err((Code::E029, detail))
         }
     }
@@ -354,6 +433,10 @@ impl Shape {
     /// # Errors
     ///
     /// Fewer values than fixed slots, or a count `rest` does not allow.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shape has more than 8 fixed slots (the schema tables have none).
     pub fn check_arity(&self, n: usize) -> Result<(), &'static str> {
         let fixed = self.fixed.len();
         assert!(fixed <= 8, "schema shapes are short");
@@ -375,6 +458,7 @@ impl Shape {
     }
 
     /// Returns the type of slot `i`, or `None` past the end of an arity-bounded shape.
+    #[must_use]
     pub fn ty(&self, i: usize) -> Option<Ty> {
         match (self.fixed.get(i), self.rest) {
             (Some(t), _) => Some(*t),
@@ -386,12 +470,17 @@ impl Shape {
 
 impl RecordSchema {
     /// Finds a known attribute by word, with its index in [`RecordSchema::attrs`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the found index is 32 or more (the schema tables are checked at compile
+    /// time to hold at most 32 attributes per kind).
+    #[must_use]
     pub fn attr(&self, key: &str) -> Option<(usize, &'static AttrSchema)> {
         let found = self.attrs.iter().enumerate().find(|(_, a)| a.key == key);
-        assert!(
-            found.is_none_or(|(i, a)| i < 32 && a.key == key),
-            "attribute bitmask holds 32"
-        );
+        if let Some((i, _)) = found {
+            assert!(i < 32, "the reader's attribute bitmask holds 32");
+        }
         found
     }
 

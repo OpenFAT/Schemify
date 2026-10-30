@@ -4,11 +4,11 @@
 //! Contents:
 //! - `pub enum ChangeKind`, `pub struct Parts`, `Parts::{FIELDS, ATTRS, VERBATIM, COMMENTS}`,
 //!   `Parts::contains`, `pub struct Change`,
-//!   `pub struct Diff<'d>`
-//! - `pub fn diff<'d>(a: &'d Document<'_>, b: &'d Document<'_>) -> Diff<'d>`
+//!   `pub struct Diff<'doc>`
+//! - `pub fn diff<'doc>(a: &'doc Document<'_>, b: &'doc Document<'_>) -> Diff<'doc>`
 
 use crate::document::{Document, NONE};
-use crate::identity::{join, join_attrs};
+use crate::identity;
 use std::ops::Range;
 
 /// How a record differs between the two sides of a [`diff`].
@@ -43,11 +43,11 @@ pub struct Change {
 
 /// Record-level differences from `a` to `b`, in identity order (kind, then key).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Diff<'d> {
+pub struct Diff<'doc> {
     /// One entry per differing record.
     pub changes: Vec<Change>,
     /// Changed attribute words, shared by all changes; borrowed from the documents.
-    pub keys: Vec<&'d str>,
+    pub keys: Vec<&'doc str>,
 }
 
 /// Lists the records added, removed and changed from `a` to `b`, matched by identity
@@ -57,33 +57,38 @@ pub struct Diff<'d> {
 ///
 /// Cost: O(n log n) in records.
 ///
+/// # Panics
+///
+/// Panics if an input lacks its header record (never true for a parsed or built one).
+///
 /// # Examples
 ///
 /// ```
-/// use schemify_format::{diff, parse, ChangeKind, Parts};
-/// let a = parse(b"schemify 1 shbench\nlabel 0abc 0 0 R0 vin\nwire 1abc 0 0 10 0\n")?;
-/// let b = parse(b"schemify 1 shbench\nlabel 0abc 0 0 R0 vbias\n")?;
-/// let d = diff(&a, &b);
+/// use schemify_format as format;
+/// use schemify_format::{ChangeKind, Parts};
+/// let a = format::parse(b"schemify 1 shbench\nlabel 0abc 0 0 R0 vin\nwire 1abc 0 0 10 0\n")?;
+/// let b = format::parse(b"schemify 1 shbench\nlabel 0abc 0 0 R0 vbias\n")?;
+/// let d = format::diff(&a, &b);
 /// assert_eq!(d.changes.len(), 2);
 /// assert_eq!(d.changes[0].kind, ChangeKind::Removed); // wire: kinds come in listed order
 /// assert_eq!(d.changes[1].kind, ChangeKind::Changed); // label text
 /// assert!(d.changes[1].parts.contains(Parts::FIELDS));
 /// # Ok::<(), schemify_format::ParseError>(())
 /// ```
-pub fn diff<'d>(a: &'d Document<'_>, b: &'d Document<'_>) -> Diff<'d> {
-    assert!(
-        a.record_count() >= 1 && b.record_count() >= 1,
-        "diff input lacks a header"
-    );
+#[must_use]
+pub fn diff<'doc>(a: &'doc Document<'_>, b: &'doc Document<'_>) -> Diff<'doc> {
+    assert!(a.record_count() >= 1, "diff input lacks a header");
+    assert!(b.record_count() >= 1, "diff input lacks a header");
     let docs = [a, b];
     let mut idents = vec![[0, 0, NONE]];
-    idents.extend(join(&docs));
+    idents.extend(identity::join(&docs));
     let mut out = Diff {
         changes: Vec::new(),
         keys: Vec::new(),
     };
     for recs in idents {
         let (ra, rb) = (recs[0], recs[1]);
+        assert_eq!(recs[2], NONE, "a two-way join fills two sides");
         let kind = match (ra != NONE, rb != NONE) {
             (true, false) => ChangeKind::Removed,
             (false, true) => ChangeKind::Added,
@@ -95,7 +100,7 @@ pub fn diff<'d>(a: &'d Document<'_>, b: &'d Document<'_>) -> Diff<'d> {
             parts |= u8::from(!a.fields(ra).eq(b.fields(rb)));
             parts |= u8::from(!a.verbatim(ra).eq(b.verbatim(rb))) * Parts::VERBATIM.0;
             parts |= u8::from(!a.comments(ra).eq(b.comments(rb))) * Parts::COMMENTS.0;
-            for ids in join_attrs(&docs, [ra, rb, NONE]) {
+            for ids in identity::join_attrs(&docs, [ra, rb, NONE]) {
                 let same = ids[0] != NONE
                     && ids[1] != NONE
                     && a.attr_values(ids[0]).eq(b.attr_values(ids[1]));
@@ -126,7 +131,13 @@ pub fn diff<'d>(a: &'d Document<'_>, b: &'d Document<'_>) -> Diff<'d> {
     assert!(
         out.changes
             .iter()
-            .all(|c| (c.kind == ChangeKind::Changed) == (c.parts.0 != 0))
+            .all(|c| (c.kind == ChangeKind::Changed) == (c.parts.0 != 0)),
+        "parts are set exactly on changed records"
+    );
+    assert!(
+        out.changes
+            .iter()
+            .all(|c| c.keys.end as usize <= out.keys.len())
     );
     out
 }
@@ -142,6 +153,7 @@ impl Parts {
     pub const COMMENTS: Parts = Parts(8);
 
     /// Returns whether every bit of `other` is set.
+    #[must_use]
     pub fn contains(self, other: Parts) -> bool {
         self.0 & other.0 == other.0
     }
