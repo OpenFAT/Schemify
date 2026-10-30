@@ -11,11 +11,7 @@ workspace = true
 [dependencies]
 # Waveform viewer tables (D23): the waves window reads them and sends requests.
 schemify-wave.workspace = true
-taffy.workspace = true
-parley.workspace = true
-# Feature selection only: system-font fallback through a dlopen'ed fontconfig (fonts/README.md).
-fontique.workspace = true
-accesskit.workspace = true
+egui.workspace = true
 ratex-parser.workspace = true
 ratex-layout.workspace = true
 ratex-types.workspace = true

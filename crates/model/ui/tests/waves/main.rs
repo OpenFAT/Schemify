@@ -15,8 +15,8 @@ mod window;
 
 use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveCommand, WaveUi};
 use schemify_ui::{
-    Contribution, InputEvent, InputEvents, Rect, Strings, Sym, TextSystem, UiLayout, UiState,
-    UiTables, compose, layout, records,
+    Contribution, InputEvent, InputEvents, Rect, Routed, Strings, Sym, UiLayout, UiState,
+    UiTables, compose, records,
 };
 use schemify_wave::{RawPlot, Request, VarKind, Variable, Waves};
 
@@ -30,7 +30,7 @@ pub(crate) struct Win {
     pub(crate) tables: UiTables,
     pub(crate) frame: UiLayout,
     pub(crate) geo: Geometry,
-    pub(crate) text: TextSystem,
+    pub(crate) ctx: schemify_ui::egui::Context,
     pub(crate) state: UiState,
     pub(crate) ui: WaveUi,
     pub(crate) waves: Waves,
@@ -76,7 +76,7 @@ impl Win {
             tables: UiTables::default(),
             frame: UiLayout::default(),
             geo: Geometry::default(),
-            text: TextSystem::new(),
+            ctx: schemify_ui::context(),
             state: UiState::default(),
             ui: WaveUi::default(),
             waves,
@@ -91,13 +91,7 @@ impl Win {
         for _ in 0..3 {
             let c = self.ui.contribute(&self.waves, &mut self.strings);
             self.tables = compose(&self.strings, &self.base, &[(name, &c)]);
-            self.frame = layout(
-                &self.tables,
-                &self.strings,
-                &mut self.text,
-                &self.state,
-                VIEW,
-            );
+            self.view(VIEW);
             self.geo = Geometry::of(&self.tables, &self.frame, &self.strings);
             let fit = (
                 WaveUi::rows_fit(self.geo.signals),
@@ -108,6 +102,17 @@ impl Win {
             }
         }
         panic!("list capacity does not settle");
+    }
+
+    /// Shows the window's tables for two egui frames (flex sizes settle over two) at `size`.
+    pub(crate) fn view(&mut self, size: (f32, f32)) {
+        for _ in 0..2 {
+            let mut out = Routed::default();
+            let Win { strings, tables, ctx, state, frame, .. } = self;
+            let raw = InputEvents::default().raw(size);
+            let mut o = ctx.run_ui(raw, |ui| schemify_ui::show(ui, tables, strings, state, frame, &mut out));
+            o.textures_delta.clear(); // no painter in a headless test
+        }
     }
 
     pub(crate) fn apply(&mut self, reqs: Vec<Request>) -> Effect {

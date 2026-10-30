@@ -1,46 +1,42 @@
-//! Transient interaction state, owned by `ui` and keyed by stable node ids so it survives
-//! recomposition: open menus and dropdowns, the open dialog and where it sits, hover and the
-//! keyboard highlight, focus and the focused field's editor, scroll offsets, split divider
-//! positions. Written by [`crate::route_input`] and the host's setters; read by layout.
+//! Interaction state egui does not keep, owned by `ui` and keyed by stable node ids so it
+//! survives recomposition: the open dialog and where it sits, the focused field's edit buffer,
+//! scroll offsets (the host windows long lists by them), split divider positions and the
+//! loaded docs images. Hover, focus, open menus and caret live in egui's memory.
 //!
 //! Contents:
-//! - `pub struct UiState`: `MAX_OPEN`, `MAX_SCROLL`, `MAX_SPLIT`, `WHEEL_PX`, `scroll_of`,
-//!   `set_scroll`, `split_of`, `set_split`, `open_menus`, `open`, `set_dialog`, `set_dialog_at`,
-//!   `dialog`, `hover`, `focus`, `editor`, `ime_area`, `focus_text`; crate-only `blur`
-//! - `pub(crate) struct NodeValue`
+//! - `pub struct UiState`: `MAX_SCROLL`, `MAX_SPLIT`, `scroll_of`, `set_scroll`, `split_of`,
+//!   `set_split`, `set_dialog`, `set_dialog_at`, `dialog`, `dialog_at`, `focus`, `focus_text`,
+//!   `set_image`, `image`
+//! - `pub struct Image`
 
-use parley::PlainEditor;
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::field;
-use crate::field::FieldPress;
-use crate::kinds::{Kind, StyleProp};
-use crate::layout::{Rect, UiLayout};
-use crate::strings::{Strings, Sym};
-use crate::tables::UiTables;
-use crate::text::TextSystem;
+use crate::math::MathList;
+use crate::strings::Sym;
 
-/// Transient interaction state, owned by `ui` and keyed by node ids.
-#[derive(Debug, Default)]
+/// Interaction state the [`crate::show`] view reads and writes between frames.
+#[derive(Default)]
 pub struct UiState {
-    pub(crate) open: Vec<Sym>,
     pub(crate) dialog: Sym,
     /// Top-left corner of the open dialog (a context menu at the pointer); `None` centers it.
     pub(crate) dialog_at: Option<(f32, f32)>,
-    pub(crate) hover: Sym,
-    pub(crate) focus: Sym,
-    pub(crate) capture: bool,
-    pub(crate) editor: Option<PlainEditor<()>>,
-    /// Wheel offset of each scrolled `scroll` node, by node id (layout clamps it).
+    /// Bumped whenever a dialog opens, so a reopened dialog forgets where it was dragged.
+    pub(crate) dialog_serial: u32,
+    /// The focused text field and its edit buffer (the field shows the node's value otherwise).
+    pub(crate) edit: Option<(Sym, String)>,
+    /// A text field to focus the next time it is shown.
+    pub(crate) focus_next: Sym,
+    /// Offset of each scrolled `scroll` node, by node id.
     pub(crate) scroll: Vec<NodeValue>,
     /// Second-pane size of each dragged `split` node, by node id.
     pub(crate) split: Vec<NodeValue>,
-    /// The `split` node whose divider the pointer is dragging (`Sym::NONE` when none).
-    pub(crate) split_drag: Sym,
-    /// Top-left corner the user dragged a centered dialog to (layout keeps it inside the
-    /// viewport); reset when another dialog opens.
-    pub(crate) dialog_pos: Option<(f32, f32)>,
-    /// While a dialog is dragged: the pointer's offset from the dialog's top-left corner.
-    pub(crate) dialog_grab: Option<(f32, f32)>,
+    /// Scroll nodes the host moved ([`UiState::set_scroll`]); the view scrolls them once.
+    pub(crate) scroll_requests: Vec<Sym>,
+    /// Docs images by project-relative path, uploaded to egui on first use.
+    pub(crate) images: HashMap<String, (Image, Option<egui::TextureHandle>)>,
+    /// Laid-out formulas by (source, px bits).
+    pub(crate) math: HashMap<(String, u32), Result<Arc<MathList>, String>>,
 }
 
 /// One row of a per-node table of [`UiState`]: a node id and its remembered pixels.
@@ -50,233 +46,171 @@ pub(crate) struct NodeValue {
     pub(crate) value: f32,
 }
 
+/// A decoded docs image: straight RGBA8 rows, top row first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for UiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UiState")
+            .field("dialog", &self.dialog)
+            .field("edit", &self.edit)
+            .field("images", &self.images.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl UiState {
-    /// Maximum menu nesting.
-    pub const MAX_OPEN: usize = 16;
     /// Scroll nodes whose offsets are remembered; the oldest is forgotten beyond this.
     pub const MAX_SCROLL: usize = 64;
     /// Split nodes whose divider positions are remembered; the oldest is forgotten beyond this.
     pub const MAX_SPLIT: usize = 64;
-    /// Pixels per wheel line.
+    /// Logical px per wheel line (a backend's pixel scroll is divided by it).
     pub const WHEEL_PX: f32 = 40.0;
+    /// Docs images kept; registering more forgets none but refuses the new one.
+    pub const MAX_IMAGES: usize = 256;
 
     /// Scroll offset of `scroll` node `id` in pixels (0 when never scrolled).
     #[must_use]
     pub fn scroll_of(&self, id: Sym) -> f32 {
-        debug_assert!(self.scroll.len() <= Self::MAX_SCROLL);
-        let offset = self
-            .scroll
-            .iter()
-            .find(|r| r.id == id)
-            .map_or(0.0, |r| r.value);
-        debug_assert!(offset.is_nan() || offset >= 0.0, "offsets are clamped at 0");
-        offset
+        let v = self.scroll.iter().find(|s| s.id == id).map_or(0.0, |s| s.value);
+        debug_assert!(v >= 0.0, "offsets are clamped at zero");
+        v
     }
 
-    /// Sets the scroll offset of node `id`, clamped to `[0, max]`.
+    /// Sets the scroll offset of node `id`, clamped to `[0, max]`; the view scrolls there the
+    /// next time it shows the node.
     pub fn set_scroll(&mut self, id: Sym, offset: f32, max: f32) {
         let v = offset.clamp(0.0, max.max(0.0));
-        debug_assert!(v.is_nan() || v <= max.max(0.0));
         remember(&mut self.scroll, Self::MAX_SCROLL, id, v);
-        debug_assert!(v.is_nan() || self.scroll_of(id) == v);
+        if !self.scroll_requests.contains(&id) && self.scroll_requests.len() < Self::MAX_SCROLL {
+            self.scroll_requests.push(id);
+        }
+        debug_assert!(self.scroll.len() <= Self::MAX_SCROLL);
+    }
+
+    /// The offset the host asked `id` to scroll to, once.
+    pub(crate) fn take_scroll_request(&mut self, id: Sym) -> Option<f32> {
+        let k = self.scroll_requests.iter().position(|&s| s == id)?;
+        self.scroll_requests.swap_remove(k);
+        Some(self.scroll_of(id))
+    }
+
+    /// Records where the view left `id` scrolled.
+    pub(crate) fn keep_scroll(&mut self, id: Sym, offset: f32, max: f32) {
+        remember(&mut self.scroll, Self::MAX_SCROLL, id, offset.clamp(0.0, max.max(0.0)));
     }
 
     /// Size in pixels of `split` node `id`'s second pane along the split's axis, once its
     /// divider was dragged (`None`: the panes keep their own sizes).
     #[must_use]
     pub fn split_of(&self, id: Sym) -> Option<f32> {
-        debug_assert!(self.split.len() <= Self::MAX_SPLIT);
-        let px = self.split.iter().find(|r| r.id == id).map(|r| r.value);
-        if let Some(px) = px {
-            debug_assert!(px.is_finite(), "set_split stores finite sizes");
-            debug_assert!(px >= 0.0, "set_split stores sizes not below 0");
-        }
-        px
+        self.split.iter().find(|s| s.id == id).map(|s| s.value)
     }
 
-    /// Sets the second-pane size of `split` node `id` (what a divider drag does; a host may
-    /// restore a saved layout with it). Takes effect at the next layout.
+    /// Sets the second-pane size of `split` node `id`.
     ///
     /// # Panics
     ///
     /// Panics if `px` is negative or not finite.
     pub fn set_split(&mut self, id: Sym, px: f32) {
-        assert!(px.is_finite(), "split size must be finite");
-        assert!(px >= 0.0, "split size must not be negative");
+        assert!(px.is_finite() && px >= 0.0, "split size must be finite");
         remember(&mut self.split, Self::MAX_SPLIT, id, px);
-        debug_assert_eq!(self.split_of(id), Some(px));
+        debug_assert!(self.split.len() <= Self::MAX_SPLIT);
     }
 
-    /// Opens a chain of menus (menubar menu first); used by tests and by keyboard menu access.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `chain` is longer than [`UiState::MAX_OPEN`].
-    pub fn open_menus(&mut self, chain: &[Sym]) {
-        assert!(chain.len() <= Self::MAX_OPEN, "menu chain too deep");
-        self.open.clear();
-        self.open.extend_from_slice(chain);
-        debug_assert_eq!(self.open.len(), chain.len());
-    }
-
-    /// Open menu chain.
-    #[must_use]
-    pub fn open(&self) -> &[Sym] {
-        debug_assert!(self.open.len() <= Self::MAX_OPEN);
-        &self.open
-    }
-
-    /// Shows dialog `id` modally (closing menus); `Sym::NONE` closes it.
+    /// Shows dialog `id` modally, centered; `Sym::NONE` closes it.
     pub fn set_dialog(&mut self, id: Sym) {
         self.set_dialog_at(id, None);
-        debug_assert_eq!(self.dialog, id);
         debug_assert!(self.dialog_at.is_none());
     }
 
-    /// Shows dialog `id` modally with its top-left corner at `at` (logical px, moved inside
-    /// the viewport by layout), e.g. a context menu at the pointer; `None` centers it as
-    /// [`UiState::set_dialog`] does. A dialog shown at a point closes on a click outside it,
-    /// like a menu.
+    /// Shows dialog `id` modally with its top-left corner at `at` (logical px, kept inside
+    /// the window), e.g. a context menu at the pointer; `None` centers it. A dialog shown at a
+    /// point closes on a click outside it, like a menu.
     ///
     /// # Panics
     ///
     /// Panics if `at` is not finite.
     pub fn set_dialog_at(&mut self, id: Sym, at: Option<(f32, f32)>) {
-        if let Some((x, y)) = at {
-            assert!(x.is_finite(), "dialog x must be finite");
-            assert!(y.is_finite(), "dialog y must be finite");
-        }
-        self.open.clear();
+        assert!(
+            at.is_none_or(|(x, y)| x.is_finite() && y.is_finite()),
+            "dialog position must be finite"
+        );
         self.dialog = id;
         self.dialog_at = at.filter(|_| !id.is_none());
-        self.dialog_pos = None;
-        self.dialog_grab = None;
-        self.blur();
-        debug_assert!(self.open.is_empty());
-        debug_assert!(self.focus.is_none());
+        self.dialog_serial = self.dialog_serial.wrapping_add(1);
+        self.edit = None;
+        debug_assert!(!id.is_none() || self.dialog_at.is_none());
     }
 
     /// The open dialog (`Sym::NONE` when none).
     #[must_use]
     pub fn dialog(&self) -> Sym {
-        if self.dialog.is_none() {
-            debug_assert!(self.dialog_at.is_none(), "no position without a dialog");
-        }
         self.dialog
     }
 
-    /// Node under the pointer, or the menu row the keyboard highlights.
+    /// Where the open dialog was asked to appear (`None`: centered).
     #[must_use]
-    pub fn hover(&self) -> Sym {
-        self.hover
+    pub fn dialog_at(&self) -> Option<(f32, f32)> {
+        self.dialog_at
     }
 
-    /// Focused node.
+    /// The text field being edited (`Sym::NONE` when none).
     #[must_use]
     pub fn focus(&self) -> Sym {
-        debug_assert_eq!(
-            self.focus.is_none(),
-            self.editor.is_none(),
-            "a focused field and its editor come and go together"
-        );
-        self.focus
+        self.edit.as_ref().map_or(Sym::NONE, |e| e.0)
     }
 
-    /// The focused text field's editor; its layout is fresh after
-    /// [`route_input`](crate::route_input).
-    #[must_use]
-    pub fn editor(&self) -> Option<&PlainEditor<()>> {
-        debug_assert_eq!(
-            self.focus.is_none(),
-            self.editor.is_none(),
-            "a focused field and its editor come and go together"
-        );
-        self.editor.as_ref()
+    /// Gives keyboard focus to text field `node`, caret at the end of its value, the next time
+    /// the view shows it (as a dialog does for its first field when it opens).
+    pub fn focus_text(&mut self, node: Sym) {
+        debug_assert!(!node.is_none(), "a field to focus");
+        self.focus_next = node;
     }
 
-    /// Where the platform should place an IME candidate window: the focused field's preedit
-    /// text, else its caret line, in logical px (`None` without a focused, laid-out field).
-    /// `layout` must be the layout of the current state.
-    #[must_use]
-    pub fn ime_area(&self, tables: &UiTables, layout: &UiLayout) -> Option<Rect> {
-        let ed = self.editor.as_ref()?;
-        debug_assert!(
-            !self.focus.is_none(),
-            "an editor belongs to a focused field"
-        );
-        let n = tables.nodes.find(self.focus)?;
-        let r = layout.row_of(n)?;
-        let l = ed.try_layout()?;
-        let area = layout.rect[r];
-        let style = |p| layout.style(tables, n, p);
-        // Where the painter puts the text: top-left inside the padding (text areas) or
-        // vertically centered (single-line fields).
-        let top = if tables.nodes.kind[n as usize] == Kind::TextArea {
-            area.y + style(StyleProp::PadY)
-        } else {
-            area.y + (area.h - l.height()) / 2.0
-        };
-        let b = ed.ime_cursor_area();
-        let out = Rect {
-            x: area.x + style(StyleProp::Pad) + b.x0 as f32,
-            y: top + b.y0 as f32,
-            w: (b.x1 - b.x0).max(1.0) as f32,
-            h: (b.y1 - b.y0).max(1.0) as f32,
-        };
-        debug_assert!(out.w > 0.0);
-        debug_assert!(out.h > 0.0);
-        Some(out)
-    }
-
-    /// Drops the keyboard focus and the focused field's editor.
-    pub(crate) fn blur(&mut self) {
-        self.focus = Sym::NONE;
-        self.editor = None;
-        debug_assert!(self.focus.is_none());
-        debug_assert!(self.editor.is_none());
-    }
-
-    /// Gives keyboard focus to text field `node` with the caret at the end of its value, as
-    /// a dialog does for its first field when it opens. `layout` must be the layout of the
-    /// current state with the field visible.
-    ///
-    /// Returns false (and changes nothing) when `node` is not a laid-out `text_input` or
-    /// `text_area`.
+    /// Registers the decoded image at project-relative `path` for `prose` image lines.
+    /// Returns false (and keeps nothing) when [`UiState::MAX_IMAGES`] are registered.
     ///
     /// # Panics
     ///
-    /// Panics if `layout` was not laid out from `tables`.
-    pub fn focus_text(
-        &mut self,
-        tables: &UiTables,
-        layout: &UiLayout,
-        strings: &Strings,
-        text: &mut TextSystem,
-        node: Sym,
-    ) -> bool {
-        let Some(n) = tables.nodes.find(node) else {
-            return false;
-        };
-        if !matches!(
-            tables.nodes.kind[n as usize],
-            Kind::TextInput | Kind::TextArea
-        ) {
+    /// Panics if `image.rgba` is not `width * height * 4` bytes.
+    pub fn set_image(&mut self, path: &str, image: Image) -> bool {
+        assert_eq!(
+            image.rgba.len() as u64,
+            u64::from(image.width) * u64::from(image.height) * 4,
+            "RGBA8 rows"
+        );
+        if self.images.len() >= Self::MAX_IMAGES && !self.images.contains_key(path) {
             return false;
         }
-        let Some(r) = layout.row_of(n) else {
-            return false;
-        };
-        let rect = layout.rect[r];
-        // A point past the last glyph puts the caret at the end.
-        let press = FieldPress {
-            row: r,
-            x: rect.x + rect.w - 1.0,
-            y: rect.y + rect.h / 2.0,
-        };
-        field::focus_field(tables, layout, strings, text, self, press);
-        assert_eq!(self.focus, node);
-        debug_assert!(self.editor.is_some(), "a focused field has an editor");
+        self.images.insert(path.to_owned(), (image, None));
+        debug_assert!(self.images.len() <= Self::MAX_IMAGES);
         true
+    }
+
+    /// The image registered at `path`.
+    #[must_use]
+    pub fn image(&self, path: &str) -> Option<&Image> {
+        self.images.get(path).map(|i| &i.0)
+    }
+
+    /// The egui texture of the image at `path`, uploaded on first use.
+    pub(crate) fn texture(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureId> {
+        let (image, tex) = self.images.get_mut(path)?;
+        let tex = tex.get_or_insert_with(|| {
+            let size = [image.width as usize, image.height as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, &image.rgba);
+            ctx.load_texture(path, color, egui::TextureOptions::LINEAR)
+        });
+        Some(tex.id())
     }
 }
 
@@ -285,9 +219,9 @@ impl UiState {
 /// Sets `id`'s value in a per-node table of at most `cap` rows, forgetting the oldest row to
 /// make room.
 fn remember(rows: &mut Vec<NodeValue>, cap: usize, id: Sym, value: f32) {
-    assert!(cap > 0, "a table holds a row");
-    match rows.iter_mut().find(|r| r.id == id) {
-        Some(row) => row.value = value,
+    assert!(cap > 0, "a table with room");
+    match rows.iter_mut().find(|s| s.id == id) {
+        Some(e) => e.value = value,
         None => {
             if rows.len() >= cap {
                 rows.remove(0);

@@ -1,11 +1,12 @@
-//! The input tables of one frame: the windowing-system-independent event table in
-//! ([`InputEvents`]), and what [`crate::route_input`] writes out ([`Routed`], whose
-//! [`CommandRequests`] the app's dispatcher drains).
+//! The input tables of one frame: the scripted event table ([`InputEvents`]: tests, the RPC
+//! stream and the canvas's pointer rows), its conversion to egui's [`egui::RawInput`]
+//! ([`InputEvents::raw`]), and what [`crate::show`] writes out ([`Routed`], whose
+//! [`CommandRequests`] the editor's dispatcher drains).
 //!
 //! Contents:
 //! - `pub enum Button`, `pub enum InputEvent`
 //! - `pub struct InputEvents`: `CAPACITY`, `push`, `push_text`, `push_preedit`, `clear`,
-//!   `is_empty`
+//!   `is_empty`, `raw`
 //! - `pub struct CommandRequests`: `arg`, `len`, `is_empty`; crate-only `push`
 //! - `pub struct Routed`; crate-only `clear`
 
@@ -85,11 +86,6 @@ pub enum InputEvent {
         /// End byte.
         end: u32,
     },
-    /// Assistive-technology "click" on a node (AccessKit `Action::Click`).
-    Activate {
-        /// Target node id.
-        node: Sym,
-    },
     /// The held modifiers changed (pointer gestures such as Shift+wheel read them; key chords
     /// carry their own).
     Mods {
@@ -120,17 +116,13 @@ pub struct CommandRequests {
     pub args: String,
 }
 
-/// Everything [`route_input`](crate::route_input) produces for one frame.
+/// Everything [`crate::show`] produces for one frame.
 #[derive(Clone, Debug, Default)]
 pub struct Routed {
     /// Commands to dispatch.
     pub commands: CommandRequests,
     /// Events that belong to the canvas (pointer over it or captured by a drag started on it).
     pub canvas: Vec<InputEvent>,
-    /// The layout is stale (menus opened/closed, focus changed size).
-    pub relayout: bool,
-    /// The picture changed (hover, editing).
-    pub redraw: bool,
 }
 
 impl InputEvents {
@@ -258,17 +250,131 @@ impl CommandRequests {
 
 impl Routed {
     /// Resets the output for a new frame, keeping the canvas column's allocation.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.commands = CommandRequests::default();
         self.canvas.clear();
-        self.relayout = false;
-        self.redraw = false;
         debug_assert!(self.canvas.is_empty());
         debug_assert!(self.commands.is_empty());
     }
 }
 
+impl InputEvents {
+    /// The table as egui input for a `viewport` window at 1 device px per logical px: what a
+    /// windowing backend would have sent for the same events. A key chord becomes the text it
+    /// types when it is printable without Ctrl or Alt, otherwise a key event; `Mods` rows set
+    /// the modifiers of the events after them.
+    #[must_use]
+    pub fn raw(&self, viewport: (f32, f32)) -> egui::RawInput {
+        use egui::{Event, Modifiers, PointerButton, Pos2};
+        assert!(viewport.0 >= 0.0 && viewport.1 >= 0.0, "a viewport of non-negative size");
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(viewport.0, viewport.1))),
+            ..egui::RawInput::default()
+        };
+        let mut m = Modifiers::NONE;
+        let button = |b: Button| match b {
+            Button::Left => PointerButton::Primary,
+            Button::Middle => PointerButton::Middle,
+            Button::Right => PointerButton::Secondary,
+        };
+        for e in &self.events {
+            let ev = match *e {
+                InputEvent::PointerMove { x, y } => Event::PointerMoved(Pos2::new(x, y)),
+                InputEvent::PointerDown { x, y, button: b } | InputEvent::PointerUp { x, y, button: b } => {
+                    Event::PointerButton {
+                        pos: Pos2::new(x, y),
+                        button: button(b),
+                        pressed: matches!(e, InputEvent::PointerDown { .. }),
+                        modifiers: m,
+                    }
+                }
+                InputEvent::PointerLeave => Event::PointerGone,
+                InputEvent::Wheel { dx, dy, .. } => Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(dx, dy),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Unknown,
+                    modifiers: m,
+                },
+                InputEvent::Text { start, end } => Event::Text(self.text[start as usize..end as usize].to_owned()),
+                InputEvent::Preedit { start, end } => {
+                    Event::Ime(egui::ImeEvent::Preedit {
+                        text: self.text[start as usize..end as usize].to_owned(),
+                        active_range_chars: None,
+                    })
+                }
+                InputEvent::Mods { mods } => {
+                    m = Modifiers {
+                        alt: mods.0 & Mods::ALT != 0,
+                        ctrl: mods.0 & Mods::CTRL != 0,
+                        shift: mods.0 & Mods::SHIFT != 0,
+                        mac_cmd: mods.0 & Mods::SUPER != 0,
+                        command: mods.0 & Mods::CTRL != 0,
+                    };
+                    raw.events.push(Event::ModifiersChanged(m));
+                    continue;
+                }
+                InputEvent::Key { chord } => {
+                    raw.events.extend(chord_events(chord));
+                    continue;
+                }
+            };
+            raw.events.push(ev);
+        }
+        debug_assert!(raw.events.len() <= 2 * self.events.len(), "at most two egui events per row");
+        raw
+    }
+}
+
 // ---- private ----
+
+/// The egui events a backend sends for one key chord.
+fn chord_events(chord: Chord) -> Vec<egui::Event> {
+    use crate::keys::Key;
+    let bits = chord.mods().0;
+    let modifiers = egui::Modifiers {
+        alt: bits & Mods::ALT != 0,
+        ctrl: bits & Mods::CTRL != 0,
+        shift: bits & Mods::SHIFT != 0,
+        mac_cmd: bits & Mods::SUPER != 0,
+        command: bits & Mods::CTRL != 0,
+    };
+    let k = chord.key().0;
+    let printable = k < Key::NAMED && k != u32::from(' ');
+    if printable && bits & (Mods::CTRL | Mods::ALT | Mods::SUPER) == 0 {
+        let c = char::from_u32(k).unwrap_or('?');
+        let c = if bits & Mods::SHIFT != 0 { c.to_ascii_uppercase() } else { c };
+        return vec![egui::Event::Text(c.to_string())];
+    }
+    let name = match chord.key() {
+        Key::ESCAPE => "Escape".to_owned(),
+        Key::ENTER => "Enter".to_owned(),
+        Key::TAB => "Tab".to_owned(),
+        Key::BACKSPACE => "Backspace".to_owned(),
+        Key::DELETE => "Delete".to_owned(),
+        Key::INSERT => "Insert".to_owned(),
+        Key::HOME => "Home".to_owned(),
+        Key::END => "End".to_owned(),
+        Key::PAGE_UP => "PageUp".to_owned(),
+        Key::PAGE_DOWN => "PageDown".to_owned(),
+        Key::LEFT => "ArrowLeft".to_owned(),
+        Key::RIGHT => "ArrowRight".to_owned(),
+        Key::UP => "ArrowUp".to_owned(),
+        Key::DOWN => "ArrowDown".to_owned(),
+        _ if k > Key::NAMED + 0x100 => format!("F{}", k - Key::NAMED - 0x100),
+        _ => char::from_u32(k).map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default(),
+    };
+    let Some(key) = egui::Key::from_name(&name) else {
+        return Vec::new();
+    };
+    vec![egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }]
+}
 
 impl InputEvents {
     /// Appends `s` to the text payloads; returns its byte range.

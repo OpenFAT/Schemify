@@ -52,15 +52,9 @@ fn window_composes_and_lists_fit_their_panels() {
     // A smaller window re-measures the lists instead of overflowing.
     let before = rows.len();
     w.ui.set_capacity(0, 0);
-    w.frame = schemify_ui::layout(
-        &w.tables,
-        &w.strings,
-        &mut w.text,
-        &w.state,
-        (1200.0, 500.0),
-    );
+    w.view((1200.0, 500.0));
     w.geo = Geometry::of(&w.tables, &w.frame, &w.strings);
-    assert!(WaveUi::rows_fit(w.geo.signals) < before as u16);
+    assert!(WaveUi::rows_fit(w.geo.signals) < before as u16, "{:?} {before}", w.geo.signals);
 }
 
 #[test]

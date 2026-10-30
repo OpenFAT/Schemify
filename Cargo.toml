@@ -66,20 +66,18 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 # since plugins are untrusted input; `portable-dispatch` instead of `auto-dispatch` saves
 # nothing (+4 KB) and runs a guest loop 3x slower.
 wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }
-# GUI (WS5): only crates/model/ui and crates/view/render may use these (docs/dev/contributing.md rule 7)
-taffy = { version = "0.14", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
-parley = { version = "0.12", default-features = false, features = ["std", "system"] }
-# Only to pick fontique's features: system fonts (fallback for glyphs outside the embedded
-# subset) found through a dlopen'ed fontconfig, so nothing links libfontconfig at build time.
-fontique = { version = "0.12", default-features = false, features = ["std", "system", "fontconfig-dlopen"] }
-accesskit = "0.25"
-accesskit_winit = "0.34"
+# GUI (WS5, D4 as amended 2026-10-30): egui is the view (layout, text, input, IME,
+# accessibility); it is headless, so `ui` and `editor` use it and stay testable without a GPU.
+# egui-winit and egui-wgpu put it in a window; only crates/view/render may use them
+# (docs/dev/contributing.md rule 7). No default fonts: the embedded faces are set by `ui`.
+egui = { version = "0.37", default-features = false }
+egui-winit = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "wayland", "x11"] }
+egui-wgpu = { version = "0.37", default-features = false, features = ["winit"] }
 ratex-parser = "0.1.14"
 ratex-layout = "0.1.14"
 ratex-types = "0.1.14"
 ratex-font = "0.1.14"
-# Only metrics and advances of the embedded faces: no autohinter shaping (the renderer's
-# glyph rasterizer turns it on).
+# Glyph ids and metrics of the embedded faces for the PDF/PostScript exporters.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # No `wayland-csd-adwaita` (D39: tiny-skia + ab_glyph + ttf-parser for a title bar). Where the
 # compositor has no server-side decorations (GNOME) the window gets smithay's plain fallback

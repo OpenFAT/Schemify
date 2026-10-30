@@ -1,30 +1,28 @@
-//! Oracles for the UI tables (docs/dev/testing.md): composition (last wins + health), layout
-//! geometry, input routing, text fields, menus and the AccessKit snapshot. Re-bless snapshots
-//! with `SCHEMIFY_BLESS=1`.
+//! Oracles for the UI tables and their egui view (docs/dev/testing.md): composition (last wins
+//! + health), what the view shows, routing (keys, menus, clicks, canvas events), dialogs,
+//! split dividers and text fields, all through real egui frames with no window.
 //!
-//! Contents: `pub(crate) struct Fixture` (`sym`, `node`, `row`, `relayout`, `route`, `center`,
-//! `click`, `commands`), `pub(crate) const VIEW`, `pub(crate) fn fixture(plugins) -> Fixture`,
-//! `pub(crate) fn key(f, chord) -> Routed`, `pub(crate) fn first_nav_row(f, menu) -> Sym`; the
-//! tests live in `compose`, `layout`, `route`, `field` and `menu`.
+//! Contents: `pub(crate) struct Fixture` (`sym`, `node`, `rect`, `route`, `center`, `click`,
+//! `commands`), `pub(crate) const VIEW`, `pub(crate) fn fixture(plugins) -> Fixture`,
+//! `pub(crate) fn key(f, chord) -> Routed`; the tests live in `compose`, `view` and `fields`.
 
 mod compose;
-mod field;
-mod layout;
-mod menu;
-mod route;
+mod fields;
+mod view;
 
 use schemify_ui::{
-    Button, Chord, InputEvent, InputEvents, Kind, Routed, Strings, Sym, TextSystem, UiLayout,
-    UiState, UiTables, compose, layout, records, route_input,
+    Button, Chord, InputEvent, InputEvents, Rect, Routed, Strings, Sym, UiLayout, UiState,
+    UiTables, compose, records,
 };
 
-/// The default UI composed with test plugins, laid out at [`VIEW`], with its routing state.
+/// The default UI composed with test plugins, shown at [`VIEW`], with its interaction state.
 pub(crate) struct Fixture {
     pub(crate) strings: Strings,
     pub(crate) tables: UiTables,
-    pub(crate) text: TextSystem,
+    pub(crate) ctx: schemify_ui::egui::Context,
     pub(crate) state: UiState,
     pub(crate) frame: UiLayout,
+    now: f64,
 }
 
 /// The viewport in logical pixels.
@@ -45,16 +43,19 @@ pub(crate) fn fixture(plugins: &[&str]) -> Fixture {
         .collect();
     let refs: Vec<_> = parsed.iter().map(|(n, c)| (*n, c)).collect();
     let tables = compose(&strings, &base, &refs);
-    let mut text = TextSystem::new();
-    let state = UiState::default();
-    let frame = layout(&tables, &strings, &mut text, &state, VIEW);
-    Fixture {
+    let mut f = Fixture {
         strings,
         tables,
-        text,
-        state,
-        frame,
+        ctx: schemify_ui::context(),
+        state: UiState::default(),
+        frame: UiLayout::default(),
+        now: 0.0,
+    };
+    // egui hit-tests against the previous frame and flex sizes settle over two.
+    for _ in 0..3 {
+        f.route(&InputEvents::default());
     }
+    f
 }
 
 impl Fixture {
@@ -69,54 +70,51 @@ impl Fixture {
             .find(self.sym(s))
             .unwrap_or_else(|| panic!("{s} not composed"))
     }
-    pub(crate) fn row(&self, s: &str) -> usize {
-        self.frame
+    pub(crate) fn rect(&self, s: &str) -> Rect {
+        let r = self
+            .frame
             .row_of(self.node(s))
-            .unwrap_or_else(|| panic!("{s} not laid out"))
+            .unwrap_or_else(|| panic!("{s} not shown"));
+        self.frame.rect()[r]
     }
-    pub(crate) fn relayout(&mut self) {
-        self.frame = layout(
-            &self.tables,
-            &self.strings,
-            &mut self.text,
-            &self.state,
-            VIEW,
-        );
-    }
+    /// One egui frame over `events` (the clock advances 1 s, so no double clicks).
     pub(crate) fn route(&mut self, events: &InputEvents) -> Routed {
         let mut out = Routed::default();
-        route_input(
-            &self.tables,
-            &self.frame,
-            &self.strings,
-            &mut self.text,
-            &mut self.state,
-            events,
-            &mut out,
-        );
-        if out.relayout {
-            self.relayout();
-        }
+        let mut raw = events.raw(VIEW);
+        self.now += 1.0;
+        raw.time = Some(self.now);
+        let Fixture {
+            strings,
+            tables,
+            ctx,
+            state,
+            frame,
+            ..
+        } = self;
+        let mut o = ctx.run_ui(raw, |ui| schemify_ui::show(ui, tables, strings, state, frame, &mut out));
+        o.textures_delta.clear(); // no painter in a headless test
         out
     }
     pub(crate) fn center(&self, s: &str) -> (f32, f32) {
-        let r = self.frame.rect()[self.row(s)];
+        let r = self.rect(s);
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
     }
+    /// Moves to `s`, then presses and releases there (the hover lands a frame first, as a real
+    /// pointer's would).
     pub(crate) fn click(&mut self, s: &str) -> Routed {
         let (x, y) = self.center(s);
+        self.click_at(x, y)
+    }
+    pub(crate) fn click_at(&mut self, x: f32, y: f32) -> Routed {
         let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerDown {
-            x,
-            y,
-            button: Button::Left,
-        });
-        ev.push(InputEvent::PointerUp {
-            x,
-            y,
-            button: Button::Left,
-        });
-        self.route(&ev)
+        ev.push(InputEvent::PointerMove { x, y });
+        self.route(&ev);
+        let mut ev = InputEvents::default();
+        ev.push(InputEvent::PointerDown { x, y, button: Button::Left });
+        ev.push(InputEvent::PointerUp { x, y, button: Button::Left });
+        let out = self.route(&ev);
+        self.route(&InputEvents::default());
+        out
     }
     pub(crate) fn commands(&self, r: &Routed) -> Vec<String> {
         r.commands
@@ -133,13 +131,4 @@ pub(crate) fn key(f: &mut Fixture, chord: &str) -> Routed {
         chord: Chord::parse(chord).expect("the test names a valid chord"),
     });
     f.route(&ev)
-}
-
-pub(crate) fn first_nav_row(f: &Fixture, menu: &str) -> Sym {
-    let n = &f.tables.nodes;
-    let c = n
-        .children(f.node(menu))
-        .find(|&c| matches!(n.kind()[c as usize], Kind::Item | Kind::Menu))
-        .expect("the menu has a navigable row");
-    n.id()[c as usize]
 }

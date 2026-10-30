@@ -7,26 +7,16 @@
 //! which RaTeX is not.
 //!
 //! Contents:
-//! - `pub struct MathFonts`: `new`, `face(u8) -> &FontData`
 //! - `pub enum Verb`, `pub struct MathPaths`, `pub struct MathList`
+//! - `pub const FACE_NAMES: [&str; 19]`
 //! - `pub(crate) fn face_bytes(name: &str) -> &'static [u8]`
-//! - `pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String>`
+//! - `pub fn layout_math(src: &str, px: f32) -> Result<MathList, String>`
 
-use std::fmt;
-use std::sync::Arc;
-
-use parley::FontData;
-use parley::fontique::Blob;
 use ratex_font::FontId;
 use ratex_layout::LayoutOptions;
 use ratex_types::display_item::DisplayItem;
 use ratex_types::path_command::PathCommand;
 use skrifa::FontRef;
-
-/// The embedded KaTeX faces, indexed by the `u8` face index stored in [`MathList::glyph_face`].
-pub struct MathFonts {
-    data: Vec<FontData>,
-}
 
 /// Path verbs for [`MathPaths`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,10 +47,10 @@ pub struct MathPaths {
 /// Positioned math in pixels. Glyph columns are parallel; `y` is the glyph baseline.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MathList {
-    /// Face index into [`MathFonts`].
+    /// Face index into [`FACE_NAMES`].
     pub glyph_face: Vec<u8>,
-    /// Glyph id in that face.
-    pub glyph_id: Vec<u32>,
+    /// The character in that face.
+    pub glyph_char: Vec<char>,
     /// Pen x.
     pub glyph_x: Vec<f32>,
     /// Baseline y.
@@ -99,7 +89,19 @@ macro_rules! face {
 }
 
 /// KaTeX faces in [`FontId`] spelling, with their bytes.
-const FACES: [(&str, &[u8]); 19] = [
+/// KaTeX face names in [`MathList::glyph_face`] order ([`FontId`] spelling); each is an egui
+/// font family of the same name ([`crate::font_definitions`]).
+pub const FACE_NAMES: [&str; 19] = {
+    let mut out = [""; 19];
+    let mut i = 0;
+    while i < 19 {
+        out[i] = FACES[i].0;
+        i += 1;
+    }
+    out
+};
+
+pub(crate) const FACES: [(&str, &[u8]); 19] = [
     face!("AMS-Regular"),
     face!("Caligraphic-Regular"),
     face!("Fraktur-Regular"),
@@ -134,60 +136,16 @@ pub(crate) fn face_bytes(name: &str) -> &'static [u8] {
     bytes
 }
 
-impl Default for MathFonts {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Debug for MathFonts {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MathFonts")
-            .field("faces", &self.data.len())
-            .finish()
-    }
-}
-
-impl MathFonts {
-    /// Wraps the embedded faces (no copy: the blobs borrow the static bytes).
-    #[must_use]
-    pub fn new() -> Self {
-        // Arc: `Blob::new` takes one (the font library's API); it wraps a `&'static` slice.
-        let data: Vec<FontData> = FACES
-            .iter()
-            .map(|(_, b)| FontData::new(Blob::new(Arc::new(*b)), 0))
-            .collect();
-        debug_assert_eq!(data.len(), FACES.len(), "one font per embedded face");
-        MathFonts { data }
-    }
-
-    /// Font for a face index from [`MathList::glyph_face`].
-    ///
-    /// # Panics
-    ///
-    /// If `i` is not a face index.
-    #[must_use]
-    pub fn face(&self, i: u8) -> &FontData {
-        assert!(usize::from(i) < self.data.len(), "face {i} is not embedded");
-        &self.data[i as usize]
-    }
-}
-
 /// Parses and lays out `src` at `px` pixels per em.
 ///
 /// # Errors
 ///
 /// Returns RaTeX's parse message for input outside its LaTeX subset.
-pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathList, String> {
+pub fn layout_math(src: &str, px: f32) -> Result<MathList, String> {
     use skrifa::MetadataProvider;
 
     assert!(px.is_finite(), "math size must be finite");
     assert!(px > 0.0, "math size must be positive");
-    assert_eq!(
-        fonts.data.len(),
-        FACES.len(),
-        "the fonts are the embedded faces"
-    );
     let ast = ratex_parser::parse(src).map_err(|e| e.to_string())?;
     let display =
         ratex_layout::to_display_list(&ratex_layout::layout(&ast, &LayoutOptions::default()));
@@ -222,12 +180,12 @@ pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathL
                 let face = faces[fi].get_or_insert_with(|| {
                     FontRef::new(FACES[fi].1).expect("embedded KaTeX face parses")
                 });
-                let Some(gid) = face.charmap().map(ch) else {
+                if face.charmap().map(ch).is_none() {
                     out.missing += 1;
                     continue;
-                };
+                }
                 out.glyph_face.push(fi as u8);
-                out.glyph_id.push(gid.to_u32());
+                out.glyph_char.push(ch);
                 out.glyph_x.push(p(*x));
                 out.glyph_y.push(p(*y));
                 out.glyph_px.push(p(*scale));
@@ -292,7 +250,7 @@ pub(crate) fn layout_math(src: &str, px: f32, fonts: &MathFonts) -> Result<MathL
             }
         }
     }
-    debug_assert_eq!(out.glyph_id.len(), out.glyph_px.len());
+    debug_assert_eq!(out.glyph_char.len(), out.glyph_px.len());
     debug_assert_eq!(
         out.glyph_face.len(),
         out.glyph_x.len(),
@@ -322,10 +280,9 @@ mod tests {
 
     #[test]
     fn fraction_has_glyphs_and_a_bar() {
-        let fonts = MathFonts::new();
-        let m = layout_math(r"g_m = \frac{2 I_D}{V_{ov}}", 20.0, &fonts).unwrap();
+        let m = layout_math(r"g_m = \frac{2 I_D}{V_{ov}}", 20.0).unwrap();
         assert_eq!(m.missing, 0);
-        assert!(m.glyph_id.len() >= 9, "glyphs {}", m.glyph_id.len());
+        assert!(m.glyph_char.len() >= 9, "glyphs {}", m.glyph_char.len());
         assert_eq!(m.rules.len(), 1, "one fraction bar");
         assert!(m.width > 60.0 && m.height > 10.0 && m.depth > 5.0);
         assert!(
@@ -337,9 +294,8 @@ mod tests {
 
     #[test]
     fn sqrt_draws_a_surd_and_bad_input_errors() {
-        let fonts = MathFonts::new();
-        let m = layout_math(r"\sqrt{x^2+1}", 20.0, &fonts).unwrap();
-        assert!(!m.glyph_id.is_empty());
-        assert!(layout_math(r"\frac{1}{", 20.0, &fonts).is_err());
+        let m = layout_math(r"\sqrt{x^2+1}", 20.0).unwrap();
+        assert!(!m.glyph_char.is_empty());
+        assert!(layout_math(r"\frac{1}{", 20.0).is_err());
     }
 }

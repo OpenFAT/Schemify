@@ -11,14 +11,10 @@ workspace = true
 [dependencies]
 schemify-ui.workspace = true
 schemify-canvas.workspace = true
-# Waveform panes (D23): trace columns, decimation, axes.
-schemify-wave.workspace = true
-vello_cpu.workspace = true
-kurbo.workspace = true
-peniko.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
 winit.workspace = true
-accesskit.workspace = true
-accesskit_winit.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 naga.workspace = true
