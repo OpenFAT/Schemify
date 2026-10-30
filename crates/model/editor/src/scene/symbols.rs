@@ -194,9 +194,9 @@ pub(super) fn sym_prims(doc: &Document) -> SymPrims {
                     grow(&mut bbox, q.0, q.1);
                 }
                 let closed = attr(doc, g.attrs[i], "closed") == Some("true");
-                if pts.len() >= 2 {
-                    p.polys.push((pts, closed, layer, style));
-                }
+                // One entry per poly row, so a walk over the rows pairs them by count.
+                assert!(pts.len() >= 2, "a poly has two points or more (E029)");
+                p.polys.push((pts, closed, layer, style));
             }
             RecordKind::Stext => {
                 let raw = s.get(g.text[i]).to_owned();

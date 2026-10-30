@@ -83,9 +83,6 @@ pub(super) fn symbol(b: &mut Build<'_>, doc: &Document) {
                 b.arc((a[0], a[1]), a[2], a[3], a[4], layer, st, obj);
             }
             RecordKind::Poly => {
-                if pi >= p.polys.len() {
-                    continue;
-                }
                 let (pts, closed, layer, st) = &p.polys[pi];
                 pi += 1;
                 let mut bx = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];

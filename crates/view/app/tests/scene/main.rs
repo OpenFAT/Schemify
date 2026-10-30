@@ -190,6 +190,54 @@ fn symbol_stroke_attributes_reach_the_scene() {
     assert!(pr.polygons.style.iter().all(|&s| s == LineStyle::PLAIN));
 }
 
+/// A symbol's own view pairs each polygon primitive with its own graphic row: polys of the
+/// minimum two points and longer, between other graphics, keep their keys and geometry. The
+/// pairing is one to one because no document holds a poly under two points: the reader
+/// refuses one (`E029`).
+#[test]
+fn each_symbol_poly_keeps_its_own_row() {
+    use schemify_doc::TableId;
+    let head = "schemify 1 shprim\n\npin A inout 0 -30\n\nimpl spice spice\n  format spice \"R{name} {A}\"\n\n";
+    let sym = format!("{head}poly 50 50 60 50\nline 0 0 5 0\npoly 10 10 20 10 20 20\n");
+    let mut p = Project::new(None, None, 1).unwrap();
+    p.index_library("", "", &[("s.shprim", sym.as_bytes())])
+        .unwrap();
+    let h = p.open("", "s.shprim", sym.as_bytes(), None).unwrap().handle;
+    let mut sc = Scene::default();
+    scene::build(&mut sc, &p, h, View::Symbol, &Symbols::default(), 0, None);
+    let object = |r: u32| {
+        let key = ObjKey {
+            table: TableId::Graphics,
+            key: r,
+        };
+        sc.objs
+            .key
+            .iter()
+            .position(|k| *k == key)
+            .expect("one object per graphic row")
+    };
+    let (first, second) = (object(0), object(2));
+    assert_eq!(sc.objs.geom[first], [50_000, 50_000, 60_000, 50_000]);
+    assert_eq!(sc.objs.geom[second], [10_000, 10_000, 20_000, 20_000]);
+    let polys = &sc.prims.polylines;
+    assert_eq!(polys.end.len(), 2, "one polyline per poly row");
+    let starts = [0, polys.end[0] as usize];
+    for (k, (obj, at)) in [(first, (50_000, 50_000)), (second, (10_000, 10_000))]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            sc.owner.polylines[k], obj as u32,
+            "polyline {k} drawn for its row"
+        );
+        assert_eq!((polys.x[starts[k]], polys.y[starts[k]]), at);
+    }
+    // Negative space: a one-point poly never reaches a document.
+    let one = format!("{head}poly 50 50\n");
+    let refused = p.open("", "t.shprim", one.as_bytes(), None).unwrap_err();
+    assert!(format!("{refused:?}").contains("E029"), "{refused:?}");
+}
+
 /// The selection set (`scene::Selected`): a reselect clears every bit the last one set, a
 /// scene that shrinks or grows keeps no stale bit, an index outside the scene (`u32::MAX`, the
 /// owner of an unowned primitive) is never selected, and a small selection of a large scene
