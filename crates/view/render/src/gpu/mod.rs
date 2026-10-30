@@ -4,15 +4,12 @@
 //! under one camera uniform (`shaders/canvas/`). A pan or zoom writes the uniform only; an
 //! edit rewrites the rows it changed. Every frame is complete: there is no tile cache.
 //!
-//! One producer, two consumers: the pack (`rows`) is the one place a per-row decision is
-//! made (dead and hidden rows draw nothing, colour and stroke width from the palette, fills,
-//! the marks' recolouring, the drawing order). The pipelines consume the rows on the GPU;
-//! [`crate::canvas::draw_rows`] consumes the same rows on the CPU ([`crate::CpuPainter`], the
-//! goldens). Culling to the view and the far-zoom cut (a row at most 2 px across is the whole
-//! pixels it touches) are pure functions of (row, camera), evaluated by each consumer: the
-//! vertex shader per row, `draw_rows` per row and per chain. Texts are not rows: they are the
-//! frame batch's atlas glyphs ([`crate::batch`]), which [`Pipelines`] draws in the same pass,
-//! each canvas stage at its place among the batch's instances.
+//! The pack (`rows`) is the one place a per-row decision is made (dead and hidden rows draw
+//! nothing, colour and stroke width from the palette, fills, the marks' recolouring, the
+//! drawing order). Culling to the view and the far-zoom cut (a row at most 2 px across is the
+//! whole pixels it touches) are pure functions of (row, camera), evaluated per row by the
+//! vertex shader. Texts are not rows: they are egui text shapes the app puts after each
+//! table's stage ([`Stage`]), so egui-wgpu draws rows and labels in one pass, in order.
 //!
 //! Six questions:
 //! 1. In: the four canvas tables of a frame ([`schemify_canvas::CanvasPrims`]: the scene as shown, decor,
@@ -45,9 +42,11 @@
 //! - `pub const KINDS`, `TRI`, `RECT`, `ARC`, `LINE`, `EDGE`, `STRIDE`, `SOURCES`, `MARKS`,
 //!   `OVERLAY`; style flags `FILL`, `PARITY`, `FIRST`, `CLOSED`
 //! - `pub struct Frame`, `pub enum Change`
-//! - `pub use rows::InstanceRows`, `pub use pipelines::Pipelines`, `pub use pass::BatchUploaded`
+//! - `pub use rows::InstanceRows`, `pub use pipelines::Pipelines`, `pub use callback::{CanvasGpu, Stage}`
+//! - `pub struct GridDots`, `pub fn grid_dots`, `pub const TEXT_MIN_PX`
 //! - `pub(crate) fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>)`
 
+mod callback;
 mod ear;
 mod marks;
 mod pass;
@@ -61,7 +60,7 @@ use kurbo::Rect;
 
 use schemify_canvas::Camera;
 
-pub use pass::BatchUploaded;
+pub use callback::{CanvasGpu, Stage};
 pub use pipelines::Pipelines;
 pub use rows::InstanceRows;
 
@@ -159,4 +158,62 @@ pub(crate) fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>) {
         d.iter().any(|q| q.start <= start && end <= q.end),
         "the new range is noted"
     );
+}
+
+/// Labels under this many logical px are not drawn (and a table whose largest label is under
+/// it draws none).
+pub const TEXT_MIN_PX: f64 = 3.0;
+
+/// The dots of a readable grid ([`grid_dots`]): dot `(i, j)` sits at world
+/// `(i · pitch, j · pitch)`, for `i` in `i_first..=i_last` and `j` in `j_first..=j_last`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridDots {
+    /// Milli-units between neighbouring dots.
+    pub pitch: f64,
+    /// The first dot column in view.
+    pub i_first: i64,
+    /// The last dot column in view (`≥ i_first`).
+    pub i_last: i64,
+    /// The first dot row in view.
+    pub j_first: i64,
+    /// The last dot row in view (`≥ j_first`).
+    pub j_last: i64,
+}
+
+/// The grid `step` milli-units apart as `view` shows it through `cam`: the dot pitch in
+/// milli-units (doubled until the dots are ≥ 10 px apart, xschem's rule) and the dot indices
+/// in view. `None` when there is no readable grid: a degenerate zoom, or more than 200 000
+/// dots.
+///
+/// # Panics
+///
+/// Panics on `step ≤ 0`.
+#[must_use]
+pub fn grid_dots(view: Rect, cam: &Camera, step: i32) -> Option<GridDots> {
+    assert!(step > 0, "grid step must be positive");
+    let mut s = f64::from(step);
+    // Bounded: 40 doublings exceed any i32 range.
+    for _ in 0..40 {
+        if s * cam.scale >= 10.0 {
+            break;
+        }
+        s *= 2.0;
+    }
+    let (wx0, wy0) = cam.to_world(view, view.x0, view.y0);
+    let (wx1, wy1) = cam.to_world(view, view.x1, view.y1);
+    let (i0, i1) = ((wx0 / s).ceil() as i64, (wx1 / s).floor() as i64);
+    let (j0, j1) = ((wy0 / s).ceil() as i64, (wy1 / s).floor() as i64);
+    if (i1 - i0 + 1).saturating_mul(j1 - j0 + 1) > 200_000 || i1 < i0 || j1 < j0 {
+        return None; // degenerate zoom: no readable grid
+    }
+    assert!(s >= f64::from(step), "the pitch only doubles");
+    debug_assert!(i0 <= i1, "a dot column in view");
+    debug_assert!(j0 <= j1, "a dot row in view");
+    Some(GridDots {
+        pitch: s,
+        i_first: i0,
+        i_last: i1,
+        j_first: j0,
+        j_last: j1,
+    })
 }

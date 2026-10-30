@@ -27,9 +27,8 @@ use schemify_cli::rpc::{self, Frame, Json, Listener, Request, Stream};
 use schemify_editor::editor::{Editor, Options, QUEUED_MAX};
 use schemify_editor::plugins::Note;
 use schemify_editor::rpc::{self as commands, Dispatched};
-use schemify_render::accesskit::TreeUpdate;
-use schemify_render::{App, Painter, Waker};
-use schemify_ui::InputEvents;
+use schemify_render::gpu::InstanceRows;
+use schemify_render::{App, Waker, egui};
 
 use crate::window::{self, Window};
 
@@ -277,19 +276,15 @@ pub fn run(options: Options, socket: &str) -> Result<(), String> {
 }
 
 impl App for Served {
-    fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
+    fn ctx(&self) -> egui::Context {
+        self.window.ctx()
+    }
+
+    fn frame(&mut self, input: egui::RawInput, canvas: &mut InstanceRows) -> egui::FullOutput {
         self.pump.take(self.window.editor_mut());
-        let changed = self.window.update(events, viewport);
+        let out = self.window.frame(input, canvas);
         self.pump.answer(self.window.editor_mut());
-        changed
-    }
-
-    fn paint<P: Painter>(&mut self, painter: &mut P, viewport: (f32, f32)) {
-        self.window.paint(painter, viewport);
-    }
-
-    fn access(&mut self) -> TreeUpdate {
-        self.window.access()
+        out
     }
 
     fn wake_ms(&self) -> Option<u32> {

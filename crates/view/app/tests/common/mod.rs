@@ -10,8 +10,7 @@ use std::path::{Path, PathBuf};
 
 use schemify_editor::editor::{Editor, Options};
 use schemify_editor::geometry::Pt;
-use schemify_render::CpuPainter;
-use schemify_render::peniko::Color;
+use schemify_render::{Image, Raster};
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Mods};
 
 /// Logical window size of every scripted session.
@@ -75,8 +74,10 @@ pub struct Session {
     pub ed: Editor,
     pub now: u64,
     pub dir: PathBuf,
-    /// The window's paint caches (canvas raster layer, diff, indexes) across renders.
+    /// The window's paint caches (canvas diff, label indexes) across renders.
     pub caches: schemify_app::paint::Caches,
+    /// The offscreen GPU renders draw with, opened on the first render.
+    pub raster: Option<Raster>,
 }
 
 impl Session {
@@ -112,6 +113,7 @@ impl Session {
             now: 1,
             dir,
             caches: Default::default(),
+            raster: None,
         };
         s.frame(InputEvents::default());
         s.frame(InputEvents::default());
@@ -122,8 +124,8 @@ impl Session {
     /// unless a test sets `now`).
     pub fn frame(&mut self, events: InputEvents) -> bool {
         self.now += 1000;
-        let changed = self.ed.update(&events, VIEW, self.now);
-        schemify_app::paint::serve_raster(&mut self.ed);
+        let changed = self.ed.step(&events, VIEW, self.now);
+        schemify_app::paint::serve_raster(&mut self.ed, &mut self.caches);
         changed
     }
 
@@ -273,11 +275,20 @@ impl Session {
         self.ed.session().project.doc(h).expect("open").canonical()
     }
 
-    /// Renders the window on the CPU.
-    pub fn render(&mut self) -> schemify_render::Pixmap {
-        let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
-        schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut p);
-        p.finish(Color::BLACK)
+    /// Renders the window offscreen through the window's renderer (one frame, no input).
+    ///
+    /// # Panics
+    ///
+    /// No GPU, hardware or software (lavapipe, llvmpipe), is available.
+    pub fn render(&mut self) -> Image {
+        let raster = self
+            .raster
+            .get_or_insert_with(|| Raster::new().expect("a GPU, hardware or software, for renders"));
+        self.now += 1000;
+        let input = InputEvents::default().raw(VIEW);
+        let frame =
+            schemify_app::paint::frame(&mut self.ed, &mut self.caches, input, self.now, raster.canvas());
+        raster.render(self.ed.shell().ctx(), frame.output, (VIEW.0 as u32, VIEW.1 as u32))
     }
 }
 
@@ -288,8 +299,8 @@ impl Drop for Session {
 }
 
 /// Writes `px` as a PNG to `path` (screenshots).
-pub fn save_png(px: &schemify_render::Pixmap, path: &Path) {
-    let png = px.clone().into_png().expect("encode png");
+pub fn save_png(px: &Image, path: &Path) {
+    let png = px.png().expect("encode png");
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).expect("the test's temp dir is writable");
     }
@@ -299,32 +310,25 @@ pub fn save_png(px: &schemify_render::Pixmap, path: &Path) {
 /// Compares `pixmap` with `tests/golden/<name>.png`: equal size, and at most 0.1% of pixels
 /// off by more than 2 in a channel. `SCHEMIFY_BLESS=1` writes the golden first; a failure
 /// writes the actual image beside the test binary's temp dir.
-pub fn check_golden(name: &str, pixmap: schemify_render::Pixmap) {
+pub fn check_golden(name: &str, pixmap: Image) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
     let path = format!("{dir}/{name}.png");
-    let png = pixmap.clone().into_png().expect("encode png");
+    let png = pixmap.png().expect("encode png");
     if std::env::var_os("SCHEMIFY_BLESS").is_some() {
         std::fs::create_dir_all(dir).expect("the test's temp dir is writable");
         std::fs::write(&path, &png).expect("the test's temp dir is writable");
     }
     let want = std::fs::read(&path)
         .unwrap_or_else(|_| panic!("{path} missing; run with SCHEMIFY_BLESS=1"));
-    let want =
-        schemify_render::Pixmap::from_png(std::io::Cursor::new(want)).expect("decode golden");
-    assert_eq!(
-        (want.width(), want.height()),
-        (pixmap.width(), pixmap.height())
-    );
+    let want = Image::from_png(&want).expect("decode golden");
+    assert_eq!((want.width, want.height), (pixmap.width, pixmap.height));
     let bad = want
-        .data()
-        .iter()
-        .zip(pixmap.data())
-        .filter(|(a, b)| {
-            let (a, b) = ([a.r, a.g, a.b, a.a], [b.r, b.g, b.b, b.a]);
-            a.iter().zip(b).any(|(x, y)| x.abs_diff(y) > 2)
-        })
+        .rgba
+        .chunks(4)
+        .zip(pixmap.rgba.chunks(4))
+        .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 2))
         .count();
-    let limit = want.data().len() / 1000;
+    let limit = want.rgba.len() / 4 / 1000;
     if bad > limit {
         let out = format!("{}/{name}.actual.png", env!("CARGO_TARGET_TMPDIR"));
         std::fs::write(&out, &png).expect("the test's temp dir is writable");

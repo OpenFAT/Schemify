@@ -43,10 +43,13 @@ pub(crate) fn field(v: &mut View, ui: &mut Ui, n: NodeIx) {
         .desired_width(width)
         .interactive(!v.t.nodes.is_disabled(v.s, n));
     let r = if multi {
-        let max_h = px * AREA_EM_MAX;
+        // A fixed height is the area's; else it grows with its lines up to AREA_EM_MAX.
+        let fixed = v.px(n, StyleProp::Height);
+        let (max_h, min_h) = if fixed > 0.0 { (fixed, fixed) } else { (px * AREA_EM_MAX, 0.0) };
         egui::ScrollArea::vertical()
             .id_salt(v.egui_id(n).with("area"))
             .max_height(max_h)
+            .min_scrolled_height(min_h)
             .show(ui, |ui| ui.add(edit))
             .inner
     } else {

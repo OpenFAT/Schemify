@@ -1,85 +1,37 @@
-//! The only crate that touches the GPU (D5): draws `ui_layout` and the schematic canvas
-//! tables, and owns the window/event loop glue (native and web). Cites D5, D33, D39 and
-//! `docs/spec/web.md` §7.
+//! The only crate that touches the GPU and the window (D5 as amended 2026-10-30): egui-winit
+//! feeds the window's events to egui, egui-wgpu draws each frame's egui output, and the
+//! schematic canvas is drawn among it by Schemify's own instanced pipelines ([`gpu`]) as egui
+//! paint callbacks, so a pan or zoom over 10^5 objects writes one camera uniform and egui
+//! tessellates nothing for it (D39).
 //!
-//! A frame, in spine order:
+//! A frame:
 //!
 //! ```text
-//! widgets::draw_ui(Layer::Main)        bars, tabs, status
-//! Painter::canvas_begin(frame)         background and grid, clipped to the canvas rect
-//! Painter::canvas_rows(table) × 4      each table's rows, its labels drawn right after
-//! Painter::canvas_marks                the selection marks
-//! Painter::canvas_rows(OVERLAY)        the gesture overlay and its labels
-//! Painter::canvas_end
-//! widgets::draw_ui(Layer::Overlay)     menu popups, dialogs
+//! egui_winit::State::take_egui_input(window)       -> RawInput
+//! App::frame(input, canvas rows)                    -> FullOutput  (the app packs the rows)
+//! egui_winit::State::handle_platform_output         cursor, clipboard, IME, accessibility
+//! ctx.tessellate(shapes); CanvasGpu::prepare        meshes; rows and camera uploaded
+//! egui_wgpu::Renderer::render(pass)                 one pass: meshes and canvas stages in order
 //! ```
 //!
-//! Every drawing function is generic over [`Painter`], so the same code fills the GPU
-//! painter's frame batch ([`GpuPainter`]) or rasterizes on the CPU ([`CpuPainter`]: golden
-//! images, and the web's frames when the browser has no WebGPU adapter). No `dyn`: the trait
-//! is a compile-time bound only.
-//!
-//! On the GPU a frame is one render pass straight into the surface (D39): the batch's rects,
-//! stroke segments, images and atlas masks ([`batch`]: glyphs, icons and math delimiters
-//! rasterized once by `vello_cpu` into the coverage [`atlas`]) in painting order, and among
-//! them the canvas's stages from its retained instance rows ([`gpu::InstanceRows`], patched
-//! from the rows [`schemify_canvas::CanvasDiff`] reports changed), drawn by Schemify's own
-//! instanced pipelines ([`gpu`]), so a pan or zoom writes one camera uniform. On the CPU,
-//! [`canvas::draw_rows`] rasterizes the same rows, the goldens' oracle. Every frame is
-//! complete: there is no tile cache and no vector renderer on the GPU.
+//! [`Raster`] draws the same output offscreen (goldens, PNG export).
 //!
 //! Contents:
-//! - modules `atlas`, `batch`, `canvas`, `gpu`, `ui_rows`, `waves`, `widgets`
-//! - re-exports:
-//!   - `CpuPainter`, `Painter`, `Chains`, `rgba` (`painter`, `cpu`)
-//!   - `Batch`, `GpuPainter` (`batch`)
-//!   - `App`, `RunError`, `Waker`, `run`, `block_on` (`window`; its web tiers in `window::cpu_view`)
-//!   - `Pixmap`, `Glyph`, `kurbo`, `peniko`, `wgpu`, `accesskit`
-//!
-//! ```
-//! use schemify_canvas::{Camera, CanvasPrims, Marks, Palette};
-//! use schemify_render::canvas::{CanvasScratch, draw_canvas};
-//! use schemify_render::{CpuPainter, Painter};
-//! use schemify_render::kurbo::Rect;
-//!
-//! let mut prims = CanvasPrims::default();
-//! prims.line(0, 0, 100_000, 0, 1);
-//! let view = Rect::new(0.0, 0.0, 64.0, 64.0);
-//! let mut cam = Camera { cx: 0.0, cy: 0.0, scale: 1.0 };
-//! cam.fit(view, [0, -10_000, 100_000, 10_000]);
-//! let mut p = CpuPainter::new(64, 64, 1.0);
-//! let mut text = schemify_ui::TextSystem::new();
-//! draw_canvas(&mut p, view, &cam, 20_000, &prims, &Palette::xschem_dark(),
-//!     &CanvasPrims::default(), &Marks::default(), &mut text, &mut CanvasScratch::default());
-//! let pixels = p.finish(schemify_render::peniko::Color::BLACK);
-//! assert_eq!(pixels.width(), 64);
-//! ```
+//! - module `gpu`
+//! - re-exports: `App`, `RunError`, `Waker`, `run`, `block_on` (`window`); `Raster`, `Image`
+//!   (`raster`); `egui`, `kurbo`, `wgpu`
 
 #![forbid(unsafe_code)]
 
-pub mod atlas;
-pub mod batch;
-pub mod canvas;
-mod cpu;
+mod device;
 pub mod gpu;
-mod painter;
-pub mod ui_rows;
-pub mod waves;
-pub mod widgets;
+mod raster;
 mod window;
 
-pub use batch::{Batch, GpuPainter};
-pub use cpu::CpuPainter;
-pub use painter::{Chains, Painter, rgba};
+pub use raster::{Image, Raster};
 #[cfg(not(target_arch = "wasm32"))]
 pub use window::block_on;
 pub use window::{App, RunError, Waker, run};
 
-/// Re-exported so callers name the same geometry, colour, glyph and GPU types.
-pub use vello_cpu::Glyph;
-/// CPU raster target returned by [`CpuPainter::finish`] (PNG encode/decode included).
-pub use vello_cpu::Pixmap;
-pub use {kurbo, peniko, wgpu};
-
-/// Re-exported for [`App::access`]'s return type.
-pub use accesskit;
+/// Re-exported so callers name the same egui, geometry and GPU types.
+pub use {egui, kurbo, wgpu};

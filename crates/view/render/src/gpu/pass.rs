@@ -1,32 +1,18 @@
-//! A frame on the GPU: the instance rows and the batch in, buffer and texture writes and one
-//! render pass out. [`Pipelines::upload`] and [`Pipelines::upload_batch`] write what changed
-//! since the last frame; [`Pipelines::draw`] draws the batch's draws in order with each canvas
-//! stage among them.
+//! Uploading and drawing the canvas: the rows' dirty ranges and the camera uniform written
+//! before egui-wgpu's pass, then each [`Stage`] drawn inside it (`super::callback`), so the
+//! rows sit at their place among egui's meshes.
 //!
 //! Contents:
-//! - `Pipelines::upload`, `Pipelines::upload_batch`, `Pipelines::take_uploaded`,
-//!   `Pipelines::take_batch_uploaded`, `Pipelines::draw`
-//! - `pub struct BatchUploaded`
+//! - `Pipelines::upload`, `Pipelines::write_camera`, `Pipelines::take_uploaded`,
+//!   `Pipelines::draw_stage`
 
 use std::mem;
 
 use schemify_canvas::LAYERS;
 
-use crate::atlas::ATLAS_SIDE;
-use crate::batch::{self, Batch, Stage, What};
-
-use super::pipelines::{self, Pipelines, TexelRect, UNIFORM_BYTES};
+use super::pipelines::{self, Pipelines, UNIFORM_BYTES};
 use super::rows::BYTES_MAX;
-use super::{Frame, InstanceRows, SOURCES, TRI};
-
-/// Bytes [`Pipelines::upload_batch`] wrote ([`Pipelines::take_batch_uploaded`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BatchUploaded {
-    /// Glyph atlas texture bytes.
-    pub atlas: u64,
-    /// Batch instance buffer bytes.
-    pub instances: u64,
-}
+use super::{Frame, InstanceRows, SOURCES, Stage, TRI};
 
 impl Pipelines {
     /// Writes the rows' dirty ranges to their buffers (a buffer too small is replaced by one
@@ -74,255 +60,40 @@ impl Pipelines {
         assert_eq!(rows.dirty_bytes(), 0, "every dirty range uploaded");
     }
 
-    /// Writes the batch's instances, its atlas's pending masks and the textures of images it
-    /// draws for the first time, and clears the pending masks. Call before
-    /// [`Pipelines::draw`].
-    ///
-    /// Cost: one `write_buffer`, one `write_texture` per new mask and per new image.
+    /// Writes the camera uniform for `frame` at `dev` device px per logical px into a
+    /// `size`-px target. Call before the pass that draws the stages.
     ///
     /// # Panics
     ///
-    /// Panics on a UI row's dirty range past its rows or an image that is not RGBA8, neither
-    /// of which the GPU painter writes.
-    pub fn upload_batch(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, batch: &mut Batch) {
-        let bytes = batch.instances();
-        if !bytes.is_empty() {
-            let b = match &mut self.instances {
-                Some(b) if b.size() >= bytes.len() as u64 => b,
-                slot => {
-                    let size = bytes.len().next_power_of_two().max(1 << 16);
-                    let usage = wgpu::BufferUsages::VERTEX;
-                    slot.insert(pipelines::buffer(device, "batch", size as u64, usage))
-                }
-            };
-            assert!(b.size() >= bytes.len() as u64, "the buffer holds the frame");
-            queue.write_buffer(b, 0, bytes);
-            self.instances_uploaded += bytes.len() as u64;
-        }
-        // The retained UI rows: only what changed since the last upload.
-        for (k, s) in batch.ui.src.iter_mut().enumerate() {
-            let dirty = mem::take(&mut s.dirty);
-            let bytes = &s.bytes;
-            let slot = &mut self.ui_rows[k];
-            let b = match slot {
-                Some(b) if b.size() >= bytes.len() as u64 => b,
-                _ => {
-                    let size = bytes.len().next_power_of_two().max(1 << 16);
-                    let usage = wgpu::BufferUsages::VERTEX;
-                    let b = pipelines::buffer(device, "ui rows", size as u64, usage);
-                    queue.write_buffer(&b, 0, bytes);
-                    self.instances_uploaded += bytes.len() as u64;
-                    *slot = Some(b);
-                    continue;
-                }
-            };
-            for r in dirty {
-                assert!(r.end <= bytes.len(), "a dirty range inside the rows");
-                queue.write_buffer(b, r.start as u64, &bytes[r.clone()]);
-                self.instances_uploaded += r.len() as u64;
-            }
-        }
-        assert_eq!(batch.ui.dirty_bytes(), 0, "every UI row uploaded");
-        // The panes' offsets and clips that moved (a scroll writes one entry, 32 bytes).
-        let panes = self.panes.iter_mut().zip(&batch.ui.panes).enumerate();
-        for (k, (have, want)) in panes {
-            if have != want {
-                *have = *want;
-                let bytes: Vec<u8> = want.iter().flat_map(|v| v.to_ne_bytes()).collect();
-                queue.write_buffer(&self.ui_uniform, 16 + 32 * k as u64, &bytes);
-                self.instances_uploaded += bytes.len() as u64;
-            }
-        }
-        let (slots, coverage) = batch.atlas.pending();
-        for &(s, at) in slots {
-            let n = usize::from(s.w) * usize::from(s.h);
-            let at = at as usize;
-            assert!(
-                at + n <= coverage.len(),
-                "a pending mask's bytes are staged"
-            );
-            let rect = TexelRect {
-                x: u32::from(s.x),
-                y: u32::from(s.y),
-                w: u32::from(s.w),
-                h: u32::from(s.h),
-            };
-            pipelines::write_texels(queue, &self.atlas, rect, 1, &coverage[at..at + n]);
-        }
-        self.atlas_uploaded += batch.atlas.pending_bytes() as u64;
-        batch.atlas.clear_pending();
-        // ponytail: image textures are dropped wholesale past twice the prose image cap (as
-        // `painter::image_data` drops its blobs); an LRU when pages show more images.
-        if self.images.len() + batch.images().len() > 2 * schemify_ui::TextSystem::IMAGES_MAX {
-            self.images.clear();
-        }
-        for image in batch.images() {
-            let id = image.data.id();
-            if self.images.contains_key(&id) {
-                continue;
-            }
-            assert!(
-                image.format == peniko::ImageFormat::Rgba8,
-                "prose images are RGBA8"
-            );
-            let size = (image.width, image.height);
-            let t = pipelines::texture(device, "image", size, wgpu::TextureFormat::Rgba8Unorm);
-            let rect = TexelRect {
-                x: 0,
-                y: 0,
-                w: size.0,
-                h: size.1,
-            };
-            pipelines::write_texels(queue, &t, rect, 4, image.data.data());
-            let view = t.create_view(&Default::default());
-            let bind = pipelines::bind_batch(
-                device,
-                &self.ui_layout,
-                &self.ui_uniform,
-                &self.atlas_view,
-                &view,
-                &self.sampler,
-            );
-            self.images.insert(id, bind);
-        }
-        debug_assert_eq!(self.atlas.width(), u32::from(ATLAS_SIDE), "one atlas side");
-        debug_assert_eq!(batch.atlas.pending_bytes(), 0, "every mask uploaded");
+    /// Panics on an empty target or a non-positive device scale.
+    pub fn write_camera(&self, queue: &wgpu::Queue, frame: &Frame, dev: f64, size: (u32, u32)) {
+        assert!(size.0 > 0 && size.1 > 0, "a target has a size");
+        assert!(dev > 0.0, "a positive device scale, got {dev}");
+        queue.write_buffer(&self.uniform, 0, &uniform(frame, dev, size));
     }
 
-    /// Bytes written to the GPU by [`Pipelines::upload`] since the last call (a report's
-    /// "bytes per edit").
+    /// Bytes [`Pipelines::upload`] wrote since the last call.
     pub fn take_uploaded(&mut self) -> u64 {
         mem::take(&mut self.uploaded)
     }
 
-    /// Bytes written by [`Pipelines::upload_batch`] since the last call.
-    pub fn take_batch_uploaded(&mut self) -> BatchUploaded {
-        BatchUploaded {
-            atlas: mem::take(&mut self.atlas_uploaded),
-            instances: mem::take(&mut self.instances_uploaded),
-        }
-    }
-
-    /// Draws one frame into `target` (a `size`-px texture of these pipelines' format) as one
-    /// render pass cleared to `clear`: the batch's draws in order, each canvas stage among
-    /// them (when `frame` has a canvas) scissored to its view at `dev` device px per logical
-    /// px, the rows as the CPU painter draws them: source by source, layer by layer, fills
-    /// before strokes. A batch with no canvas stage draws the whole canvas first. Call after
-    /// [`Pipelines::upload`] and [`Pipelines::upload_batch`].
-    ///
-    /// Cost: one pass, two uniform writes, one draw per batch draw and per non-empty (source,
-    /// layer, kind).
+    /// Draws `stage` into `pass` (its viewport the whole `size`-px target, as the camera
+    /// uniform assumes; its scissor already the canvas clip): the background and grid, or a
+    /// row source layer by layer, fills before strokes.
     ///
     /// # Panics
     ///
-    /// Panics when rows were packed since the last [`Pipelines::upload`], on an empty target,
-    /// or on a batch whose instances or images were not uploaded
-    /// ([`Pipelines::upload_batch`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one frame's inputs: the encoder, the target, the rows, the batch and the camera"
-    )]
-    pub fn draw(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        queue: &wgpu::Queue,
-        target: &wgpu::TextureView,
-        clear: wgpu::Color,
-        rows: &InstanceRows,
-        batch: &Batch,
-        frame: Option<&Frame>,
-        dev: f64,
-        size: (u32, u32),
-    ) {
-        let (w, h) = size;
-        assert!(w > 0, "a target has a size");
-        assert!(h > 0, "a target has a size");
-        assert!(dev > 0.0, "a positive device scale, got {dev}");
+    /// Panics when rows were packed since the last [`Pipelines::upload`].
+    pub fn draw_stage(&self, pass: &mut wgpu::RenderPass<'_>, rows: &InstanceRows, stage: Stage, size: (u32, u32)) {
         assert_eq!(rows.dirty_bytes(), 0, "rows uploaded before they are drawn");
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("frame"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(clear),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        let mut ui = [0u8; 16];
-        ui[..4].copy_from_slice(&(w as f32).to_ne_bytes());
-        ui[4..8].copy_from_slice(&(h as f32).to_ne_bytes());
-        queue.write_buffer(&self.ui_uniform, 0, &ui);
-        // The canvas's scissor, when there is a canvas in view.
-        let scissor = frame.and_then(|frame| {
-            let v = frame.view;
-            let at = |c: f64, max: u32| c.clamp(0.0, f64::from(max)) as u32;
-            let (x0, y0) = (at((v.x0 * dev).floor(), w), at((v.y0 * dev).floor(), h));
-            let (x1, y1) = (at((v.x1 * dev).ceil(), w), at((v.y1 * dev).ceil(), h));
-            if x1 <= x0 || y1 <= y0 {
-                return None;
+        pass.set_viewport(0.0, 0.0, size.0 as f32, size.1 as f32, 0.0, 1.0);
+        pass.set_bind_group(0, &self.bind, &[]);
+        match stage {
+            Stage::Background => {
+                pass.set_pipeline(&self.background);
+                pass.draw(0..6, 0..1);
             }
-            queue.write_buffer(&self.uniform, 0, &uniform(frame, dev, size));
-            Some([x0, y0, x1 - x0, y1 - y0])
-        });
-        let stage = |pass: &mut wgpu::RenderPass<'_>, stage: Stage| {
-            let Some([x, y, sw, sh]) = scissor else {
-                return;
-            };
-            pass.set_scissor_rect(x, y, sw, sh);
-            pass.set_bind_group(0, &self.bind, &[]);
-            match stage {
-                Stage::Background => {
-                    pass.set_pipeline(&self.background);
-                    pass.draw(0..6, 0..1);
-                }
-                Stage::Rows(src) => self.draw_rows(pass, rows, src),
-            }
-        };
-        let staged = batch
-            .draws()
-            .iter()
-            .any(|d| matches!(d.what, What::Canvas(_)));
-        if !staged {
-            stage(&mut pass, Stage::Background);
-            for src in 0..SOURCES {
-                stage(&mut pass, Stage::Rows(src));
-            }
-        }
-        for d in batch.draws() {
-            let bind = match d.what {
-                What::Canvas(s) => {
-                    stage(&mut pass, s);
-                    continue;
-                }
-                What::Ui | What::Retained(_) => &self.ui_bind,
-                What::Image(k) => {
-                    let id = batch.images()[k as usize].data.id();
-                    self.images
-                        .get(&id)
-                        .expect("images uploaded before they are drawn")
-                }
-            };
-            if d.range.is_empty() {
-                continue;
-            }
-            let buf = match d.what {
-                What::Retained(k) => self.ui_rows[k].as_ref(),
-                _ => self.instances.as_ref(),
-            }
-            .expect("instances uploaded before they are drawn");
-            assert!(
-                buf.size() >= u64::from(d.range.end) * batch::STRIDE as u64,
-                "the buffer holds every instance"
-            );
-            pass.set_scissor_rect(0, 0, w, h);
-            pass.set_pipeline(&self.ui);
-            pass.set_bind_group(0, bind, &[]);
-            pass.set_vertex_buffer(0, buf.slice(..));
-            pass.draw(0..6, d.range.clone());
+            Stage::Rows(src) => self.draw_rows(pass, rows, src),
         }
     }
 }
@@ -370,7 +141,7 @@ fn uniform(frame: &Frame, dev: f64, (w, h): (u32, u32)) -> [u8; UNIFORM_BYTES] {
     let (fx, fy) = (cam.cx.floor(), cam.cy.floor());
     let clamp = |c: f64| c.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
     let (ox, oy) = cam.origin(v);
-    let grid = match crate::canvas::grid_dots(v, cam, frame.grid) {
+    let grid = match super::grid_dots(v, cam, frame.grid) {
         Some(dots) => {
             let p = dots.pitch * cam.scale;
             [

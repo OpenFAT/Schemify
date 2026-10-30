@@ -247,8 +247,7 @@ impl View<'_> {
                     (false, Some(h)) => vec2(avail.x, h),
                     _ => avail,
                 };
-                let rect = self.sized(ui, c, size, share.is_some(), !row || stretch, row, cross);
-                self.keep_size(ui, c, row, if row { rect.width() } else { rect.height() });
+                self.sized(ui, c, size, share.is_some(), !row || stretch, row, cross);
             }
         });
     }
@@ -268,6 +267,8 @@ impl View<'_> {
         row: bool,
         center: Option<f32>,
     ) -> ERect {
+        // egui's sizing pass measures natural sizes: nothing stretches or grows in it.
+        let (grown, fill_cross) = if ui.is_sizing_pass() { (false, false) } else { (grown, fill_cross) };
         // A grown cell's main size (free space, a dragged split) wins over a fixed style.
         let mut fixed = vec2(self.px(c, StyleProp::Width), self.px(c, StyleProp::Height));
         if grown {
@@ -295,6 +296,9 @@ impl View<'_> {
         }
         child.set_min_width(self.px(c, StyleProp::MinWidth).min(cell.x));
         self.node(&mut child, c);
+        // The size it wants (unclipped) is what later frames leave room for.
+        let natural = child.min_rect().size();
+        self.keep_size(ui, c, row, if row { natural.x } else { natural.y });
         let used = child.min_rect().intersect(rect);
         if center.is_some() {
             ui.data_mut(|d| d.insert_temp(self.egui_id(c).with("cross"), used.height()));
@@ -321,6 +325,9 @@ impl View<'_> {
         if before.is_none_or(|b| (b - size).abs() > 0.5) {
             ui.data_mut(|d| d.insert_temp(key.with("prev"), size));
             if before.is_some() {
+                if std::env::var_os("SCHEMIFY_FLEX_DEBUG").is_some() {
+                    eprintln!("flex: {} {:?} -> {size}", self.s.get(self.id(c)), before);
+                }
                 ui.ctx().request_discard("a flex child changed size");
             }
         }
@@ -390,8 +397,7 @@ impl View<'_> {
                     self.st.set_split(self.id(n), px);
                 }
                 debug_assert!(div.width() >= 0.0);
-                let r = self.sized(ui, b, dims(second), true, true, row, None);
-                self.keep_size(ui, b, row, if row { r.width() } else { r.height() });
+                self.sized(ui, b, dims(second), true, true, row, None);
             });
         });
         self.record(n, frame_r.response.rect, None);
@@ -454,6 +460,9 @@ impl View<'_> {
             .frame(self.frame(n))
             .backdrop_color(Color32::TRANSPARENT)
             .show(ctx, |ui| {
+                // The modal measured its width in egui's sizing pass (cells do not stretch
+                // there); its height may grow with its content past last frame's.
+                ui.set_max_height(ctx.content_rect().height() * 0.9);
                 ui.set_min_width(self.px(n, StyleProp::MinWidth));
                 self.children(ui, n);
                 ui.min_rect()

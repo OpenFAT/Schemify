@@ -210,8 +210,11 @@ fn row(v: &mut View, ui: &mut Ui, n: NodeIx, shown: Shown, active: bool) -> Resp
         if fixed.x > 0.0 { fixed.x } else { content.x.max(style(StyleProp::MinWidth) as f32) },
         if fixed.y > 0.0 { fixed.y } else { content.y },
     );
-    // Across a column cell (its minimum) or a justified popup, like a flex column's stretch.
-    size.x = size.x.max(ui.min_size().x);
+    // Across a column cell (its minimum: nothing is placed in it yet) or a justified popup,
+    // like a flex column's stretch; in a row the minimum is what the row already holds.
+    if ui.layout().is_vertical() {
+        size.x = size.x.max(ui.min_size().x);
+    }
     if ui.layout().horizontal_justify() {
         size.x = size.x.max(ui.available_width());
     }

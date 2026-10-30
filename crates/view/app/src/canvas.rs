@@ -1,8 +1,8 @@
-//! `canvas`: a [`CanvasPicture`] → the painter's canvas rows and label texts (architecture.md,
-//! frame spine step 12; D39, `docs/dev/perf.md`). Between `Painter::canvas_begin` and
-//! `canvas_end`: the four canvas tables (scene as shown, decor, violation markers, parity
-//! extra) through `Painter::canvas_rows`, each patched by its change since the last frame
-//! and followed by its texts; the selection marks; then the gesture overlay, repacked whole.
+//! `canvas`: a [`CanvasPicture`] → the GPU's canvas rows and the canvas slot's egui shape
+//! (architecture.md, frame spine step 12; D39, `docs/dev/perf.md`): the background stage, the
+//! four canvas tables (scene as shown, decor, violation markers, parity extra) each packed by
+//! its change since the last frame and drawn as one stage followed by its labels (egui text);
+//! the selection marks; then the gesture overlay, repacked whole.
 //!
 //! A table's change comes from its producer when it reports one (the scene's and the
 //! markers' killed rows, O(change)), else from [`CanvasDiff`]'s edit script of the hashed
@@ -11,24 +11,22 @@
 //! whole when even the table's largest is under [`draw::TEXT_MIN_PX`].
 //!
 //! Contents:
-//! - `pub(crate) struct CanvasCache`, `CanvasCache::paint<P: Painter>(&mut self, p: &mut P,
-//!   picture: &CanvasPicture<'_>, text: &mut TextSystem) -> bool`
+//! - `pub(crate) struct CanvasCache`, `CanvasCache::paint(&mut self, ctx, picture, rows) ->
+//!   (egui::Shape, bool)`
 
 use std::hash::DefaultHasher;
 
 use schemify_canvas::kurbo::Rect as KRect;
 use schemify_canvas::{Camera, CanvasDiff, CanvasPrims, PrimIndex, Rows, TableChange};
 use schemify_editor::editor::CanvasPicture;
-use schemify_render::Painter;
-use schemify_render::canvas::{self as draw, CanvasScratch};
-use schemify_render::gpu::{Change, Frame, OVERLAY};
-use schemify_ui::TextSystem;
+use schemify_render::egui;
+use schemify_render::gpu::{Change, Frame, InstanceRows, MARKS, OVERLAY, Stage, TEXT_MIN_PX};
+
+use crate::labels;
 
 /// What paint keeps of the canvas between frames; rebuilt from the tables if dropped.
 #[derive(Default)]
 pub(crate) struct CanvasCache {
-    /// Label glyphs and path buffers of every canvas table.
-    scratch: CanvasScratch,
     /// The diff's snapshot and what it was taken at.
     diff: Diffed,
     /// Per table in drawing order: its label index and largest label.
@@ -102,12 +100,16 @@ impl CanvasCache {
     /// Paints `picture` between `Painter::canvas_begin` and `canvas_end`. Returns whether
     /// the diff took the scene's and the markers' reported edits (`Editor::painted`): true
     /// when the generations or the style moved, also for a painter that shows no canvas.
-    pub(crate) fn paint<P: Painter>(
+    /// Packs `picture`'s tables into `rows` (each by its change since the last frame) and
+    /// returns the canvas slot's shape: the stages in drawing order with each table's labels
+    /// after its rows, clipped by the slot to the canvas. Returns whether the diff took the
+    /// scene's and the markers' reported edits ([`schemify_editor::editor::Editor::painted`]).
+    pub(crate) fn paint(
         &mut self,
-        painter: &mut P,
+        ctx: &egui::Context,
         picture: &CanvasPicture<'_>,
-        text: &mut TextSystem,
-    ) -> bool {
+        rows: &mut InstanceRows,
+    ) -> (egui::Shape, bool) {
         assert!(picture.cam.scale > 0.0, "a camera scale is positive");
         assert!(picture.cam.scale.is_finite(), "a camera scale is finite");
         let style = style_key(picture);
@@ -124,23 +126,22 @@ impl CanvasCache {
                 marks_changed: false,
             }
         };
-        let frame = Frame {
+        rows.frame = Some(Frame {
             view: picture.view,
             cam: picture.cam,
             grid: picture.grid,
             background: picture.palette.background,
             grid_color: picture.palette.grid,
-        };
-        if !painter.canvas_begin(&frame) {
-            assert_eq!(self.diff.gens, picture.gens, "the diff is current");
-            return diffed; // a painter that shows no canvas
-        }
+        });
+        let screen = ctx.content_rect();
+        let mut shapes = vec![Stage::Background.shape(screen)];
         let (view, cam, palette) = (picture.view, &picture.cam, &picture.palette);
         let near = world_box(view, cam);
         let tables = [shown, picture.decor, picture.markers, picture.extra];
         let tables_changes = tables.into_iter().zip(changes).enumerate();
         for (k, (table, change)) in tables_changes {
-            painter.canvas_rows(k, table, palette, change);
+            rows.pack(k, table, palette, change);
+            shapes.push(Stage::Rows(k).shape(screen));
             // A table whose largest label is under the text cut at this zoom draws none (the
             // far zoom's frames look at no label); else only the rows near the view.
             let cache = &mut self.tables[k];
@@ -149,42 +150,23 @@ impl CanvasCache {
                 cache.label_gen = generation + 1;
                 cache.label_max = table.texts.size.iter().copied().max().unwrap_or(0);
             }
-            if f64::from(cache.label_max) * cam.scale < draw::TEXT_MIN_PX {
+            if f64::from(cache.label_max) * cam.scale < TEXT_MIN_PX {
                 continue;
             }
             let listed = cache.rows_near(table, generation, near, &mut self.near);
             let listed = listed.then_some(&self.near.texts[..]);
-            let scratch = &mut self.scratch;
-            draw::draw_texts(
-                painter,
-                view,
-                cam,
-                &table.texts,
-                listed,
-                palette,
-                text,
-                scratch,
-            );
+            labels::draw(ctx, view, cam, &table.texts, listed, palette, &mut shapes);
         }
-        painter.canvas_marks(picture.scene, picture.marks, marks_changed);
+        rows.pack_marks(picture.scene, picture.marks, marks_changed);
+        shapes.push(Stage::Rows(MARKS).shape(screen));
         if !picture.overlay.is_empty() {
-            let (overlay, scratch) = (picture.overlay, &mut self.scratch);
-            painter.canvas_rows(OVERLAY, overlay, palette, Change::All);
-            draw::draw_texts(
-                painter,
-                view,
-                cam,
-                &overlay.texts,
-                None,
-                palette,
-                text,
-                scratch,
-            );
+            rows.pack(OVERLAY, picture.overlay, palette, Change::All);
+            shapes.push(Stage::Rows(OVERLAY).shape(screen));
+            labels::draw(ctx, view, cam, &picture.overlay.texts, None, palette, &mut shapes);
         }
-        painter.canvas_end();
         assert_eq!(self.diff.gens, picture.gens, "the diff is current");
         assert_eq!(self.diff.style, style, "the diff is current");
-        diffed
+        (egui::Shape::Vec(shapes), diffed)
     }
 }
 

@@ -45,6 +45,7 @@ const _: () = assert!((TICK_MAX_MS as u64) < TIMEOUT_MS);
 struct Run {
     start_ms: u64,
     last_line: String,
+    caches: paint::Caches,
 }
 
 /// Runs `name` with `args` in the editor `options` opens; returns the exit status (0, 1 or
@@ -67,6 +68,7 @@ pub fn command(options: Options, name: &str, args: &[String]) -> u8 {
     let mut run = Run {
         start_ms: platform::unix_ms(),
         last_line: String::new(),
+        caches: paint::Caches::default(),
     };
     // The first frames load the plugins; a plugin on a worker (a raised `fuel`,
     // plugin-abi §2) composes its commands a delivery later, so run until nothing is pending.
@@ -127,8 +129,8 @@ pub fn command(options: Options, name: &str, args: &[String]) -> u8 {
 impl Run {
     /// One frame with no input, a PNG export it asked for, then the new plugin log lines.
     fn frame(&mut self, editor: &mut Editor) {
-        editor.update(&InputEvents::default(), VIEW, platform::unix_ms());
-        paint::serve_raster(editor);
+        editor.step(&InputEvents::default(), VIEW, platform::unix_ms());
+        paint::serve_raster(editor, &mut self.caches);
         let (lines, _) = editor.take_plugin_log();
         for line in lines {
             println!("{line}");

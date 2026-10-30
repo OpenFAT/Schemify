@@ -183,6 +183,8 @@ pub struct Editor {
     dialog: Dialog,
     clipboard: Vec<RecordBuf>,
     rng: IdRng,
+    /// egui texture updates of headless frames ([`Editor::step`]), handed to the next painter.
+    textures: Kept,
     viewport: (f32, f32),
     /// Advance whenever a table the canvas layer draws changes: the scene as shown, decor,
     /// parity decor (`extra`), marks, violation markers.
@@ -416,16 +418,20 @@ impl Editor {
         input.time = Some(now_ms as f64 / 1000.0);
         let ctx = self.shell.ctx.clone();
         let mut changed = false;
-        let output = ctx.run_ui(input, |ui| changed |= self.pass(ui, viewport, now_ms, canvas));
+        let mut output = ctx.run_ui(input, |ui| changed |= self.pass(ui, viewport, now_ms, canvas));
+        let mut textures = std::mem::take(&mut self.textures.0);
+        textures.append(std::mem::take(&mut output.textures_delta));
+        output.textures_delta = textures;
         Frame { output, changed }
     }
 
     /// One frame from scripted input with no window (`schemify cmd`, the RPC server's ticks,
     /// tests): `events` in a `viewport`-sized window, the canvas left unpainted and egui's
-    /// textures dropped. Returns whether a table changed.
+    /// texture updates kept for the next [`Editor::update`]. Returns whether a table changed.
     pub fn step(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
         let mut f = self.update(events.raw(viewport), now_ms, &mut |_, _| (egui::Shape::Noop, false));
-        f.output.textures_delta.clear(); // no painter holds egui's textures here
+        // No painter here: keep egui's texture updates for the next `update`'s painter.
+        self.textures.0.append(std::mem::take(&mut f.output.textures_delta));
         f.changed
     }
 
@@ -458,7 +464,7 @@ impl Editor {
                 .resizable(true)
                 .default_size(viewport.1 * (1.0 - DOCK_SPLIT))
                 .frame(egui::Frame::NONE)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     let over = pointer.is_some_and(|p| ui.max_rect().contains(p));
                     (w.view(ui, over, now_ms), over)
                 });
@@ -632,6 +638,23 @@ impl Editor {
                 | u8::from(m.alt) * Mods::ALT
                 | u8::from(m.mac_cmd) * Mods::SUPER;
         });
+    }
+}
+
+/// Texture updates no painter took yet; dropped unapplied when the editor goes (egui asserts
+/// that a delta is applied or cleared).
+#[derive(Default)]
+struct Kept(egui::TexturesDelta);
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl fmt::Debug for Kept {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Kept").field("textures", &self.0.set.len()).finish()
     }
 }
 

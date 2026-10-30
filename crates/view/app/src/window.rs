@@ -1,7 +1,7 @@
-//! `window`: an [`Editor`] → a window frame loop (`schemify_render::run`; D39). One frame
-//! is `Editor::update(input)` → [`paint::frame`] (`Editor::picture` → pixels →
-//! `Editor::painted`) → [`paint::serve_raster`] (a PNG export the frame asked for); the
-//! window sleeps until input or `Editor::wake_ms` (idle CPU 0%).
+//! `window`: an [`Editor`] → a window frame loop (`schemify_render::run`; D39). One frame is
+//! [`paint::frame`] (`Editor::update` with the canvas painted into the window's GPU rows) →
+//! [`paint::serve_raster`] (a PNG export the frame asked for); the window sleeps until input
+//! or `Editor::wake_ms` (idle CPU 0%).
 //!
 //! Contents:
 //! - `pub struct Window`, `Window::new(editor: Editor) -> Window`,
@@ -14,9 +14,9 @@ use std::time::Instant;
 
 use schemify_editor::editor::{Editor, Options};
 use schemify_editor::platform;
-use schemify_render::accesskit::TreeUpdate;
-use schemify_render::{App, Painter};
-use schemify_ui::InputEvents;
+use schemify_render::App;
+use schemify_render::egui;
+use schemify_render::gpu::InstanceRows;
 
 use crate::paint::{self, Caches};
 
@@ -46,16 +46,34 @@ impl Window {
     pub fn editor_mut(&mut self) -> &mut Editor {
         &mut self.editor
     }
+
+    fn now_ms(&self) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
+        }
+        // Web: `Instant` panics in a browser; the page's clock (web spec §1).
+        #[cfg(target_arch = "wasm32")]
+        {
+            platform::unix_ms()
+        }
+    }
 }
 
 impl App for Window {
-    fn update(&mut self, events: &InputEvents, viewport: (f32, f32)) -> bool {
-        assert!(viewport.0 >= 0.0, "viewport width {}", viewport.0);
-        assert!(viewport.1 >= 0.0, "viewport height {}", viewport.1);
+    fn ctx(&self) -> egui::Context {
+        self.editor.shell().ctx().clone()
+    }
+
+    fn frame(&mut self, input: egui::RawInput, canvas: &mut InstanceRows) -> egui::FullOutput {
         let now = self.now_ms();
-        let changed = self.editor.update(events, viewport, now);
-        paint::serve_raster(&mut self.editor);
-        changed
+        let frame = paint::frame(&mut self.editor, &mut self.caches, input, now, canvas);
+        paint::serve_raster(&mut self.editor, &mut self.caches);
+        frame.output
+    }
+
+    fn wake_ms(&self) -> Option<u32> {
+        self.editor.wake_ms()
     }
 
     fn exit_requested(&self) -> bool {
@@ -66,26 +84,9 @@ impl App for Window {
     fn close(&mut self) {
         self.editor.settle();
     }
-
-    fn paint<P: Painter>(&mut self, painter: &mut P, _viewport: (f32, f32)) {
-        paint::frame(&mut self.editor, &mut self.caches, painter);
-    }
-
-    fn wake_ms(&self) -> Option<u32> {
-        self.editor.wake_ms()
-    }
-
-    fn ime_area(&self) -> Option<(f32, f32, f32, f32)> {
-        self.editor.ime_area()
-    }
-
-    fn access(&mut self) -> TreeUpdate {
-        self.editor.access_tree()
-    }
 }
 
-/// Opens the editor window and runs until it closes (native: blocks; web: returns once the
-/// window is attached).
+/// Opens the editor window and runs until it closes (native: blocks).
 ///
 /// # Errors
 ///
@@ -97,28 +98,14 @@ pub fn run(options: Options) -> Result<(), String> {
 
 /// Opens the editor a window shows: the platform's state directory unless `options` names
 /// one, and the system clipboard.
+///
+/// # Errors
+///
+/// The project or file cannot be opened.
 pub(crate) fn open(mut options: Options) -> Result<Editor, String> {
     if options.state_dir.is_none() {
         options.state_dir = platform::state_dir();
     }
     options.system_clipboard = true;
     Editor::new(options)
-}
-
-// ---- private ----
-
-impl Window {
-    /// Milliseconds since [`Window::new`] natively; the page's clock on the web, where
-    /// `Instant` panics (web spec §1); a frozen clock made every second click a double
-    /// click and kept plugin timers from firing.
-    fn now_ms(&self) -> u64 {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            platform::unix_ms()
-        }
-    }
 }
