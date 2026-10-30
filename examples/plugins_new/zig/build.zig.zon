@@ -1,0 +1,13 @@
+.{
+    .name = .hello,
+    .version = "0.0.0",
+    .fingerprint = 0x3610a686f95a00c5,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // This template sits inside the Schemify repository. In your own repository, pin a
+        // Schemify revision instead (this rewrites the entry with .url and .hash):
+        //     zig fetch --save=schemify git+https://github.com/OmarSiwy/Schemify#<full 40-char commit>
+        .schemify = .{ .path = "../../.." },
+    },
+    .paths = .{""},
+}
