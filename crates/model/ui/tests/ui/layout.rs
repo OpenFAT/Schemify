@@ -8,13 +8,13 @@ use schemify_ui::{
     records,
 };
 
-use crate::{VIEW, fixture};
+use crate::VIEW;
 
 // ---- private ----
 
 #[test]
 fn layout_stacks_bars_and_fills_canvas() {
-    let f = fixture(&[]);
+    let f = crate::fixture(&[]);
     let r = |s: &str| f.frame.rect()[f.row(s)];
     let (bar, tools, tabs, canvas, status) = (
         r("menubar"),
@@ -57,7 +57,7 @@ fn layout_stacks_bars_and_fills_canvas() {
 
 #[test]
 fn open_menu_and_cascade_place_popups() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     f.state
         .open_menus(&[f.sym("menu.file"), f.sym("menu.file.image_export")]);
     f.relayout();
@@ -108,7 +108,7 @@ fn open_menu_and_cascade_place_popups() {
 
 #[test]
 fn accesskit_tree_snapshot() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     f.state
         .open_menus(&[f.sym("menu.options"), f.sym("menu.options.crosshair")]);
     f.relayout();
@@ -145,13 +145,16 @@ fn accesskit_tree_snapshot() {
 #[test]
 fn every_kind_lays_out() {
     let mut src = String::from("node w window\n");
-    for k in Kind::ALL
+    let nested = Kind::ALL
         .iter()
-        .filter(|k| !matches!(k, Kind::Window | Kind::Dialog))
-    {
-        src += &format!("node w.{n} {n}\n  parent w\n  label {n}\n", n = k.name());
+        .filter(|k| !matches!(k, Kind::Window | Kind::Dialog));
+    for k in nested {
+        src.push_str(&format!(
+            "node w.{n} {n}\n  parent w\n  label {n}\n",
+            n = k.name()
+        ));
     }
-    src += "set w.math value \"x^2\"\n";
+    src.push_str("set w.math value \"x^2\"\n");
     let mut strings = Strings::new();
     let (c, r) = records::parse(&src, &mut strings);
     assert!(r.is_empty());
@@ -176,7 +179,8 @@ fn every_kind_lays_out() {
 /// data falls back to the label.
 #[test]
 fn toolbar_buttons_draw_icons_and_keep_labels_for_access() {
-    let f = fixture(&["node t.bad button\n  parent toolbar\n  label Bad\n  icon \"L1 2\"\n"]);
+    let f =
+        crate::fixture(&["node t.bad button\n  parent toolbar\n  label Bad\n  icon \"L1 2\"\n"]);
     let n = &f.tables.nodes;
     let mut buttons = 0;
     for c in n.children(f.node("toolbar")) {

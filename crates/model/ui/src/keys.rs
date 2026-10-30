@@ -25,6 +25,18 @@ pub struct Key(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Chord(u32);
 
+/// Offset of the function keys from [`Key::NAMED`], past every named key.
+const F_KEYS: u32 = 0x100;
+
+const _: () = assert!(
+    NAMED_KEYS.len() < F_KEYS as usize,
+    "named keys end before F1"
+);
+const _: () = assert!(
+    Key::NAMED + F_KEYS + 24 < 1 << 24,
+    "every key fits a chord's 24 bits"
+);
+
 /// Record spellings of the named keys, in code order from [`Key::NAMED`].
 const NAMED_KEYS: [&str; 15] = [
     "Esc",
@@ -90,17 +102,30 @@ impl Key {
     pub const PRINT: Key = Key(Self::NAMED + 14);
 
     /// Function key `F<n>` for `n` in `1..=24`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is outside `1..=24`.
+    #[must_use]
     pub fn f(n: u8) -> Key {
         assert!((1..=24).contains(&n), "F-key out of range");
-        Key(Self::NAMED + 0x100 + u32::from(n))
+        let key = Key(Self::NAMED + F_KEYS + u32::from(n));
+        debug_assert!(
+            key.0 > Self::NAMED + NAMED_KEYS.len() as u32,
+            "F-keys follow the named keys"
+        );
+        key
     }
 
     /// Parses a key name: one character, a named key (case-insensitive, with the aliases
     /// `Escape`, `Return`, `Delete`, `Insert`, `Space`), or `F1`..`F24`.
+    #[must_use]
     pub fn parse(s: &str) -> Option<Key> {
         let mut chars = s.chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
-            return Some(Key(c as u32));
+            let key = Key(c as u32);
+            debug_assert!(key.0 < Self::NAMED, "a character sits below the named keys");
+            return Some(key);
         }
         let alias = match s.to_ascii_lowercase().as_str() {
             "escape" => "Esc",
@@ -114,15 +139,26 @@ impl Key {
             .iter()
             .position(|n| n.eq_ignore_ascii_case(alias))
         {
+            debug_assert!(i < NAMED_KEYS.len());
             return Some(Key(Self::NAMED + i as u32));
         }
         let n: u8 = s.strip_prefix(['F', 'f'])?.parse().ok()?;
-        (1..=24).contains(&n).then(|| Key::f(n))
+        let key = (1..=24).contains(&n).then(|| Key::f(n));
+        debug_assert!(
+            key.is_none_or(|k| k.0 < 1 << 24),
+            "a key fits a chord's 24 bits"
+        );
+        key
     }
 }
 
 impl Chord {
     /// Builds a normalized chord.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key`'s code is wider than 24 bits (no [`Key`] constant or parse is).
+    #[must_use]
     pub fn new(mods: Mods, key: Key) -> Chord {
         assert!(key.0 < 1 << 24, "key code wider than 24 bits");
         let mut m = mods.0;
@@ -139,11 +175,16 @@ impl Chord {
                 m &= !Mods::SHIFT;
             }
         }
-        Chord((u32::from(m) << 24) | k)
+        let chord = Chord((u32::from(m) << 24) | k);
+        // Normalization only drops Shift and lowercases: every other bit survives.
+        debug_assert_eq!(chord.mods().0 & !Mods::SHIFT, mods.0 & !Mods::SHIFT);
+        debug_assert_eq!(chord.key().0 >= Key::NAMED, key.0 >= Key::NAMED);
+        chord
     }
 
     /// Parses `Ctrl+Shift+S`, `Shift-Ins`, `Alt+-`, `%`: modifiers (`Ctrl`/`Control`, `Shift`,
     /// `Alt`, `Super`/`Cmd`, case-insensitive) each followed by `+` or `-`, then a [`Key`] name.
+    #[must_use]
     pub fn parse(s: &str) -> Option<Chord> {
         const MODS: [(&str, u8); 6] = [
             ("ctrl", Mods::CTRL),
@@ -167,16 +208,31 @@ impl Chord {
             mods |= bit;
             rest = &rest[name.len() + 1..];
         }
-        Some(Chord::new(Mods(mods), Key::parse(rest)?))
+        debug_assert_eq!(mods & !0x0f, 0, "four modifier bits");
+        debug_assert!(
+            rest.len() <= s.len(),
+            "modifiers are consumed from the front"
+        );
+        let chord = Chord::new(Mods(mods), Key::parse(rest)?);
+        debug_assert_eq!(chord.mods().0 & !Mods::SHIFT, mods & !Mods::SHIFT);
+        Some(chord)
     }
 
     /// Modifier bits.
+    #[must_use]
     pub fn mods(self) -> Mods {
         Mods((self.0 >> 24) as u8)
     }
 
     /// Key code.
+    #[must_use]
     pub fn key(self) -> Key {
-        Key(self.0 & 0xff_ffff)
+        let key = Key(self.0 & 0xff_ffff);
+        debug_assert_eq!(
+            (u32::from(self.mods().0) << 24) | key.0,
+            self.0,
+            "modifiers and key repack to the chord"
+        );
+        key
     }
 }

@@ -3,7 +3,7 @@
 //!
 //! Contents: no `pub` items.
 
-use schemify_ui::{Chord, HealthKind, NO_NODE, Prop, UiTables, compose, records};
+use schemify_ui::{Chord, HealthKind, NO_NODE, Prop, UiTables, records};
 
 use crate::fixture;
 
@@ -140,7 +140,7 @@ fn state_text_that_changes_every_frame_does_not_grow_strings() {
     for i in 0..2000 {
         let (c, rej) = records::parse_live(&frame(i), &mut f.strings);
         assert!(rej.is_empty());
-        f.tables = compose(&f.strings, &base, &[(name, &c)]);
+        f.tables = schemify_ui::compose(&f.strings, &base, &[(name, &c)]);
         let label = f.tables.nodes.prop(Prop::Label)[f.node("status.msg") as usize];
         assert!(label.is_live());
         assert_eq!(f.strings.get(label), format!("mouse = {i} {}", i * 7));
@@ -199,7 +199,7 @@ fn patch_last_equals_compose() {
         )
     };
     let mut old = records::parse_live(&state(0, "a"), &mut f.strings).0;
-    let mut tables = compose(&f.strings, &base, &[(name, &old)]);
+    let mut tables = schemify_ui::compose(&f.strings, &base, &[(name, &old)]);
     let mut patched = 0;
     for i in 1..300u32 {
         let title = ["a", "b.shcomp", "c*"][(i % 3) as usize];
@@ -209,7 +209,7 @@ fn patch_last_equals_compose() {
             schemify_ui::patch_last(&mut tables, &old, &new),
             "frame {i}: values only"
         );
-        let full = compose(&f.strings, &base, &[(name, &new)]);
+        let full = schemify_ui::compose(&f.strings, &base, &[(name, &new)]);
         assert!(
             same_tables(&tables, &full),
             "frame {i}: patched == composed"
@@ -241,7 +241,7 @@ fn patch_last_equals_compose() {
     ];
     for (was, text) in refused {
         let (old, _) = records::parse_live(&was, &mut f.strings);
-        let before = compose(&f.strings, &base, &[(name, &old)]);
+        let before = schemify_ui::compose(&f.strings, &base, &[(name, &old)]);
         let (new, _) = records::parse_live(&text, &mut f.strings);
         let mut t = before.clone();
         assert!(!schemify_ui::patch_last(&mut t, &old, &new), "{text}");

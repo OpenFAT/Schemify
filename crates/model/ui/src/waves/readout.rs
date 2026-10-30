@@ -9,9 +9,9 @@
 //! - `pub fn measure_at(geo, waves, x, y) -> Option<(f64, f64)>`,
 //!   `pub fn measure_label(geo, waves, x, y) -> Option<String>`
 
-use schemify_wave::{PaneMode, Waves, format_si};
+use schemify_wave::{PaneMode, Waves};
 
-use super::{Geometry, plot_area};
+use super::Geometry;
 
 /// Column headings of the readout's trace table, one per [`ReadoutRow::cells`] column.
 pub const READOUT_HEADINGS: [&str; 4] = ["trace", "@A", "@B", "B−A"];
@@ -48,6 +48,7 @@ pub struct ReadoutRow {
 pub const LANE_NAME_CHARS: usize = 9;
 
 /// The prefix of `src` a digital lane shows: its first [`LANE_NAME_CHARS`] chars.
+#[must_use]
 pub fn lane_name(src: &str) -> &str {
     let end = src
         .char_indices()
@@ -55,6 +56,7 @@ pub fn lane_name(src: &str) -> &str {
         .map_or(src.len(), |(b, _)| b);
     let name = &src[..end];
     debug_assert!(name.chars().count() <= LANE_NAME_CHARS);
+    debug_assert!(src.starts_with(name), "a lane name is a prefix");
     name
 }
 
@@ -79,13 +81,17 @@ pub fn legend_label(waves: &Waves, i: usize, out: &mut String) {
     let a = waves.cursors()[0].filter(|_| !props.own_x());
     if let Some(v) = a.and_then(|a| waves.value_at(i, a)) {
         out.push_str(" = ");
-        out.push_str(&format_si(v, 4));
+        out.push_str(&schemify_wave::format_si(v, 4));
     }
     debug_assert!(out.contains(waves.src(i)));
 }
 
 /// The readout's head lines for the viewer's cursors. `active` picks the pane whose
 /// horizontal cursors show; it is clamped to the last pane for the lookup but printed as given.
+///
+/// # Panics
+///
+/// If `waves` has no pane.
 pub fn readout_head(waves: &Waves, active: u8) -> ReadoutHead {
     assert!(!waves.panes().is_empty(), "a viewer always has a pane");
     let [a, b] = waves.cursors();
@@ -94,7 +100,7 @@ pub fn readout_head(waves: &Waves, active: u8) -> ReadoutHead {
         let inv = if dx != 0.0 {
             si(Some(1.0 / dx))
         } else {
-            "-".into()
+            "-".to_owned()
         };
         format!("Δx = {}   1/Δx = {inv}", si(Some(dx)))
     });
@@ -130,6 +136,7 @@ pub fn readout_head(waves: &Waves, active: u8) -> ReadoutHead {
 /// O(min(rows, `max`)) value lookups, each a binary search of one trace's samples.
 pub fn readout_rows(waves: &Waves, max: usize, out: &mut Vec<ReadoutRow>) {
     out.clear();
+    debug_assert!(!waves.panes().is_empty(), "a viewer always has a pane");
     let [ca, cb] = waves.cursors();
     for i in 0..waves.trace_count() {
         if out.len() >= max {
@@ -184,6 +191,11 @@ pub fn readout_rows(waves: &Waves, max: usize, out: &mut Vec<ReadoutRow>) {
         }
     }
     debug_assert!(out.len() <= max);
+    debug_assert!(
+        out.iter()
+            .all(|r| r.cells[1..].iter().all(|c| !c.is_empty())),
+        "every value cell shows a value or `-`"
+    );
 }
 
 /// The data point under the pointer `(x, y)`, as `(x, y)` values of the pane it is over, or
@@ -192,13 +204,15 @@ pub fn readout_rows(waves: &Waves, max: usize, out: &mut Vec<ReadoutRow>) {
 /// # Panics
 ///
 /// Panics if `geo` has more pane rectangles than `waves` has panes.
+#[must_use]
 pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64, f64)> {
     assert!(
         geo.panes.len() <= waves.panes().len(),
         "more pane rects than panes"
     );
     let k = usize::from(geo.pane_at(x, y)?);
-    let pr = plot_area(geo.panes[k]);
+    debug_assert!(k < geo.panes.len());
+    let pr = super::plot_area(geo.panes[k]);
     if !pr.contains(x, y) {
         return None;
     }
@@ -209,14 +223,28 @@ pub fn measure_at(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<(f64,
 
 /// The measurement tooltip's text (xschem `m`): `y=…  x=…` of [`measure_at`] in engineering
 /// units, or `None` where it measures nothing.
+///
+/// # Panics
+///
+/// As [`measure_at`].
+#[must_use]
 pub fn measure_label(geo: &Geometry, waves: &Waves, x: f32, y: f32) -> Option<String> {
     let (vx, vy) = measure_at(geo, waves, x, y)?;
-    Some(format!("y={}  x={}", format_si(vy, 4), format_si(vx, 4)))
+    let label = format!(
+        "y={}  x={}",
+        schemify_wave::format_si(vy, 4),
+        schemify_wave::format_si(vx, 4)
+    );
+    debug_assert!(label.starts_with("y="));
+    debug_assert!(label.contains("  x="), "both values are shown");
+    Some(label)
 }
 
 // ---- private ----
 
 /// `v` in engineering units with 4 significant digits, `-` for `None`.
 fn si(v: Option<f64>) -> String {
-    v.map_or_else(|| "-".to_owned(), |v| format_si(v, 4))
+    let text = v.map_or_else(|| "-".to_owned(), |v| schemify_wave::format_si(v, 4));
+    debug_assert!(!text.is_empty(), "a value or `-`");
+    text
 }

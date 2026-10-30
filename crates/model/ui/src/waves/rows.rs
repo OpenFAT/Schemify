@@ -16,7 +16,16 @@ impl WaveUi {
     /// per pane, trace rows, toggle states, field values, the open dialog's fields and status.
     /// Interns every string it emits into `strings` (bounded by datasets' variable names and
     /// user input).
+    ///
+    /// # Panics
+    ///
+    /// If the rows take more than [`Contribution::CAPACITY`] edits: the signal list is
+    /// scrolled, so only a bug grows it that far.
     pub fn contribute(&self, waves: &Waves, strings: &mut Strings) -> Contribution {
+        debug_assert!(
+            self.signal_rows <= super::ROWS_MAX,
+            "signal rows are bounded by set_capacity"
+        );
         let mut e = Vec::with_capacity(256);
         let mut s = |t: &str| strings.intern(t);
         let node = |e: &mut Vec<Edit>, id: Sym, kind: Kind, parent: Sym| {

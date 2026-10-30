@@ -12,7 +12,7 @@
 //! Contents:
 //! - `pub(crate) const LINES_MAX`, `pub(crate) const COLUMNS_MAX`
 //! - `pub(crate) const BOLD`, `pub(crate) const ITALIC`, `pub(crate) const CODE`
-//! - `pub(crate) enum Block`, `pub(crate) struct Inline`, `pub enum Segment<'a>`
+//! - `pub(crate) enum Block`, `pub(crate) struct Inline`, `pub enum Segment<'src>`
 //! - `pub(crate) fn blocks(src) -> Vec<Block>`
 //! - `pub fn image_line(t) -> Option<(&str, &str)>`
 //! - `pub(crate) fn inlines(src, notes, math) -> Inline`
@@ -76,11 +76,25 @@ pub(crate) struct Inline {
 
 /// One piece of a prose source after [`split_plots`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Segment<'a> {
+pub enum Segment<'src> {
     /// Markdown for the prose widget.
-    Prose(&'a str),
+    Prose(&'src str),
     /// The calculator expression of a ```` ```plot ```` fence (an embedded graph).
-    Plot(&'a str),
+    Plot(&'src str),
+}
+
+/// A link `[text](target)` in a run of chars: indices of its `]` and its `)`.
+#[derive(Clone, Copy, Debug)]
+struct Link {
+    close: usize,
+    end: usize,
+}
+
+/// A footnote definition line `[^label]: text`, split.
+#[derive(Clone, Copy, Debug)]
+struct NoteDef<'line> {
+    label: &'line str,
+    text: &'line str,
 }
 
 /// Parses the block structure of `src`. Never fails: anything unrecognised is paragraph text.
@@ -88,6 +102,7 @@ pub enum Segment<'a> {
 /// Cost: O(len); allocates the block texts.
 pub(crate) fn blocks(src: &str) -> Vec<Block> {
     let lines: Vec<&str> = src.lines().take(LINES_MAX).collect();
+    debug_assert!(lines.len() <= LINES_MAX);
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
@@ -155,7 +170,7 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
             out.push(Block::Table(header, rows));
             continue;
         }
-        if let Some((label, text)) = note_def(t) {
+        if let Some(NoteDef { label, text }) = note_def(t) {
             let mut text = text.to_owned();
             i += 1;
             while i < lines.len() {
@@ -230,10 +245,16 @@ pub(crate) fn blocks(src: &str) -> Vec<Block> {
 
 /// A line that is exactly one image, `![alt](path)` (an optional title after the path is
 /// ignored): `(alt, path)`.
+#[must_use]
 pub fn image_line(t: &str) -> Option<(&str, &str)> {
     let (alt, target) = t.strip_prefix("![")?.strip_suffix(')')?.split_once("](")?;
     let path = target.split_whitespace().next()?;
-    (!alt.contains(']') && !target.contains(')')).then_some((alt, path))
+    if alt.contains(']') || target.contains(')') {
+        return None;
+    }
+    debug_assert!(!path.is_empty(), "a path is a whitespace-free word");
+    debug_assert!(t.contains(path));
+    Some((alt, path))
 }
 
 /// Parses inline markup. `notes` are the block's footnote labels in number order: `[^label]`
@@ -251,11 +272,11 @@ pub(crate) fn inlines(
     let chars: Vec<char> = src.chars().collect();
     // The open link: indices of its `]` and `)`. Its text is parsed like any other, so
     // emphasis nests inside; the target is skipped when the scan reaches the `]`.
-    let mut link: Option<(usize, usize)> = None;
+    let mut link: Option<Link> = None;
     let mut i = 0;
     // Each iteration consumes ≥ 1 char.
     while i < chars.len() {
-        if let Some((k, e)) = link
+        if let Some(Link { close: k, end: e }) = link
             && i >= k
         {
             link = None;
@@ -357,9 +378,9 @@ pub(crate) fn inlines(
             }
             // An image inside text shows its alt text; only one alone on a line is drawn.
             '!' if chars.get(i + 1) == Some(&'[') => match link_at(&chars, i + 1) {
-                Some((k, e)) => {
-                    out.text.extend(&chars[i + 2..k]);
-                    i = e + 1;
+                Some(l) => {
+                    out.text.extend(&chars[i + 2..l.close]);
+                    i = l.end + 1;
                 }
                 None => {
                     out.text.push('!');
@@ -382,6 +403,7 @@ pub(crate) fn inlines(
 /// prose between fences is dropped.
 ///
 /// Cost: one pass over the lines.
+#[must_use]
 pub fn split_plots(src: &str) -> Vec<Segment<'_>> {
     let mut out = Vec::new();
     let mut from = 0;
@@ -415,6 +437,7 @@ pub fn split_plots(src: &str) -> Vec<Segment<'_>> {
         out.push(Segment::Plot(src[body..].trim()));
         from = src.len();
     }
+    debug_assert!(from <= src.len(), "prose resumes inside the source");
     push_prose(&mut out, &src[from..]);
     debug_assert!(at == src.len());
     out
@@ -425,11 +448,16 @@ pub fn split_plots(src: &str) -> Vec<Segment<'_>> {
 fn heading(t: &str) -> Option<(u8, &str)> {
     let level = t.bytes().take_while(|&b| b == b'#').count();
     let rest = &t[level..];
-    ((1..=6).contains(&level) && (rest.is_empty() || rest.starts_with(' ')))
-        .then(|| (level as u8, rest.trim().trim_end_matches('#').trim_end()))
+    if !(1..=6).contains(&level) || !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    let text = rest.trim().trim_end_matches('#').trim_end();
+    debug_assert!(text.len() < t.len(), "the markers are dropped");
+    Some((level as u8, text))
 }
 
 fn is_rule(t: &str) -> bool {
+    assert!(!t.is_empty(), "blank lines are skipped before a rule test");
     let c = t.as_bytes()[0];
     matches!(c, b'-' | b'*' | b'_')
         && t.bytes().filter(|&b| b != b' ').all(|b| b == c)
@@ -437,6 +465,11 @@ fn is_rule(t: &str) -> bool {
 }
 
 fn starts_block(t: &str) -> bool {
+    debug_assert!(
+        !t.is_empty(),
+        "blank lines end a paragraph before this test"
+    );
+    debug_assert_eq!(t, t.trim(), "the caller trims");
     t.starts_with("```")
         || t.starts_with("~~~")
         || t.starts_with("$$")
@@ -448,18 +481,25 @@ fn starts_block(t: &str) -> bool {
         || image_line(t).is_some()
 }
 
-/// A footnote definition line `[^label]: text`: `(label, text)`. Labels have no spaces or
-/// brackets.
-fn note_def(t: &str) -> Option<(&str, &str)> {
+/// A footnote definition line `[^label]: text`. Labels have no spaces or brackets.
+fn note_def(t: &str) -> Option<NoteDef<'_>> {
     let (label, text) = t.strip_prefix("[^")?.split_once("]:")?;
     let ok = !label.is_empty() && !label.contains(|c: char| c.is_whitespace() || c == '[');
-    ok.then(|| (label, text.trim()))
+    if !ok {
+        return None;
+    }
+    debug_assert!(!label.contains(']'), "the first `]:` ends the label");
+    Some(NoteDef {
+        label,
+        text: text.trim(),
+    })
 }
 
 /// A list item line: `(depth, marker, text)`.
 fn item(line: &str) -> Option<(u8, String, &str)> {
     let t = line.trim_start();
     let depth = ((line.len() - t.len()) / 2).min(7) as u8;
+    debug_assert!(depth <= 7, "nesting is capped");
     for b in ["- ", "* ", "+ "] {
         if let Some(rest) = t.strip_prefix(b) {
             return Some((depth, "\u{2022}".to_owned(), rest.trim()));
@@ -468,7 +508,9 @@ fn item(line: &str) -> Option<(u8, String, &str)> {
     let digits = t.bytes().take_while(u8::is_ascii_digit).count();
     let rest = &t[digits..];
     if (1..=9).contains(&digits) && (rest.starts_with(". ") || rest.starts_with(") ")) {
-        return Some((depth, format!("{}.", &t[..digits]), rest[2..].trim()));
+        let marker = format!("{}.", &t[..digits]);
+        debug_assert!(marker.len() <= 10, "at most nine digits and a dot");
+        return Some((depth, marker, rest[2..].trim()));
     }
     None
 }
@@ -476,27 +518,33 @@ fn item(line: &str) -> Option<(u8, String, &str)> {
 fn cells(t: &str) -> Vec<String> {
     let inner = t.trim_start_matches('|');
     let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner
+    let row: Vec<String> = inner
         .split('|')
         .take(COLUMNS_MAX)
         .map(|c| c.trim().to_owned())
-        .collect()
+        .collect();
+    debug_assert!(!row.is_empty(), "a split yields at least one cell");
+    debug_assert!(row.len() <= COLUMNS_MAX, "extra cells are dropped");
+    row
 }
 
 fn is_separator(c: &str) -> bool {
+    debug_assert!(!c.contains('|'), "one cell");
     let c = c.trim_matches(':');
     !c.is_empty() && c.bytes().all(|b| b == b'-')
 }
 
-/// The link `[text](target)` whose `[` is `chars[at]`: indices of its `]` and `)`.
-fn link_at(chars: &[char], at: usize) -> Option<(usize, usize)> {
+/// The link `[text](target)` whose `[` is `chars[at]`.
+fn link_at(chars: &[char], at: usize) -> Option<Link> {
     debug_assert_eq!(chars.get(at), Some(&'['));
     let k = at + chars[at..].iter().position(|&n| n == ']')?;
     if chars.get(k + 1) != Some(&'(') {
         return None;
     }
     let e = k + chars[k..].iter().position(|&n| n == ')')?;
-    Some((k, e))
+    debug_assert!(at < k, "the `]` follows the `[`");
+    debug_assert!(k + 1 < e, "the `(` sits between `]` and `)`");
+    Some(Link { close: k, end: e })
 }
 
 /// Appends `n` in superscript digits (`¹²`): a footnote reference.
@@ -511,18 +559,24 @@ fn push_superscript(out: &mut String, n: usize) {
 /// Closes the span styled `from` at the current end and starts one styled `to`.
 fn restyle(out: &mut Inline, start: &mut u32, from: u8, to: u8) {
     let end = out.text.len() as u32;
+    assert!(*start <= end, "a span starts inside the text");
     if from != 0 && end > *start {
         out.spans.push((*start, end, from));
     }
     if from != to {
         *start = end;
     }
+    if let Some(&(s, e, _)) = out.spans.last() {
+        debug_assert!(s < e, "no empty span");
+    }
 }
 
-fn push_prose<'a>(out: &mut Vec<Segment<'a>>, s: &'a str) {
+fn push_prose<'src>(out: &mut Vec<Segment<'src>>, s: &'src str) {
+    let before = out.len();
     if !s.trim().is_empty() {
         out.push(Segment::Prose(s));
     }
+    debug_assert!(out.len() - before <= 1, "one segment at most");
 }
 
 #[cfg(test)]

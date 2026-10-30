@@ -23,18 +23,21 @@
 //! - `pub(crate) fn measure_code(ts, px) -> Option<CodeMetrics>`
 //! - `pub(crate) fn layout_prose(ts, src, px, width) -> ProseList`
 
+use std::ops::RangeInclusive;
+
 use parley::{
     Alignment, AlignmentOptions, FontFamily, FontStyle, FontWeight, InlineBox, InlineBoxKind,
-    Layout, PositionedLayoutItem, StyleProperty, VerticalAlign,
+    Layout, LineHeight, PositionedLayoutItem, StyleProperty, VerticalAlign,
 };
 
-use crate::markdown::{BOLD, Block, CODE, COLUMNS_MAX, ITALIC, Inline, blocks, inlines};
+use crate::markdown;
+use crate::markdown::{BOLD, Block, CODE, COLUMNS_MAX, ITALIC, Inline};
 use crate::text::{TextId, TextSystem};
 
 pub use crate::markdown::{Segment, image_line, split_plots};
 
 /// Prose fonts (px) whose code metrics [`TextSystem::new`] measures ([`code_metrics`]).
-pub const CODE_PX: std::ops::RangeInclusive<u16> = 8..=32;
+pub const CODE_PX: RangeInclusive<u16> = 8..=32;
 
 /// How a fenced code block lays out at one prose font size, for callers that place its lines
 /// themselves (a windowed text view): a line of `cols` printable ASCII characters (no tab) is
@@ -83,6 +86,14 @@ pub struct ProseList {
 /// Size of a fenced code block's monospace text relative to the prose font.
 const CODE_SCALE: f32 = 0.92;
 
+/// Where a run goes: its top-left corner and the width it wraps at, in logical px.
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    x: f32,
+    y: f32,
+    width: f32,
+}
+
 /// Code metrics at prose font `px`, from the table [`TextSystem::new`] measured; `None`
 /// outside [`CODE_PX`] or when the measured row height is not a whole number (then rows can
 /// not be stacked with integer spacers).
@@ -119,14 +130,13 @@ pub(crate) fn measure_code(ts: &mut TextSystem, px: u16) -> Option<CodeMetrics> 
 ///
 /// Panics if `px` or `width` is not finite and positive.
 pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) -> ProseList {
-    assert!(px > 0.0 && px.is_finite(), "prose size must be positive");
-    assert!(
-        width > 0.0 && width.is_finite(),
-        "prose width must be positive"
-    );
+    assert!(px.is_finite(), "prose size must be finite");
+    assert!(px > 0.0, "prose size must be positive");
+    assert!(width.is_finite(), "prose width must be finite");
+    assert!(width > 0.0, "prose width must be positive");
     let mut p = ProseList::default();
     let gap = (px * 0.6).round();
-    let parsed = blocks(src);
+    let parsed = markdown::blocks(src);
     let notes: Vec<&str> = parsed
         .iter()
         .filter_map(|b| match b {
@@ -148,12 +158,17 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
         match b {
             Block::Heading(level, text) => {
                 let scale = [1.6, 1.35, 1.2, 1.1, 1.0, 1.0][usize::from(*level) - 1];
-                y += rich(ts, &mut p, text, px * scale, BOLD, (0.0, y), width, notes);
+                let slot = Slot { x: 0.0, y, width };
+                y += rich(ts, &mut p, text, px * scale, BOLD, slot, notes);
             }
-            Block::Para(text) => y += rich(ts, &mut p, text, px, 0, (0.0, y), width, notes),
+            Block::Para(text) => {
+                let slot = Slot { x: 0.0, y, width };
+                y += rich(ts, &mut p, text, px, 0, slot, notes);
+            }
             Block::Quote(text) => {
                 let w = (width - px).max(px);
-                let h = rich(ts, &mut p, text, px, ITALIC, (px, y), w, notes);
+                let slot = Slot { x: px, y, width: w };
+                let h = rich(ts, &mut p, text, px, ITALIC, slot, notes);
                 p.rules.push([px * 0.25, y, 3.0, h]);
                 y += h;
             }
@@ -164,18 +179,19 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
             } => {
                 let x = px * 1.5 * f32::from(*depth);
                 let body = x + px * 1.6;
-                rich(
-                    ts,
-                    &mut p,
-                    marker,
-                    px,
-                    0,
-                    (x + px * 0.3, y),
-                    px * 1.3,
-                    notes,
-                );
+                let marker_slot = Slot {
+                    x: x + px * 0.3,
+                    y,
+                    width: px * 1.3,
+                };
+                rich(ts, &mut p, marker, px, 0, marker_slot, notes);
                 let w = (width - body).max(px);
-                y += rich(ts, &mut p, text, px, 0, (body, y), w, notes);
+                let slot = Slot {
+                    x: body,
+                    y,
+                    width: w,
+                };
+                y += rich(ts, &mut p, text, px, 0, slot, notes);
             }
             Block::Code(_, text) => {
                 let pad = code_pad(px);
@@ -221,7 +237,8 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
                 }
                 None => {
                     let text = format!("[image: {alt}]");
-                    y += rich(ts, &mut p, &text, px, ITALIC, (0.0, y), width, notes);
+                    let slot = Slot { x: 0.0, y, width };
+                    y += rich(ts, &mut p, &text, px, ITALIC, slot, notes);
                 }
             },
             Block::Note(..) => unreachable!("skipped above"),
@@ -243,9 +260,19 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
         }
         let marker = format!("{}.", k + 1);
         let body = small * 2.0;
-        rich(ts, &mut p, &marker, small, 0, (0.0, y), body, notes);
+        let marker_slot = Slot {
+            x: 0.0,
+            y,
+            width: body,
+        };
+        rich(ts, &mut p, &marker, small, 0, marker_slot, notes);
         let w = (width - body).max(small);
-        y += rich(ts, &mut p, text, small, 0, (body, y), w, notes);
+        let slot = Slot {
+            x: body,
+            y,
+            width: w,
+        };
+        y += rich(ts, &mut p, text, small, 0, slot, notes);
     }
     p.height = y.ceil();
     p.width = p.width.min(width);
@@ -259,23 +286,28 @@ pub(crate) fn layout_prose(ts: &mut TextSystem, src: &str, px: f32, width: f32) 
 
 /// Padding around a fenced code block's text (each side) at prose font `px`.
 fn code_pad(px: f32) -> f32 {
-    (px * 0.5).round()
+    debug_assert!(px > 0.0, "a font size");
+    let pad = (px * 0.5).round();
+    debug_assert!(pad >= 0.0);
+    pad
 }
 
-/// Lays out one inline run at `at`, wrapping at `width`; returns its height.
-#[allow(clippy::too_many_arguments)]
+/// Lays out one inline run in `slot`; returns its height.
 fn rich(
     ts: &mut TextSystem,
     p: &mut ProseList,
     src: &str,
     px: f32,
     style: u8,
-    at: (f32, f32),
-    width: f32,
+    slot: Slot,
     notes: &[&str],
 ) -> f32 {
+    debug_assert!(slot.width > 0.0, "a run wraps at a positive width");
+    let texts = p.text_id.len();
     let (layout, inl) = shape_rich(ts, src, px, style, notes);
-    place(ts, p, layout, &inl, at, width)
+    let h = place(ts, p, layout, &inl, slot);
+    debug_assert_eq!(p.text_id.len(), texts + 1, "one layout per run");
+    h
 }
 
 /// Parses and shapes one inline run at `px` (lines not broken yet), its formulas laid out.
@@ -286,7 +318,9 @@ fn shape_rich(
     style: u8,
     notes: &[&str],
 ) -> (Layout<()>, Inline) {
-    let inl = inlines(src, notes, &mut |m| ts.math_uncached(m, px));
+    assert!(px > 0.0, "prose size must be positive");
+    debug_assert_eq!(style & CODE, 0, "a whole run is never a code span");
+    let inl = markdown::inlines(src, notes, &mut |m| ts.math_uncached(m, px));
     // Math boxes first: the builder below borrows the text system's contexts mutably.
     let boxes: Vec<(u32, f32, f32, f32)> = inl
         .maths
@@ -303,9 +337,9 @@ fn shape_rich(
         let mut b = lcx.ranged_builder(fcx, &inl.text, 1.0, true);
         b.push_default(StyleProperty::FontFamily(FontFamily::from(family.as_str())));
         b.push_default(StyleProperty::FontSize(px));
-        b.push_default(StyleProperty::LineHeight(
-            parley::LineHeight::FontSizeRelative(1.35),
-        ));
+        b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(
+            1.35,
+        )));
         if style & BOLD != 0 {
             b.push_default(StyleProperty::FontWeight(FontWeight::BOLD));
         }
@@ -340,37 +374,46 @@ fn shape_rich(
         }
         b.build_into(&mut layout, &inl.text);
     }
+    debug_assert_eq!(boxes.len(), inl.maths.len(), "one inline box per formula");
     (layout, inl)
 }
 
-/// Breaks a [`shape_rich`] layout at `width`, records it and its formulas at `at`; returns
-/// its height.
+/// Breaks a [`shape_rich`] layout at the slot's width, records it and its formulas at the
+/// slot's corner; returns its height.
 fn place(
     ts: &mut TextSystem,
     p: &mut ProseList,
     mut layout: Layout<()>,
     inl: &Inline,
-    at: (f32, f32),
-    width: f32,
+    slot: Slot,
 ) -> f32 {
-    layout.break_all_lines(Some(width.max(1.0)));
+    debug_assert_eq!(p.math_id.len(), p.math_x.len(), "math columns in step");
+    debug_assert_eq!(p.math_id.len(), p.math_y.len(), "math columns in step");
+    let maths = p.math_id.len();
+    layout.break_all_lines(Some(slot.width.max(1.0)));
     layout.align(Alignment::Start, AlignmentOptions::default());
     for line in layout.lines() {
         for item in line.items() {
             if let PositionedLayoutItem::InlineBox(ib) = item {
                 p.math_id.push(inl.maths[ib.id as usize].1);
-                p.math_x.push(at.0 + ib.x);
-                p.math_y.push(at.1 + ib.y);
+                p.math_x.push(slot.x + ib.x);
+                p.math_y.push(slot.y + ib.y);
             }
         }
     }
+    debug_assert!(
+        p.math_id.len() - maths <= inl.maths.len(),
+        "each formula placed once"
+    );
     let id = ts.push_layout(layout);
-    push_text(p, ts, id, at.0, at.1)
+    push_text(p, ts, id, slot.x, slot.y)
 }
 
 /// Shapes verbatim monospace text (code blocks, formulas outside the subset), wrapping at
 /// `width`.
 fn shape(ts: &mut TextSystem, text: &str, px: f32, width: f32) -> TextId {
+    assert!(px > 0.0, "code size must be positive");
+    debug_assert!(width > 0.0, "code wraps at a positive width");
     let mono = ts.mono().to_owned();
     let mut layout: Layout<()> = Layout::new();
     {
@@ -387,11 +430,14 @@ fn shape(ts: &mut TextSystem, text: &str, px: f32, width: f32) -> TextId {
 
 /// Records text layout `id` at `(x, y)`; returns its height.
 fn push_text(p: &mut ProseList, ts: &TextSystem, id: TextId, x: f32, y: f32) -> f32 {
+    debug_assert!(x >= 0.0, "runs sit inside the block");
     let l = ts.layout(id);
     p.text_id.push(id);
     p.text_x.push(x);
     p.text_y.push(y);
     p.width = p.width.max(x + l.width());
+    debug_assert_eq!(p.text_id.len(), p.text_x.len(), "text columns in step");
+    debug_assert_eq!(p.text_id.len(), p.text_y.len(), "text columns in step");
     l.height()
 }
 
@@ -441,6 +487,7 @@ fn table(
     for w in &widths {
         xs.push(xs[xs.len() - 1] + w);
     }
+    debug_assert_eq!(xs.len(), cols + 1, "one edge per column and a closing one");
     let total = xs[cols];
     let mut y = y0;
     p.rules.push([0.0, y0, total, 1.0]);
@@ -449,8 +496,12 @@ fn table(
         let mut h = 0.0f32;
         for (&w, &x) in widths.iter().zip(&xs) {
             let (layout, inl) = cells.next().expect("one shaped cell per column");
-            let at = (x + pad, y + pad);
-            h = h.max(place(ts, p, layout, &inl, at, (w - 2.0 * pad).max(1.0)));
+            let slot = Slot {
+                x: x + pad,
+                y: y + pad,
+                width: (w - 2.0 * pad).max(1.0),
+            };
+            h = h.max(place(ts, p, layout, &inl, slot));
         }
         y += h + 2.0 * pad;
         p.rules.push([0.0, y, total, 1.0]);
@@ -460,6 +511,7 @@ fn table(
         p.rules.push([x, y0, 1.0, y - y0]);
     }
     p.width = p.width.max(total);
+    debug_assert!(y >= y0, "rows stack downward");
     y - y0 + 1.0
 }
 
@@ -474,7 +526,8 @@ fn table(
 /// Panics on no columns or more than [`COLUMNS_MAX`].
 fn column_widths(natural: &[f32], width: f32, min: f32) -> Vec<f32> {
     let n = natural.len();
-    assert!(n > 0 && n <= COLUMNS_MAX, "1..=COLUMNS_MAX columns");
+    assert!(n > 0, "a table has a column");
+    assert!(n <= COLUMNS_MAX, "at most COLUMNS_MAX columns");
     if natural.iter().sum::<f32>() <= width {
         return natural.iter().map(|w| w.ceil()).collect();
     }
@@ -500,7 +553,7 @@ fn column_widths(natural: &[f32], width: f32, min: f32) -> Vec<f32> {
     assert!(flex_n > 0, "the columns overflow, so one stays flexible");
     let flex_sum: f32 = (0..n).filter(|&c| !fixed[c]).map(|c| natural[c]).sum();
     let left = (width - used).max(0.0);
-    (0..n)
+    let widths: Vec<f32> = (0..n)
         .map(|c| {
             if fixed[c] {
                 natural[c].ceil()
@@ -510,7 +563,10 @@ fn column_widths(natural: &[f32], width: f32, min: f32) -> Vec<f32> {
                 (left / flex_n as f32).floor().max(min)
             }
         })
-        .collect()
+        .collect();
+    debug_assert_eq!(widths.len(), n, "one width per column");
+    debug_assert!(widths.iter().all(|w| w.fract() == 0.0), "whole pixels");
+    widths
 }
 
 #[cfg(test)]

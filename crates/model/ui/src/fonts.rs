@@ -9,6 +9,10 @@
 //! - `pub fn ui_font_info(face: u8) -> FontInfo`
 //! - `pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>)`
 
+use skrifa::{FontRef, GlyphId};
+
+use crate::math;
+
 /// Noto Sans subset to the UI's scripts and symbols (fonts/README.md has the command).
 pub(crate) static NOTO_SANS: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -51,8 +55,12 @@ pub struct FontGlyph {
 /// under the SIL OFL 1.1, which allows embedding: exporters embed them so printed text uses
 /// the glyphs the canvas draws (PDF `FontFile2`, PostScript Type 42) instead of a base-14
 /// font that only covers ASCII.
+#[must_use]
 pub fn ui_fonts() -> [&'static [u8]; 2] {
-    [NOTO_SANS, crate::math::face_bytes("Main-Regular")]
+    let faces = [NOTO_SANS, math::face_bytes("Main-Regular")];
+    debug_assert!(faces[0].starts_with(&[0, 1, 0, 0]), "face 0 is TrueType");
+    debug_assert!(faces[1].starts_with(&[0, 1, 0, 0]), "face 1 is TrueType");
+    faces
 }
 
 /// The metrics of face `face` of [`ui_fonts`].
@@ -60,9 +68,11 @@ pub fn ui_fonts() -> [&'static [u8]; 2] {
 /// # Panics
 ///
 /// Panics if `face` is not an index into [`ui_fonts`].
+#[must_use]
 pub fn ui_font_info(face: u8) -> FontInfo {
     use skrifa::MetadataProvider;
     use skrifa::instance::{LocationRef, Size};
+    assert!(usize::from(face) < ui_fonts().len(), "no UI face {face}");
     let m = ui_face(face).metrics(Size::unscaled(), LocationRef::default());
     let r = |v: f32| v.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
     let b = m.bounds.unwrap_or_default();
@@ -74,7 +84,8 @@ pub fn ui_font_info(face: u8) -> FontInfo {
         cap_height: r(m.cap_height.unwrap_or(m.ascent * 0.7)),
         bbox: [r(b.x_min), r(b.y_min), r(b.x_max), r(b.y_max)],
     };
-    assert!(info.upem >= 16 && info.glyphs > 1, "a usable TrueType face");
+    assert!(info.upem >= 16, "a TrueType em has at least 16 units");
+    assert!(info.glyphs > 1, "a face has glyphs beyond .notdef");
     info
 }
 
@@ -84,9 +95,14 @@ pub fn ui_font_info(face: u8) -> FontInfo {
 /// `glyphshow` places. A character no face has gets glyph 0 of face 0 (`.notdef`, a box).
 ///
 /// Cost: at most one charmap lookup per face per character.
+///
+/// # Panics
+///
+/// If an embedded UI face fails to parse (a build defect, never input).
 pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
     use skrifa::MetadataProvider;
     use skrifa::instance::{LocationRef, Size};
+    debug_assert_eq!(ui_fonts().len(), 2, "two faces, in fallback order");
     let faces = [ui_face(0), ui_face(1)];
     let cmaps = [faces[0].charmap(), faces[1].charmap()];
     let metrics = [
@@ -101,7 +117,7 @@ pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
         });
         let (face, id) = hit.unwrap_or((0, 0));
         let adv = metrics[face]
-            .advance_width(skrifa::GlyphId::new(u32::from(id)))
+            .advance_width(GlyphId::new(u32::from(id)))
             .unwrap_or(0.0);
         out.push(FontGlyph {
             face: face as u8,
@@ -115,9 +131,10 @@ pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
 // ---- private ----
 
 /// Face `face` of [`ui_fonts`], parsed.
-fn ui_face(face: u8) -> skrifa::FontRef<'static> {
+fn ui_face(face: u8) -> FontRef<'static> {
+    assert!(usize::from(face) < ui_fonts().len(), "no UI face {face}");
     let bytes = ui_fonts()[usize::from(face)];
-    skrifa::FontRef::new(bytes).expect("an embedded UI face parses")
+    FontRef::new(bytes).expect("an embedded UI face parses")
 }
 
 #[cfg(test)]

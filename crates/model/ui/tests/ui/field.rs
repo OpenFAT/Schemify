@@ -5,13 +5,11 @@
 
 use schemify_ui::{Button, Chord, InputEvent, InputEvents, Shown, StyleProp, UiState};
 
-use crate::{fixture, key};
-
 // ---- private ----
 
 #[test]
 fn text_field_editing_with_ime_submits_on_enter() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     f.click("status.snap");
     assert_eq!(f.state.focus(), f.sym("status.snap"));
     let mut ev = InputEvents::default();
@@ -46,7 +44,7 @@ fn text_area_scrolls_inside_itself() {
         "node area.box text_area\n  parent window\n  value \"{}\"\nnode area.short text_area\n  parent window\n  value \"one\\ntwo\"\n",
         long.join("\\n")
     );
-    let mut f = fixture(&[src.as_str()]);
+    let mut f = crate::fixture(&[src.as_str()]);
     let (node, r) = (f.node("area.box"), f.row("area.box"));
     let style = |p| {
         let v = schemify_ui::row_style(&f.tables, f.frame.title_style(), node, Shown::Normal, p);
@@ -114,7 +112,7 @@ fn text_area_scrolls_inside_itself() {
 /// until Enter (`text_field_editing_with_ime_submits_on_enter`).
 #[test]
 fn text_fields_send_their_input_command_as_typed() {
-    let mut f = fixture(&[
+    let mut f = crate::fixture(&[
         "node t.field text_input\n  parent status\n  value ab\n  command t.ok\n  input t.typed\n",
     ]);
     assert!(
@@ -132,10 +130,10 @@ fn text_fields_send_their_input_command_as_typed() {
     assert_eq!(out.commands.arg(0), "abcd");
     assert_eq!(out.commands.node[0], f.sym("t.field"));
     assert!(
-        key(&mut f, "Left").commands.is_empty(),
+        crate::key(&mut f, "Left").commands.is_empty(),
         "no change, no command"
     );
-    let out = key(&mut f, "BackSpace");
+    let out = crate::key(&mut f, "BackSpace");
     assert_eq!(f.commands(&out), ["t.typed"]);
     assert_eq!(out.commands.arg(0), "abd");
     let mut ev = InputEvents::default();
@@ -169,10 +167,10 @@ fn text_fields_send_their_input_command_as_typed() {
 /// The IME candidate area follows the focused field's caret and is gone without focus.
 #[test]
 fn ime_area_follows_the_caret() {
-    let mut f = fixture(&[]);
+    let mut f = crate::fixture(&[]);
     assert!(f.state.ime_area(&f.tables, &f.frame).is_none());
     f.click("status.snap");
-    key(&mut f, "End");
+    crate::key(&mut f, "End");
     let field = f.frame.rect()[f.row("status.snap")];
     let a = f.state.ime_area(&f.tables, &f.frame).unwrap();
     assert!(a.w > 0.0 && a.h > 0.0);
@@ -188,6 +186,6 @@ fn ime_area_follows_the_caret() {
         b.x + b.w > a.x + a.w,
         "moves right with the caret: {a:?} -> {b:?}"
     );
-    key(&mut f, "Escape");
+    crate::key(&mut f, "Escape");
     assert!(f.state.ime_area(&f.tables, &f.frame).is_none());
 }

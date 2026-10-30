@@ -18,11 +18,14 @@
 //! - `pub fn layout(tables, strings, text, state, viewport) -> UiLayout`
 //! - `pub fn area_scroll_max(tables, layout, text, state, r) -> f32`
 
-use taffy::prelude::*;
+use std::ops::Range;
 
-use crate::flex::{Builder, Frame, NO_ROW};
+use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
+
+use crate::flex::{Builder, NO_ROW};
 use crate::kinds::{Kind, StyleProp};
-use crate::paint::row_style;
+use crate::paint;
+use crate::place::{Frame, Placed};
 use crate::state::UiState;
 use crate::strings::Strings;
 use crate::tables::{NO_NODE, NO_STYLE, NodeIx, UiTables};
@@ -105,7 +108,10 @@ pub struct UiLayout {
     pub(crate) clip: Vec<Rect>,
     pub(crate) scroller: Vec<NodeIx>,
     pub(crate) scrolled: Vec<f32>,
-    pub(crate) scroll_max: Vec<(NodeIx, f32)>,
+    /// Each laid-out `scroll` node, once, parallel to `scroll_max`.
+    pub(crate) scroll_node: Vec<NodeIx>,
+    /// Largest offset of each node in `scroll_node`.
+    pub(crate) scroll_max: Vec<f32>,
     pub(crate) overlay_start: u32,
     /// First row a modal dialog leaves hittable: the dialog's own (floats sit below it).
     pub(crate) modal_start: u32,
@@ -114,111 +120,170 @@ pub struct UiLayout {
 
 impl Rect {
     /// True when `(px, py)` is inside (left/top inclusive, right/bottom exclusive).
+    #[must_use]
     pub fn contains(&self, px: f32, py: f32) -> bool {
+        debug_assert!(self.w >= 0.0, "a rect's width is not negative");
+        debug_assert!(self.h >= 0.0, "a rect's height is not negative");
         px >= self.x && py >= self.y && px < self.x + self.w && py < self.y + self.h
     }
 
     /// The overlap of two rectangles (zero-sized when they do not meet).
+    #[must_use]
     pub fn intersect(&self, o: &Rect) -> Rect {
         let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
         let (x1, y1) = (
             (self.x + self.w).min(o.x + o.w),
             (self.y + self.h).min(o.y + o.h),
         );
-        Rect {
+        let out = Rect {
             x: x0,
             y: y0,
             w: (x1 - x0).max(0.0),
             h: (y1 - y0).max(0.0),
-        }
+        };
+        debug_assert!(
+            out.w <= self.w.max(o.w),
+            "an overlap is no wider than either side"
+        );
+        debug_assert!(
+            out.h <= self.h.max(o.h),
+            "an overlap is no taller than either side"
+        );
+        out
     }
 }
 
 impl UiLayout {
     /// Number of rows.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.rect.len(), self.node.len(), "columns in step");
         self.node.len()
     }
 
     /// True when nothing is visible.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.rect.len(), self.node.len(), "columns in step");
         self.node.is_empty()
     }
 
     /// Node of each row.
+    #[must_use]
     pub fn node(&self) -> &[NodeIx] {
+        debug_assert!(
+            self.modal_start as usize <= self.node.len(),
+            "layers inside the rows"
+        );
         &self.node
     }
 
     /// How each row shows its node.
+    #[must_use]
     pub fn shown(&self) -> &[Shown] {
+        debug_assert_eq!(self.shown.len(), self.node.len(), "columns in step");
         &self.shown
     }
 
     /// Rectangle of each row.
+    #[must_use]
     pub fn rect(&self) -> &[Rect] {
+        debug_assert_eq!(self.rect.len(), self.node.len(), "columns in step");
         &self.rect
     }
 
     /// Label layout of each row ([`NO_TEXT`] when none).
+    #[must_use]
     pub fn label(&self) -> &[TextId] {
+        debug_assert_eq!(self.label.len(), self.node.len(), "columns in step");
         &self.label
     }
 
     /// Accelerator layout of each row ([`NO_TEXT`] when none).
+    #[must_use]
     pub fn accel(&self) -> &[TextId] {
+        debug_assert_eq!(self.accel.len(), self.node.len(), "columns in step");
         &self.accel
     }
 
     /// Math layout id of each row (`u32::MAX` when none).
+    #[must_use]
     pub fn math(&self) -> &[u32] {
+        debug_assert_eq!(self.math.len(), self.node.len(), "columns in step");
         &self.math
     }
 
     /// Prose layout id ([`TextSystem::prose_list`]) of each row (`u32::MAX` when none).
+    #[must_use]
     pub fn prose(&self) -> &[u32] {
+        debug_assert_eq!(self.prose.len(), self.node.len(), "columns in step");
         &self.prose
     }
 
     /// Icon id ([`TextSystem::icon_paths`]) of each row (`u32::MAX` when none): a button
     /// with a parsable `icon` shows it instead of its label.
+    #[must_use]
     pub fn icon(&self) -> &[u32] {
+        debug_assert_eq!(self.icon.len(), self.node.len(), "columns in step");
         &self.icon
     }
 
     /// Left inset reserved for a check indicator in menu rows.
+    #[must_use]
     pub fn indent(&self) -> &[f32] {
+        debug_assert_eq!(self.indent.len(), self.node.len(), "columns in step");
         &self.indent
     }
 
     /// Visible part of each row's area: the intersection of its `scroll` ancestors'
     /// rectangles, [`NO_CLIP`] outside any. Painters clip to it; hit testing ignores the rest.
+    #[must_use]
     pub fn clip(&self) -> &[Rect] {
+        debug_assert_eq!(self.clip.len(), self.node.len(), "columns in step");
         &self.clip
     }
 
     /// How far each row is scrolled up: the sum of its `scroll` ancestors' offsets (logical px,
     /// 0 outside any). The row's place in its panes' content is its rect moved down by it, so a
     /// painter can keep a scrolled row and move it by its pane's offset alone.
+    #[must_use]
     pub fn scrolled(&self) -> &[f32] {
+        debug_assert_eq!(self.scrolled.len(), self.node.len(), "columns in step");
         &self.scrolled
     }
 
     /// Largest scroll offset of a laid-out `scroll` node (content height minus view height).
+    #[must_use]
     pub fn scroll_max(&self, node: NodeIx) -> Option<f32> {
-        self.scroll_max
-            .iter()
-            .find(|(n, _)| *n == node)
-            .map(|(_, m)| *m)
+        debug_assert_eq!(
+            self.scroll_node.len(),
+            self.scroll_max.len(),
+            "scroll columns in step"
+        );
+        let i = self.scroll_node.iter().position(|&n| n == node)?;
+        debug_assert!(self.scroll_max[i] >= 0.0, "a scroll extent is not negative");
+        Some(self.scroll_max[i])
     }
 
     /// Innermost `scroll` node enclosing row `r` ([`NO_NODE`] when none).
+    ///
+    /// # Panics
+    ///
+    /// If `r` is not a row.
+    #[must_use]
     pub fn scroller(&self, r: usize) -> NodeIx {
+        assert!(r < self.len(), "row {r} out of range");
+        debug_assert_eq!(self.scroller.len(), self.node.len(), "columns in step");
         self.scroller[r]
     }
 
     /// Rows of one paint layer.
-    pub fn rows(&self, layer: Layer) -> std::ops::Range<usize> {
+    #[must_use]
+    pub fn rows(&self, layer: Layer) -> Range<usize> {
+        debug_assert!(
+            self.overlay_start as usize <= self.len(),
+            "the overlay starts inside"
+        );
         match layer {
             Layer::Main => 0..self.overlay_start as usize,
             Layer::Overlay => self.overlay_start as usize..self.len(),
@@ -227,32 +292,60 @@ impl UiLayout {
 
     /// Rows of the canvas's floats: the start of [`Layer::Overlay`], before the dialog and
     /// popups (empty when the canvas has no children).
-    pub fn floats(&self) -> std::ops::Range<usize> {
-        debug_assert!(self.overlay_start <= self.modal_start);
+    #[must_use]
+    pub fn floats(&self) -> Range<usize> {
+        debug_assert!(
+            self.overlay_start <= self.modal_start,
+            "floats precede the dialog"
+        );
+        debug_assert!(
+            self.modal_start as usize <= self.len(),
+            "the dialog starts inside"
+        );
         self.overlay_start as usize..self.modal_start as usize
     }
 
     /// Style row of the `menu-title` selector ([`NO_STYLE`] if the theme has none).
+    #[must_use]
     pub fn title_style(&self) -> u16 {
         self.title_style
     }
 
     /// [`row_style`] of `node` shown normally, as a float (what input and painting measure with).
     pub(crate) fn style(&self, tables: &UiTables, node: NodeIx, prop: StyleProp) -> f32 {
-        row_style(tables, self.title_style, node, Shown::Normal, prop) as f32
+        debug_assert!(
+            (node as usize) < tables.nodes.len(),
+            "node {node} out of range"
+        );
+        paint::row_style(tables, self.title_style, node, Shown::Normal, prop) as f32
     }
 
     /// First row showing `node` normally, as a title or as a cascade row (not as a popup).
+    #[must_use]
     pub fn row_of(&self, node: NodeIx) -> Option<usize> {
-        (0..self.len()).find(|&r| self.node[r] == node && self.shown[r] != Shown::Popup)
+        debug_assert_eq!(self.shown.len(), self.node.len(), "columns in step");
+        let row = (0..self.len()).find(|&r| self.node[r] == node && self.shown[r] != Shown::Popup);
+        if let Some(r) = row {
+            debug_assert_eq!(self.node[r], node);
+        }
+        row
     }
 
     /// Topmost row under `(x, y)`. While a dialog is open only its rows can be hit (modal).
+    #[must_use]
     pub fn hit(&self, x: f32, y: f32, modal: bool) -> Option<usize> {
+        debug_assert_eq!(self.clip.len(), self.rect.len(), "columns in step");
         let lo = if modal { self.modal_start as usize } else { 0 };
-        (lo..self.len())
+        let row = (lo..self.len())
             .rev()
-            .find(|&r| self.rect[r].contains(x, y) && self.clip[r].contains(x, y))
+            .find(|&r| self.rect[r].contains(x, y) && self.clip[r].contains(x, y));
+        if let Some(r) = row {
+            debug_assert!(
+                r >= lo,
+                "a modal dialog leaves the rows below it unhittable"
+            );
+        }
+        row
     }
 }
 
@@ -269,10 +362,10 @@ pub fn layout(
     state: &UiState,
     viewport: (f32, f32),
 ) -> UiLayout {
-    assert!(
-        viewport.0 > 0.0 && viewport.1 > 0.0 && viewport.0.is_finite() && viewport.1.is_finite(),
-        "bad viewport"
-    );
+    assert!(viewport.0.is_finite(), "viewport width must be finite");
+    assert!(viewport.1.is_finite(), "viewport height must be finite");
+    assert!(viewport.0 > 0.0, "viewport width must be positive");
+    assert!(viewport.1 > 0.0, "viewport height must be positive");
     text.begin_frame();
     let title_style = strings
         .find("menu-title")
@@ -299,11 +392,11 @@ pub fn layout(
         };
         let mut s = b.tree.style(root).expect("root style").clone();
         s.size = Size {
-            width: length(viewport.0),
-            height: length(viewport.1),
+            width: Dimension::length(viewport.0),
+            height: Dimension::length(viewport.1),
         };
         b.tree.set_style(root, s).expect("root style");
-        b.place(0, root, avail, (0.0, 0.0), &mut f);
+        b.place(0, root, avail, &mut f);
     }
     let overlay_start = b.rows.len() as u32;
     // Floats: each child of the canvas, laid out at its content size and centred along the
@@ -315,8 +408,12 @@ pub fn layout(
         let c = f.rect[cr];
         let kids: Vec<NodeIx> = nodes.children(b.rows[cr].node).collect();
         for k in kids {
-            let (start, w, _) = b.float(k, Shown::Normal, &mut f);
-            f.shift(start, c.x + ((c.w - w) / 2.0).max(0.0), c.y + FLOAT_INSET);
+            let p = b.float(k, Shown::Normal, &mut f);
+            f.shift(
+                p.start,
+                c.x + ((c.w - p.w) / 2.0).max(0.0),
+                c.y + FLOAT_INSET,
+            );
         }
     }
     let modal_start = b.rows.len() as u32;
@@ -327,7 +424,7 @@ pub fn layout(
         .find(state.dialog)
         .filter(|&d| nodes.kind[d as usize] == Kind::Dialog)
     {
-        let (start, w, h) = b.float(d, Shown::Normal, &mut f);
+        let Placed { start, w, h } = b.float(d, Shown::Normal, &mut f);
         // At a point (a context menu) or where the user dragged it: kept inside the viewport.
         let (dx, dy) = match state.dialog_at.or(state.dialog_pos) {
             Some((x, y)) => (
@@ -352,7 +449,11 @@ pub fn layout(
         // Menubar titles and dropdowns drop down; cascades open to the right.
         let below = b.rows[a].shown == Shown::Title
             || (b.rows[a].shown == Shown::Normal && nodes.kind[m as usize] == Kind::Dropdown);
-        let (start, pw, ph) = b.float(m, Shown::Popup, &mut f);
+        let Placed {
+            start,
+            w: pw,
+            h: ph,
+        } = b.float(m, Shown::Popup, &mut f);
         let mut x = if below { ar.x } else { ar.x + ar.w };
         let mut y = if below { ar.y + ar.h } else { ar.y };
         x = x.min(viewport.0 - pw).max(0.0);
@@ -372,6 +473,7 @@ pub fn layout(
         clip: f.clip,
         scroller: f.scroller,
         scrolled: f.scrolled,
+        scroll_node: f.scroll_node,
         scroll_max: f.scroll_max,
         overlay_start,
         modal_start,
@@ -380,11 +482,24 @@ pub fn layout(
     debug_assert_eq!(out.rect.len(), out.node.len());
     debug_assert_eq!(out.clip.len(), out.node.len());
     debug_assert_eq!(out.scrolled.len(), out.node.len());
+    debug_assert_eq!(out.scroll_node.len(), out.scroll_max.len());
+    assert!(
+        out.overlay_start <= out.modal_start,
+        "floats precede the dialog"
+    );
+    assert!(
+        out.modal_start as usize <= out.node.len(),
+        "the dialog's rows exist"
+    );
     out
 }
 
 /// How far text area row `r` scrolls inside itself: the height of its text (the editor's
 /// while it has focus) minus the height inside its vertical padding; 0 when it fits.
+///
+/// # Panics
+///
+/// If `r` is not a row of `layout`.
 pub fn area_scroll_max(
     tables: &UiTables,
     layout: &UiLayout,
@@ -392,6 +507,7 @@ pub fn area_scroll_max(
     state: &UiState,
     r: usize,
 ) -> f32 {
+    assert!(r < layout.len(), "row {r} out of range");
     let n = layout.node[r];
     debug_assert_eq!(tables.nodes.kind[n as usize], Kind::TextArea);
     let pad_y = layout.style(tables, n, StyleProp::PadY);
@@ -403,5 +519,7 @@ pub fn area_scroll_max(
     } else {
         0.0
     };
-    (content - (layout.rect[r].h - 2.0 * pad_y)).max(0.0)
+    let max = (content - (layout.rect[r].h - 2.0 * pad_y)).max(0.0);
+    debug_assert!(max >= 0.0, "a scroll extent is not negative");
+    max
 }

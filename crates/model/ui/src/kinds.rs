@@ -26,13 +26,23 @@ macro_rules! named_enum {
             pub const COUNT: usize = Self::ALL.len();
 
             /// The record spelling (line-record word).
+            #[must_use]
             pub fn name(self) -> &'static str {
-                match self { $($name::$v => $s),+ }
+                // `ALL` is in discriminant order: per-variant arrays index by `self as usize`.
+                debug_assert_eq!(Self::ALL[self as usize], self);
+                let name = match self { $($name::$v => $s),+ };
+                debug_assert!(!name.is_empty(), "every variant has a spelling");
+                name
             }
 
             /// Parses the record spelling; `None` for anything else.
+            #[must_use]
             pub fn parse(s: &str) -> Option<Self> {
-                match s { $($s => Some($name::$v),)+ _ => None }
+                let parsed = match s { $($s => Some($name::$v),)+ _ => None };
+                if let Some(v) = parsed {
+                    debug_assert_eq!(v.name(), s, "spellings round-trip");
+                }
+                parsed
             }
         }
     };
@@ -179,6 +189,12 @@ named_enum!(
     }
 );
 
+// `UiStyles::set` holds one bit per style prop.
+const _: () = assert!(StyleProp::COUNT <= 32, "style props fit a u32 bit mask");
+// `parse_value` reads the props up to `border-color` as colours.
+const _: () = assert!((StyleProp::Dir as u8) > StyleProp::BorderColor as u8);
+const _: () = assert!((StyleProp::Border as u8) > StyleProp::BorderColor as u8);
+
 impl StyleProp {
     /// Parses a style value for this prop; `None` when malformed.
     pub(crate) fn parse_value(self, s: &str) -> Option<u32> {
@@ -191,7 +207,10 @@ impl StyleProp {
             }
             let v = u32::from_str_radix(hex, 16).ok()?;
             return match hex.len() {
-                6 => Some((v << 8) | 0xff),
+                6 => {
+                    debug_assert!(v <= 0xff_ffff, "six hex digits are 24 bits");
+                    Some((v << 8) | 0xff)
+                }
                 8 => Some(v),
                 _ => None,
             };
@@ -203,6 +222,8 @@ impl StyleProp {
                 _ => None,
             };
         }
-        s.parse::<u32>().ok().filter(|&v| v <= LENGTH_MAX)
+        debug_assert!(self > StyleProp::BorderColor, "colours parse above");
+        let length: u32 = s.parse().ok()?;
+        (length <= LENGTH_MAX).then_some(length)
     }
 }

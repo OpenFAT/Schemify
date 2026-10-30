@@ -7,7 +7,7 @@ use schemify_ui::waves::{DialogFx, PROPS_DIALOG};
 use schemify_ui::{HealthKind, Rect};
 use schemify_wave::{Cursor, PaneMode, PaneProps, Radix, Request};
 
-use crate::{VIEW, Win, data, inside};
+use crate::{VIEW, Win};
 
 // ---- private ----
 
@@ -43,7 +43,7 @@ fn range(seed: &mut u64) -> (f64, f64) {
 #[test]
 fn properties_dialog_round_trips() {
     let mut seed = 0x2545_f491_4f6c_dd1d;
-    let waves = data();
+    let waves = crate::data();
     for case in 0..64 {
         let mut w = Win::new(waves.clone());
         let modes = [PaneMode::Analog, PaneMode::Digital, PaneMode::Histogram];
@@ -128,7 +128,7 @@ fn properties_dialog_round_trips() {
 
 #[test]
 fn properties_dialog_applies_edits_and_keeps_bad_ones_open() {
-    let mut w = Win::new(data());
+    let mut w = Win::new(crate::data());
     w.command("waves.props", "", "", 0);
     let bad = w
         .tables
@@ -143,7 +143,7 @@ fn properties_dialog_applies_edits_and_keeps_bad_ones_open() {
         w: VIEW.0,
         h: VIEW.1,
     };
-    assert!(inside(w.rect(PROPS_DIALOG), window));
+    assert!(crate::inside(w.rect(PROPS_DIALOG), window));
     // A field that does not parse keeps the dialog open and names the field.
     let reqs = w.command("waves.props.ok", "2meg", "waves.props.f.1", 0);
     assert!(reqs.is_empty());

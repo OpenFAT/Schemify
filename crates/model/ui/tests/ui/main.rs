@@ -130,7 +130,7 @@ impl Fixture {
 pub(crate) fn key(f: &mut Fixture, chord: &str) -> Routed {
     let mut ev = InputEvents::default();
     ev.push(InputEvent::Key {
-        chord: Chord::parse(chord).unwrap(),
+        chord: Chord::parse(chord).expect("the test names a valid chord"),
     });
     f.route(&ev)
 }
@@ -140,6 +140,6 @@ pub(crate) fn first_nav_row(f: &Fixture, menu: &str) -> Sym {
     let c = n
         .children(f.node(menu))
         .find(|&c| matches!(n.kind()[c as usize], Kind::Item | Kind::Menu))
-        .unwrap();
+        .expect("the menu has a navigable row");
     n.id()[c as usize]
 }

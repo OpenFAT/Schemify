@@ -3,17 +3,18 @@
 //!
 //! Contents: no `pub` items.
 
-use schemify_ui::waves::{DialogFx, Drag, plot_area};
+use schemify_ui::waves;
+use schemify_ui::waves::{DialogFx, Drag};
 use schemify_ui::{Button, InputEvent, Kind, Prop, StyleProp};
 use schemify_wave::{Cursor, PALETTE, Request};
 
-use crate::{Win, data};
+use crate::Win;
 
 // ---- private ----
 
 #[test]
 fn commands_drive_the_viewer() {
-    let mut w = Win::new(data());
+    let mut w = Win::new(crate::data());
     // Double-clicking a signal row plots it into the active pane; a single click only selects.
     assert!(
         w.command("waves.signal", "", "waves.sig.7", 1000)
@@ -63,7 +64,7 @@ fn commands_drive_the_viewer() {
 
 #[test]
 fn swatches_recolour_the_selected_trace() {
-    let mut w = Win::new(data());
+    let mut w = Win::new(crate::data());
     for (k, &c) in PALETTE.iter().enumerate() {
         let class = w.strings.find(&format!("wswatch{k}")).unwrap();
         let row = w.tables.styles.row(class);
@@ -103,8 +104,8 @@ fn swatches_recolour_the_selected_trace() {
 
 #[test]
 fn keys_place_horizontal_cursors_track_steps_and_measure() {
-    let mut w = Win::new(data());
-    let p = plot_area(w.geo.panes[0]);
+    let mut w = Win::new(crate::data());
+    let p = waves::plot_area(w.geo.panes[0]);
     let (x, y) = (p.x + 0.5 * p.w, p.y + 0.25 * p.h);
     w.route(&[InputEvent::PointerMove { x, y }], 0);
     // Shift+A: horizontal cursor A at the pointer's y; again hides it.
@@ -188,7 +189,7 @@ fn keys_place_horizontal_cursors_track_steps_and_measure() {
 /// button (no argument) use the typed text.
 #[test]
 fn fields_follow_typing_through_input_commands() {
-    let mut w = Win::new(data());
+    let mut w = Win::new(crate::data());
     w.command("waves.props", "", "", 0);
     let input = w.tables.nodes.prop(Prop::Input);
     let fields = (w.tables.nodes.kind().iter())

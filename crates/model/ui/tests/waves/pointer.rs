@@ -3,18 +3,19 @@
 //!
 //! Contents: no `pub` items.
 
-use schemify_ui::waves::{DialogFx, Drag, Geometry, PROPS_DIALOG, WaveUi, plot_area};
+use schemify_ui::waves;
+use schemify_ui::waves::{DialogFx, Drag, Geometry, PROPS_DIALOG, WaveUi};
 use schemify_ui::{Button, InputEvent, InputEvents, Mods, Rect};
 use schemify_wave::{Cursor, Request};
 
-use crate::{Win, data};
+use crate::Win;
 
 // ---- private ----
 
 #[test]
 fn wheel_zoom_keeps_the_point_under_the_pointer() {
-    let mut w = Win::new(data());
-    let p = plot_area(w.geo.panes[0]);
+    let mut w = Win::new(crate::data());
+    let p = waves::plot_area(w.geo.panes[0]);
     let (x, y) = (p.x + 0.3 * p.w, p.y + 0.25 * p.h);
     let (x_at, y_at) = (w.waves.x().at(0.3), w.waves.panes()[0].at(0.75));
     let wheel = InputEvent::Wheel {
@@ -54,8 +55,8 @@ fn wheel_zoom_keeps_the_point_under_the_pointer() {
 
 #[test]
 fn drags_pan_box_zoom_and_move_cursors() {
-    let mut w = Win::new(data());
-    let p = plot_area(w.geo.panes[0]);
+    let mut w = Win::new(crate::data());
+    let p = waves::plot_area(w.geo.panes[0]);
     let (x0, y0) = (p.x + 100.0, p.y + 50.0);
     let before = (w.waves.x(), w.waves.panes()[0]);
     // Left drag right and down: the data follows the pointer.
@@ -172,7 +173,7 @@ fn drags_pan_box_zoom_and_move_cursors() {
 
 #[test]
 fn embedded_graph_routes_with_one_pane_rect() {
-    let waves = data();
+    let waves = crate::data();
     let mut ui = WaveUi::default();
     let geo = Geometry {
         panes: vec![Rect {
@@ -183,7 +184,7 @@ fn embedded_graph_routes_with_one_pane_rect() {
         }],
         ..Geometry::default()
     };
-    let p = plot_area(geo.panes[0]);
+    let p = waves::plot_area(geo.panes[0]);
     let events = InputEvents {
         events: vec![InputEvent::Wheel {
             x: p.x + p.w / 2.0,

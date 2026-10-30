@@ -13,10 +13,9 @@
 ///
 /// Panics unless `lo < hi` (both finite) and `max_ticks >= 2`.
 pub fn ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
-    assert!(
-        lo.is_finite() && hi.is_finite() && lo < hi,
-        "empty tick range"
-    );
+    assert!(lo.is_finite(), "tick range start must be finite");
+    assert!(hi.is_finite(), "tick range end must be finite");
+    assert!(lo < hi, "empty tick range");
     assert!(max_ticks >= 2, "need at least two ticks");
     out.clear();
     let raw = (hi - lo) / f64::from(max_ticks);
@@ -51,10 +50,9 @@ pub fn ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
 ///
 /// Panics unless `0 < lo < hi` (both finite) and `max_ticks >= 2`.
 pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
-    assert!(
-        lo > 0.0 && hi.is_finite() && lo < hi,
-        "empty log tick range"
-    );
+    assert!(lo > 0.0, "a log range starts above 0");
+    assert!(hi.is_finite(), "log range end must be finite");
+    assert!(lo < hi, "empty log tick range");
     assert!(max_ticks >= 2, "need at least two ticks");
     let (d0, d1) = (lo.log10().ceil() as i32, hi.log10().floor() as i32);
     if d1 - d0 + 1 < 2 {
@@ -81,14 +79,19 @@ pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
     }
     out.sort_by(f64::total_cmp);
     debug_assert!(
-        out.iter()
-            .all(|v| *v >= lo * (1.0 - 1e-12) && *v <= hi * (1.0 + 1e-12))
+        out.iter().all(|v| *v >= lo * (1.0 - 1e-12)),
+        "no tick below the range"
+    );
+    debug_assert!(
+        out.iter().all(|v| *v <= hi * (1.0 + 1e-12)),
+        "no tick above the range"
     );
 }
 
 /// Significant digits that tell neighbouring ticks `ts` apart: at least 3, more when the view
 /// is narrow next to its distance from zero (a 50 ps window at 4.2 ms needs 9), at most 15. A
 /// log axis, fewer than two ticks, or ticks not ascending get 3.
+#[must_use]
 pub fn tick_digits(ts: &[f64], log: bool) -> usize {
     let (Some(&a), Some(&b)) = (ts.first(), ts.get(1)) else {
         return 3;
@@ -97,6 +100,7 @@ pub fn tick_digits(ts: &[f64], log: bool) -> usize {
     if log || b <= a || big == 0.0 {
         return 3;
     }
+    debug_assert!(big >= b.abs(), "the largest magnitude bounds every tick");
     let d = ((big / (b - a)).log10().ceil() as i64 + 1).clamp(3, 15) as usize;
     debug_assert!((3..=15).contains(&d));
     d

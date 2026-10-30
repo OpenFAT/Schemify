@@ -35,6 +35,7 @@
 //! - `pub struct UiTables`
 
 use std::collections::HashMap;
+use std::iter;
 
 use crate::keys::Chord;
 use crate::kinds::{Kind, Prop, StyleProp};
@@ -199,22 +200,35 @@ impl Contribution {
 
 impl Health {
     /// Number of rows.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(self.target.len(), self.kind.len());
+        debug_assert_eq!(self.by.len(), self.kind.len());
         self.kind.len()
     }
 
     /// True when nothing was overridden or rejected.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.over.len(), self.kind.len());
         self.kind.is_empty()
     }
 
     /// Appends one row.
     pub(crate) fn push(&mut self, kind: HealthKind, target: Sym, by: u8, over: u8) {
+        // Only an unknown target or an orphan is reported against its own contribution.
+        if by == over {
+            debug_assert!(
+                matches!(kind, HealthKind::UnknownTarget | HealthKind::Orphaned),
+                "an override names two contributions"
+            );
+        }
         self.kind.push(kind);
         self.target.push(target);
         self.by.push(by);
         self.over.push(over);
         debug_assert_eq!(self.target.len(), self.kind.len());
+        debug_assert_eq!(self.over.len(), self.by.len());
     }
 }
 
@@ -223,48 +237,72 @@ impl UiNodes {
     pub const CAPACITY: usize = u16::MAX as usize;
 
     /// Number of nodes.
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert!(self.id.len() <= Self::CAPACITY);
+        debug_assert_eq!(self.kind.len(), self.id.len());
         self.id.len()
     }
 
     /// True when no node exists.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert_eq!(self.index.len(), self.id.len(), "one index entry per node");
         self.id.is_empty()
     }
 
     /// Stable public ids.
+    #[must_use]
     pub fn id(&self) -> &[Sym] {
+        debug_assert_eq!(self.index.len(), self.id.len(), "one index entry per node");
         &self.id
     }
 
     /// Widget kinds.
+    #[must_use]
     pub fn kind(&self) -> &[Kind] {
+        debug_assert_eq!(self.kind.len(), self.id.len());
         &self.kind
     }
 
     /// Parent index per node ([`NO_NODE`] for roots: the window and dialogs).
+    #[must_use]
     pub fn parent(&self) -> &[NodeIx] {
+        debug_assert_eq!(self.parent.len(), self.id.len());
         &self.parent
     }
 
     /// Pre-order subtree end: the descendants of `i` are exactly `i + 1 .. end[i]`.
+    #[must_use]
     pub fn end(&self) -> &[NodeIx] {
+        debug_assert_eq!(self.end.len(), self.id.len());
         &self.end
     }
 
     /// Contribution that declared each node (0 = base).
+    #[must_use]
     pub fn owner(&self) -> &[u8] {
+        debug_assert_eq!(self.owner.len(), self.id.len());
         &self.owner
     }
 
     /// One prop column (`Sym::NONE` = absent).
+    #[must_use]
     pub fn prop(&self, p: Prop) -> &[Sym] {
-        &self.props[p as usize]
+        let column = &self.props[p as usize];
+        debug_assert_eq!(column.len(), self.id.len());
+        column
     }
 
     /// Index of the node with public id `id`.
+    #[must_use]
     pub fn find(&self, id: Sym) -> Option<NodeIx> {
-        self.index.get(&id).copied()
+        let found = self.index.get(&id).copied();
+        if let Some(i) = found {
+            debug_assert!((i as usize) < self.id.len(), "index entry past the table");
+            debug_assert_eq!(self.id[i as usize], id, "index and id column agree");
+        }
+        found
     }
 
     /// Direct children of `i`, in sibling order. O(children) using the pre-order `end` column.
@@ -275,24 +313,43 @@ impl UiNodes {
     pub fn children(&self, i: NodeIx) -> impl Iterator<Item = NodeIx> + '_ {
         assert!((i as usize) < self.len(), "node index out of range");
         let end = self.end[i as usize];
+        debug_assert!(end > i, "a subtree holds its root");
+        debug_assert!(
+            (end as usize) <= self.len(),
+            "a subtree ends inside the table"
+        );
         let mut c = i + 1;
-        std::iter::from_fn(move || {
+        iter::from_fn(move || {
             if c >= end {
                 return None;
             }
             let this = c;
             c = self.end[c as usize];
+            debug_assert!(c > this, "each sibling step moves forward");
+            debug_assert!(c <= end, "a child's subtree ends inside its parent's");
             Some(this)
         })
     }
 
     /// True when the `checked` prop is set to anything but `"0"`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i` is not a node index.
+    #[must_use]
     pub fn is_checked(&self, strings: &Strings, i: NodeIx) -> bool {
+        assert!((i as usize) < self.len(), "node index out of range");
         is_true(strings, self.props[Prop::Checked as usize][i as usize])
     }
 
     /// True when the `disabled` prop is set to anything but `"0"`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i` is not a node index.
+    #[must_use]
     pub fn is_disabled(&self, strings: &Strings, i: NodeIx) -> bool {
+        assert!((i as usize) < self.len(), "node index out of range");
         is_true(strings, self.props[Prop::Disabled as usize][i as usize])
     }
 }
@@ -311,16 +368,38 @@ impl Default for UiStyles {
 
 impl UiStyles {
     /// Row of `selector`, or [`NO_STYLE`]. O(selectors), which is ~30.
+    #[must_use]
     pub fn row(&self, selector: Sym) -> u16 {
-        self.selector
-            .iter()
-            .position(|&s| s == selector)
-            .map_or(NO_STYLE, |r| r as u16)
+        debug_assert!(
+            self.selector.len() < NO_STYLE as usize,
+            "rows stay below the sentinel"
+        );
+        let row = self.selector.iter().position(|&s| s == selector);
+        let row = row.map_or(NO_STYLE, |r| r as u16);
+        if row != NO_STYLE {
+            debug_assert_eq!(self.selector[usize::from(row)], selector);
+        }
+        row
     }
 
     /// Resolves `prop` for a node with class row `class` and kind `kind`; 0 when no selector
     /// sets it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `class` is neither [`NO_STYLE`] nor a row of this table.
+    #[must_use]
     pub fn get(&self, class: u16, kind: Kind, prop: StyleProp) -> u32 {
+        if class != NO_STYLE {
+            assert!(
+                usize::from(class) < self.selector.len(),
+                "style row {class} from other tables"
+            );
+        }
+        debug_assert!(
+            self.default_row == NO_STYLE || usize::from(self.default_row) < self.selector.len(),
+            "the default row is a row"
+        );
         self.lookup(class, prop)
             .or_else(|| self.lookup(self.kind_row[kind as usize], prop))
             .or_else(|| self.lookup(self.default_row, prop))
@@ -330,20 +409,33 @@ impl UiStyles {
 
 impl Keymap {
     /// Command bound to `chord`. O(log bindings).
+    #[must_use]
     pub fn lookup(&self, chord: Chord) -> Option<Sym> {
-        self.chord
-            .binary_search(&chord)
-            .ok()
-            .map(|i| self.command[i])
+        debug_assert_eq!(self.command.len(), self.chord.len());
+        debug_assert!(
+            self.chord.is_sorted(),
+            "binary search needs ascending chords"
+        );
+        let found = self.chord.binary_search(&chord).ok();
+        let command = found.map(|i| self.command[i]);
+        debug_assert!(
+            command.is_none_or(|c| !c.is_none()),
+            "a binding names a command"
+        );
+        command
     }
 
     /// Bound chords, ascending.
+    #[must_use]
     pub fn chords(&self) -> &[Chord] {
+        debug_assert_eq!(self.command.len(), self.chord.len());
         &self.chord
     }
 
     /// Commands, parallel to [`Keymap::chords`].
+    #[must_use]
     pub fn commands(&self) -> &[Sym] {
+        debug_assert_eq!(self.command.len(), self.chord.len());
         &self.command
     }
 }
@@ -352,14 +444,22 @@ impl Keymap {
 
 /// A boolean prop: set and not `"0"`.
 fn is_true(strings: &Strings, v: Sym) -> bool {
-    !v.is_none() && strings.get(v) != "0"
+    if v.is_none() {
+        return false;
+    }
+    strings.get(v) != "0"
 }
 
 impl UiStyles {
     /// Prop `prop` of style row `row` when that row sets it.
     fn lookup(&self, row: u16, prop: StyleProp) -> Option<u32> {
-        let r = row as usize;
-        (row != NO_STYLE && self.set[r] & (1 << prop as u32) != 0)
-            .then(|| self.value[r][prop as usize])
+        debug_assert_eq!(self.value.len(), self.selector.len());
+        debug_assert_eq!(self.set.len(), self.selector.len());
+        if row == NO_STYLE {
+            return None;
+        }
+        let r = usize::from(row);
+        debug_assert!(r < self.selector.len(), "style row {r} out of range");
+        (self.set[r] & (1 << prop as u32) != 0).then(|| self.value[r][prop as usize])
     }
 }

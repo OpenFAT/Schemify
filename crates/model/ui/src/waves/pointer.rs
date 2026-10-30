@@ -3,13 +3,25 @@
 //!
 //! Contents:
 //! - `WaveUi::route(waves, geo, events, now_ms, out) -> Effect`
-//! - `pub(super) WaveUi::pointer_at(geo) -> Option<(u8, f64, f64)>`
+//! - `pub(super) struct PaneFraction`
+//! - `pub(super) WaveUi::pointer_at(geo) -> Option<PaneFraction>`
 
 use schemify_wave::{Cursor, PaneMode, Request, Scale, Waves};
 
-use super::{DOUBLE_CLICK_MS, Drag, Effect, Geometry, WaveUi, plot_area};
+use super::{DOUBLE_CLICK_MS, Drag, Effect, Geometry, PlotPress, WaveUi};
 use crate::input::{Button, InputEvent, InputEvents};
 use crate::keys::Mods;
+
+/// A point inside a pane's plot as fractions of it, clamped to `[0, 1]`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PaneFraction {
+    /// The pane.
+    pub(super) pane: u8,
+    /// From the plot's left edge.
+    pub(super) x: f64,
+    /// From the plot's bottom edge.
+    pub(super) y: f64,
+}
 
 /// Pointer distance in logical pixels within which a press grabs a cursor line.
 const GRAB_PX: f32 = 6.0;
@@ -36,22 +48,30 @@ impl WaveUi {
             "more pane rects than panes"
         );
         let mut fx = Effect::default();
+        let before = out.len();
         for &ev in &events.events {
             let e = self.event(waves, geo, ev, now_ms, out);
             fx.or(e);
         }
+        debug_assert!(out.len() >= before, "routing only appends requests");
         fx
     }
 
     /// The pane under the pointer with the pointer's fractions of its plot (x from the left, y
     /// from the bottom), clamped to `[0, 1]`.
-    pub(super) fn pointer_at(&self, geo: &Geometry) -> Option<(u8, f64, f64)> {
+    pub(super) fn pointer_at(&self, geo: &Geometry) -> Option<PaneFraction> {
         let (x, y) = self.pointer?;
         let k = geo.pane_at(x, y)?;
-        let p = plot_area(geo.panes[usize::from(k)]);
+        let p = super::plot_area(geo.panes[usize::from(k)]);
         let fx = f64::from((x - p.x) / p.w).clamp(0.0, 1.0);
         let fy = f64::from((p.y + p.h - y) / p.h).clamp(0.0, 1.0);
-        Some((k, fx, fy))
+        debug_assert!((0.0..=1.0).contains(&fx), "clamped x fraction");
+        debug_assert!((0.0..=1.0).contains(&fy), "clamped y fraction");
+        Some(PaneFraction {
+            pane: k,
+            x: fx,
+            y: fy,
+        })
     }
 }
 
@@ -79,7 +99,11 @@ impl WaveUi {
         if held.is_some_and(|p| usize::from(p) >= geo.panes.len()) {
             self.drag = Drag::None;
         }
-        let plot = |k: u8| plot_area(geo.panes[usize::from(k)]);
+        debug_assert!(
+            geo.panes.len() <= waves.panes().len(),
+            "pane rects index the viewer's panes"
+        );
+        let plot = |k: u8| super::plot_area(geo.panes[usize::from(k)]);
         let x_scale = |k: u8| {
             let p = plot(k);
             waves.x_of(usize::from(k)).scale(p.x, p.x + p.w)
@@ -172,12 +196,16 @@ impl WaveUi {
                 };
                 match button {
                     Button::Left if in_plot => {
-                        let double = self.last_down.is_some_and(|(px, py, t)| {
-                            now_ms.saturating_sub(t) <= DOUBLE_CLICK_MS
-                                && (px - x).abs() <= 4.0
-                                && (py - y).abs() <= 4.0
+                        let double = self.last_down.is_some_and(|last| {
+                            now_ms.saturating_sub(last.at_ms) <= DOUBLE_CLICK_MS
+                                && (last.x - x).abs() <= 4.0
+                                && (last.y - y).abs() <= 4.0
                         });
-                        self.last_down = Some((x, y, now_ms));
+                        self.last_down = Some(PlotPress {
+                            x,
+                            y,
+                            at_ms: now_ms,
+                        });
                         if double {
                             self.last_down = None;
                             fx.or(self.open_dialog(waves, k));
@@ -275,6 +303,7 @@ impl WaveUi {
 /// x), else a horizontal one (analog and histogram panes).
 fn grab(waves: &Waves, k: u8, sx: &Scale, sy: &Scale, x: f32, y: f32) -> Option<Drag> {
     let p = usize::from(k);
+    assert!(p < waves.panes().len(), "a press lands in a pane ({k})");
     let props = waves.props(p);
     let near =
         |c: Option<f64>, at: f32, s: &Scale| c.is_some_and(|v| (s.px(v) - at).abs() <= GRAB_PX);
