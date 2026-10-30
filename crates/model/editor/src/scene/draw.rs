@@ -43,7 +43,10 @@ pub(super) struct Stamp<'d> {
 
 /// Stamps instance row `i`: the resolved cell's symbol through the placement transform, or
 /// a red placeholder with the cell reference when it does not resolve.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the build, the document and its resolver, the derived values and the stamp cache one instance reads"
+)]
 pub(super) fn instance<'d>(
     b: &mut Build<'_>,
     project: &'d Project,
@@ -133,7 +136,10 @@ pub(super) fn instance<'d>(
 /// instance is re-stamped whole.
 ///
 /// Cost: O(the instance's texts), no row added or killed.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same inputs as `instance`, which it re-stamps in part"
+)]
 pub(super) fn revalue_texts<'d>(
     sc: &mut Scene,
     project: &'d Project,

@@ -121,8 +121,8 @@ impl Editor {
                         .and_then(|p| crate::libs::rel_path(&self.session.root, p))
                         .unwrap_or_default();
                     let title = if symbol { "Save symbol as" } else { "Save as" };
-                    self.open_text(TextFor::SaveAs(symbol), title);
-                    if let Dialog::Text(_, _, typed) = &mut self.dialog {
+                    self.open_text(TextFor::SaveAs { symbol }, title);
+                    if let Dialog::Text { typed, .. } = &mut self.dialog {
                         *typed = current;
                     }
                 } else {

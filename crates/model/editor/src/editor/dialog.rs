@@ -35,11 +35,17 @@ use super::tool::{Form, Placement, Tool};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TextFor {
     Label,
-    Port(bool),
+    Port {
+        /// An output port (else an input).
+        output: bool,
+    },
     Text,
     SymPin,
-    /// File → Save As (`true`: as symbol).
-    SaveAs(bool),
+    /// File → Save As.
+    SaveAs {
+        /// Save as a symbol (else as a schematic).
+        symbol: bool,
+    },
     /// A one-number setting: snap, grid, line width, crosshair, symbol width, dim.
     Setting(Cmd),
     /// Layer color `rrggbb` of the current layer.
@@ -79,16 +85,31 @@ pub(super) enum Dialog {
     None,
     Choose(Chooser),
     Props(Props),
-    /// Purpose, title, typed text (follows the typing: `field.typed`).
-    Text(TextFor, String, String),
-    /// The canvas context menu (right click); `true` when something was selected.
-    Ctx(bool),
+    /// An enter-text dialog.
+    Text {
+        /// What the text is for.
+        purpose: TextFor,
+        /// The dialog's title.
+        title: String,
+        /// The typed text (follows the typing: `field.typed`).
+        typed: String,
+    },
+    /// The canvas context menu (right click).
+    Ctx {
+        /// Something was selected when it opened.
+        selected: bool,
+    },
     /// View → Visible layers.
     Layers,
     /// Properties → Edit file: the document's text (follows the typing: `field.typed`).
     File(String),
-    /// Crash recovery of a document: (document, journal records offered).
-    Recover(DocHandle, u32),
+    /// Crash recovery of a document.
+    Recover {
+        /// The document.
+        doc: DocHandle,
+        /// Journal records offered.
+        records: u32,
+    },
 }
 
 impl Editor {
@@ -107,12 +128,17 @@ impl Editor {
     pub(super) fn open_text(&mut self, purpose: TextFor, title: &str) {
         assert!(!title.is_empty(), "an enter-text dialog has a title");
         self.tool = Tool::Idle;
-        self.dialog = Dialog::Text(purpose, title.to_owned(), String::new());
+        self.dialog = Dialog::Text {
+            purpose,
+            title: title.to_owned(),
+            typed: String::new(),
+        };
         self.show_dialog("dialog.enter_text");
         self.focus_next = Some("dialog.enter_text.input".into());
+        assert!(matches!(self.tool, Tool::Idle), "a dialog ends the gesture");
     }
     pub(super) fn enter_text_ok(&mut self, arg: &str, at: Pt, reqs: &mut Vec<EditRequest>) {
-        let Dialog::Text(purpose, _, typed) = self.dialog.clone() else {
+        let Dialog::Text { purpose, typed, .. } = self.dialog.clone() else {
             self.close_dialog();
             return;
         };
@@ -124,13 +150,17 @@ impl Editor {
             arg.to_owned()
         };
         self.close_dialog();
+        assert!(
+            matches!(self.dialog, Dialog::None),
+            "the text dialog closed"
+        );
         let text = text.trim().to_owned();
         if text.is_empty() {
             return; // xschem: empty text places nothing
         }
         let what = match purpose {
             TextFor::Label => Placement::Label(text),
-            TextFor::Port(out) => Placement::Port(text, out),
+            TextFor::Port { output } => Placement::Port { name: text, output },
             TextFor::Text => Placement::Text(text),
             TextFor::SymPin => Placement::SymPin(text),
             other => {
@@ -150,7 +180,7 @@ impl Editor {
     /// OK of an enter-text dialog opened by a parity command.
     fn text_ok(&mut self, purpose: TextFor, text: &str, reqs: &mut Vec<EditRequest>) {
         match purpose {
-            TextFor::SaveAs(symbol) => {
+            TextFor::SaveAs { symbol } => {
                 if let Some((h, _)) = self.active() {
                     self.save_as(h, text, symbol);
                 }
@@ -159,7 +189,7 @@ impl Editor {
             TextFor::LayerColor => {
                 self.run_cmd(Cmd::LayerColor, text, "", reqs);
             }
-            TextFor::Label | TextFor::Port(_) | TextFor::Text | TextFor::SymPin => {
+            TextFor::Label | TextFor::Port { .. } | TextFor::Text | TextFor::SymPin => {
                 unreachable!("placements are handled by enter_text_ok")
             }
         }
@@ -189,6 +219,10 @@ impl Editor {
         });
         self.show_dialog("dialog.props");
         self.focus_next = Some("dialog.props.val.1".into());
+        debug_assert!(
+            matches!(&self.dialog, Dialog::Props(p) if p.fields[1].key == "value"),
+            "the focused field is the search value"
+        );
     }
     /// OK of the search dialog: select the matches, or replace them all (one undo).
     pub(super) fn search_ok(
@@ -252,6 +286,10 @@ impl Editor {
             }
         };
         let fields = vec![f("doc"), f("prefix"), f("category")];
+        assert!(
+            fields.iter().all(|f| f.value == f.original),
+            "a fresh form has nothing changed"
+        );
         self.tool = Tool::Idle;
         self.dialog = Dialog::Props(Props {
             of: PropsFor::Header,
@@ -268,6 +306,10 @@ impl Editor {
         fields: &[Field],
         reqs: &mut Vec<EditRequest>,
     ) {
+        assert!(
+            fields.iter().all(|f| f.editable),
+            "every header field is editable"
+        );
         let ops: Vec<Op> = fields
             .iter()
             .filter(|f| f.value != f.original)
@@ -295,7 +337,7 @@ impl Editor {
     pub(super) fn context_menu(&mut self, at: (f32, f32)) {
         assert!(at.0.is_finite() && at.1.is_finite(), "a screen point");
         let selected = !self.selection().is_empty();
-        self.dialog = Dialog::Ctx(selected);
+        self.dialog = Dialog::Ctx { selected };
         let sym = self.shell.sym("dialog.ctx");
         self.shell.ui.set_dialog_at(sym, Some(at));
         self.shell.invalidate();
@@ -350,8 +392,9 @@ impl Editor {
         let Some((d, n)) = self.session.pending_recovery() else {
             return;
         };
+        assert!(n > 0, "a recovery offers journal records");
         self.tool = Tool::Idle;
-        self.dialog = Dialog::Recover(d, n);
+        self.dialog = Dialog::Recover { doc: d, records: n };
         self.show_dialog("dialog.recover");
     }
 }

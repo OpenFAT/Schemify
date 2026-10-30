@@ -95,7 +95,7 @@ impl Page {
 #[must_use]
 pub fn row_of(node: &str) -> Option<u32> {
     let rest = node.strip_prefix("docs.b.")?;
-    rest.split('.').next()?.parse().ok()
+    rest.split('.').next()?.parse::<u32>().ok()
 }
 
 /// Node id of the prose editor of block `row`.

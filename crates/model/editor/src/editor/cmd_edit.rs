@@ -15,7 +15,7 @@ use crate::{edit, platform, wiring};
 
 use super::dialog::TextFor;
 use super::finish::Outline;
-use super::tool::{Form, Placement, Tool};
+use super::tool::{Carry, Form, Placement, Tool};
 use super::{Editor, apply};
 
 impl Editor {
@@ -115,22 +115,20 @@ impl Editor {
             Cmd::Duplicate | Cmd::Move | Cmd::MoveKiss | Cmd::MoveStretch => {
                 // xschem: `m` moves, Ctrl+M stretches (swapped by `enable_stretch`), Shift+M
                 // stretches and adds "kissing" wires.
-                let stretch = match cmd {
-                    Cmd::Move => u8::from(self.opts.stretch),
-                    Cmd::MoveStretch => u8::from(!self.opts.stretch),
-                    Cmd::MoveKiss => 2,
-                    _ => 0,
+                let carry = match cmd {
+                    Cmd::Move => Carry::stretch_if(self.opts.stretch),
+                    Cmd::MoveStretch => Carry::stretch_if(!self.opts.stretch),
+                    Cmd::MoveKiss => Carry::Kiss,
+                    _ => Carry::Copy,
                 };
-                assert!(stretch <= 2, "plain, stretch or kissing move");
                 let partial = cmd != Cmd::Duplicate && !self.partial_ends().is_empty();
                 if !self.selection().is_empty() || partial {
                     self.tool = Tool::Move {
                         from: ptr,
                         to: ptr,
                         lin: Xform::IDENTITY,
-                        copy: cmd == Cmd::Duplicate,
+                        carry,
                         drag: false,
-                        stretch,
                     };
                 }
             }
@@ -164,8 +162,8 @@ impl Editor {
             Cmd::ConstrainV => self.opts.constrain = if self.opts.constrain == 2 { 0 } else { 2 },
             Cmd::Unconstrained => self.opts.constrain = 0,
             Cmd::PlaceLabel | Cmd::PlaceWireLabel => self.open_text(TextFor::Label, "Net label"),
-            Cmd::PlaceInPort => self.open_text(TextFor::Port(false), "Input port"),
-            Cmd::PlaceOutPort => self.open_text(TextFor::Port(true), "Output port"),
+            Cmd::PlaceInPort => self.open_text(TextFor::Port { output: false }, "Input port"),
+            Cmd::PlaceOutPort => self.open_text(TextFor::Port { output: true }, "Output port"),
             Cmd::InsertText => self.open_text(TextFor::Text, "Text"),
             Cmd::PlaceSymPin => {
                 if view == View::Symbol {

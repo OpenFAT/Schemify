@@ -114,7 +114,10 @@ impl Editor {
         out
     }
     /// Runs one core command. Returns whether anything visible changed.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the modal gate and the routing of every core command to its family, in one place"
+    )]
     pub(super) fn run(
         &mut self,
         cmd: Cmd,
@@ -126,7 +129,7 @@ impl Editor {
             // Typing in a field: allowed in every dialog and tab, changes no document.
             return self.field_typed(node, arg);
         }
-        if matches!(self.dialog, Dialog::Ctx(_)) && cmd != Cmd::DialogClose {
+        if matches!(self.dialog, Dialog::Ctx { .. }) && cmd != Cmd::DialogClose {
             // A context-menu row: the menu closes and its command runs as from the menubar.
             self.close_dialog();
         }

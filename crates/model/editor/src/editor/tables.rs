@@ -175,7 +175,8 @@ impl Editor {
     /// button. A journal then names its file's hash, so a restart offers its edits against
     /// the file. Cost: O(open files' bytes).
     pub fn settle(&mut self) {
-        for d in self.session.project.handles().collect::<Vec<_>>() {
+        let docs: Vec<DocHandle> = self.session.project.handles().collect();
+        for d in docs {
             self.session.project.settle_journal(d);
             self.session.flush_journal(d);
         }

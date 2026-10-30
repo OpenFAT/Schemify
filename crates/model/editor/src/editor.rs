@@ -108,7 +108,7 @@ use schemify_config::Startup;
 use schemify_netlist::NameMap;
 #[cfg(not(target_arch = "wasm32"))]
 use schemify_run::SimCommand;
-pub use tool::{Form, Placement, Tool};
+pub use tool::{Carry, Form, Placement, Tool};
 use values::Parked;
 
 /// Which panel the `bottom` container shows.

@@ -24,7 +24,7 @@ use crate::session::View;
 use crate::{edit, wiring};
 
 use super::Editor;
-use super::tool::{Form, Placement, Tool};
+use super::tool::{Carry, Form, Placement, Tool};
 
 /// Whether a drawn polygon closes on its first point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,7 +144,6 @@ impl Editor {
             };
         }
     }
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_move(
         &mut self,
         reqs: &mut Vec<EditRequest>,
@@ -152,17 +151,16 @@ impl Editor {
         from: Pt,
         to: Pt,
         lin: Xform,
-        copy: bool,
-        stretch: u8,
+        carry: Carry,
     ) {
-        assert!(stretch <= 2, "plain, stretch or kissing move");
         let x = lin.then(Xform::translate(to.0 - from.0, to.1 - from.1));
         self.opts.constrain = 0;
+        let copy = carry == Carry::Copy;
         if x == Xform::IDENTITY && !copy {
             return;
         }
-        if !copy && (stretch > 0 || !self.partial_ends().is_empty()) {
-            self.finish_stretch(reqs, h, x, stretch);
+        if !copy && (carry != Carry::Plain || !self.partial_ends().is_empty()) {
+            self.finish_stretch(reqs, h, x, carry);
             if self.opts.auto_trim {
                 self.trim_after = Some(h);
             }
@@ -239,8 +237,8 @@ impl Editor {
                     );
                     ("place label", o, k)
                 }
-                Placement::Port(t, out) if schematic => {
-                    let base = if out { Orient::R180 } else { Orient::R0 };
+                Placement::Port { name: t, output } if schematic => {
+                    let base = if output { Orient::R180 } else { Orient::R0 };
                     let (o, k) = one(RecordKind::Port, TableId::Ports, lin.orient(base), &t);
                     ("place port", o, k)
                 }
@@ -364,11 +362,20 @@ impl Editor {
             }]);
         }
     }
-    /// Ends a move: a plain move, or a stretch (`stretch` 1) / kissing (2) move whose
-    /// attached wires follow (translations only; a move rotated in flight is plain). The
-    /// selected ends of partially selected wires (Ctrl+drag box) move with any translation.
-    fn finish_stretch(&mut self, reqs: &mut Vec<EditRequest>, h: DocHandle, x: Xform, stretch: u8) {
-        assert!(stretch <= 2, "plain, stretch or kissing move");
+    /// Ends a move: a plain move, or a stretch / kissing move whose attached wires follow
+    /// (translations only; a move rotated in flight is plain). The selected ends of partially
+    /// selected wires (Ctrl+drag box) move with any translation.
+    fn finish_stretch(
+        &mut self,
+        reqs: &mut Vec<EditRequest>,
+        h: DocHandle,
+        x: Xform,
+        carry: Carry,
+    ) {
+        assert!(
+            carry != Carry::Copy,
+            "a copy leaves attached wires where they are"
+        );
         let sel = self.selection().to_vec();
         let ends: Vec<(ObjKey, Pt)> = self
             .partial_ends()
@@ -376,7 +383,7 @@ impl Editor {
             .copied()
             .filter(|e| sel.binary_search(&e.0).is_err())
             .collect();
-        if !x.is_translation() || (stretch == 0 && ends.is_empty()) {
+        if !x.is_translation() || (carry == Carry::Plain && ends.is_empty()) {
             let ops = self.with_doc(h, |doc, sel| edit::transform(doc, sel, x));
             self.commit(reqs, h, "move", ops);
             return;
@@ -390,18 +397,18 @@ impl Editor {
                 wiring::Moved {
                     sel: &sel,
                     ends: &ends,
-                    follow: stretch > 0,
-                    kiss: stretch == 2,
+                    follow: carry != Carry::Plain,
+                    kiss: carry == Carry::Kiss,
                 },
                 x,
                 manhattan,
                 &mut ids,
             )
         };
-        let label = match stretch {
-            2 => "kissing move",
-            1 => "stretch move",
-            _ => "move",
+        let label = match carry {
+            Carry::Kiss => "kissing move",
+            Carry::Stretch => "stretch move",
+            Carry::Plain | Carry::Copy => "move",
         };
         // The selection, whole and partial, stays what was moved (xschem's default: partially
         // selected wires stay selected after a stretch move); partial ends follow their move.

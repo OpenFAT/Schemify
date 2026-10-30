@@ -207,7 +207,7 @@ impl Editor {
                         }
                     }
                     Placement::Label(t)
-                    | Placement::Port(t, _)
+                    | Placement::Port { name: t, .. }
                     | Placement::Text(t)
                     | Placement::SymPin(t) => {
                         o.rect(

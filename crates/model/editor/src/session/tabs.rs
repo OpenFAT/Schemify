@@ -70,6 +70,7 @@ impl Session {
             self.status = format!("at most {TABS_MAX} tabs");
             return;
         }
+        let tabs = self.tabs.len();
         let docs = self
             .project
             .doc(doc)
@@ -89,7 +90,12 @@ impl Session {
             text: None,
         });
         self.active = self.tabs.len() - 1;
+        assert_eq!(self.tabs.len(), tabs + 1, "one tab opened");
         assert!(self.tabs.len() <= TABS_MAX);
+        debug_assert!(
+            self.tabs[self.active].stack[0].doc == doc,
+            "the new tab is active"
+        );
     }
 
     /// Shows `view` in a read-only text tab made from the active level (a tab already
@@ -125,6 +131,7 @@ impl Session {
         });
         self.active = self.tabs.len() - 1;
         assert!(self.tabs.len() <= TABS_MAX);
+        assert!(self.text_view().is_some(), "the text tab is active");
     }
 
     /// The status line: the message the last step left (last wins).
@@ -198,11 +205,11 @@ impl Session {
     pub fn close_active_tab(&mut self) -> Result<(), String> {
         assert!(self.active < self.tabs.len(), "an active tab to close");
         self.tabs.remove(self.active);
-        let made = match self.tabs.is_empty() {
-            true => self
-                .create(FileKind::Shcomp)
-                .map(|d| self.open_tab(d, View::Schematic)),
-            false => Ok(()),
+        let made = if self.tabs.is_empty() {
+            self.create(FileKind::Shcomp)
+                .map(|d| self.open_tab(d, View::Schematic))
+        } else {
+            Ok(())
         };
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
         assert!(
@@ -321,6 +328,7 @@ impl Session {
                 s.push('.');
             }
         }
+        debug_assert!(s.starts_with('.') && s.ends_with('.'), "xschem path `{s}`");
         s
     }
 
@@ -347,6 +355,10 @@ impl Session {
             ends: Vec::new(),
         });
         assert!(tab.stack.len() <= DEPTH_MAX);
+        assert!(
+            tab.stack.len() >= 2,
+            "a pushed level sits above the top one"
+        );
         Ok(())
     }
 

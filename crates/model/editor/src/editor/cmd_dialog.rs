@@ -59,7 +59,7 @@ impl Editor {
             Cmd::EditHeader => self.open_header(h),
             Cmd::ContextMenu => self.context_menu(self.pointer),
             Cmd::Recover | Cmd::DiscardRecovery => {
-                let Dialog::Recover(d, _) = std::mem::take(&mut self.dialog) else {
+                let Dialog::Recover { doc: d, .. } = std::mem::take(&mut self.dialog) else {
                     return false;
                 };
                 self.close_dialog();

@@ -166,7 +166,7 @@ impl Editor {
                 _ => ("Snap (units)", units(self.opts.snap)),
             };
             self.open_text(TextFor::Setting(cmd), title);
-            if let Dialog::Text(_, _, typed) = &mut self.dialog {
+            if let Dialog::Text { typed, .. } = &mut self.dialog {
                 *typed = value;
             }
             return;

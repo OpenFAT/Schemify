@@ -17,7 +17,7 @@ use crate::{cell, docs};
 
 use super::chooser::ChooseFor;
 use super::dialog::Dialog;
-use super::tool::{Form, Tool};
+use super::tool::{Carry, Form, Tool};
 use super::{Editor, dispatch};
 
 /// What [`Editor::ui_inputs`] made current.
@@ -164,7 +164,9 @@ impl Editor {
                 form: Form::Circle, ..
             } => "DRAW CIRCLE! ",
             Tool::UnselectArmed => "UNSELECT AREA! ",
-            Tool::Move { copy: true, .. } => "COPY! ",
+            Tool::Move {
+                carry: Carry::Copy, ..
+            } => "COPY! ",
             Tool::Move { .. } => "MOVE! ",
             Tool::Place { .. } => "PLACE! ",
             Tool::ZoomArmed | Tool::Zoom { .. } => "ZOOM BOX! ",
@@ -316,12 +318,12 @@ impl Editor {
         }
         match &self.dialog {
             Dialog::None => {}
-            Dialog::Text(_, title, typed) => {
+            Dialog::Text { title, typed, .. } => {
                 let _ = writeln!(t, "set dialog.enter_text.title label {}", q(title));
                 let _ = writeln!(t, "set dialog.enter_text.input value {}", q(typed));
                 let _ = writeln!(t, "set dialog.enter_text.input input field.typed");
             }
-            Dialog::Ctx(_) | Dialog::Layers | Dialog::File(_) | Dialog::Recover(..) => {}
+            Dialog::Ctx { .. } | Dialog::Layers | Dialog::File(_) | Dialog::Recover { .. } => {}
             Dialog::Choose(c) => {
                 let title = match c.purpose {
                     ChooseFor::Insert => "Insert symbol (type to filter, click to place)".into(),

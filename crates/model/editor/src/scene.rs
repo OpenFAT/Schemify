@@ -186,6 +186,7 @@ impl Objects {
         self.stamp.push(s);
         assert_eq!(self.geom.len(), self.key.len(), "object columns in step");
         assert_eq!(self.seg.len(), self.key.len(), "object columns in step");
+        assert_eq!(self.stamp.len(), self.key.len(), "object columns in step");
         (self.key.len() - 1) as u32
     }
 
@@ -204,7 +205,8 @@ impl Objects {
         self.geom.swap_remove(o);
         self.seg.swap_remove(o);
         self.stamp.swap_remove(o);
-        assert_eq!(self.key.len(), self.stamp.len());
+        assert_eq!(self.key.len(), self.stamp.len(), "object columns in step");
+        assert_eq!(self.key.len(), self.geom.len(), "object columns in step");
         (o != last).then_some(o)
     }
 
@@ -222,8 +224,13 @@ impl Objects {
     }
 
     /// Normalized bounding box of object `i`.
+    ///
+    /// # Panics
+    ///
+    /// If `i` is not an object row.
     #[must_use]
     pub fn bbox(&self, i: usize) -> [i32; 4] {
+        assert!(i < self.geom.len(), "object {i} of {}", self.geom.len());
         let g = self.geom[i];
         [
             g[0].min(g[2]),

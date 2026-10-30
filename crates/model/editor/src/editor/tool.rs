@@ -4,6 +4,7 @@
 //! - `pub(super) const HIT_PX`
 //! - `pub(super) const ZOOM_STEP`
 //! - `pub enum Placement`
+//! - `pub enum Carry`
 //! - `pub enum Tool`
 //! - `pub enum Form`, `Form::points`
 //! - `pub(super) fn constrain`
@@ -32,14 +33,32 @@ pub enum Placement {
     Inst(String),
     /// A net label.
     Label(String),
-    /// A port (`true` = output).
-    Port(String, bool),
+    /// A port.
+    Port {
+        /// The port's net name.
+        name: String,
+        /// An output port (else an input).
+        output: bool,
+    },
     /// An annotation text.
     Text(String),
     /// A symbol pin (symbol view).
     SymPin(String),
     /// Clipboard records, relative to the pointer.
     Paste(Vec<RecordBuf>),
+}
+
+/// What a move does with the selection and the wires attached to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carry {
+    /// Copies the selection; nothing attached follows.
+    Copy,
+    /// Moves the selection alone.
+    Plain,
+    /// Moves the selection and stretches the wires attached to it.
+    Stretch,
+    /// Stretches attached wires and adds "kissing" wires where a pin leaves a pin.
+    Kiss,
 }
 
 /// The `tool_state` table: one row, the gesture in progress.
@@ -80,12 +99,10 @@ pub enum Tool {
         to: Pt,
         /// Rotation/flip about `from`.
         lin: Xform,
-        /// Copy instead of move.
-        copy: bool,
+        /// Copy, plain move, or a move whose attached wires follow.
+        carry: Carry,
         /// Ends on button release (a drag) instead of on click.
         drag: bool,
-        /// 0 plain move, 1 stretch attached wires, 2 stretch and add "kissing" wires.
-        stretch: u8,
     },
     /// Drawing a wire from `from` to `to`.
     Wire {
@@ -161,6 +178,18 @@ const DRAG_PX: f32 = 8.0;
 /// Double-click window.
 const DOUBLE_CLICK_MS: u64 = 400;
 
+impl Carry {
+    /// `Stretch` when `stretch`, else `Plain`: a move key or drag under the Options →
+    /// enable stretch toggle (or its Ctrl inversion).
+    pub(super) fn stretch_if(stretch: bool) -> Carry {
+        if stretch {
+            Carry::Stretch
+        } else {
+            Carry::Plain
+        }
+    }
+}
+
 impl Form {
     /// Points that complete the shape (`None`: open-ended polygon).
     pub(super) fn points(self) -> Option<usize> {
@@ -227,20 +256,19 @@ impl Editor {
                             });
                             // xschem: Ctrl+drag stretches (swapped by `enable_stretch`),
                             // Ctrl+Shift+drag stretches with kissing wires, Shift+drag copies.
-                            let stretch = match (ctrl, shift) {
-                                (true, true) => 2,
-                                (true, false) => u8::from(!self.opts.stretch),
-                                (false, _) => u8::from(self.opts.stretch),
+                            let carry = match (ctrl, shift) {
+                                (true, true) => Carry::Kiss,
+                                (true, false) => Carry::stretch_if(!self.opts.stretch),
+                                (false, true) => Carry::Copy,
+                                (false, false) => Carry::stretch_if(self.opts.stretch),
                             };
-                            assert!(stretch <= 2, "plain, stretch or kissing move");
                             self.tool = if on_selected {
                                 Tool::Move {
                                     from: world,
                                     to: w,
                                     lin: Xform::IDENTITY,
-                                    copy: shift && !ctrl,
+                                    carry,
                                     drag: true,
-                                    stretch: if shift && !ctrl { 0 } else { stretch },
                                 }
                             } else {
                                 Tool::Box {
@@ -292,11 +320,10 @@ impl Editor {
                         from,
                         to,
                         lin,
-                        copy,
+                        carry,
                         drag: false,
-                        stretch,
                     } => {
-                        self.finish_move(reqs, h, from, to, lin, copy, stretch);
+                        self.finish_move(reqs, h, from, to, lin, carry);
                     }
                     Tool::Wire { from, to, .. } => {
                         let to = if shift {
@@ -430,10 +457,9 @@ impl Editor {
                         from,
                         to,
                         lin,
-                        copy,
+                        carry,
                         drag: true,
-                        stretch,
-                    } => self.finish_move(reqs, h, from, to, lin, copy, stretch),
+                    } => self.finish_move(reqs, h, from, to, lin, carry),
                     Tool::Wire {
                         from,
                         to,

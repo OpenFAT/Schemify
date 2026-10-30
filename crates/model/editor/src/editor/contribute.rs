@@ -118,7 +118,7 @@ impl Editor {
             let _ = writeln!(t, "remove toolbar");
         }
         match &self.dialog {
-            Dialog::Ctx(selected) => {
+            Dialog::Ctx { selected } => {
                 let rows: &[(&str, &str)] = if *selected {
                     &[
                         ("Abort command", "view.redraw"),
@@ -188,7 +188,7 @@ impl Editor {
                 let _ = writeln!(t, "set dialog.edit_file.text value {}", q_multiline(text));
                 let _ = writeln!(t, "set dialog.edit_file.text input field.typed");
             }
-            Dialog::Recover(d, n) => {
+            Dialog::Recover { doc: d, records: n } => {
                 let name = self.session.name(*d);
                 let _ = writeln!(
                     t,

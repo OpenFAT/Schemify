@@ -148,9 +148,11 @@ impl Editor {
                 self.commit(reqs, h, "sync pins from ports", ops);
             }
             Cmd::CellSyncCancel => self.port_sync = None,
-            Cmd::DocsSelect => self.page.sel = docs::row_of(node).or_else(|| arg.parse().ok()),
+            Cmd::DocsSelect => {
+                self.page.sel = docs::row_of(node).or_else(|| arg.parse::<u32>().ok())
+            }
             Cmd::DocsEdit => {
-                let Some(row) = docs::row_of(node).or_else(|| arg.parse().ok()) else {
+                let Some(row) = docs::row_of(node).or_else(|| arg.parse::<u32>().ok()) else {
                     return false;
                 };
                 self.page.sel = Some(row);

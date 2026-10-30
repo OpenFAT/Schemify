@@ -233,7 +233,7 @@ impl Editor {
                 self.refill_chooser();
                 true
             }
-            Dialog::Text(_, _, typed) if node == "dialog.enter_text.input" => {
+            Dialog::Text { typed, .. } if node == "dialog.enter_text.input" => {
                 text.clone_into(typed);
                 false
             }

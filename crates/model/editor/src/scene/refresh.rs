@@ -77,7 +77,10 @@ impl Build<'_> {
         self.grow(a.0, a.1);
         self.grow(b.0, b.1);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the arc primitive's own fields plus its owner, as `CanvasPrims::arc_styled` takes them"
+    )]
     pub(super) fn arc(
         &mut self,
         c: Pt,
