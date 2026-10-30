@@ -114,8 +114,22 @@ pub struct PaneProps {
     pub step: Option<u32>,
 }
 
+// Requests and trace rows index traces, panes and datasets with a `u8`.
+const _: () = assert!(MAX_TRACES <= u8::MAX as usize + 1, "a trace row fits a u8");
+const _: () = assert!(MAX_PANES <= u8::MAX as usize + 1, "a pane index fits a u8");
+const _: () = assert!(
+    MAX_DATASETS <= u8::MAX as usize + 1,
+    "a dataset index fits a u8"
+);
+const _: () = assert!(
+    MAX_BUS_BITS <= u32::BITS as usize,
+    "a bus value is an exact u32"
+);
+const _: () = assert!(MAX_BINS >= 2, "a histogram has at least two bins");
+
 impl LineStyle {
     /// Stroke width in logical pixels.
+    #[must_use]
     pub fn width(self) -> f64 {
         match self {
             LineStyle::Thin => 1.0,
@@ -126,6 +140,7 @@ impl LineStyle {
 
 impl Radix {
     /// The text of bus value `v` in this radix.
+    #[must_use]
     pub fn format(self, v: u32) -> String {
         match self {
             Radix::Hex => format!("0x{v:x}"),
@@ -136,24 +151,29 @@ impl Radix {
 
 impl Default for PaneProps {
     fn default() -> Self {
-        PaneProps {
+        let props = PaneProps {
             mode: PaneMode::Analog,
             threshold: 0.5,
             radix: Radix::Hex,
             bins: 32,
             locked: true,
             step: None,
-        }
+        };
+        debug_assert!(props.valid(), "every new pane starts inside spec waves §3");
+        debug_assert!(!props.own_x(), "a new pane shows the shared x axis");
+        props
     }
 }
 
 impl PaneProps {
     /// Inside the domains of spec waves §3.
+    #[must_use]
     pub fn valid(&self) -> bool {
         self.threshold.is_finite() && (2..=MAX_BINS).contains(&self.bins)
     }
 
     /// Uses the pane's own x axis rather than the shared one.
+    #[must_use]
     pub fn own_x(&self) -> bool {
         !self.locked || self.mode == PaneMode::Histogram
     }

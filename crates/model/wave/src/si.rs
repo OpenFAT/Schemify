@@ -23,6 +23,7 @@ const PREFIXES: [(f64, &str); 9] = [
 /// prefix: `3.3e-9` → `"3.3n"`, `1.2e4` → `"12k"`, `999.96e3` → `"1M"` (rounding carries into
 /// the next prefix). Zero (either sign) is `"0"`; NaN and infinities print as Rust does
 /// (`"NaN"`, `"inf"`).
+#[must_use]
 pub fn format_si(value: f64, digits: usize) -> String {
     if value == 0.0 {
         return "0".to_owned();
@@ -37,6 +38,7 @@ pub fn format_si(value: f64, digits: usize) -> String {
         .unwrap_or(PREFIXES.len());
     // Two passes at most: the second runs only when rounding reached 1000 of a prefix.
     for _ in 0..2 {
+        debug_assert!(k <= PREFIXES.len(), "a prefix, or femto past the table");
         let (scale, prefix) = PREFIXES.get(k).copied().unwrap_or((1e-15, "f"));
         let scaled = value / scale;
         let int_digits = (scaled.abs().log10().floor() as i32 + 1).max(1) as usize;
@@ -47,7 +49,9 @@ pub fn format_si(value: f64, digits: usize) -> String {
             k -= 1;
             continue;
         }
-        return format!("{}{prefix}", trim_zeros(&s));
+        let text = format!("{}{prefix}", trim_zeros(&s));
+        debug_assert!(!text.is_empty(), "a number keeps its leading digit");
+        return text;
     }
     unreachable!("a carry moves up one prefix, then fits")
 }

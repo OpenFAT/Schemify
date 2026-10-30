@@ -16,9 +16,10 @@
 //!
 //! Contents:
 //! - `pub fn decimate(xs: &[f64], ys: &[f64], sx: &Scale, sy: &Scale, out: &mut Vec<[f32; 2]>)`
-//! - `pub(crate) fn minmax(y: &[f64]) -> (f64, f64)`
-//! - `pub(crate) fn minmax_scalar(y: &[f64]) -> (f64, f64)`
-//! - `pub(crate) fn extent(xs, ys, steps, x_lo, x_hi) -> (f64, f64)`
+//! - `pub(crate) struct MinMax`, `pub(crate) const MinMax::EMPTY`
+//! - `pub(crate) fn minmax(y: &[f64]) -> MinMax`
+//! - `pub(crate) fn minmax_scalar(y: &[f64]) -> MinMax`
+//! - `pub(crate) fn extent(xs, ys, steps, x_lo, x_hi) -> MinMax`
 //! - `pub(crate) fn pixel_columns(sx: &Scale) -> usize`
 //! - `pub(crate) fn gallop(xs: &[f64], from: usize, end: usize, edge: f64) -> usize`
 
@@ -26,9 +27,25 @@ use core::ops::Range;
 
 use crate::axis::Scale;
 
+/// The least and greatest of a run of samples, NaN skipped: `min = +inf`, `max = -inf` when no
+/// sample compares, so folding it with another run is `min.min(..)`, `max.max(..)`. Never NaN.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MinMax {
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+}
+
 /// Lanes of the vector accumulators; 8 × f64 fills four SSE2 or two AVX registers per
 /// accumulator, enough independent chains to hide `minpd` latency.
 const LANES: usize = 8;
+
+impl MinMax {
+    /// Nothing seen yet: the identity of the fold.
+    pub(crate) const EMPTY: MinMax = MinMax {
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+    };
+}
 
 /// Appends the polyline of one sweep step to `out` as `[x, y]` pixels: every sample when the
 /// visible part has at most two per pixel column, otherwise each column's min and max (entered
@@ -48,14 +65,14 @@ pub fn decimate(xs: &[f64], ys: &[f64], sx: &Scale, sy: &Scale, out: &mut Vec<[f
     decimate_with(minmax, xs, ys, sx, sy, out);
 }
 
-/// Minimum and maximum of `y`, skipping NaN; `(+inf, -inf)` when no sample compares. Vectorized
+/// Minimum and maximum of `y`, skipping NaN; [`MinMax::EMPTY`] when no sample compares. Vectorized
 /// (packed `minpd`/`maxpd` on every x86-64 level, by the shape of the loop, without `unsafe`);
 /// agrees with [`minmax_scalar`] on every input up to the sign of a zero result.
 ///
 /// # Time complexity
 ///
 /// O(n): 9.6 µs per 64k samples in L2 (7× the scalar fold), 0.16 ms per 1M samples.
-pub(crate) fn minmax(y: &[f64]) -> (f64, f64) {
+pub(crate) fn minmax(y: &[f64]) -> MinMax {
     let chunks = y.chunks_exact(LANES);
     let tail = chunks.remainder();
     // The accumulators travel through `fold` by value: that keeps them in registers. The same
@@ -72,19 +89,29 @@ pub(crate) fn minmax(y: &[f64]) -> (f64, f64) {
             (lo, hi)
         },
     );
-    let (mut a, mut b) = minmax_scalar(tail);
+    let MinMax {
+        min: mut a,
+        max: mut b,
+    } = minmax_scalar(tail);
     for k in 0..LANES {
         a = if lo[k] < a { lo[k] } else { a };
         b = if hi[k] > b { hi[k] } else { b };
     }
-    debug_assert!(!a.is_nan() && !b.is_nan(), "results are never NaN");
-    (a, b)
+    debug_assert!(
+        !a.is_nan(),
+        "a NaN never wins a comparison, so the min is never NaN"
+    );
+    debug_assert!(
+        !b.is_nan(),
+        "a NaN never wins a comparison, so the max is never NaN"
+    );
+    MinMax { min: a, max: b }
 }
 
 /// The scalar fold [`minmax`] vectorizes: the oracle in tests and the vector loop's tail.
 /// Kept out of line so benchmarks measure it as written.
 #[inline(never)]
-pub(crate) fn minmax_scalar(y: &[f64]) -> (f64, f64) {
+pub(crate) fn minmax_scalar(y: &[f64]) -> MinMax {
     let (mut a, mut b) = (f64::INFINITY, f64::NEG_INFINITY);
     for &v in y {
         if v < a {
@@ -94,26 +121,34 @@ pub(crate) fn minmax_scalar(y: &[f64]) -> (f64, f64) {
             b = v;
         }
     }
-    (a, b)
+    debug_assert!(
+        !a.is_nan(),
+        "a NaN never wins a comparison, so the min is never NaN"
+    );
+    debug_assert!(
+        !b.is_nan(),
+        "a NaN never wins a comparison, so the max is never NaN"
+    );
+    MinMax { min: a, max: b }
 }
 
 /// Minimum and maximum of `ys` over the samples whose x lies in `[x_lo, x_hi]`, step by step
 /// (`steps` partition the columns). Steps whose x is not ascending are taken whole. Used for
-/// autoscaling; `(+inf, -inf)` when nothing is in range.
+/// autoscaling; [`MinMax::EMPTY`] when nothing is in range.
 ///
 /// # Panics
 ///
 /// Panics if the columns differ in length or a step lies outside them.
-pub(crate) fn extent(
-    xs: &[f64],
-    ys: &[f64],
-    steps: &[Range<u32>],
-    x_lo: f64,
-    x_hi: f64,
-) -> (f64, f64) {
+pub(crate) fn extent(xs: &[f64], ys: &[f64], steps: &[Range<u32>], x_lo: f64, x_hi: f64) -> MinMax {
     assert_eq!(xs.len(), ys.len(), "x and y columns differ in length");
-    let (mut a, mut b) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut all = MinMax::EMPTY;
     for s in steps {
+        assert!(s.start <= s.end, "step {s:?} is reversed");
+        assert!(
+            s.end as usize <= xs.len(),
+            "step {s:?} ends past the {} samples",
+            xs.len()
+        );
         let r = s.start as usize..s.end as usize;
         let (x, y) = (&xs[r.clone()], &ys[r]);
         let r = if x.first() <= x.last() {
@@ -121,15 +156,21 @@ pub(crate) fn extent(
         } else {
             0..x.len()
         };
-        let (lo, hi) = minmax(&y[r.start..r.end.max(r.start)]);
-        a = a.min(lo);
-        b = b.max(hi);
+        let step = minmax(&y[r.start..r.end.max(r.start)]);
+        all.min = all.min.min(step.min);
+        all.max = all.max.max(step.max);
     }
-    (a, b)
+    debug_assert!(!all.min.is_nan(), "a fold of never-NaN minima is never NaN");
+    debug_assert!(!all.max.is_nan(), "a fold of never-NaN maxima is never NaN");
+    all
 }
 
 /// Whole pixel columns `sx` spans, at least one.
 pub(crate) fn pixel_columns(sx: &Scale) -> usize {
+    assert!(
+        sx.p0.is_finite(),
+        "a scale built by Scale::new has finite pixels"
+    );
     assert!(sx.p1 > sx.p0, "x pixels must increase left to right");
     ((sx.p1 - sx.p0).floor() as usize).max(1)
 }
@@ -138,7 +179,12 @@ pub(crate) fn pixel_columns(sx: &Scale) -> usize {
 /// `from`, then binary search in the bracket, so a run of k samples costs O(log k) probes that
 /// stay near each other in memory.
 pub(crate) fn gallop(xs: &[f64], from: usize, end: usize, edge: f64) -> usize {
-    debug_assert!(from <= end && end <= xs.len());
+    debug_assert!(from <= end, "the search range {from}..={end} is reversed");
+    debug_assert!(
+        end <= xs.len(),
+        "the search ends at {end}, past {} samples",
+        xs.len()
+    );
     let mut lo = from;
     let mut step = 1;
     // Invariant: xs[from..lo] < edge. Bounded: `step` doubles every pass.
@@ -157,7 +203,7 @@ pub(crate) fn gallop(xs: &[f64], from: usize, end: usize, edge: f64) -> usize {
 /// [`decimate`] with its min/max kernel as a parameter, so tests and the benchmark run the
 /// scalar oracle through the same column walk.
 fn decimate_with(
-    kernel: fn(&[f64]) -> (f64, f64),
+    kernel: fn(&[f64]) -> MinMax,
     xs: &[f64],
     ys: &[f64],
     sx: &Scale,
@@ -205,7 +251,7 @@ fn decimate_with(
             gallop(xs, i, end, sx.value(sx.p0 + (c + 1) as f32))
         };
         if j > i {
-            let (lo, hi) = kernel(&ys[i..j]);
+            let MinMax { min: lo, max: hi } = kernel(&ys[i..j]);
             if lo <= hi {
                 let x = sx.p0 + c as f32 + 0.5;
                 let (pl, ph) = (sy.px(lo), sy.px(hi));
@@ -229,8 +275,10 @@ fn decimate_with(
 
 #[cfg(test)]
 mod tests {
+    use core::slice;
+
     use super::*;
-    use crate::digital::{bin_counts, logic_runs};
+    use crate::digital;
 
     /// Deterministic xorshift in [-1, 1).
     fn rng(seed: &mut u64) -> f64 {
@@ -250,14 +298,19 @@ mod tests {
                     y[k] = f64::NAN;
                 }
                 let (v, s) = (minmax(&y), minmax_scalar(&y));
-                assert!(v.0 == s.0 && v.1 == s.1, "len {len}: {v:?} vs {s:?}");
+                // `==`, not `assert_eq!` on the structs: `0.0 == -0.0` (see the module docs).
+                assert!(v.min == s.min, "len {len}: {v:?} vs {s:?}");
+                assert!(v.max == s.max, "len {len}: {v:?} vs {s:?}");
             }
         }
-        assert_eq!(minmax(&[]), (f64::INFINITY, f64::NEG_INFINITY));
-        assert_eq!(minmax(&[f64::NAN; 11]), (f64::INFINITY, f64::NEG_INFINITY));
+        assert_eq!(minmax(&[]), MinMax::EMPTY);
+        assert_eq!(minmax(&[f64::NAN; 11]), MinMax::EMPTY);
         assert_eq!(
             minmax(&[1.0, f64::NEG_INFINITY, 2.0]),
-            (f64::NEG_INFINITY, 2.0)
+            MinMax {
+                min: f64::NEG_INFINITY,
+                max: 2.0
+            }
         );
     }
 
@@ -353,15 +406,16 @@ mod tests {
     fn extent_respects_window_and_steps() {
         let xs = [0.0, 1.0, 2.0, 0.0, 1.0, 2.0];
         let ys = [5.0, -1.0, 7.0, 3.0, 9.0, -4.0];
-        assert_eq!(extent(&xs, &ys, &[0..3, 3..6], 0.5, 1.5), (-1.0, 9.0));
-        let (all, first) = (0..6u32, 0..3u32);
-        let all = std::slice::from_ref(&all);
-        assert_eq!(extent(&xs, &ys, all, 0.0, 2.0), (-4.0, 9.0)); // not ascending: whole
-        let first = std::slice::from_ref(&first);
+        let min_max = |min, max| MinMax { min, max };
         assert_eq!(
-            extent(&xs, &ys, first, 5.0, 6.0),
-            (f64::INFINITY, f64::NEG_INFINITY)
+            extent(&xs, &ys, &[0..3, 3..6], 0.5, 1.5),
+            min_max(-1.0, 9.0)
         );
+        let (all, first) = (0..6u32, 0..3u32);
+        let all = slice::from_ref(&all);
+        assert_eq!(extent(&xs, &ys, all, 0.0, 2.0), min_max(-4.0, 9.0)); // not ascending: whole
+        let first = slice::from_ref(&first);
+        assert_eq!(extent(&xs, &ys, first, 5.0, 6.0), MinMax::EMPTY);
     }
 
     /// `cargo test --release -p schemify-wave -- --ignored --nocapture bench_decimation`
@@ -383,12 +437,12 @@ mod tests {
             }
             best
         };
-        let mm_v = time(&|| black_box(minmax(black_box(&ys))).0 as usize);
-        let mm_s = time(&|| black_box(minmax_scalar(black_box(&ys))).0 as usize);
+        let mm_v = time(&|| black_box(minmax(black_box(&ys))).min as usize);
+        let mm_s = time(&|| black_box(minmax_scalar(black_box(&ys))).min as usize);
         // 64k samples (512 KiB) stay in L2: the compute-bound ratio.
         let l2 = &ys[..65_536];
-        let l2_v = time(&|| black_box(minmax(black_box(l2))).0 as usize);
-        let l2_s = time(&|| black_box(minmax_scalar(black_box(l2))).0 as usize);
+        let l2_v = time(&|| black_box(minmax(black_box(l2))).min as usize);
+        let l2_s = time(&|| black_box(minmax_scalar(black_box(l2))).min as usize);
         println!(
             "64k f64 (L2): minmax vector {:.1} µs, scalar {:.1} µs ({:.1}x)",
             l2_v * 1e3,
@@ -397,7 +451,7 @@ mod tests {
         );
         let sx = Scale::new(0.0, xs[n as usize - 1], false, 0.0, 1500.0);
         let sy = Scale::new(-1.0, 1.0, false, 400.0, 0.0);
-        let dec = |k: fn(&[f64]) -> (f64, f64)| {
+        let dec = |k: fn(&[f64]) -> MinMax| {
             let mut out = Vec::with_capacity(4000);
             decimate_with(k, black_box(&xs), black_box(&ys), &sx, &sy, &mut out);
             out.len()
@@ -413,19 +467,19 @@ mod tests {
         // Digital lanes and histogram bins over the same million samples.
         let lr = |thr: Option<f64>| {
             let mut out = Vec::with_capacity(1500);
-            logic_runs(black_box(&xs), black_box(&ys), thr, &sx, &mut out);
+            digital::logic_runs(black_box(&xs), black_box(&ys), thr, &sx, &mut out);
             out.len()
         };
         let lr_t = time(&|| lr(Some(0.0)));
         let bus: Vec<f64> = ys.iter().map(|v| (v * 4.0 + 4.0).floor()).collect();
         let lr_b = time(&|| {
             let mut out = Vec::with_capacity(1500);
-            logic_runs(black_box(&xs), black_box(&bus), None, &sx, &mut out);
+            digital::logic_runs(black_box(&xs), black_box(&bus), None, &sx, &mut out);
             out.len()
         });
         let hist = |log: bool| {
             let mut bins = [0u32; 64];
-            bin_counts(
+            digital::bin_counts(
                 black_box(&ys),
                 if log { -3.0 } else { -1.0 },
                 0.0,

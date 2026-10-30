@@ -28,7 +28,8 @@ fn dataset(x: &[f64], cols: &[(&str, Vec<f64>)]) -> RawPlot {
         vars.push(var(name, VarKind::Voltage));
         re.extend_from_slice(c);
     }
-    RawPlot::from_columns("synthetic", vars, re, vec![]).unwrap()
+    RawPlot::from_columns("synthetic", vars, re, vec![])
+        .expect("every column has x's length, checked above")
 }
 
 fn add(w: &mut Waves, src: &str, pane: u8) -> Result<Applied, ViewError> {

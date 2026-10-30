@@ -14,12 +14,14 @@ mod oracle;
 mod panes;
 mod view;
 
+use std::fs;
+
 use schemify_wave::{RawPlot, parse_raw};
 
 /// Reads and parses a fixture.
 pub(crate) fn fixture(name: &str) -> Vec<RawPlot> {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     parse_raw(&bytes).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 

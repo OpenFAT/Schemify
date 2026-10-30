@@ -19,6 +19,9 @@
 //! - `pub fn parse_raw(bytes: &[u8]) -> Result<Vec<RawPlot>, RawError>`
 
 use std::borrow::Cow;
+use std::error;
+use std::fmt;
+use std::str;
 
 use crate::plot::{RawPlot, VarKind, Variable};
 
@@ -47,10 +50,28 @@ struct Header {
     plotname: String,
     command: String,
     flags: String,
-    n_vars: u32,
-    n_points: u32,
+    var_count: u32,
+    point_count: u32,
     variables: Vec<Variable>,
     binary: bool,
+}
+
+/// The data layout a header's `Flags:` and `Command:` lines select.
+#[derive(Clone, Copy, Debug)]
+struct Layout {
+    /// Every value is a `(re, im)` pair.
+    complex: bool,
+    /// LTspice column-major binary.
+    fastaccess: bool,
+    /// LTspice: f32 data, negative times marking compressed points.
+    ltspice: bool,
+}
+
+/// A block's samples, column-major: `re[v * n + p]` is variable `v` at point `p`; `im` the same
+/// for complex data, empty otherwise.
+struct Samples {
+    re: Vec<f64>,
+    im: Vec<f64>,
 }
 
 /// Points per block of [`transpose`]: one block writes 16 consecutive `f64` (two cache lines)
@@ -63,8 +84,8 @@ const POINTWISE_NV_MAX: usize = 128;
 
 /// Line- and token-oriented cursor over UTF-8 or UTF-16LE text, with raw byte access for binary
 /// sections. `unit` is the code-unit width (1 or 2 bytes).
-struct Reader<'a> {
-    bytes: &'a [u8],
+struct Reader<'bytes> {
+    bytes: &'bytes [u8],
     pos: usize,
     unit: usize,
 }
@@ -75,6 +96,11 @@ struct Reader<'a> {
 ///
 /// See [`RawError`]; the first malformed block fails the whole file.
 ///
+/// # Panics
+///
+/// Never on any input: the reader is total. Its asserts (progress per block, the column store
+/// sizes) fire only on a bug in the reader.
+///
 /// # Time complexity
 ///
 /// O(bytes). Binary data is transposed to column-major once.
@@ -82,16 +108,16 @@ pub fn parse_raw(bytes: &[u8]) -> Result<Vec<RawPlot>, RawError> {
     if bytes.is_empty() {
         return Err(RawError::Empty);
     }
-    let mut rd = Reader::new(bytes);
+    let mut reader = Reader::new(bytes);
     let mut plots = Vec::new();
     // Bounded: every iteration consumes at least one header line or ends the loop.
-    while !rd.at_end() {
-        let before = rd.pos;
-        match parse_one_plot(&mut rd)? {
+    while !reader.at_end() {
+        let before = reader.pos;
+        match parse_one_plot(&mut reader)? {
             Some(p) => plots.push(p),
             None => break, // trailing blank lines
         }
-        assert!(rd.pos > before, "parser made no progress");
+        assert!(reader.pos > before, "parser made no progress");
     }
     if plots.is_empty() {
         return Err(RawError::NoPlots);
@@ -100,10 +126,10 @@ pub fn parse_raw(bytes: &[u8]) -> Result<Vec<RawPlot>, RawError> {
     Ok(plots)
 }
 
-impl std::error::Error for RawError {}
+impl error::Error for RawError {}
 
-impl std::fmt::Display for RawError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for RawError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RawError::Empty => f.write_str("empty file"),
             RawError::Header(m) => write!(f, "malformed header: {m}"),
@@ -121,37 +147,54 @@ impl std::fmt::Display for RawError {
 
 // ---- private ----
 
-fn parse_one_plot(rd: &mut Reader) -> Result<Option<RawPlot>, RawError> {
-    let Some(h) = parse_header(rd)? else {
+fn parse_one_plot(reader: &mut Reader) -> Result<Option<RawPlot>, RawError> {
+    let Some(header) = parse_header(reader)? else {
         return Ok(None);
     };
-    let flags = h.flags.to_ascii_lowercase();
-    let complex = flags.contains("complex");
-    let fastaccess = flags.contains("fastaccess");
-    let command = h.command.to_ascii_lowercase();
-    let ltspice = command.contains("ltspice") || command.contains("linear technology");
-    let n = h.n_points as usize;
+    assert_eq!(
+        header.variables.len(),
+        header.var_count as usize,
+        "the header is checked"
+    );
+    let flags = header.flags.to_ascii_lowercase();
+    let command = header.command.to_ascii_lowercase();
+    let layout = Layout {
+        complex: flags.contains("complex"),
+        fastaccess: flags.contains("fastaccess"),
+        ltspice: command.contains("ltspice") || command.contains("linear technology"),
+    };
+    let n = header.point_count as usize;
 
-    let (mut re, im) = if h.binary {
-        parse_binary(rd, &h, complex, fastaccess, ltspice)?
+    let Samples { mut re, im } = if header.binary {
+        parse_binary(reader, &header, layout)?
     } else {
-        parse_ascii_values(rd, &h, complex)?
+        parse_ascii_values(reader, &header, layout.complex)?
     };
     // LTspice marks compressed transient points with a negative time; consumers take |t|.
-    if ltspice && h.variables[0].kind == VarKind::Time {
+    if layout.ltspice && header.variables[0].kind == VarKind::Time {
         for x in &mut re[..n] {
             *x = x.abs();
         }
     }
-    let plot = RawPlot::from_columns(&h.plotname, h.variables, re, im)?;
+    let plot = RawPlot::from_columns(&header.plotname, header.variables, re, im)?;
+    assert_eq!(
+        plot.len(),
+        n,
+        "the plot holds the points the header declares"
+    );
+    assert_eq!(
+        plot.is_complex(),
+        layout.complex,
+        "the plot keeps the header's flags"
+    );
     Ok(Some(plot))
 }
 
-fn parse_header(rd: &mut Reader) -> Result<Option<Header>, RawError> {
-    let mut h = Header::default();
+fn parse_header(reader: &mut Reader) -> Result<Option<Header>, RawError> {
+    let mut header = Header::default();
     let mut seen_any = false;
     loop {
-        let Some(line) = rd.read_line() else {
+        let Some(line) = reader.read_line() else {
             return if seen_any {
                 Err(RawError::Header("unexpected end of file in header".into()))
             } else {
@@ -164,54 +207,54 @@ fn parse_header(rd: &mut Reader) -> Result<Option<Header>, RawError> {
         }
         seen_any = true;
         if let Some(v) = value_of(trimmed, "plotname:") {
-            h.plotname = v.to_owned();
+            header.plotname = v.to_owned();
         } else if let Some(v) = value_of(trimmed, "command:") {
-            h.command = v.to_owned();
+            header.command = v.to_owned();
         } else if let Some(v) = value_of(trimmed, "flags:") {
-            h.flags = v.to_owned();
+            header.flags = v.to_owned();
         } else if let Some(v) = value_of(trimmed, "no. variables:") {
-            h.n_vars = v
+            header.var_count = v
                 .parse()
                 .map_err(|_| RawError::Header(format!("bad variable count: {v}")))?;
         } else if let Some(v) = value_of(trimmed, "no. points:") {
-            h.n_points = v
+            header.point_count = v
                 .parse()
                 .map_err(|_| RawError::Header(format!("bad point count: {v}")))?;
         } else if let Some(rest) = value_of(trimmed, "variables:") {
-            if h.n_vars == 0 {
+            if header.var_count == 0 {
                 return Err(RawError::Header("Variables: before No. Variables:".into()));
             }
             // Some writers put the first entry on the `Variables:` line itself.
             if !rest.is_empty() {
-                h.variables.push(parse_var_line(rest)?);
+                header.variables.push(parse_var_line(rest)?);
             }
-            // Bounded by n_vars, and each pass consumes a line or fails.
-            while h.variables.len() < h.n_vars as usize {
-                let vl = rd
+            // Bounded by var_count, and each pass consumes a line or fails.
+            while header.variables.len() < header.var_count as usize {
+                let vl = reader
                     .read_line()
                     .ok_or_else(|| RawError::Header("end of file in variable list".into()))?;
-                h.variables.push(parse_var_line(&vl)?);
+                header.variables.push(parse_var_line(&vl)?);
             }
         } else if value_of(trimmed, "values:").is_some() {
-            h.binary = false;
+            header.binary = false;
             break;
         } else if value_of(trimmed, "binary:").is_some() {
-            h.binary = true;
+            header.binary = true;
             break;
         }
         // Unknown header lines (Title:, Date:, Offset:, Dimensions:, …) are skipped.
     }
-    if h.n_points == 0 || h.n_vars == 0 {
+    if header.point_count == 0 || header.var_count == 0 {
         return Err(RawError::Header("zero points or variables".into()));
     }
-    if h.variables.len() != h.n_vars as usize {
+    if header.variables.len() != header.var_count as usize {
         return Err(RawError::Header(format!(
             "variable count mismatch: declared {}, listed {}",
-            h.n_vars,
-            h.variables.len()
+            header.var_count,
+            header.variables.len()
         )));
     }
-    Ok(Some(h))
+    Ok(Some(header))
 }
 
 /// `"<idx> <name> <type> [params…]"`.
@@ -222,6 +265,7 @@ fn parse_var_line(line: &str) -> Result<Variable, RawError> {
         .next()
         .ok_or_else(|| RawError::Header(format!("bad variable line: {line}")))?;
     let kind = it.next().map_or(VarKind::Other, VarKind::from_type_str);
+    debug_assert!(!name.is_empty(), "a whitespace-split token is never empty");
     Ok(Variable {
         name: name.to_owned(),
         kind,
@@ -231,6 +275,10 @@ fn parse_var_line(line: &str) -> Result<Variable, RawError> {
 /// Case-insensitive `"Key:" value` extractor; byte-wise, so a multibyte character in the line
 /// never splits.
 fn value_of<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    debug_assert!(
+        key.is_ascii(),
+        "slicing at `key.len()` needs an ASCII key, got {key:?}"
+    );
     let b = line.as_bytes();
     if b.len() >= key.len() && b[..key.len()].eq_ignore_ascii_case(key.as_bytes()) {
         // `key` is ASCII and matched, so `key.len()` is a char boundary.
@@ -244,47 +292,53 @@ fn value_of<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 /// variable (two numbers for complex). Commas and whitespace both separate, so ngspice's
 /// `re,im` and Xyce's `re, im` read the same; line breaks carry no meaning.
 fn parse_ascii_values(
-    rd: &mut Reader,
-    h: &Header,
+    reader: &mut Reader,
+    header: &Header,
     complex: bool,
-) -> Result<(Vec<f64>, Vec<f64>), RawError> {
-    let n = h.n_points as usize;
-    let nv = h.n_vars as usize;
+) -> Result<Samples, RawError> {
+    let n = header.point_count as usize;
+    let var_count = header.var_count as usize;
     let parts = if complex { 2 } else { 1 };
     // Every number needs at least two units (a digit and a separator): refuse before allocating
     // what the input cannot fill.
     let need = n
-        .checked_mul(nv)
+        .checked_mul(var_count)
         .and_then(|c| c.checked_mul(parts + 1))
-        .and_then(|c| c.checked_mul(rd.unit))
+        .and_then(|c| c.checked_mul(reader.unit))
         .ok_or_else(|| RawError::Header("point × variable count overflows".into()))?;
-    if need > rd.remaining() {
+    if need > reader.remaining() {
         return Err(RawError::Truncated {
             expected: need,
-            found: rd.remaining(),
+            found: reader.remaining(),
         });
     }
-    let mut re = vec![0.0f64; nv * n];
+    let mut re = vec![0.0f64; var_count * n];
     let mut im = if complex {
-        vec![0.0f64; nv * n]
+        vec![0.0f64; var_count * n]
     } else {
         Vec::new()
     };
     for point in 0..n {
         let bad = || RawError::Values(point as u32);
-        let idx = rd.number().ok_or_else(bad)?;
+        let idx = reader.number().ok_or_else(bad)?;
         if idx != point as f64 {
             return Err(bad());
         }
-        for v in 0..nv {
-            re[v * n + point] = rd.number().ok_or_else(bad)?;
+        for v in 0..var_count {
+            re[v * n + point] = reader.number().ok_or_else(bad)?;
             if complex {
-                im[v * n + point] = rd.number().ok_or_else(bad)?;
+                im[v * n + point] = reader.number().ok_or_else(bad)?;
             }
         }
     }
-    rd.skip_line();
-    Ok((re, im))
+    reader.skip_line();
+    assert_eq!(re.len(), var_count * n, "one value per cell");
+    assert_eq!(
+        im.len(),
+        if complex { re.len() } else { 0 },
+        "imaginary part: all or nothing"
+    );
+    Ok(Samples { re, im })
 }
 
 /// Binary layouts, all little-endian:
@@ -292,39 +346,41 @@ fn parse_ascii_values(
 ///   - ngspice / Xyce / LTspice complex: row-major, every value (f64, f64)
 ///   - LTspice real: row-major, scale f64, data f32 (or all f64, detected by size)
 ///   - LTspice fastaccess: column-major, scale f64 column, then f32 data columns
-fn parse_binary(
-    rd: &mut Reader,
-    h: &Header,
-    complex: bool,
-    fastaccess: bool,
-    ltspice: bool,
-) -> Result<(Vec<f64>, Vec<f64>), RawError> {
-    let n = h.n_points as usize;
-    let nv = h.n_vars as usize;
+fn parse_binary(reader: &mut Reader, header: &Header, layout: Layout) -> Result<Samples, RawError> {
+    let n = header.point_count as usize;
+    let var_count = header.var_count as usize;
+    assert!(var_count > 0, "the header is checked: a row has its scale");
     let overflow = || RawError::Header("point × variable count overflows".into());
-    let cells = n.checked_mul(nv).ok_or_else(overflow)?;
+    let cells = n.checked_mul(var_count).ok_or_else(overflow)?;
 
-    if complex {
-        let data = rd.take_bytes(cells.checked_mul(16).ok_or_else(overflow)?)?;
+    if layout.complex {
+        let data = reader.take_bytes(cells.checked_mul(16).ok_or_else(overflow)?)?;
         let mut re = vec![0.0f64; cells];
         let mut im = vec![0.0f64; cells];
-        transpose(data, 16, 0, n, nv, &mut re);
-        transpose(data, 16, 8, n, nv, &mut im);
-        return Ok((re, im));
+        transpose(data, 16, 0, n, var_count, &mut re);
+        transpose(data, 16, 8, n, var_count, &mut im);
+        assert_eq!(im.len(), re.len(), "complex: both parts of every cell");
+        return Ok(Samples { re, im });
     }
 
     let all_f64 = cells.checked_mul(8).ok_or_else(overflow)?;
-    let row_mixed = (nv - 1)
+    let row_mixed = (var_count - 1)
         .checked_mul(4)
         .and_then(|b| b.checked_add(8))
         .ok_or_else(overflow)?;
     let mixed = n.checked_mul(row_mixed).ok_or_else(overflow)?;
-    let avail = rd.remaining();
-    if ltspice && avail >= mixed && (avail < all_f64 || nv == 1) {
-        let data = rd.take_bytes(mixed)?;
+    let avail = reader.remaining();
+    if layout.ltspice && avail >= mixed && (avail < all_f64 || var_count == 1) {
+        let data = reader.take_bytes(mixed)?;
+        assert_eq!(
+            data.len(),
+            n * row_mixed,
+            "one f64 scale and f32 values per row"
+        );
         let mut re = vec![0.0f64; cells];
-        if fastaccess {
+        if layout.fastaccess {
             let (scale, rest) = data.split_at(n * 8);
+            assert_eq!(rest.len(), n * (var_count - 1) * 4, "f32 data columns");
             for (p, b) in scale.chunks_exact(8).enumerate() {
                 re[p] = f64_le(b);
             }
@@ -339,27 +395,28 @@ fn parse_binary(
                 }
             }
         }
-        return Ok((re, Vec::new()));
+        return Ok(Samples { re, im: Vec::new() });
     }
-    let data = rd.take_bytes(all_f64)?;
+    let data = reader.take_bytes(all_f64)?;
     let mut re = vec![0.0f64; cells];
-    transpose(data, 8, 0, n, nv, &mut re);
-    Ok((re, Vec::new()))
+    transpose(data, 8, 0, n, var_count, &mut re);
+    assert_eq!(re.len(), n * var_count, "one value per cell");
+    Ok(Samples { re, im: Vec::new() })
 }
 
-/// Transposes `n` row-major rows of `nv` cells of `cell` bytes into columns: `out[v * n + p]`
+/// Transposes `n` row-major rows of `var_count` cells of `cell` bytes into columns: `out[v * n + p]`
 /// is the little-endian `f64` at byte `off` of cell `(p, v)`. Rows wider than
 /// [`POINTWISE_NV_MAX`] go [`BLOCK`] points at a time, so a block's reads stay in cache and
 /// each column write fills whole lines.
-fn transpose(data: &[u8], cell: usize, off: usize, n: usize, nv: usize, out: &mut [f64]) {
-    assert_eq!(data.len(), n * nv * cell, "whole rows");
-    assert_eq!(out.len(), n * nv, "one value per cell");
+fn transpose(data: &[u8], cell: usize, off: usize, n: usize, var_count: usize, out: &mut [f64]) {
+    assert_eq!(data.len(), n * var_count * cell, "whole rows");
+    assert_eq!(out.len(), n * var_count, "one value per cell");
     assert!(off + 8 <= cell, "the value is inside its cell");
     if n == 0 {
         return;
     }
-    let row = nv * cell;
-    if nv <= POINTWISE_NV_MAX {
+    let row = var_count * cell;
+    if var_count <= POINTWISE_NV_MAX {
         for (p, r) in data.chunks_exact(row).enumerate() {
             for (v, c) in r.chunks_exact(cell).enumerate() {
                 out[v * n + p] = f64_le(&c[off..off + 8]);
@@ -396,16 +453,21 @@ fn f32_le(b: &[u8]) -> f32 {
     f32::from_le_bytes(b[..4].try_into().expect("4 bytes"))
 }
 
-impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        let bom = bytes.len() >= 2 && bytes[..2] == [0xFF, 0xFE];
+impl<'bytes> Reader<'bytes> {
+    fn new(bytes: &'bytes [u8]) -> Self {
+        let bom = bytes.len() >= 2 && bytes[..2] == [0xff, 0xfe];
         // UTF-16LE: a BOM, or an ASCII first character with a zero high byte.
         let utf16 = bom || (bytes.len() >= 2 && bytes[1] == 0);
-        Reader {
+        let reader = Reader {
             bytes,
             pos: if bom { 2 } else { 0 },
             unit: if utf16 { 2 } else { 1 },
-        }
+        };
+        assert!(
+            reader.pos <= reader.bytes.len(),
+            "a BOM is inside the input"
+        );
+        reader
     }
 
     fn at_end(&self) -> bool {
@@ -418,6 +480,7 @@ impl<'a> Reader<'a> {
 
     /// Code unit at the cursor (a byte, or a UTF-16 unit), if a whole one remains.
     fn peek(&self) -> Option<u32> {
+        debug_assert!(matches!(self.unit, 1 | 2), "a code unit is 1 or 2 bytes");
         if self.at_end() {
             return None;
         }
@@ -433,15 +496,17 @@ impl<'a> Reader<'a> {
 
     /// One text line without its `\r\n`; `None` at end of input. Always consumes at least one
     /// unit, and a trailing partial UTF-16 unit is dropped.
-    fn read_line(&mut self) -> Option<Cow<'a, str>> {
+    fn read_line(&mut self) -> Option<Cow<'bytes, str>> {
         if self.at_end() {
             self.pos = self.bytes.len();
             return None;
         }
+        let start = self.pos;
         if self.unit == 1 {
             let rest = &self.bytes[self.pos..];
             let len = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
             self.pos += (len + 1).min(rest.len());
+            assert!(self.pos > start, "a line consumes at least one byte");
             let line = &rest[..len];
             let line = line.strip_suffix(b"\r").unwrap_or(line);
             return Some(String::from_utf8_lossy(line));
@@ -454,12 +519,13 @@ impl<'a> Reader<'a> {
             }
             if u != u32::from(b'\r') {
                 // .raw headers are ASCII in practice; anything else is shown lossily.
-                out.push(char::from_u32(u).unwrap_or('\u{FFFD}'));
+                out.push(char::from_u32(u).unwrap_or('\u{fffd}'));
             }
         }
         if self.at_end() {
             self.pos = self.bytes.len();
         }
+        assert!(self.pos > start, "a line consumes at least one unit");
         Some(Cow::Owned(out))
     }
 
@@ -471,6 +537,10 @@ impl<'a> Reader<'a> {
                 break;
             }
         }
+        assert!(
+            self.pos <= self.bytes.len(),
+            "`peek` hands out only whole units"
+        );
     }
 
     /// Next number token: separators are ASCII whitespace and `,`. `None` at end of input, for a
@@ -500,11 +570,17 @@ impl<'a> Reader<'a> {
         if len == 0 {
             return None;
         }
-        std::str::from_utf8(&buf[..len]).ok()?.parse().ok()
+        assert!(len <= buf.len(), "a token fits the buffer");
+        assert!(
+            self.pos <= self.bytes.len(),
+            "`peek` hands out only whole units"
+        );
+        let value: f64 = str::from_utf8(&buf[..len]).ok()?.parse().ok()?;
+        Some(value)
     }
 
     /// Consumes exactly `want` raw bytes.
-    fn take_bytes(&mut self, want: usize) -> Result<&'a [u8], RawError> {
+    fn take_bytes(&mut self, want: usize) -> Result<&'bytes [u8], RawError> {
         let avail = self.remaining();
         if avail < want {
             return Err(RawError::Truncated {
@@ -514,6 +590,10 @@ impl<'a> Reader<'a> {
         }
         let out = &self.bytes[self.pos..self.pos + want];
         self.pos += want;
+        assert!(
+            self.pos <= self.bytes.len(),
+            "the take was checked against what remains"
+        );
         Ok(out)
     }
 }
@@ -643,8 +723,8 @@ Values:
 
     /// The point-at-a-time transpose [`transpose`] replaced: the oracle.
     fn transpose_simple(data: &[u8], cell: usize, off: usize, n: usize, out: &mut [f64]) {
-        let nv = out.len() / n.max(1);
-        for (p, row) in data.chunks_exact((nv * cell).max(1)).enumerate() {
+        let var_count = out.len() / n.max(1);
+        for (p, row) in data.chunks_exact((var_count * cell).max(1)).enumerate() {
             for (v, c) in row.chunks_exact(cell).enumerate() {
                 out[v * n + p] = f64_le(&c[off..]);
             }
@@ -668,9 +748,9 @@ Values:
             (17, 300),
             (100, 129),
         ];
-        for (n, nv) in sizes {
+        for (n, var_count) in sizes {
             for (cell, off) in [(8, 0), (16, 0), (16, 8)] {
-                let data: Vec<u8> = (0..n * nv * cell)
+                let data: Vec<u8> = (0..n * var_count * cell)
                     .map(|_| {
                         seed ^= seed << 13;
                         seed ^= seed >> 7;
@@ -678,15 +758,15 @@ Values:
                         seed as u8
                     })
                     .collect();
-                let mut out = vec![0.0; n * nv];
-                transpose(&data, cell, off, n, nv, &mut out);
-                let mut want = vec![0.0; n * nv];
+                let mut out = vec![0.0; n * var_count];
+                transpose(&data, cell, off, n, var_count, &mut out);
+                let mut want = vec![0.0; n * var_count];
                 transpose_simple(&data, cell, off, n, &mut want);
                 let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
                 assert_eq!(
                     bits(&out),
                     bits(&want),
-                    "n {n} nv {nv} cell {cell} off {off}"
+                    "n {n} var_count {var_count} cell {cell} off {off}"
                 );
             }
         }
@@ -698,9 +778,9 @@ Values:
     fn bench_parse() {
         use std::hint::black_box;
         use std::time::Instant;
-        let (n, nv) = (1_000_000usize, 4usize);
+        let (n, var_count) = (1_000_000usize, 4usize);
         let mut head = format!(
-            "Title: t\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: {nv}\n\
+            "Title: t\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: {var_count}\n\
              No. Points: {n}\nVariables:\n 0 time time\n 1 v(a) voltage\n 2 v(b) voltage\n\
              3 i(v1) current\n"
         );
@@ -738,31 +818,31 @@ Values:
         };
         let (tb, ta) = (time(&bin, 10), time(&ascii, 5));
         println!(
-            "parse_raw: binary 1M x {nv} ({} MB) {tb:.1} ms; ascii 100k x {nv} ({} MB) {ta:.1} ms",
+            "parse_raw: binary 1M x {var_count} ({} MB) {tb:.1} ms; ascii 100k x {var_count} ({} MB) {ta:.1} ms",
             bin.len() >> 20,
             ascii.len() >> 20
         );
         drop((bin, ascii));
         // Wide: hundreds of vectors (a large circuit's node voltages and device currents).
-        let (n, nv) = (40_000usize, 256usize);
+        let (n, var_count) = (40_000usize, 256usize);
         let mut wide = format!(
-            "Title: t\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: {nv}\n\
+            "Title: t\nPlotname: Transient Analysis\nFlags: real\nNo. Variables: {var_count}\n\
              No. Points: {n}\nVariables:\n 0 time time\n"
         );
-        for v in 1..nv {
+        for v in 1..var_count {
             wide.push_str(&format!(" {v} v(n{v}) voltage\n"));
         }
         wide.push_str("Binary:\n");
         let mut wide = wide.into_bytes();
         for p in 0..n {
             wide.extend_from_slice(&(p as f64 * 1e-9).to_le_bytes());
-            for v in 1..nv {
-                wide.extend_from_slice(&((p * nv + v) as f64).to_le_bytes());
+            for v in 1..var_count {
+                wide.extend_from_slice(&((p * var_count + v) as f64).to_le_bytes());
             }
         }
         let tw = time(&wide, 10);
         println!(
-            "parse_raw: binary {n} x {nv} ({} MB) {tw:.1} ms",
+            "parse_raw: binary {n} x {var_count} ({} MB) {tw:.1} ms",
             wide.len() >> 20
         );
         drop(wide);
@@ -776,7 +856,7 @@ Values:
                 })
                 .fold(f64::INFINITY, f64::min)
         };
-        for (n, nv) in [
+        for (n, var_count) in [
             (1_000_000usize, 4usize),
             (500_000, 8),
             (250_000, 16),
@@ -786,13 +866,16 @@ Values:
             (40_000, 256),
             (10_000, 1024),
         ] {
-            let payload: Vec<u8> = (0..n * nv).flat_map(|k| (k as f64).to_le_bytes()).collect();
-            let mut out = vec![0.0; n * nv];
-            let blocked = best(&mut || transpose(black_box(&payload), 8, 0, n, nv, &mut out));
+            let payload: Vec<u8> = (0..n * var_count)
+                .flat_map(|k| (k as f64).to_le_bytes())
+                .collect();
+            let mut out = vec![0.0; n * var_count];
+            let blocked =
+                best(&mut || transpose(black_box(&payload), 8, 0, n, var_count, &mut out));
             black_box(&out);
             let simple = best(&mut || transpose_simple(black_box(&payload), 8, 0, n, &mut out));
             black_box(&out);
-            println!("transpose {n} x {nv}: blocked {blocked:.1} ms, simple {simple:.1} ms");
+            println!("transpose {n} x {var_count}: blocked {blocked:.1} ms, simple {simple:.1} ms");
         }
     }
 

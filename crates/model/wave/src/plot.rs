@@ -14,6 +14,7 @@
 //! - `pub fn group_datasets(plots: Vec<RawPlot>) -> Vec<RawPlot>`
 
 use core::ops::Range;
+use std::mem;
 
 use schemify_expr::SignalKind;
 
@@ -68,13 +69,15 @@ pub struct RawPlot {
 /// # Panics
 ///
 /// Panics if a merged dataset would exceed 2^32 points.
+#[must_use]
 pub fn group_datasets(plots: Vec<RawPlot>) -> Vec<RawPlot> {
     let count = plots.len();
+    let points: usize = plots.iter().map(RawPlot::len).sum();
     let mut out: Vec<RawPlot> = Vec::with_capacity(count);
     let mut run: Vec<RawPlot> = Vec::new();
     for p in plots {
         if run.first().is_some_and(|first| !same_vars(first, &p)) {
-            out.push(merge(std::mem::take(&mut run)));
+            out.push(merge(mem::take(&mut run)));
         }
         run.push(p);
     }
@@ -82,11 +85,14 @@ pub fn group_datasets(plots: Vec<RawPlot>) -> Vec<RawPlot> {
         out.push(merge(run));
     }
     assert!(out.len() <= count, "grouping never adds a dataset");
+    let grouped: usize = out.iter().map(RawPlot::len).sum();
+    assert_eq!(grouped, points, "grouping keeps every point");
     out
 }
 
 impl VarKind {
     /// Display unit (`"V"`, `"A"`, `"s"`, `"Hz"`, or `""`).
+    #[must_use]
     pub fn unit(self) -> &'static str {
         match self {
             VarKind::Time => "s",
@@ -130,14 +136,14 @@ impl RawPlot {
         re: Vec<f64>,
         im: Vec<f64>,
     ) -> Result<RawPlot, RawError> {
-        let nv = vars.len();
-        if nv == 0 || re.is_empty() || !re.len().is_multiple_of(nv) {
+        let var_count = vars.len();
+        if var_count == 0 || re.is_empty() || !re.len().is_multiple_of(var_count) {
             return Err(RawError::Header(format!(
-                "{} samples do not form {nv} non-empty columns",
+                "{} samples do not form {var_count} non-empty columns",
                 re.len()
             )));
         }
-        let n = re.len() / nv;
+        let n = re.len() / var_count;
         let n32 =
             u32::try_from(n).map_err(|_| RawError::Header(format!("{n} points exceed 2^32")))?;
         let complex = !im.is_empty();
@@ -161,27 +167,39 @@ impl RawPlot {
     }
 
     /// The `Plotname:` header value (for merged datasets, the first block's).
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// True for AC-style data: every column has an imaginary part.
+    #[must_use]
     pub fn is_complex(&self) -> bool {
         self.complex
     }
 
     /// Variables in column order; entry 0 is the scale.
+    #[must_use]
     pub fn vars(&self) -> &[Variable] {
+        debug_assert!(!self.vars.is_empty(), "a plot has its scale");
         &self.vars
     }
 
     /// Points per column (all steps together).
+    #[must_use]
     pub fn len(&self) -> usize {
+        debug_assert_eq!(
+            self.re.len(),
+            self.n as usize * self.vars.len(),
+            "column store size"
+        );
         self.n as usize
     }
 
     /// Always false: a plot has at least one point (kept for clippy's `len` convention).
+    #[must_use]
     pub fn is_empty(&self) -> bool {
+        debug_assert!(self.n > 0, "a plot has a point");
         self.n == 0
     }
 
@@ -191,6 +209,7 @@ impl RawPlot {
     ///
     /// Panics when `v >= vars().len()`.
     #[inline]
+    #[must_use]
     pub fn col(&self, v: usize) -> &[f64] {
         assert!(v < self.vars.len(), "column {v} out of range");
         let n = self.len();
@@ -203,6 +222,7 @@ impl RawPlot {
     ///
     /// Panics when `v >= vars().len()`.
     #[inline]
+    #[must_use]
     pub fn col_im(&self, v: usize) -> &[f64] {
         assert!(v < self.vars.len(), "column {v} out of range");
         if !self.complex {
@@ -214,17 +234,21 @@ impl RawPlot {
 
     /// The scale (sweep axis) column, real part. AC frequencies are real in every simulator.
     #[inline]
+    #[must_use]
     pub fn scale(&self) -> &[f64] {
         self.col(0)
     }
 
     /// Sweep steps: contiguous non-empty ranges partitioning `0..len()`.
+    #[must_use]
     pub fn steps(&self) -> &[Range<u32>] {
+        debug_assert!(!self.steps.is_empty(), "a plot has a point, so a step");
         &self.steps
     }
 
     /// Column of the variable named `name`, compared case-insensitively (simulators disagree on
     /// case: ngspice writes `v(out)`, Xyce `OUT`).
+    #[must_use]
     pub fn find_var(&self, name: &str) -> Option<usize> {
         self.vars
             .iter()
@@ -234,6 +258,7 @@ impl RawPlot {
     /// Column a calculator signal names (spec expr §4): `v(net)` is the vector `v(net)`, else
     /// `net` (Xyce, `notype` vectors); `i(dev)` is `i(dev)`, else `dev#branch` (Xyce, old
     /// ngspice), else `dev`. All comparisons ignore case. Never column 0 unless the name says so.
+    #[must_use]
     pub fn find_signal(&self, kind: SignalKind, name: &str) -> Option<usize> {
         let f = match kind {
             SignalKind::V => "v",
@@ -257,7 +282,12 @@ impl RawPlot {
 /// restarting, a `.step` run appended in place). Equal neighbours never split, so a descending
 /// sweep stays one step. O(n).
 fn detect_steps(x: &[f64]) -> Vec<Range<u32>> {
-    assert!(!x.is_empty() && x.len() <= u32::MAX as usize);
+    assert!(!x.is_empty(), "a plot has a point");
+    assert!(
+        x.len() <= u32::MAX as usize,
+        "{} points exceed 2^32",
+        x.len()
+    );
     let mut steps = Vec::new();
     let mut start = 0u32;
     let mut dir = 0i8;
@@ -276,10 +306,18 @@ fn detect_steps(x: &[f64]) -> Vec<Range<u32>> {
         }
     }
     steps.push(start..x.len() as u32);
+    debug_assert!(
+        steps.iter().all(|s| s.start < s.end),
+        "a split never leaves an empty step"
+    );
     steps
 }
 
+/// True when `a` and `b` hold the same variables (names ignoring case, kinds) and both are
+/// real or both complex: blocks [`group_datasets`] may merge.
 fn same_vars(a: &RawPlot, b: &RawPlot) -> bool {
+    debug_assert!(!a.vars.is_empty(), "a plot has a variable");
+    debug_assert!(!b.vars.is_empty(), "a plot has a variable");
     a.complex == b.complex
         && a.vars.len() == b.vars.len()
         && a.vars
@@ -291,6 +329,10 @@ fn same_vars(a: &RawPlot, b: &RawPlot) -> bool {
 /// One block holding `run`'s samples column by column and its steps end to end.
 fn merge(mut run: Vec<RawPlot>) -> RawPlot {
     assert!(!run.is_empty(), "a run holds a block");
+    debug_assert!(
+        run.iter().all(|p| same_vars(&run[0], p)),
+        "a run shares its variables"
+    );
     if run.len() == 1 {
         return run.pop().expect("one block");
     }
@@ -299,11 +341,11 @@ fn merge(mut run: Vec<RawPlot>) -> RawPlot {
         total <= u32::MAX as usize,
         "merged dataset exceeds 2^32 points"
     );
-    let nv = run[0].vars.len();
+    let var_count = run[0].vars.len();
     let complex = run[0].complex;
-    let mut re = Vec::with_capacity(total * nv);
-    let mut im = Vec::with_capacity(if complex { total * nv } else { 0 });
-    for v in 0..nv {
+    let mut re = Vec::with_capacity(total * var_count);
+    let mut im = Vec::with_capacity(if complex { total * var_count } else { 0 });
+    for v in 0..var_count {
         for p in &run {
             re.extend_from_slice(p.col(v));
             im.extend_from_slice(p.col_im(v));
@@ -315,6 +357,11 @@ fn merge(mut run: Vec<RawPlot>) -> RawPlot {
         steps.extend(p.steps.iter().map(|s| s.start + base..s.end + base));
         base += p.n;
     }
+    assert_eq!(
+        re.len(),
+        total * var_count,
+        "every column of every block copied"
+    );
     let first = run.swap_remove(0);
     let plot = RawPlot {
         name: first.name,
@@ -336,7 +383,8 @@ impl RawPlot {
         assert!(n > 0, "a plot has a point");
         assert!(!self.vars.is_empty(), "a plot has a variable");
         assert_eq!(self.re.len(), n * self.vars.len(), "column store size");
-        assert_eq!(self.im.len(), if self.complex { self.re.len() } else { 0 });
+        let im_len = if self.complex { self.re.len() } else { 0 };
+        assert_eq!(self.im.len(), im_len, "imaginary part: all or nothing");
         let mut at = 0;
         for s in &self.steps {
             assert_eq!(s.start, at, "steps do not partition the points");
