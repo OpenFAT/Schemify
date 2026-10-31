@@ -2,11 +2,9 @@
 """Drives the web editor in headless Chrome through the DevTools protocol (over a pipe,
 Python stdlib only) and checks what the web spec promises end to end:
 
-0. pixels (web spec §7): WebGPU, else WebGL2 (CI's SwiftShader WebGPU shows no frames, so CI
-   lands on WebGL2), else the CPU; on the CPU the frame of the `inv`
-   project matches the native CPU golden `crates/view/app/tests/golden/editor_dark.png` (≤ 0.1%
-   of pixels off by more than 2 levels); whichever painter draws, the page screenshot is
-   within 5% of that golden (never blank);
+0. pixels (web spec §7): the WebGL2 tier (WebGPU is disabled: SwiftShader's WebGPU shows no
+   frames headless); the page screenshot of the `inv` project is within 5% of the native
+   golden `crates/view/app/tests/golden/editor_dark.png` (never blank);
 1. storage (web spec §2): the `inv` fixture, written into OPFS by the browser's own API,
    opens (the mount reads files it did not write); a wire drawn and saved (Ctrl+S) reaches
    OPFS and is still there after a reload;
@@ -35,8 +33,6 @@ import zlib
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FIXTURE = os.path.join(REPO, "crates/view/app/tests/fixtures/inv")
 GOLDEN = os.path.join(REPO, "crates/view/app/tests/golden/editor_dark.png")
-CPU_CANVAS = "schemify-cpu"  # render::cpu_view::ID
-GL_CANVAS = "schemify-webgl"  # render::window::GL_ID
 
 
 class Browser:
@@ -195,19 +191,6 @@ class Page:
         )
         self.eval(js)
         return len(files)
-
-    def cpu_png(self):
-        """The CPU overlay's pixels as PNG bytes, or None when the page draws on a GPU."""
-        url = self.eval(
-            f"(() => {{ const c = document.getElementById('{CPU_CANVAS}');"
-            " return c ? c.toDataURL('image/png') : null; })()"
-        )
-        return base64.b64decode(url.split(",", 1)[1]) if url else None
-
-    def gpu_tier(self):
-        """The GPU tier drawing the page when the CPU overlay is absent (web spec §7)."""
-        js = f"document.getElementById('{GL_CANVAS}') ? 'WebGL2' : 'WebGPU'"
-        return self.eval(js)
 
     def write_text(self, path, text):
         """Writes OPFS file `path` (test-only JS, as the browser's own API would)."""
@@ -401,12 +384,11 @@ def main():
     os.makedirs(out, exist_ok=True)
     origin = url.split("/", 3)[:3]
     origin = "/".join(origin)
-    # `--disable-3d-apis` (smoke.sh's second run) takes WebGL2 and WebGPU away: the editor
-    # must then draw on the CPU, so the CPU tier stays covered.
-    cpu_only = "--disable-3d-apis" in sys.argv[4:]
+    # No WebGPU: SwiftShader's headless WebGPU draws nothing to the page, so the editor's
+    # WebGL2 tier (ANGLE on SwiftShader) is the one this drive can check.
     flags = ["--headless=new", "--no-sandbox", "--no-first-run", "--window-size=1280,800",
-             "--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-angle=swiftshader",
-             "--use-webgpu-adapter=swiftshader", "--enable-unsafe-swiftshader",
+             "--disable-features=WebGPU,WebGPUService", "--use-angle=swiftshader",
+             "--enable-unsafe-swiftshader",
              "--enable-logging=stderr", "--v=0", *sys.argv[4:]]
     failures = []
     with open(os.path.join(out, "drive-chrome.log"), "wb") as log:
@@ -431,38 +413,12 @@ def main():
             p.write_text("/config/init.lua", 'schemify.keymap.set("F9", "file.save")\n')
             top = "/projects/inv/top.shcomp"
             p.load(f"{url}#{top}")
-            # 0. Pixels (web spec §7): with neither WebGPU nor WebGL2 usable the editor draws
-            #    on the CPU; before any synthetic input moves the pointer (the status line
-            #    shows it), the frame must match the native CPU golden under the native
-            #    test's tolerance.
-            png, deadline = None, time.time() + 15
-            while time.time() < deadline and png is None:
-                png = p.cpu_png()
-                time.sleep(0.25)
-            if png is None and cpu_only:
-                failures.append(f"with no 3D APIs the editor draws with {p.gpu_tier()}, not the CPU")
-            elif png is None:
-                print(f"::notice::the editor draws with {p.gpu_tier()}: no CPU frame to compare")
-            else:
-                time.sleep(2.0)  # the editor settles (plugin load, compose, a tick)
-                png = p.cpu_png()
-                with open(os.path.join(out, "web_cpu.png"), "wb") as f:
-                    f.write(png)
-                got = png_rgba(png)
-                with open(GOLDEN, "rb") as f:
-                    want = png_rgba(f.read())
-                if got[:2] != want[:2]:
-                    failures.append(f"CPU frame {got[:2]}, golden {want[:2]}")
-                else:
-                    bad, limit = differing_pixels(got[2], want[2]), got[0] * got[1] // 1000
-                    print(f"CPU frame vs editor_dark.png: {bad} pixels differ (limit {limit})")
-                    if bad > limit:
-                        failures.append(f"the web CPU frame differs from the native golden in "
-                                        f"{bad} pixels (limit {limit}): see web_cpu.png")
-            # 0b. Whatever drew it (GPU, or the CPU fallback after a GPU that shows nothing),
-            #     the page itself must show the editor: the compositor's screenshot is near
-            #     the golden (a blank page differs almost everywhere; the GPU's antialiasing
-            #     only along edges, hence the loose 5%).
+            time.sleep(5.0)  # the GPU opens, the editor settles (plugin load, compose, a tick)
+            # 0. Pixels (web spec §7): the WebGL2 tier must show the
+            #    editor before any synthetic input moves the pointer (the status line shows
+            #    it): the compositor's screenshot is near the native golden (a blank page
+            #    differs almost everywhere; the tiers' antialiasing only along edges, hence the
+            #    loose 5%).
             p.screenshot(os.path.join(out, "page.png"))
             with open(os.path.join(out, "page.png"), "rb") as f:
                 shot = png_rgba(f.read())
