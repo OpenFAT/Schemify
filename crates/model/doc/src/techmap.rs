@@ -94,7 +94,7 @@ impl TechMap {
     pub fn parse(bytes: &[u8]) -> Result<TechMap, String> {
         let d = schemify_format::parse(bytes).map_err(|e| e.to_string())?;
         if d.kind() != FileKind::Techmap {
-            return Err(format!("not a tech map (`{}` file)", d.kind().word()));
+            return Err(format!("not a tech map (`{}` file)", d.kind().as_str()));
         }
         let mut m = TechMap {
             param_start: vec![0],

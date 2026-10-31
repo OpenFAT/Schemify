@@ -1,10 +1,11 @@
 //! Diagnostics: reader findings → codes with positions (spec §7).
 //!
 //! Contents:
-//! - `pub enum Code`, `Code::as_str`, `Code::meaning`, `Code::is_warning`
+//! - `pub enum Code`, `Code::as_str`, `Code::meaning`, `Code::is_warning`, `Display`
 //! - `pub const NO_RECORD: u32`
 //! - `pub struct Diagnostic`
 //! - `pub struct ParseError`, `ParseError::has`
+//! - `pub struct ParseWordError`: the `FromStr` error of this crate's word enums
 
 use std::fmt;
 
@@ -53,6 +54,11 @@ pub struct ParseError {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Why a `FromStr` of a word enum ([`FileKind`](crate::FileKind), [`Orient`](crate::Orient))
+/// failed: the text names no variant. Carries nothing, so it is free to return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseWordError;
+
 /// Code text and spec §7 meaning, in `Code` declaration order.
 const CODES: [(&str, &str); 10] = [
     ("E021", "file too large"),
@@ -83,7 +89,7 @@ const _: () = {
 impl Code {
     /// Returns the code as written in diagnostics and the spec (`"E022"`).
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         CODES[self as usize].0
     }
 
@@ -130,6 +136,12 @@ impl ParseError {
     }
 }
 
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (code, meaning) = (self.code.as_str(), self.code.meaning());
@@ -154,6 +166,14 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+impl fmt::Display for ParseWordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown word")
+    }
+}
+
+impl std::error::Error for ParseWordError {}
 
 #[cfg(test)]
 mod tests {

@@ -465,7 +465,8 @@ pub(crate) fn move_elem<T>(v: &mut [T], from: usize, to: usize) {
 }
 
 pub(crate) fn orient(text: &str) -> Orient {
-    Orient::parse(text).expect("orientations are validated before they reach a table")
+    text.parse()
+        .expect("orientations are validated before they reach a table")
 }
 
 // ---- private ----

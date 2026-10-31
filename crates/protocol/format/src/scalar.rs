@@ -3,11 +3,16 @@
 //!
 //! Contents:
 //! - `pub enum CoordError`
-//! - `pub enum Orient`, `Orient::parse`, `Orient::as_str`, `Orient::mirrored`,
+//! - `pub enum Orient`, `FromStr`, `Display`, `Orient::as_str`, `Orient::mirrored`,
 //!   `Orient::quarter_turns`
 //! - `pub fn is_number(s: &str) -> bool`
 //! - `pub fn parse_coord(s: &str) -> Result<i32, CoordError>`
 //! - `pub fn format_coord(milli: i32, out: &mut String)`
+
+use std::fmt;
+use std::str::FromStr;
+
+use crate::diag::ParseWordError;
 
 /// Why [`parse_coord`] rejected its input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,22 +190,34 @@ pub fn format_coord(milli: i32, out: &mut String) {
     debug_assert_eq!(parse_coord(&out[before..]), Ok(milli));
 }
 
-impl Orient {
-    /// Parses a file word; case-sensitive, so `r90` is `None`.
+impl FromStr for Orient {
+    type Err = ParseWordError;
+
+    /// Parses a file word; case-sensitive, so `r90` is an error.
     ///
     /// # Panics
     ///
     /// Never: asserts that the word table is in discriminant order.
-    #[must_use]
-    pub fn parse(word: &str) -> Option<Orient> {
-        let (_, o) = ORIENTS.iter().find(|(w, _)| *w == word)?;
+    fn from_str(word: &str) -> Result<Orient, ParseWordError> {
+        let (_, o) = ORIENTS
+            .iter()
+            .find(|(w, _)| *w == word)
+            .ok_or(ParseWordError)?;
         assert_eq!(o.as_str(), word, "table order is discriminant order");
-        Some(*o)
+        Ok(*o)
     }
+}
 
+impl fmt::Display for Orient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl Orient {
     /// Returns the file word.
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         ORIENTS[self as usize].0
     }
 
@@ -352,11 +369,12 @@ mod tests {
     #[test]
     fn orientations_round_trip() {
         for (i, (_, o)) in ORIENTS.iter().enumerate() {
-            assert_eq!(Orient::parse(o.as_str()), Some(*o));
+            assert_eq!(o.as_str().parse(), Ok(*o));
+            assert_eq!(o.to_string(), o.as_str());
             assert_eq!(o.mirrored(), i >= 4);
             assert_eq!(usize::from(o.quarter_turns()), i % 4);
         }
-        assert_eq!(Orient::parse("r90"), None);
-        assert_eq!(Orient::parse("R45"), None);
+        assert_eq!("r90".parse::<Orient>(), Err(ParseWordError));
+        assert_eq!("R45".parse::<Orient>(), Err(ParseWordError));
     }
 }

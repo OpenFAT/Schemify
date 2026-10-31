@@ -339,12 +339,13 @@ mod tests {
     #[test]
     fn table_rows_are_consistent() {
         for fk in FileKind::ALL {
-            assert_eq!(FileKind::from_word(fk.word()), Some(fk));
+            assert_eq!(fk.as_str().parse(), Ok(fk));
+            assert_eq!(fk.to_string(), fk.as_str());
             let kinds = fk.records();
             for (i, k) in kinds.iter().enumerate() {
                 assert!(*k != R::Header && *k != R::Unknown);
                 // A word resolves to exactly one kind per file kind.
-                assert_eq!(fk.lookup(k.word()), Some(*k));
+                assert_eq!(fk.lookup(k.as_str()), Some(*k));
                 // Listed order is rank order, so the writer's kind order is the spec's.
                 if i > 0 {
                     assert!(kinds[i - 1].rank() <= k.rank());
@@ -364,7 +365,7 @@ mod tests {
                 assert!(k.schema().attrs.len() <= 32);
             }
         }
-        assert_eq!(FileKind::from_word("schematic"), None);
+        assert!("schematic".parse::<FileKind>().is_err());
         assert_eq!(FileKind::Shbench.lookup("pin"), None);
         // D17 as amended: a component carries `code`; the other bench tables stay
         // bench-only, and a primitive has neither.
@@ -401,7 +402,7 @@ mod tests {
             (R::Class, "class", 1, KeyRule::TypeName),
         ];
         for (kind, word, rank, key) in rows {
-            assert_eq!((kind.word(), kind.rank(), kind.key()), (word, rank, key));
+            assert_eq!((kind.as_str(), kind.rank(), kind.key()), (word, rank, key));
         }
         let inst = R::Inst.schema();
         assert!(inst.open && inst.sorted && !inst.verbatim);

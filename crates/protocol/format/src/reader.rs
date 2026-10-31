@@ -183,7 +183,7 @@ fn prefix_len(bytes: &[u8], max_rank: u8) -> usize {
     let kind = std::str::from_utf8(&bytes[..header_end])
         .ok()
         .and_then(|h| h.split_ascii_whitespace().nth(2))
-        .and_then(FileKind::from_word);
+        .and_then(|w| w.parse::<FileKind>().ok());
     let Some(kind) = kind else { return bytes.len() };
     let mut pos = header_end + 1;
     while pos < bytes.len() {

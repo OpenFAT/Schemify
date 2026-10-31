@@ -320,7 +320,7 @@ impl Table for Shapes {
         assert!(self.id[row] != ObjId::NONE, "every shape has an id");
         sink.begin(RecordKind::Shape);
         sink.id(self.id[row], strings);
-        sink.field(self.form[row].word());
+        sink.field(self.form[row].as_str());
         for &c in &pool.coords[self.coords[row].range()] {
             sink.coord(c);
         }

@@ -179,7 +179,7 @@ fn the_orientation_transform_matches_the_spec_examples() {
     assert_eq!(place(10, 5, Orient::MR0, 100, 100), (90, 105));
     assert_eq!(place(10, 5, Orient::MR90, 0, 0), (-5, -10));
     for o in ["R0", "R90", "R180", "R270", "MR0", "MR90", "MR180", "MR270"] {
-        let got = place(7, 3, Orient::parse(o).unwrap(), 11, 13);
+        let got = place(7, 3, o.parse().unwrap(), 11, 13);
         assert_eq!(
             (got.0 as i64, got.1 as i64),
             common::place_ref(7, 3, o, (11, 13)),

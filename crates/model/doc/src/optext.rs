@@ -126,13 +126,13 @@ pub(crate) fn push_op(d: &mut FormatDoc<'static>, op: &Op) {
     match op {
         Op::Insert { rec, at: None } => {
             d.begin_unknown_record("insert");
-            d.push_field(rec.kind.word());
+            d.push_field(rec.kind.as_str());
             push_payload(d, rec);
         }
         Op::Insert { rec, at: Some(row) } => {
             d.begin_unknown_record("insert_at");
             d.push_field(&row.to_string());
-            d.push_field(rec.kind.word());
+            d.push_field(rec.kind.as_str());
             push_payload(d, rec);
         }
         Op::Delete(t) => {
@@ -244,12 +244,12 @@ fn push_payload(d: &mut FormatDoc<'static>, rec: &RecordBuf) {
 
 fn push_target(d: &mut FormatDoc<'static>, t: &Target) {
     assert!(t.kind != RecordKind::Unknown, "ops address known kinds");
-    d.push_field(t.kind.word());
+    d.push_field(t.kind.as_str());
     d.push_field(&t.key);
 }
 
 fn kind_of(word: &str, file: FileKind) -> Result<RecordKind, Code> {
-    if word == RecordKind::Header.word() {
+    if word == RecordKind::Header.as_str() {
         return Ok(RecordKind::Header);
     }
     file.lookup(word).ok_or(Code::E027)

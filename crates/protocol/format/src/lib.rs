@@ -61,7 +61,7 @@ mod scalar;
 mod schema;
 mod writer;
 
-pub use diag::{Code, Diagnostic, NO_RECORD, ParseError};
+pub use diag::{Code, Diagnostic, NO_RECORD, ParseError, ParseWordError};
 pub use diff::{Change, ChangeKind, Diff, Parts, diff};
 pub use document::{Document, NONE, Texts, VERSION, is_word};
 pub use id::{ID_ALPHABET, ID_LEN_NEW, IdRng, NewId, fresh_id, is_id};
