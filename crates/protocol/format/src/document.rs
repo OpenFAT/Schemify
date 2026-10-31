@@ -202,7 +202,7 @@ impl<'src> Document<'src> {
     pub fn kind(&self) -> FileKind {
         // Pairs the typed kind with the header text the writer emits.
         if !self.record_kinds.is_empty() {
-            debug_assert_eq!(self.field(0, 1), Some(self.kind.word()));
+            debug_assert_eq!(self.field(0, 1), Some(self.kind.as_str()));
         }
         self.kind
     }
@@ -258,7 +258,7 @@ impl<'src> Document<'src> {
     pub fn record_word(&self, r: u32) -> &str {
         let kind = self.record_kind(r);
         if kind != RecordKind::Unknown {
-            return kind.word();
+            return kind.as_str();
         }
         let i = self
             .unknown_words

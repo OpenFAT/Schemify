@@ -108,7 +108,7 @@ fn lex_header(src: &str) -> Result<(Document<'_>, usize), Diagnostic> {
             "version must be a positive integer below 65536",
         ));
     };
-    let Some(file_kind) = FileKind::from_word(kind) else {
+    let Ok(file_kind) = kind.parse::<FileKind>() else {
         return Err(bad(col(kind), "unknown file kind"));
     };
     let mut doc = Document::bare(src, number, file_kind);
@@ -116,7 +116,7 @@ fn lex_header(src: &str) -> Result<(Document<'_>, usize), Diagnostic> {
     doc.begin(RecordKind::Header, 1);
     // Stored canonical (`01` → `1`) so the writer needs no special case for the header.
     let v = doc.intern(&number.to_string());
-    let k = doc.intern(file_kind.word());
+    let k = doc.intern(file_kind.as_str());
     doc.push_field_str(v, 0);
     doc.push_field_str(k, 0);
     assert_eq!(doc.record_count(), 1);

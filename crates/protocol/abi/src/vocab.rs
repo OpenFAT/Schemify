@@ -5,16 +5,12 @@
 //! edits spec §1 (edit modes).
 //!
 //! Contents:
-//! - `pub enum Code`: `from_raw`, `neg`, `check`, `Display`
+//! - `pub enum Code`: `from_raw`, `neg`, `check`
 //! - `pub enum Cap`: `parse_grant`, `env_name`
 //! - `pub enum Kind`: `COUNT`, `words`, `scoped`
 //! - `pub enum Level`, `pub enum EditMode`
 //! - every named enum (`Code`, `Cap`, `Kind`, `Level`, `EditMode`, `schema::ColType`): `ALL`,
-//!   `pub const fn name(self) -> &'static str`, `pub fn parse(name: &str) -> Option<Self>`,
-//!   `FromStr` (`Err = Code`)
-
-use std::fmt;
-use std::fmt::{Display, Formatter};
+//!   `pub const fn as_str(self) -> &'static str`, `Display`, `FromStr` (`Err = Code`)
 
 use crate::text;
 
@@ -39,27 +35,28 @@ macro_rules! named_enum {
 
             /// Returns the wire name.
             #[must_use]
-            pub const fn name(self) -> &'static str {
+            pub const fn as_str(self) -> &'static str {
                 match self { $($T::$V => $s,)* }
-            }
-
-            /// Parses a wire name; `None` for anything else, including another case.
-            #[must_use]
-            pub fn parse(name: &str) -> Option<$T> {
-                let parsed = match name { $($s => Some($T::$V),)* _ => None };
-                if let Some(value) = parsed {
-                    debug_assert_eq!(value.name(), name, "name and parse are inverses");
-                }
-                parsed
             }
         }
 
         impl std::str::FromStr for $T {
             type Err = $crate::Code;
 
-            /// As the inherent `parse`, failing with [`Code::Parse`](crate::Code::Parse).
+            /// Parses a wire name; [`Code::Parse`](crate::Code::Parse) for anything else,
+            /// including another case.
             fn from_str(name: &str) -> Result<$T, $crate::Code> {
-                $T::parse(name).ok_or($crate::Code::Parse)
+                let parsed = match name { $($s => Ok($T::$V),)* _ => Err($crate::Code::Parse) };
+                if let Ok(value) = parsed {
+                    debug_assert_eq!(value.as_str(), name, "as_str and from_str are inverses");
+                }
+                parsed
+            }
+        }
+
+        impl std::fmt::Display for $T {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.pad(self.as_str())
             }
         }
     };
@@ -209,12 +206,6 @@ impl Code {
     }
 }
 
-impl Display for Code {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
 impl Cap {
     /// Parses one manifest grant (`read_project`, `spawn:ngspice`, …) into the capability
     /// and its argument (the binary name for `spawn`, the variable for `read`, empty
@@ -227,7 +218,7 @@ impl Cap {
     #[must_use]
     pub fn parse_grant(grant: &str) -> Option<(Cap, &str)> {
         let (name, arg) = grant.split_once(':').unwrap_or((grant, ""));
-        let cap = Cap::parse(name)?;
+        let cap: Cap = name.parse().ok()?;
         let well_formed = match cap {
             Cap::Spawn => !arg.is_empty() && !arg.contains(['/', '\\']) && text::is_bare(arg),
             Cap::ReadEnv => Cap::env_name(arg),
@@ -302,15 +293,15 @@ mod tests {
         for (i, &code) in Code::ALL.iter().enumerate() {
             assert_eq!(code as usize, i + 1);
             assert_eq!(Code::from_raw(code as u32), Some(code));
-            assert_eq!(Code::parse(code.name()), Some(code));
+            assert_eq!(code.as_str().parse(), Ok(code));
             assert_eq!(Code::check(code.neg()), Err(code));
             assert!(code.neg() < 0);
-            assert_eq!(code.to_string(), code.name());
+            assert_eq!(code.to_string(), code.as_str());
         }
-        assert_eq!(Code::Parse.name(), "E_PARSE");
+        assert_eq!(Code::Parse.as_str(), "E_PARSE");
         assert_eq!(Code::from_raw(0), None);
         assert_eq!(Code::from_raw(12), None);
-        assert_eq!(Code::parse("e_parse"), None);
+        assert_eq!("e_parse".parse::<Code>(), Err(Code::Parse));
         assert_eq!(Code::check(0), Ok(0));
         assert_eq!(Code::check(i32::MAX), Ok(i32::MAX as u32));
         assert_eq!(Code::check(i32::MIN), Err(Code::Range));
@@ -360,34 +351,20 @@ mod tests {
     fn named_enums_are_dense_and_round_trip() {
         for (i, &kind) in Kind::ALL.iter().enumerate() {
             assert_eq!(kind as usize, i);
-            assert_eq!(Kind::parse(kind.name()), Some(kind));
+            assert_eq!(kind.as_str().parse(), Ok(kind));
+            assert_eq!(kind.to_string(), kind.as_str());
             assert!(!kind.words().is_empty());
             assert_eq!(kind.scoped(), kind == Kind::Annotations);
         }
         for (i, &level) in Level::ALL.iter().enumerate() {
             assert_eq!(level as usize, i);
-            assert_eq!(Level::parse(level.name()), Some(level));
+            assert_eq!(level.as_str().parse(), Ok(level));
         }
         assert_eq!(Kind::COUNT, 9);
-        assert_eq!(Kind::parse("nope"), None);
-        assert_eq!(Kind::parse("UI"), None);
-        assert_eq!(EditMode::parse("stage"), Some(EditMode::Stage));
-    }
-
-    /// `FromStr` agrees with the inherent `parse` on every name and fails with `E_PARSE`.
-    #[test]
-    fn from_str_matches_parse() {
-        for &kind in Kind::ALL {
-            let parsed: Result<Kind, Code> = kind.name().parse();
-            assert_eq!(parsed, Ok(kind));
-        }
-        for &code in Code::ALL {
-            let parsed: Result<Code, Code> = code.name().parse();
-            assert_eq!(parsed, Ok(code));
-        }
-        let mode: Result<EditMode, Code> = "Stage".parse();
-        assert_eq!(mode, Err(Code::Parse));
-        let code: Result<Code, Code> = "E_NOPE".parse();
-        assert_eq!(code, Err(Code::Parse));
+        assert_eq!("nope".parse::<Kind>(), Err(Code::Parse));
+        assert_eq!("UI".parse::<Kind>(), Err(Code::Parse));
+        assert_eq!("stage".parse(), Ok(EditMode::Stage));
+        assert_eq!("Stage".parse::<EditMode>(), Err(Code::Parse));
+        assert_eq!("E_NOPE".parse::<Code>(), Err(Code::Parse));
     }
 }

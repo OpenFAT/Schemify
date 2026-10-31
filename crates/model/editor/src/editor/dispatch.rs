@@ -44,7 +44,7 @@ pub(super) fn kind_refusal(cmd: Cmd, kind: FileKind) -> String {
     debug_assert!(!want.is_empty(), "only a restricted command is refused");
     format!(
         "{}: needs a {} file (this is a {})",
-        cmd.name(),
+        cmd.as_str(),
         want.join(" or "),
         ext(&kind)
     )

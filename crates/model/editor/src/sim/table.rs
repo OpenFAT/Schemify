@@ -303,7 +303,7 @@ impl Sim {
             State::Failed => "results-fail",
             State::Pending | State::Queued | State::Running | State::Cancelled => "results-dim",
         };
-        cell(t, format!("{rid}.state"), st.word(), st_style);
+        cell(t, format!("{rid}.state"), st.as_str(), st_style);
         for o in 0..res.outputs().len() as u16 {
             let v = res
                 .value(j, o)

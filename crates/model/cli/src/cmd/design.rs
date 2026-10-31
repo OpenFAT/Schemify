@@ -355,13 +355,13 @@ fn explicit_dialect(a: &DesignArgs) -> Result<Option<Dialect>, u8> {
     let Some(word) = a.dialect.as_deref() else {
         return Ok(None);
     };
-    let d = spines::dialect_of(word).ok_or_else(|| {
+    let d: Dialect = word.parse().map_err(|_| {
         eprintln!(
             "unknown dialect `{word}` (ngspice espice xyce ltspice hspice cdl spectre verilog)"
         );
         USAGE_ERROR
     })?;
-    assert_eq!(spines::dialect_word(d), word, "dialect words round-trip");
+    assert_eq!(d.as_str(), word, "dialect words round-trip");
     Ok(Some(d))
 }
 

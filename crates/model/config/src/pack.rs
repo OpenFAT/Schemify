@@ -172,7 +172,7 @@ fn pack_spec(v: Value, root: Option<&Path>) -> Result<PackSpec, String> {
             let cmd = words(&l, "cmd")?;
             let mut event = Vec::new();
             for w in words(&l, "event")? {
-                event.push(Event::from_word(&w).ok_or(format!("unknown event `{w}`"))?);
+                event.push(w.parse().map_err(|_| format!("unknown event `{w}`"))?);
             }
             if cmd.is_empty() && event.is_empty() {
                 return Err("`lazy` needs `cmd` or `event`".into());

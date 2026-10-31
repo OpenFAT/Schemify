@@ -14,14 +14,14 @@
 //! objectives), `scores`; at most the budget (≤ `BUDGET_MAX`) rows.
 //!
 //! Contents:
-//! - `pub struct Param`, `pub struct Objective`, `pub enum Algorithm` (`from_name`),
+//! - `pub struct Param`, `pub struct Objective`, `pub enum Algorithm` (`FromStr`),
 //!   `pub struct Evaluation<'a>`, `pub enum OptError`
 //! - `pub struct Optimizer`: `new`, `params`, `objectives`, `ask`, `tell`, `tell_failed`,
 //!   `evaluation_count`, `eval`, `best`
 //! - `pub struct OptRun`: `new`, `jobs_per_candidate`, `step`, `done`, `eval_job`,
 //!   `best_job`
 
-use crate::jobs::{Jobs, NO_SAMPLE, State};
+use crate::jobs::{Jobs, NO_SAMPLE, ParseWordError, State};
 use crate::nelder_mead::{NelderMead, UNEVALUATED};
 use crate::plan::{self, Goal, Plan, PlanError};
 use crate::results::Results;
@@ -29,6 +29,7 @@ use schemify_doc::Assignment;
 use std::error::Error;
 use std::fmt;
 use std::ops::Range;
+use std::str::FromStr;
 
 /// One bounded search parameter. `init` is clamped into `[min, max]` at use.
 #[derive(Clone, Debug, PartialEq)]
@@ -144,14 +145,15 @@ enum Search {
 /// Seed used for 0, which xorshift cannot leave (the golden-ratio constant).
 const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
-impl Algorithm {
+impl FromStr for Algorithm {
+    type Err = ParseWordError;
+
     /// Parses the `algo` word (`random`, `nelder-mead`).
-    #[must_use]
-    pub fn from_name(s: &str) -> Option<Algorithm> {
-        match s {
-            "random" => Some(Algorithm::Random),
-            "nelder-mead" => Some(Algorithm::NelderMead),
-            _ => None,
+    fn from_str(word: &str) -> Result<Algorithm, ParseWordError> {
+        match word {
+            "random" => Ok(Algorithm::Random),
+            "nelder-mead" => Ok(Algorithm::NelderMead),
+            _ => Err(ParseWordError),
         }
     }
 }
@@ -371,8 +373,10 @@ impl OptRun {
             record.weights.len(),
             "weights are parallel to goals"
         );
-        let algo = Algorithm::from_name(&record.algo)
-            .ok_or_else(|| bad(format!("unknown algo `{}`", record.algo)))?;
+        let algo: Algorithm = record
+            .algo
+            .parse()
+            .map_err(|_| bad(format!("unknown algo `{}`", record.algo)))?;
         let mut params = Vec::with_capacity(record.vary.len());
         for v in &record.vary {
             let bounds = plan::var_bounds(plan, v).map_err(|e| bad(format!("vary {v}: {e}")))?;
@@ -790,6 +794,7 @@ mod tests {
             Optimizer::new(vec![], obj(), Algorithm::Random, 1, 5),
             Err(OptError::Empty)
         );
-        assert_eq!(Algorithm::from_name("anneal"), None);
+        assert_eq!("anneal".parse::<Algorithm>(), Err(ParseWordError));
+        assert_eq!("nelder-mead".parse(), Ok(Algorithm::NelderMead));
     }
 }

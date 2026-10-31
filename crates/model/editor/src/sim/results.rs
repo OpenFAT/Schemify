@@ -427,7 +427,7 @@ fn row_text(jobs: &Jobs, res: &Results, j: u32, out: &mut String) {
     let _ = write!(out, "{j} ");
     jobs.write_key(j, out);
     out.push(' ');
-    out.push_str(jobs.state(j).word());
+    out.push_str(jobs.state(j).as_str());
     for s in 0..res.specs() as u16 {
         match res.pass(j, s) {
             Pass::Pass => out.push_str(" pass"),

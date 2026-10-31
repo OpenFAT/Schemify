@@ -51,7 +51,7 @@
 //! Contents:
 //! - `pub enum Value`, `pub enum Code`, `pub struct Span`, `pub struct Error`
 //! - `pub(crate) const MAX_NODES`, `MAX_DEPTH`, `MAX_STR_BYTES`, `MAX_PLUGIN_ARGS`
-//! - `Code::as_str(self) -> &'static str`, `Code::is_warning(self) -> bool`
+//! - `Code::as_str(self) -> &'static str`, `Display`, `Code::is_warning(self) -> bool`
 //! - `Span::new(start, end) -> Span`, `Span::join(self, other) -> Span`
 //! - `Error::new(code, span, message) -> Error`, `Error::bare(code, message) -> Error`,
 //!   `Error::at(self, span) -> Error`
@@ -284,6 +284,12 @@ impl Error {
             self.span = span;
         }
         self
+    }
+}
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
     }
 }
 

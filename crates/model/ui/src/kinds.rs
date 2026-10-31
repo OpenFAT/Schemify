@@ -6,10 +6,19 @@
 //!
 //! Contents:
 //! - `pub enum Kind`, `pub enum Prop`, `pub enum StyleProp`: each with `ALL`, `COUNT`,
-//!   `name(self) -> &'static str`, `parse(&str) -> Option<Self>`
+//!   `as_str(self) -> &'static str`, `Display`, `FromStr`
+//! - `pub struct ParseWordError`: the `FromStr` error of these and of [`Key`](crate::Key),
+//!   [`Chord`](crate::Chord)
 //! - `StyleProp::parse_value(self, &str) -> Option<u32>` (crate-only)
 
+use std::fmt;
+
 use crate::records::LENGTH_MAX;
+
+/// Why a `FromStr` of a UI vocabulary word ([`Kind`], [`Prop`], [`StyleProp`]) or of a
+/// [`Key`](crate::Key) or [`Chord`](crate::Chord) failed: the text names none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseWordError;
 
 /// Declares a `u8` enum whose variants each carry their record spelling.
 macro_rules! named_enum {
@@ -27,22 +36,31 @@ macro_rules! named_enum {
 
             /// The record spelling (line-record word).
             #[must_use]
-            pub fn name(self) -> &'static str {
+            pub fn as_str(self) -> &'static str {
                 // `ALL` is in discriminant order: per-variant arrays index by `self as usize`.
                 debug_assert_eq!(Self::ALL[self as usize], self);
                 let name = match self { $($name::$v => $s),+ };
                 debug_assert!(!name.is_empty(), "every variant has a spelling");
                 name
             }
+        }
 
-            /// Parses the record spelling; `None` for anything else.
-            #[must_use]
-            pub fn parse(s: &str) -> Option<Self> {
-                let parsed = match s { $($s => Some($name::$v),)+ _ => None };
-                if let Some(v) = parsed {
-                    debug_assert_eq!(v.name(), s, "spellings round-trip");
+        impl std::str::FromStr for $name {
+            type Err = ParseWordError;
+
+            /// Parses the record spelling.
+            fn from_str(s: &str) -> Result<Self, ParseWordError> {
+                let parsed = match s { $($s => Ok($name::$v),)+ _ => Err(ParseWordError) };
+                if let Ok(v) = parsed {
+                    debug_assert_eq!(v.as_str(), s, "spellings round-trip");
                 }
                 parsed
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.pad(self.as_str())
             }
         }
     };
@@ -225,5 +243,35 @@ impl StyleProp {
         debug_assert!(self > StyleProp::BorderColor, "colours parse above");
         let length: u32 = s.parse().ok()?;
         (length <= LENGTH_MAX).then_some(length)
+    }
+}
+
+impl fmt::Display for ParseWordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown word")
+    }
+}
+
+impl std::error::Error for ParseWordError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every spelling parses back to its variant; another case or word is no variant.
+    #[test]
+    fn spellings_round_trip() {
+        for &k in Kind::ALL {
+            assert_eq!(k.as_str().parse(), Ok(k));
+            assert_eq!(k.to_string(), k.as_str());
+        }
+        for &p in Prop::ALL {
+            assert_eq!(p.as_str().parse(), Ok(p));
+        }
+        for &p in StyleProp::ALL {
+            assert_eq!(p.as_str().parse(), Ok(p));
+        }
+        assert_eq!("Window".parse::<Kind>(), Err(ParseWordError));
+        assert_eq!("".parse::<Prop>(), Err(ParseWordError));
     }
 }

@@ -145,7 +145,7 @@ impl Editor {
                         let pivot = self.selection_pivot();
                         let ops =
                             self.with_doc(h, |doc, sel| edit::transform(doc, sel, about(pivot)));
-                        self.commit(reqs, h, cmd.name(), ops);
+                        self.commit(reqs, h, cmd.as_str(), ops);
                     }
                 }
             }
@@ -156,7 +156,7 @@ impl Editor {
                     _ => Xform::flip_y,
                 };
                 let ops = self.with_doc(h, |doc, sel| edit::transform_each(doc, sel, about));
-                self.commit(reqs, h, cmd.name(), ops);
+                self.commit(reqs, h, cmd.as_str(), ops);
             }
             Cmd::ConstrainH => self.opts.constrain = if self.opts.constrain == 1 { 0 } else { 1 },
             Cmd::ConstrainV => self.opts.constrain = if self.opts.constrain == 2 { 0 } else { 2 },
@@ -273,7 +273,7 @@ impl Editor {
                             .map_or_else(Vec::new, |d| wiring::break_at(d, &pts, &mut ids))
                     }
                 };
-                self.commit(reqs, h, cmd.name(), ops);
+                self.commit(reqs, h, cmd.as_str(), ops);
             }
             Cmd::JoinTrim => {
                 let ops = {

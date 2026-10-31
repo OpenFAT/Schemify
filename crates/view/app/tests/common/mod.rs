@@ -140,7 +140,7 @@ impl Session {
 
     /// Presses a chord (`"w"`, `"Shift+R"`, `"Ctrl+Z"`).
     pub fn key(&mut self, chord: &str) {
-        let chord = Chord::parse(chord).expect("chord parses");
+        let chord = chord.parse::<Chord>().expect("chord parses");
         let mods = chord.mods();
         self.send([
             InputEvent::Mods { mods },

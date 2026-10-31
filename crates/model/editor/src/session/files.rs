@@ -267,7 +267,7 @@ impl Session {
     /// If `kind` is not `Shcomp` or `Shprim`.
     pub fn create(&mut self, kind: FileKind) -> Result<DocHandle, String> {
         assert!(matches!(kind, FileKind::Shcomp | FileKind::Shprim));
-        let ext = kind.word();
+        let ext = kind.as_str();
         let rel = loop {
             self.untitled = self
                 .untitled

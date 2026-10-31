@@ -77,7 +77,9 @@ fn keymap_covers_the_xschem_inventory() {
     ];
     let mut missing = Vec::new();
     for (chord, row) in &expected {
-        let c = Chord::parse(chord).unwrap_or_else(|| panic!("{chord} parses ({row})"));
+        let c = chord
+            .parse::<Chord>()
+            .unwrap_or_else(|_| panic!("{chord} parses ({row})"));
         let dropped = DROPPED.contains(&chord.as_str());
         if keymap.lookup(c).is_none() != dropped {
             missing.push(chord.clone());
@@ -183,7 +185,7 @@ fn keymap_covers_the_xschem_inventory() {
         "Shift+K",
     ];
     for chord in required {
-        let c = Chord::parse(chord).unwrap();
+        let c = chord.parse::<Chord>().unwrap();
         let cmd = keymap
             .lookup(c)
             .unwrap_or_else(|| panic!("{chord} unbound"));

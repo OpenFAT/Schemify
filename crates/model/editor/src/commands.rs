@@ -13,8 +13,10 @@
 //! - `pub enum Target`
 //! - `pub struct Commands`, `Commands::set_plugin_rows`, `Commands::resolve`,
 //!   `Commands::resolve_arg`
-//! - `pub enum Cmd`, `pub const CORE` (both from `commands!`), `Cmd::name`, `Cmd::file_kinds`,
-//!   `Cmd::accepts`, `Cmd::takes_suffix`
+//! - `pub enum Cmd`, `pub const CORE` (both from `commands!`), `Cmd::as_str`, `Display`,
+//!   `Cmd::file_kinds`, `Cmd::accepts`, `Cmd::takes_suffix`
+
+use std::fmt;
 
 use schemify_format::FileKind;
 use schemify_plugin::abi::Kind;
@@ -571,7 +573,7 @@ impl Cmd {
     ///
     /// Only if `commands!` lists the variants out of name order (a bug in this file).
     #[must_use]
-    pub fn name(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         // Variants are declared in name order, so a variant's row is its discriminant.
         let (name, cmd) = CORE[self as usize];
         assert_eq!(cmd, self, "CORE lists the variants in declaration order");
@@ -615,6 +617,12 @@ impl Cmd {
                 | Cmd::ShowStaged
                 | Cmd::ImportProject
         )
+    }
+}
+
+impl fmt::Display for Cmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
     }
 }
 
@@ -700,7 +708,7 @@ mod tests {
         let t = Commands::default();
         for &(name, cmd) in CORE {
             assert_eq!(t.resolve(name), Target::Core(cmd));
-            assert_eq!(cmd.name(), name);
+            assert_eq!(cmd.as_str(), name);
         }
         assert_eq!(t.resolve("no.such_command"), Target::Unknown);
         assert_eq!(t.resolve(""), Target::Unknown);

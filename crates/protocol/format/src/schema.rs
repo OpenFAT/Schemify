@@ -6,10 +6,10 @@
 //! references) belong to later layers (spec §6).
 //!
 //! Contents:
-//! - `pub enum FileKind`, `FileKind::ALL`, `FileKind::word`, `FileKind::from_word`,
+//! - `pub enum FileKind`, `FromStr`, `Display`, `FileKind::ALL`, `FileKind::as_str`,
 //!   `FileKind::records`, `FileKind::lookup`, `FileKind::rank_sorted` (crate)
-//! - `pub enum RecordKind`, `RecordKind::schema`, `RecordKind::word`, `RecordKind::rank`,
-//!   `RecordKind::key`
+//! - `pub enum RecordKind`, `Display`, `RecordKind::schema`, `RecordKind::as_str`,
+//!   `RecordKind::rank`, `RecordKind::key`
 //! - `pub enum KeyRule`, `pub enum Ty`, `Ty::check`, `pub enum Rest`
 //! - `pub struct Shape`, `Shape::check_arity`, `Shape::ty`
 //! - `pub struct AttrSchema`, `pub struct RecordSchema`, `RecordSchema::attr`,
@@ -18,7 +18,10 @@
 //!   `pub const SHAPE_FORMS: &[&str]`, `pub(crate) const RANK_MAX: u8`
 //! - `pub fn shape_arity(form: &str, n: usize) -> Option<bool>`
 
-use crate::diag::Code;
+use std::fmt;
+use std::str::FromStr;
+
+use crate::diag::{Code, ParseWordError};
 use crate::id;
 use crate::records::{FILE_RECORDS, RECORDS};
 use crate::scalar;
@@ -264,7 +267,7 @@ impl FileKind {
 
     /// Returns the header word (`shcomp`, `project`, ...).
     #[must_use]
-    pub fn word(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         let word = FILE_WORDS[self as usize];
         debug_assert_eq!(
             FileKind::ALL[self as usize],
@@ -272,19 +275,6 @@ impl FileKind {
             "ALL is in declaration order"
         );
         word
-    }
-
-    /// Parses a header kind word; `None` for anything not in spec §1.
-    ///
-    /// # Panics
-    ///
-    /// Never: asserts that the word table is in declaration order.
-    #[must_use]
-    pub fn from_word(word: &str) -> Option<FileKind> {
-        let i = FILE_WORDS.iter().position(|w| *w == word)?;
-        let kind = FileKind::ALL[i];
-        assert_eq!(kind.word(), word);
-        Some(kind)
     }
 
     /// Returns the record kinds this file kind allows, in canonical writer order.
@@ -305,7 +295,7 @@ impl FileKind {
     /// Never: asserts that the result is a kind a file may contain.
     #[must_use]
     pub fn lookup(self, word: &str) -> Option<RecordKind> {
-        let kind = self.records().iter().copied().find(|k| k.word() == word);
+        let kind = self.records().iter().copied().find(|k| k.as_str() == word);
         assert_ne!(
             kind,
             Some(RecordKind::Header),
@@ -338,7 +328,7 @@ impl RecordKind {
 
     /// Returns the record word (`"schemify"` for the header, `""` for `Unknown`).
     #[must_use]
-    pub fn word(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         let word = self.schema().word;
         debug_assert_eq!(word.is_empty(), self == RecordKind::Unknown);
         word
@@ -378,6 +368,37 @@ impl RecordKind {
     }
 }
 
+impl FromStr for FileKind {
+    type Err = ParseWordError;
+
+    /// Parses a header kind word; an error for anything not in spec §1.
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that the word table is in declaration order.
+    fn from_str(word: &str) -> Result<FileKind, ParseWordError> {
+        let i = FILE_WORDS
+            .iter()
+            .position(|w| *w == word)
+            .ok_or(ParseWordError)?;
+        let kind = FileKind::ALL[i];
+        assert_eq!(kind.as_str(), word);
+        Ok(kind)
+    }
+}
+
+impl fmt::Display for FileKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl fmt::Display for RecordKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
 impl Ty {
     /// Checks value `v` against this slot type (spec §3); returns a coordinate's
     /// milli-units (`None` for the other types). The reader and the `doc` crate's record
@@ -408,7 +429,7 @@ impl Ty {
                 "expected a number `-?digits(.digits)?`",
             ),
             Ty::Orient => (
-                Orient::parse(v).is_some(),
+                v.parse::<Orient>().is_ok(),
                 "expected R0 R90 R180 R270 MR0 MR90 MR180 MR270",
             ),
             Ty::Bool => (v == "true" || v == "false", "expected true or false"),

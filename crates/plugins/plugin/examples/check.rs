@@ -42,7 +42,7 @@ fn main() {
     for r in &plugins.composed().records {
         println!(
             "contribute {}: {}",
-            r.kind.name(),
+            r.kind.as_str(),
             r.text.replace('\n', "\n    ")
         );
     }
@@ -64,7 +64,7 @@ fn main() {
         deliver(&mut plugins, &events, &mut snap, &mut queues);
     }
     for l in &queues.logs {
-        println!("log {}: {}", l.level.name(), l.text);
+        println!("log {}: {}", l.level.as_str(), l.text);
     }
     let faults = plugins.health().faults();
     for f in faults {

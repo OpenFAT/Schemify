@@ -33,7 +33,7 @@
 //! - `pub const DIALECTS`
 //! - `pub const ADD_LANGS`
 //! - `pub enum Field`
-//! - `pub enum Bench`, `Bench::word`, `Bench::ALL`
+//! - `pub enum Bench`, `Bench::as_str`, `Bench::ALL`, `FromStr`, `Display`
 //! - `pub const ALGOS`
 //! - `pub fn parse_field`
 //! - `pub fn button_row`
@@ -43,7 +43,11 @@ mod bench_panel;
 mod ops;
 mod panel;
 
+use std::fmt;
+use std::str::FromStr;
+
 use schemify_doc::{Document, Loc, PinDir, RecordBuf, RecordKind, TableId};
+use schemify_format::ParseWordError;
 
 pub use bench::{add_bench_ops, delete_bench_ops};
 pub use ops::{
@@ -145,7 +149,7 @@ impl SyncPlan {
 impl Bench {
     /// The node id word of the table.
     #[must_use]
-    pub fn word(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Bench::Output => "output",
             Bench::Spec => "spec",
@@ -171,6 +175,22 @@ impl Bench {
 
     /// Every bench table, in panel order.
     pub const ALL: [Bench; 3] = [Bench::Output, Bench::Spec, Bench::Optimize];
+}
+
+impl FromStr for Bench {
+    type Err = ParseWordError;
+
+    /// Parses the node id word [`Bench::as_str`] writes.
+    fn from_str(word: &str) -> Result<Bench, ParseWordError> {
+        let b = Bench::ALL.into_iter().find(|b| b.as_str() == word);
+        b.ok_or(ParseWordError)
+    }
+}
+
+impl fmt::Display for Bench {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
 }
 
 /// Decodes a field node id; a dropdown choice id (`<field>=<value>`) also returns the value.

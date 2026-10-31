@@ -340,7 +340,7 @@ fn build_styles(strings: &Strings, selectors: Vec<Selector>) -> UiStyles {
         ..UiStyles::default()
     };
     for &k in Kind::ALL {
-        styles.kind_row[k as usize] = strings.find(k.name()).map_or(NO_STYLE, |s| styles.row(s));
+        styles.kind_row[k as usize] = strings.find(k.as_str()).map_or(NO_STYLE, |s| styles.row(s));
     }
     styles.default_row = strings.find("*").map_or(NO_STYLE, |s| styles.row(s));
     debug_assert_eq!(styles.value.len(), styles.selector.len());

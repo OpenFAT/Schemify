@@ -31,7 +31,7 @@ impl Editor {
         let Some(doc) = self.session.project.doc(h) else {
             return;
         };
-        let ext = doc.kind().word();
+        let ext = doc.kind().as_str();
         let mut path = PathBuf::from(rel);
         if path.extension().is_none() {
             path.set_extension(ext);

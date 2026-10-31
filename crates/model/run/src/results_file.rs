@@ -75,7 +75,7 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
     let mut e = 0;
     let mut num = String::new();
     for j in 0..jobs.len() {
-        write!(out, "\njob {j} {}\n", jobs.state(j).word()).expect("String write");
+        write!(out, "\njob {j} {}\n", jobs.state(j).as_str()).expect("String write");
         if let Some(c) = jobs.config(j) {
             attr(&mut out, "config", &[c]);
         }
@@ -199,7 +199,7 @@ pub fn read_results(text: &str) -> Result<(Jobs, Results), String> {
                 if f[1].parse::<u32>() != Ok(jobs.len()) {
                     return Err(bad(n, "jobs must be numbered 0, 1, 2, …"));
                 }
-                let state = State::from_word(&f[2]).ok_or_else(|| bad(n, "unknown state"))?;
+                let state: State = f[2].parse().map_err(|_| bad(n, "unknown state"))?;
                 current = Some(JobRecord::new(state));
             }
             _ => return Err(bad(n, "unexpected record")),

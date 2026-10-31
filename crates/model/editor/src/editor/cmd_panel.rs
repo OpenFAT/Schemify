@@ -45,7 +45,7 @@ impl Editor {
             }
             Cmd::CellAddBench => {
                 let word = node.strip_prefix("cell.add.").unwrap_or(arg);
-                let Some(b) = cell::Bench::ALL.iter().copied().find(|b| b.word() == word) else {
+                let Ok(b) = word.parse::<cell::Bench>() else {
                     self.session
                         .say(format!("cell.add_bench: unknown table {word}"));
                     return true;
@@ -77,7 +77,7 @@ impl Editor {
                         cell::delete_impl_ops(d, r)
                     } else if let Some((b, r)) = cell::Bench::ALL
                         .iter()
-                        .find_map(|&b| cell::button_row(node, b.word(), "del").map(|r| (b, r)))
+                        .find_map(|&b| cell::button_row(node, b.as_str(), "del").map(|r| (b, r)))
                     {
                         cell::delete_bench_ops(d, b, r)
                     } else {

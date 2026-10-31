@@ -138,7 +138,7 @@ impl Editor {
                     | RecordKind::Class
                     | RecordKind::Unknown => "text",
                 };
-                title = format!("{} {}", rec.kind.word(), rec.fields[4]);
+                title = format!("{} {}", rec.kind.as_str(), rec.fields[4]);
                 fields.push(field(what, what, &rec.fields[4], true));
             }
             RecordKind::Wire => {
@@ -189,7 +189,7 @@ impl Editor {
             | RecordKind::Class
             | RecordKind::Unknown => {
                 self.session
-                    .say(format!("{}: no editable properties yet", rec.kind.word()));
+                    .say(format!("{}: no editable properties yet", rec.kind.as_str()));
                 return;
             }
         }

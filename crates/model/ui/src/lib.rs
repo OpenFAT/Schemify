@@ -60,7 +60,7 @@ pub use fonts::{
 };
 pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed};
 pub use keys::{Chord, Key, Mods};
-pub use kinds::{Kind, Prop, StyleProp};
+pub use kinds::{Kind, ParseWordError, Prop, StyleProp};
 pub use layout::{AREA_EM_MAX, FLOAT_INSET, NO_CLIP, Rect, SPLIT_GAP, SPLIT_MIN, Slot, UiLayout};
 pub use state::{Image, UiState};
 pub use strings::{Strings, Sym};

@@ -42,7 +42,7 @@ impl Document<'static> {
         let mut doc = Document::bare("", VERSION, kind);
         doc.begin(RecordKind::Header, 0);
         doc.push_field(&VERSION.to_string());
-        doc.push_field(kind.word());
+        doc.push_field(kind.as_str());
         assert_eq!(doc.record_count(), 1);
         assert_eq!(doc.fields(0).len(), 2, "the header is `<version> <kind>`");
         doc

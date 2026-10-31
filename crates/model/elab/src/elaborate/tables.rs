@@ -9,12 +9,15 @@
 //! elaboration. Parallel: read-only once built.
 //!
 //! Contents:
-//! - `pub enum Dialect`: `as_str`, `format_words`, `takes_code`
+//! - `pub enum Dialect`: `as_str`, `Display`, `FromStr`, `format_words`, `takes_code`
 //! - `pub enum Target`
 //! - `pub const COMPUTED`, `pub const DEFAULT`, `pub const OVERRIDDEN`
 //! - `pub struct Defs`, `pub struct Insts`, `pub struct Impls`
 //! - `pub enum CornerLine`, `pub struct Bench`
 //! - `pub struct Elab`: `insts_of`, `conns`, `ports`, `params_of`, `flat_leaves`
+
+use std::fmt;
+use std::str::FromStr;
 
 use crate::iface::Iface;
 use crate::names::{Name, Names};
@@ -22,6 +25,7 @@ use crate::nets::{CellNets, Ignore};
 use crate::values::Val;
 use crate::violations::Violations;
 use schemify_doc::ObjId;
+use schemify_format::ParseWordError;
 
 /// Netlist dialects (D22). Owned here because impl support (`E013`) and code-block
 /// selection depend on it; `netlist` matches on the same enum.
@@ -267,6 +271,33 @@ impl Dialect {
             }
             Dialect::Spectre | Dialect::Verilog => lang == self.as_str(),
         }
+    }
+}
+
+impl FromStr for Dialect {
+    type Err = ParseWordError;
+
+    /// Parses the dialect word [`Dialect::as_str`] writes (`ngspice`, `xyce`, …).
+    fn from_str(word: &str) -> Result<Dialect, ParseWordError> {
+        let d = match word {
+            "ngspice" => Dialect::Ngspice,
+            "xyce" => Dialect::Xyce,
+            "cdl" => Dialect::Cdl,
+            "spectre" => Dialect::Spectre,
+            "verilog" => Dialect::Verilog,
+            "espice" => Dialect::Espice,
+            "hspice" => Dialect::Hspice,
+            "ltspice" => Dialect::Ltspice,
+            _ => return Err(ParseWordError),
+        };
+        debug_assert_eq!(d.as_str(), word, "as_str and from_str are inverses");
+        Ok(d)
+    }
+}
+
+impl fmt::Display for Dialect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
     }
 }
 

@@ -149,7 +149,7 @@ impl Runtime {
                 return function.call::<_, ()>(());
             };
             let argument = lua.create_table()?;
-            argument.raw_set("event", event.word())?;
+            argument.raw_set("event", event.as_str())?;
             for &(name, value) in fields {
                 argument.raw_set(name, value)?;
             }

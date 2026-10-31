@@ -252,7 +252,7 @@ pub fn cell_relpath(project: &Project, row: usize) -> String {
     assert_eq!(c.dir.len(), c.stem.len());
     let s = project.strings();
     let (dir, stem) = (s.get(c.dir[row]), s.get(c.stem[row]));
-    let ext = c.kind[row].word();
+    let ext = c.kind[row].as_str();
     if dir.is_empty() {
         format!("{stem}.{ext}")
     } else {

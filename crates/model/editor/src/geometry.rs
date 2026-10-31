@@ -460,7 +460,7 @@ fn map_pair(fields: &mut [String], i: usize, x: Xform) -> Option<()> {
 }
 
 fn map_orient(slot: &mut String, x: Xform) -> Option<()> {
-    let o = Orient::parse(slot)?;
+    let o: Orient = slot.parse().ok()?;
     *slot = x.orient(o).as_str().to_owned();
     Some(())
 }
