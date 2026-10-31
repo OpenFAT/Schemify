@@ -23,15 +23,18 @@
 //! Contents:
 //! - `pub(crate) trait Table`, `pub(crate) struct Owned`, crate macro `row_ops!`
 //!   (`#[macro_use]` in `lib.rs`, so `schematic` sees it)
-//! - `pub enum PinDir`: `as_str`; `pub struct Pins`, `pub struct Graphics`
+//! - `pub enum PinDir`: `as_str`, `Display`, `FromStr`; `pub struct Pins`, `pub struct Graphics`
 //! - `pub struct Records`
 //! - crate: `fn move_elem`, `fn orient`
 //!
 //! The rank-3 tables live in `schematic.rs`.
 
+use std::fmt;
+use std::str::FromStr;
+
 use crate::pool::{self, Pool, RecView, Sink, Span};
 use crate::strings::{ObjId, Strings, Sym};
-use schemify_format::{KeyRule, Orient, RecordKind};
+use schemify_format::{KeyRule, Orient, ParseWordError, RecordKind};
 
 /// Operations every table supports; the document dispatches by `TableId` with a
 /// `match`, so every call is static.
@@ -196,6 +199,28 @@ impl PinDir {
     }
 }
 
+impl FromStr for PinDir {
+    type Err = ParseWordError;
+
+    /// Parses the file word (`in`, `out`, `inout`).
+    fn from_str(word: &str) -> Result<PinDir, ParseWordError> {
+        let dir = match word {
+            "in" => PinDir::In,
+            "out" => PinDir::Out,
+            "inout" => PinDir::Inout,
+            _ => return Err(ParseWordError),
+        };
+        debug_assert_eq!(dir.as_str(), word, "as_str and from_str are inverses");
+        Ok(dir)
+    }
+}
+
+impl fmt::Display for PinDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
 impl Table for Pins {
     row_ops!(name, dir, x, y, attrs, comments);
     fn kind_at(&self, _row: usize) -> RecordKind {
@@ -204,7 +229,9 @@ impl Table for Pins {
     fn push(&mut self, rec: &RecView<'_>, strings: &mut Strings, pool: &mut Pool) {
         assert_eq!(rec.fields.len(), 4);
         self.name.push(strings.intern(rec.fields[0]));
-        self.dir.push(PinDir::from_word(rec.fields[1]));
+        let dir = rec.fields[1].parse();
+        self.dir
+            .push(dir.expect("pin dirs are validated before they reach the table"));
         self.x.push(rec.field_milli[2]);
         self.y.push(rec.field_milli[3]);
         self.attrs.push(pool.push_attrs(rec, &[], strings));
@@ -467,17 +494,4 @@ pub(crate) fn move_elem<T>(v: &mut [T], from: usize, to: usize) {
 pub(crate) fn orient(text: &str) -> Orient {
     text.parse()
         .expect("orientations are validated before they reach a table")
-}
-
-// ---- private ----
-
-impl PinDir {
-    fn from_word(word: &str) -> PinDir {
-        match word {
-            "in" => PinDir::In,
-            "out" => PinDir::Out,
-            "inout" => PinDir::Inout,
-            _ => panic!("pin dir {word:?} was validated before reaching the table"),
-        }
-    }
 }
