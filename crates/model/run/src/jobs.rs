@@ -12,7 +12,8 @@
 //!
 //! Contents:
 //! - `pub const JOBS_MAX: u32`, `pub const DEFAULT: u16`, `pub const NO_SAMPLE: u32`
-//! - `pub enum State`, `State::word`, `State::from_word`, `State::finished`
+//! - `pub enum State`, `State::as_str`, `FromStr`, `Display`, `State::finished`
+//! - `pub struct ParseWordError`: the `FromStr` error of `State` and `Algorithm`
 //! - `pub struct Select<'a>`
 //! - `pub struct Jobs`: `new`, `len`, `is_empty`, `push`, `config`, `corner`, `sample`,
 //!   `seed`, `states`, `state`, `cancel_pending`, `assignments`, `assigned`, `write_key`;
@@ -21,7 +22,9 @@
 
 use crate::plan::{self, Plan, PlanError, Sweep};
 use schemify_doc::Assignment;
+use std::fmt;
 use std::ops::Range;
+use std::str::FromStr;
 
 /// Most jobs in one run (architecture.md capacity).
 pub const JOBS_MAX: u32 = 1 << 20;
@@ -49,6 +52,11 @@ pub enum State {
     /// Cancelled before it finished.
     Cancelled,
 }
+
+/// Why a `FromStr` of a [`State`] or an `Algorithm` (feature `optimize`) failed: the text
+/// names no variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseWordError;
 
 /// What to run of a bench: the dimensions a Run expands. Empty `configs`/`corners`
 /// mean the bench default; `sweeps` nest with the first outermost.
@@ -215,7 +223,7 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
 }
 
 impl State {
-    /// Every state, in `repr` order (the index of [`State::word`]).
+    /// Every state, in `repr` order (the index of [`State::as_str`]).
     const ALL: [State; 6] = [
         State::Pending,
         State::Queued,
@@ -227,7 +235,7 @@ impl State {
 
     /// Returns the state word results files use.
     #[must_use]
-    pub fn word(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         // The table is indexed by discriminant.
         const { assert!(State::ALL.len() == State::Cancelled as usize + 1) };
         [
@@ -240,18 +248,36 @@ impl State {
         ][self as usize]
     }
 
-    /// Parses [`State::word`]; `None` for any other text.
-    #[must_use]
-    pub fn from_word(w: &str) -> Option<State> {
-        State::ALL.into_iter().find(|s| s.word() == w)
-    }
-
     /// Returns whether the job will not change any more (done, failed or cancelled).
     #[must_use]
     pub fn finished(self) -> bool {
         matches!(self, State::Done | State::Failed | State::Cancelled)
     }
 }
+
+impl FromStr for State {
+    type Err = ParseWordError;
+
+    /// Parses [`State::as_str`].
+    fn from_str(word: &str) -> Result<State, ParseWordError> {
+        let state = State::ALL.into_iter().find(|s| s.as_str() == word);
+        state.ok_or(ParseWordError)
+    }
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl fmt::Display for ParseWordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown word")
+    }
+}
+
+impl std::error::Error for ParseWordError {}
 
 impl Jobs {
     /// Creates an empty table.
@@ -536,10 +562,11 @@ mod tests {
     #[test]
     fn state_words_round_trip_and_reject_others() {
         for s in State::ALL {
-            assert_eq!(State::from_word(s.word()), Some(s));
+            assert_eq!(s.as_str().parse(), Ok(s));
+            assert_eq!(s.to_string(), s.as_str());
         }
-        assert_eq!(State::from_word("Done"), None);
-        assert_eq!(State::from_word(""), None);
+        assert_eq!("Done".parse::<State>(), Err(ParseWordError));
+        assert_eq!("".parse::<State>(), Err(ParseWordError));
     }
 
     #[test]

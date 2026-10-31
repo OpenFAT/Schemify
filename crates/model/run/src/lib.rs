@@ -87,7 +87,7 @@ mod sweep;
 #[cfg(not(target_arch = "wasm32"))]
 mod tools;
 
-pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
+pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, ParseWordError, Select, State, expand};
 #[cfg(feature = "mc")]
 pub use mc::{Yield, sim_seed, yield_summary};
 #[cfg(feature = "optimize")]
