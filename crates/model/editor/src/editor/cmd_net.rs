@@ -8,7 +8,7 @@ use schemify_format::{Orient, RecordKind};
 
 use crate::commands::Cmd;
 use crate::geometry::Xform;
-use crate::{edit, spines};
+use crate::edit;
 
 use super::Editor;
 use super::apply;
@@ -46,12 +46,12 @@ impl Editor {
                 } else {
                     arg.trim()
                 };
-                match spines::dialect_of(word) {
-                    Some(d) => {
+                match word.parse() {
+                    Ok(d) => {
                         self.dialect = d;
                         self.session.say(format!("netlist dialect: {word}"));
                     }
-                    None => self.session.say(format!("{word:?}: not a netlist dialect")),
+                    Err(_) => self.session.say(format!("{word:?}: not a netlist dialect")),
                 }
             }
             Cmd::ShowNetlist => self.show_netlist = !self.show_netlist,

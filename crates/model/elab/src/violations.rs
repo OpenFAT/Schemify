@@ -3,7 +3,7 @@
 //! writes. Cites netlist spec §8 (codes, severities), D13 (waivable gating codes).
 //!
 //! Contents:
-//! - `pub enum Code` (`as_str`, `severity`, `waivable`, `meaning`), `pub enum Severity`
+//! - `pub enum Code` (`as_str`, `Display`, `severity`, `waivable`, `meaning`), `pub enum Severity`
 //! - `pub struct Violation`: `key_cmp`, `pub(crate) new`
 //! - `pub const VIOLATIONS_MAX`
 //! - `pub struct Violations`: `diff`, `blocking`, `with`, `pub(crate) from_rows`
@@ -13,6 +13,7 @@
 use crate::names::{Name, Names};
 use schemify_doc::ObjId;
 use std::cmp::Ordering;
+use std::fmt;
 
 /// Check codes (netlist spec §8; `E035`, `E036`, `W037` are elab amendments).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -178,6 +179,12 @@ impl Code {
             Code::E039 => "Virtuoso-derived value is stale",
             Code::I005 => "waived violation",
         }
+    }
+}
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
     }
 }
 

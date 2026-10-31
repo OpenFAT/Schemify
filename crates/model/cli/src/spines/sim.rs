@@ -28,8 +28,6 @@ use schemify_elab::Dialect;
 #[cfg(not(target_arch = "wasm32"))]
 use schemify_run::{SimCommand, Tools};
 
-use super::dialect_of;
-
 /// The dialect a request netlists and simulates for (run spec §5): `explicit`
 /// (`--dialect`, the Netlist dialect menu), else the simulator the PDK pins (its tech
 /// map's `simulator`, pdk spec §6), else the user config's `schemify.opt.simulator`, else
@@ -78,10 +76,8 @@ pub fn pin(project: &Project) -> Result<Option<(&str, Dialect)>, String> {
     let Some(word) = map.simulator.as_deref() else {
         return Ok(None);
     };
-    match dialect_of(word) {
-        Some(d) if SIMULATORS.contains(&d) || d == Dialect::Hspice => {
-            Ok(Some((map.pdk.as_str(), d)))
-        }
+    match word.parse() {
+        Ok(d) if SIMULATORS.contains(&d) || d == Dialect::Hspice => Ok(Some((map.pdk.as_str(), d))),
         _ => Err(format!(
             "{} pins simulator `{word}`, which is not a simulator \
              (ngspice espice xyce ltspice spectre hspice)",

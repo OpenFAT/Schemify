@@ -159,7 +159,7 @@ impl Editor {
         let lines = text.lines().count();
         self.session.say(format!(
             "netlist ({}) written: {} ({lines} lines)",
-            spines::dialect_word(dialect),
+            dialect.as_str(),
             path.display()
         ));
         if self.show_netlist {

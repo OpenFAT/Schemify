@@ -15,7 +15,6 @@
 //! - `pub fn elaborate_all<C: Cells, F: Funcs>(&mut C, DocHandle, &Request, &mut F)
 //!   -> Result<Elab, String>`
 //! - `pub fn violation_line(&Names, &Violation) -> String`
-//! - `pub fn dialect_of(&str) -> Option<Dialect>`, `pub fn dialect_word(Dialect) -> &str`
 //! - `pub fn netlist_file(&Path, &str, Dialect) -> PathBuf`
 //! - `pub fn env_pairs() -> Vec<Assignment>`
 //! - `pub fn open_file(&Path, u64) -> Result<Opened, OpenError>`
@@ -88,7 +87,7 @@ pub enum OpenError {
     Design(String),
 }
 
-// The words and the extensions are each unique, so `dialect_of` and `netlist_file` are
+// The words and the extensions are each unique, so `Dialect::from_str` and `netlist_file` are
 // one-to-one; a duplicate row is a compile error.
 const _: () = {
     let mut i = 0;
@@ -158,21 +157,6 @@ pub fn violation_line(names: &Names, v: &Violation) -> String {
     line.push_str(": ");
     line.push_str(&v.detail);
     line
-}
-
-/// The dialect a CLI word names (`ngspice espice xyce ltspice hspice cdl spectre verilog`).
-#[must_use]
-pub fn dialect_of(word: &str) -> Option<Dialect> {
-    DIALECTS.iter().find(|d| d.0 == word).map(|d| d.1)
-}
-
-/// The CLI word of `d`.
-#[must_use]
-pub fn dialect_word(d: Dialect) -> &'static str {
-    DIALECTS
-        .iter()
-        .find(|x| x.1 == d)
-        .map_or("ngspice", |x| x.0)
 }
 
 /// Where the editor writes the netlist of cell `stem` in dialect `d`:
@@ -353,16 +337,17 @@ mod tests {
     #[test]
     fn dialect_words_round_trip_and_files_land_in_dot_schemify() {
         for (w, d, ext) in DIALECTS {
-            assert_eq!(dialect_of(w), Some(d));
-            assert_eq!(dialect_word(d), w);
+            assert_eq!(w.parse(), Ok(d));
+            assert_eq!(d.as_str(), w);
+            assert_eq!(d.to_string(), w);
             let f = netlist_file(Path::new("/p"), "top", d);
             assert_eq!(
                 f,
                 Path::new("/p/.schemify/netlist").join(format!("top.{ext}"))
             );
         }
-        assert_eq!(dialect_of("vacask"), None);
-        assert_eq!(dialect_of(""), None);
+        assert!("vacask".parse::<Dialect>().is_err());
+        assert!("".parse::<Dialect>().is_err());
         // The simulators are netlist dialects; each dialect has its own netlist file.
         assert!(
             SIMULATORS

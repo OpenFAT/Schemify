@@ -87,11 +87,7 @@ impl Editor {
         for (id, on) in flags {
             let _ = writeln!(t, "set {id} checked {}", u8::from(on));
         }
-        let _ = writeln!(
-            t,
-            "set status.mode label {}",
-            spines::dialect_word(self.dialect)
-        );
+        let _ = writeln!(t, "set status.mode label {}", self.dialect.as_str());
         let _ = writeln!(t, "set status.stretch label {}", u8::from(o.stretch));
         // Open recent: one row per remembered file.
         if self.recent.is_empty() {
