@@ -5,61 +5,36 @@
 //! edits spec §1 (edit modes).
 //!
 //! Contents:
-//! - `pub enum Code`: `ALL`, `name`, `parse`, `from_raw`, `neg`, `check`, `Display`,
-//!   `FromStr`
+//! - `pub enum Code`: `from_raw`, `neg`, `check`, `Display`
 //! - `pub enum Cap`: `parse_grant`, `env_name`
 //! - `pub enum Kind`: `COUNT`, `words`, `scoped`
 //! - `pub enum Level`, `pub enum EditMode`
-//! - every named enum (`Cap`, `Kind`, `Level`, `EditMode`, `schema::ColType`): `ALL`,
+//! - every named enum (`Code`, `Cap`, `Kind`, `Level`, `EditMode`, `schema::ColType`): `ALL`,
 //!   `pub const fn name(self) -> &'static str`, `pub fn parse(name: &str) -> Option<Self>`,
 //!   `FromStr` (`Err = Code`)
 
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::str::FromStr;
 
 use crate::text;
 
-/// Error codes (§8). Imports return them negated (`-(code as i32)`); outputs are rejected
-/// with them; the health report carries them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u8)]
-pub enum Code {
-    /// Capability not granted, or the call is not allowed in this context (pure call).
-    Denied = 1,
-    /// Referenced document, object, plugin or handle no longer exists.
-    Gone = 2,
-    /// Destination buffer too small, or a host queue/table is at capacity.
-    Space = 3,
-    /// Unknown table id.
-    Table = 4,
-    /// Unknown column id, or a typed read of a column of another type.
-    Column = 5,
-    /// Row range, pointer range or numeric value out of bounds.
-    Range = 6,
-    /// Malformed line record, value or UTF-8.
-    Parse = 7,
-    /// Fuel budget exhausted; the event's outputs were discarded.
-    Fuel = 8,
-    /// Guest ABI version differs from [`crate::ABI_VERSION`].
-    Version = 9,
-    /// Guest trapped (unreachable, out-of-bounds access, stack overflow, failed allocation).
-    Trap = 10,
-    /// Module failed validation or linking, or lacks a required export.
-    Module = 11,
-}
-
 /// Declares a closed `#[repr(u8)]` enum whose variants have one wire name each, numbered
-/// densely from 0.
+/// densely from 0 (`V = "name"`) or by explicit discriminants (`V = 1 => "name"`).
 macro_rules! named_enum {
     ($(#[$m:meta])* pub enum $T:ident { $($(#[$vm:meta])* $V:ident = $s:literal,)* }) => {
+        named_enum! { $(#[$m])* pub enum $T { $($(#[$vm])* $V => $s,)* } }
+    };
+    (
+        $(#[$m:meta])*
+        pub enum $T:ident { $($(#[$vm:meta])* $V:ident $(= $d:literal)? => $s:literal,)* }
+    ) => {
         $(#[$m])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u8)]
-        pub enum $T { $($(#[$vm])* $V,)* }
+        pub enum $T { $($(#[$vm])* $V $(= $d)?,)* }
 
         impl $T {
-            /// Every variant in discriminant order (`ALL[i] as usize == i`).
+            /// Every variant, in discriminant order (`ALL[i] as usize == i` when dense).
             pub const ALL: &'static [$T] = &[$($T::$V,)*];
 
             /// Returns the wire name.
@@ -88,6 +63,35 @@ macro_rules! named_enum {
             }
         }
     };
+}
+
+named_enum! {
+    /// Error codes (§8). Imports return them negated (`-(code as i32)`); outputs are rejected
+    /// with them; the health report carries them. The numbers are wire values.
+    pub enum Code {
+        /// Capability not granted, or the call is not allowed in this context (pure call).
+        Denied = 1 => "E_DENIED",
+        /// Referenced document, object, plugin or handle no longer exists.
+        Gone = 2 => "E_GONE",
+        /// Destination buffer too small, or a host queue/table is at capacity.
+        Space = 3 => "E_SPACE",
+        /// Unknown table id.
+        Table = 4 => "E_TABLE",
+        /// Unknown column id, or a typed read of a column of another type.
+        Column = 5 => "E_COLUMN",
+        /// Row range, pointer range or numeric value out of bounds.
+        Range = 6 => "E_RANGE",
+        /// Malformed line record, value or UTF-8.
+        Parse = 7 => "E_PARSE",
+        /// Fuel budget exhausted; the event's outputs were discarded.
+        Fuel = 8 => "E_FUEL",
+        /// Guest ABI version differs from [`crate::ABI_VERSION`].
+        Version = 9 => "E_VERSION",
+        /// Guest trapped (unreachable, out-of-bounds access, stack overflow, failed allocation).
+        Trap = 10 => "E_TRAP",
+        /// Module failed validation or linking, or lacks a required export.
+        Module = 11 => "E_MODULE",
+    }
 }
 
 named_enum! {
@@ -159,24 +163,11 @@ named_enum! {
     }
 }
 
-const CODE_NAMES: [&str; 11] = [
-    "E_DENIED",
-    "E_GONE",
-    "E_SPACE",
-    "E_TABLE",
-    "E_COLUMN",
-    "E_RANGE",
-    "E_PARSE",
-    "E_FUEL",
-    "E_VERSION",
-    "E_TRAP",
-    "E_MODULE",
-];
 /// Longest environment variable name a `read:` grant may carry.
 const ENV_NAME_BYTES_MAX: usize = 64;
 const _: () = assert!(Code::Module as usize == Code::ALL.len());
-// `name` indexes `CODE_NAMES` with `code - 1` and `neg` promises a negative value: both need
-// the first code to be 1.
+// `from_raw` indexes `ALL` with `code - 1` and `neg` promises a negative value: both need the
+// first code to be 1.
 const _: () = assert!(Code::ALL[0] as u8 == 1);
 const _: () = assert!(Kind::COUNT == 9);
 // A kind without record words would reject every non-empty contribution of itself.
@@ -189,37 +180,6 @@ const _: () = {
 };
 
 impl Code {
-    /// Every code, in numeric order (`ALL[i] as u8 == i + 1`). An array, not a slice, so
-    /// generators can `map` it.
-    pub const ALL: [Code; 11] = [
-        Code::Denied,
-        Code::Gone,
-        Code::Space,
-        Code::Table,
-        Code::Column,
-        Code::Range,
-        Code::Parse,
-        Code::Fuel,
-        Code::Version,
-        Code::Trap,
-        Code::Module,
-    ];
-
-    /// Returns the spec name (`E_DENIED`, …), which is also the wire form in events.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        CODE_NAMES[self as usize - 1]
-    }
-
-    /// Parses a spec name; `None` for anything else.
-    #[must_use]
-    pub fn parse(name: &str) -> Option<Code> {
-        let index = CODE_NAMES.iter().position(|&known| known == name)?;
-        let code = Code::ALL[index];
-        debug_assert_eq!(code.name(), name, "name and parse are inverses");
-        Some(code)
-    }
-
     /// Returns the code with numeric value `raw`; `None` outside `1..=11`.
     #[must_use]
     pub fn from_raw(raw: u32) -> Option<Code> {
@@ -252,15 +212,6 @@ impl Code {
 impl Display for Code {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
-    }
-}
-
-impl FromStr for Code {
-    type Err = Code;
-
-    /// As [`Code::parse`], failing with [`Code::Parse`].
-    fn from_str(name: &str) -> Result<Code, Code> {
-        Code::parse(name).ok_or(Code::Parse)
     }
 }
 
@@ -430,7 +381,7 @@ mod tests {
             let parsed: Result<Kind, Code> = kind.name().parse();
             assert_eq!(parsed, Ok(kind));
         }
-        for code in Code::ALL {
+        for &code in Code::ALL {
             let parsed: Result<Code, Code> = code.name().parse();
             assert_eq!(parsed, Ok(code));
         }

@@ -33,11 +33,11 @@ fn c() -> String {
     let mut s = format!(
         "#define SCH_ABI_VERSION {ABI_VERSION}u\n\n/* Error codes (ABI §8); imports return them negated. */\nenum sch_code {{\n"
     );
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("    SCH_{} = {},\n", c.name(), c as u32);
     }
     s += "};\nstatic const char *const sch_code_names[] = {\n    0,\n";
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("    \"{}\",\n", c.name());
     }
     s += "};\n\n/* Snapshot tables (ABI §4). */\nenum sch_table {\n";
@@ -78,11 +78,11 @@ fn zig() -> String {
     let mut s = format!(
         "pub const abi_version: u32 = {ABI_VERSION};\n\n/// Error codes (ABI §8); imports return them negated.\npub const Code = enum(u32) {{\n"
     );
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("    {} = {},\n", code_snake(c), c as u32);
     }
     s += "};\n/// Wire names of `Code`, indexed by `code - 1`.\npub const code_names = [_][]const u8{\n";
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("    \"{}\",\n", c.name());
     }
     s += "};\n\n/// Snapshot tables (ABI §4).\npub const Table = enum(u32) {\n";
@@ -118,11 +118,11 @@ fn odin() -> String {
     let mut s = format!(
         "ABI_VERSION :: {ABI_VERSION}\n\n// Error codes (ABI §8); imports return them negated.\nCode :: enum u32 {{\n"
     );
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("\t{} = {},\n", ada(&code_snake(c)), c as u32);
     }
     s += "}\n// Wire names of `Code`.\nCODE_NAMES :: [Code]string {\n";
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("\t.{} = \"{}\",\n", ada(&code_snake(c)), c.name());
     }
     s += "}\n\n// Snapshot tables (ABI §4).\nTable :: enum u32 {\n";
@@ -157,11 +157,15 @@ fn go() -> String {
     let mut s = format!(
         "// AbiVersion is what schemify_abi returns.\nconst AbiVersion = {ABI_VERSION}\n\n// Code is an error code (ABI §8); imports return them negated.\ntype Code uint32\n\nconst (\n"
     );
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("\tE{} Code = {}\n", camel(&code_snake(c)), c as u32);
     }
     s += ")\n\nvar codeNames = [...]string{\"\", ";
-    s += &Code::ALL.map(|c| format!("\"{}\"", c.name())).join(", ");
+    s += &Code::ALL
+        .iter()
+        .map(|c| format!("\"{}\"", c.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
     s += "}\n\n// Table is a snapshot table id (ABI §4).\ntype Table uint32\n\nconst (\n";
     for &t in Table::ALL {
         s += &format!("\t{} Table = {}\n", camel(t.name()), t as u32);
@@ -193,11 +197,15 @@ fn assemblyscript() -> String {
     let mut s = format!(
         "export const ABI_VERSION: u32 = {ABI_VERSION};\n\n/** Error codes (ABI §8); imports return them negated. */\nexport enum Code {{\n"
     );
-    for c in Code::ALL {
+    for &c in Code::ALL {
         s += &format!("  {} = {},\n", camel(&code_snake(c)), c as u32);
     }
     s += "}\n/** Wire names of `Code`, indexed by the code. */\nexport const CODE_NAMES: StaticArray<string> = [\"\", ";
-    s += &Code::ALL.map(|c| format!("\"{}\"", c.name())).join(", ");
+    s += &Code::ALL
+        .iter()
+        .map(|c| format!("\"{}\"", c.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
     s += "];\n\n/** Snapshot tables (ABI §4). */\nexport enum Table {\n";
     for &t in Table::ALL {
         s += &format!("  {} = {},\n", camel(t.name()), t as u32);
