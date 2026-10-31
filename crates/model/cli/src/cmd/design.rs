@@ -154,6 +154,11 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
         spines::SIMULATORS.contains(&dialect),
         "run_dialect picks a simulator"
     );
+    let mut tools = spines::tools(config.table());
+    let host = spines::run_host(dialect, &o.project, &mut tools).map_err(|e| {
+        eprintln!("run: {e}");
+        DESIGN_ERROR
+    })?;
     let env = spines::env_pairs();
     let env = pairs(&env);
     let (configs, corners, sweeps) = (strs(&a.configs), strs(&a.corners), strs(&a.sweeps));
@@ -186,7 +191,8 @@ pub fn run(config: &Config, args: &[String]) -> Exit {
         |digest| {
             let mut runner_config = RunnerConfig::new(&root, digest);
             runner_config.lib_dirs = lib_dirs;
-            runner_config.tools = spines::tools(config.table());
+            runner_config.tools = tools;
+            runner_config.host = host;
             if let Some(n) = a.jobs {
                 runner_config.workers = n;
             }

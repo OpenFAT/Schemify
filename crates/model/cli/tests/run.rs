@@ -358,3 +358,118 @@ fn run_starts_every_simulator() {
     );
     assert_eq!(code, 2, "hspice is netlist-only: {text}");
 }
+
+/// A PDK whose models stay on its server names its host (tech map `host`, pdk spec §6): the
+/// run goes there through `ssh` with the user config's `sim` row for that host (run spec
+/// §5), and needs no local simulator. The `ssh` on `PATH` is a test double that runs the
+/// remote command here (run/tests/remote.rs's), logging its argv. Without the `host` the
+/// same project runs locally; a host outside the destination grammar, or one the user config
+/// has no row for, refuses the run naming the PDK and never starts ssh.
+#[cfg(unix)]
+#[test]
+fn a_pdk_runs_on_its_host() {
+    use std::env;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = run_project("run-host");
+    let (bin, tmp) = (dir.join("bin"), dir.join("tmp"));
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&tmp).unwrap();
+    let log = dir.join("ssh.log");
+    let ssh = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
+         while [ $# -gt 0 ]; do case \"$1\" in --) shift; break ;; -o) shift 2 ;; -*) shift ;; *) break ;; esac; done\n\
+         shift\nTMPDIR='{tmp}' exec sh -c \"$*\"\n",
+        log = log.display(),
+        tmp = tmp.display(),
+    );
+    for (name, text) in [("ssh", ssh), ("fake", format!("#!/bin/sh\n{FAKE}"))] {
+        fs::write(bin.join(name), text).unwrap();
+        fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::write(
+        dir.join("schemify.project"),
+        "schemify 1 project\n\nlib tech map tech.map\n",
+    )
+    .unwrap();
+    // The local espice is missing: only the host can run the pinned simulator.
+    let init = format!(
+        "schemify.sim('espice', {{ path = '/nonexistent/espice' }})\n\
+         schemify.sim('espice', {{ host = 'pdk@server', path = '{fake}', \
+         args = {{ '{{netlist}}', '{{raw}}' }}, env = {{ ZIG = '/z/zig' }} }})\n",
+        fake = bin.join("fake").display()
+    );
+    fs::write(dir.join("init.lua"), init).unwrap();
+    let path = format!("{}:{}", bin.display(), env::var("PATH").unwrap_or_default());
+    let run = |host: Option<&str>| {
+        let line = host.map_or_else(String::new, |h| format!("  host {h}\n"));
+        let map = format!("schemify 1 techmap\n  pdk kit\n  simulator espice\n{line}");
+        fs::write(dir.join("tech.map"), map).unwrap();
+        let out = common::core(&dir)
+            .env("PATH", &path)
+            .args(["-u", "init.lua", "run", "tb.shbench"])
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code().unwrap(), text)
+    };
+    let ssh_calls = || fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+    let (code, text) = run(Some("pdk@server"));
+    assert_eq!((code, text.matches(" done\n").count()), (0, 1), "{text}");
+    let logged = fs::read_to_string(&log).unwrap();
+    assert!(logged.contains(" -- pdk@server sh -c '"), "{logged}");
+    let runs: Vec<_> = fs::read_dir(dir.join(".schemify/runs")).unwrap().collect();
+    assert_eq!(runs.len(), 1);
+    let command = fs::read_to_string(runs[0].as_ref().unwrap().path().join("0/command.log"));
+    assert!(
+        command.unwrap().starts_with("ssh pdk@server "),
+        "the host row's command line ran there"
+    );
+    assert_eq!(
+        fs::read_dir(&tmp).unwrap().count(),
+        0,
+        "the scratch is gone"
+    );
+
+    // Without a host the run stays here, where the pinned espice is missing.
+    let (code, text) = run(None);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("kit pins simulator espice, which is not installed"),
+        "{text}"
+    );
+
+    // Negative space (D7: a PDK names a host, only the user's config lets one run): a word
+    // that would reach ssh as an option, split into several, or feed a shell is no
+    // destination; a valid host the config lists no row for is refused too. Each is refused
+    // before anything spawns: no ssh call, no run directory.
+    let runs = || fs::read_dir(dir.join(".schemify/runs")).unwrap().count();
+    for (word, host) in [
+        ("-oProxyCommand=evil", "-oProxyCommand=evil"),
+        (
+            "\"pdk@server -oProxyCommand=evil\"",
+            "pdk@server -oProxyCommand=evil",
+        ),
+        ("pdk@server;reboot", "pdk@server;reboot"),
+    ] {
+        let (code, text) = run(Some(word));
+        assert_eq!(code, 1, "{text}");
+        let msg = format!("kit names host `{host}`, which is not an ssh destination");
+        assert!(text.contains(&msg), "{text}");
+    }
+    let (code, text) = run(Some("other@server"));
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(
+            "kit runs on `other@server`, where the user config names no `sim espice` row"
+        ),
+        "{text}"
+    );
+    assert_eq!(runs(), 1, "no refused run was started");
+    assert_eq!(ssh_calls(), 1, "ssh ran for the one remote run only");
+}
