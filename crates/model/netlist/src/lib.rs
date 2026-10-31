@@ -40,8 +40,9 @@
 //! - `pub struct Netlist`, `pub struct Lowered`
 //! - `pub fn emit(elab: &Elab, dialect: Dialect) -> Netlist`
 //! - `pub fn lower(elab: &Elab, dialect: Dialect) -> Lowered`
-//! - re-exported: `emit_flat` (flat.rs), `compiled_source` (deck.rs), `set_serial`
-//!   (block.rs), `NameMap` (name_map/), SpiceRack's `Lines`, `SetupLine`, `CircuitIR`
+//! - re-exported: `emit_flat` (flat.rs), `compiled_source`, `verilog_ext` (deck.rs),
+//!   `set_serial` (block.rs), `NameMap` (name_map/), SpiceRack's `Lines`, `SetupLine`,
+//!   `CircuitIR`
 //! - crate-wide: `const NONE`, `struct Respelling`,
 //!   `fn write(lowered: &mut Lowered, dialect: Dialect) -> String`,
 //!   `fn spicerack_dialect(dialect: Dialect) -> SpiceRackDialect`,
@@ -84,7 +85,7 @@ mod name_map;
 mod plan;
 
 pub use block::set_serial;
-pub use deck::compiled_source;
+pub use deck::{compiled_source, verilog_ext};
 pub use flat::emit_flat;
 pub use name_map::NameMap;
 pub use spicerack::codegen::xschem::{Lines, SetupLine};
@@ -121,7 +122,7 @@ pub struct Lowered {
     pub globals: Vec<String>,
     /// The corner lines in file order.
     pub setup: Vec<SetupLine>,
-    /// Impl bodies written once.
+    /// Text written once after the models: espice's `.verilog` loads, then impl bodies.
     pub bodies: Vec<String>,
     /// Per block (the top, then each definition): its template rows, one run per part
     /// rendered in parallel.

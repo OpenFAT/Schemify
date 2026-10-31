@@ -1,12 +1,12 @@
 //! The compiled-source build cache (run spec §5): a job's [`Source`]s in, their outputs
-//! (`<stem>.osdi|.vvp|.va`) in the shared cache directory out, then copied into each job
-//! directory with the files a copied Verilog-A source `` `include``s.
+//! (`<stem>.osdi|.vvp|.va|.v|.sv`) in the shared cache directory out, then copied into each
+//! job directory with the files a copied source `` `include``s.
 //!
 //! Compilers (OpenVAF, Icarus) are child processes polled like simulators: one compiler
 //! per stale output serves every job that needs it, outputs are fresh by mtime, and a
-//! failed output fails every job of the run that needs it. ESPice's Verilog-A sources
-//! ([`Tool::Copy`]) skip the compiler: the source itself is cached and copied, its
-//! includes found once per run.
+//! failed output fails every job of the run that needs it. ESPice's Verilog-A and
+//! Verilog sources ([`Tool::Copy`]) skip the compiler: the source itself is cached and
+//! copied, its includes found once per run.
 //!
 //! Contents:
 //! - crate-only `struct Cache`: `ensure`, `reap`, `failure`, `compiling`, `busy`,
@@ -48,9 +48,9 @@ struct Includes {
     files: Vec<String>,
 }
 
-/// Most files one copied Verilog-A source may `` `include`` (transitively).
+/// Most files one copied source may `` `include`` (transitively).
 const INCLUDES_MAX: usize = 256;
-/// Deepest `` `include`` nesting of a copied Verilog-A source.
+/// Deepest `` `include`` nesting of a copied source.
 const INCLUDE_DEPTH_MAX: u32 = 16;
 /// Headers VerA (ESPice's Verilog-A compiler) supplies itself, so a source may include
 /// them without a copy beside it.
@@ -88,7 +88,7 @@ impl Cache {
         {
             let found = source_file(config, *lib, path).and_then(|src| {
                 let dir = src.parent().map_or_else(PathBuf::new, Path::to_path_buf);
-                va_includes(&src).map(|inc| (dir, inc))
+                includes(&src).map(|inc| (dir, inc))
             });
             match found {
                 Ok((dir, files)) => self.includes.push(Includes {
@@ -249,11 +249,12 @@ fn spawn_compile(config: &RunnerConfig, s: &Source) -> Result<Option<Compiling>,
         Origin::Body(text) => {
             fs::create_dir_all(&config.cache).map_err(cache)?;
             let stem = s.out.rsplit_once('.').map_or(s.out.as_str(), |(st, _)| st);
-            let ext = match s.tool {
-                Tool::Openvaf | Tool::Copy => "va",
-                Tool::Iverilog => "v",
+            // A copied body is its own output (`<stem>.va|.v`).
+            let p = match s.tool {
+                Tool::Openvaf => config.cache.join(format!("{stem}.va")),
+                Tool::Iverilog => config.cache.join(format!("{stem}.v")),
+                Tool::Copy => config.cache.join(&s.out),
             };
-            let p = config.cache.join(format!("{stem}.{ext}"));
             if fs::read(&p).ok().as_deref() != Some(text.as_bytes()) {
                 fs::write(&p, text).map_err(cache)?;
             }
@@ -319,17 +320,17 @@ fn source_file(config: &RunnerConfig, lib: u8, path: &str) -> Result<PathBuf, St
     Ok(dir.join(path))
 }
 
-/// Returns the files the Verilog-A source `src` includes, transitively, as paths relative
-/// to its directory, sorted: each `` `include "<name>"`` resolves against the directory of
-/// the file that names it (as ESPice's compiler does), so the copies keep their layout
-/// beside the copied source (run spec §5). An absolute name is left to resolve by itself;
+/// Returns the files the Verilog-A or Verilog source `src` includes, transitively, as paths
+/// relative to its directory, sorted: each `` `include "<name>"`` resolves against the
+/// directory of the file that names it (as ESPice's compilers do), so the copies keep their
+/// layout beside the copied source (run spec §5). An absolute name is left to resolve by itself;
 /// a missing [`STANDARD_HEADERS`] name is the compiler's own. Each file is read once, so
 /// include cycles end.
 ///
 /// Errors: a file that cannot be read, a missing include (naming it and the file that
 /// includes it), a name that leaves the source's directory (`..` above it), more than
 /// [`INCLUDES_MAX`] files, or nesting deeper than [`INCLUDE_DEPTH_MAX`].
-fn va_includes(src: &Path) -> Result<Vec<String>, String> {
+fn includes(src: &Path) -> Result<Vec<String>, String> {
     let dir = src.parent().unwrap_or(Path::new(""));
     let mut out: Vec<String> = Vec::new();
     // (including file relative to `dir`, `None` for `src` itself; its depth)
@@ -387,7 +388,8 @@ fn va_includes(src: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// The quoted names of a Verilog-A text's `` `include`` directives, outside `//` comments.
+/// The quoted names of a Verilog-A or Verilog text's `` `include`` directives, outside `//`
+/// comments (both languages spell them alike).
 // ponytail: `/* */` comments and `ifdef`-disabled branches are not skipped, so an include
 // there must exist too; handle them when a model needs it.
 fn include_names(text: &str) -> impl Iterator<Item = &str> {

@@ -1,0 +1,11 @@
+`include "disciplines.vams"
+// Behavioural 8-bit charge-redistribution DAC (fixture): the top plate settles to the
+// binary-weighted mean of the bit voltages, scaled from vdd to vref.
+module cdac(d7, d6, d5, d4, d3, d2, d1, d0, out);
+  inout d7, d6, d5, d4, d3, d2, d1, d0, out;
+  electrical d7, d6, d5, d4, d3, d2, d1, d0, out;
+  parameter real vref = 1.8;
+  parameter real vdd = 1.8;
+  analog V(out) <+ vref / vdd * (128 * V(d7) + 64 * V(d6) + 32 * V(d5) + 16 * V(d4)
+                                 + 8 * V(d3) + 4 * V(d2) + 2 * V(d1) + V(d0)) / 256;
+endmodule

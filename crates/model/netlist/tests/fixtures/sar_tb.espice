@@ -1,0 +1,25 @@
+* sar_tb (schemify espice)
+NDAC d[7] d[6] d[5] d[4] d[3] d[2] d[1] d[0] vdac cdac_m
+NU1 clk rst cmp d[7] d[6] d[5] d[4] d[3] d[2] d[1] d[0] eoc sar_m vdd=1.8 vth=0.9 vhys=0 rout=100 trise=1e-9 tfall=1e-9 ttol=2e-11
+VVDD vdd 0 dc 1.8
+VVIN vin 0 dc 1.290234375
+X1 vin vdac cmp vdd cmp
+.model nch nmos level=1 vto=0.5 kp=200u lambda=0.02
+.model pch pmos level=1 vto=-0.5 kp=100u lambda=0.02
+VCLK clk 0 PULSE(0 1.8 50n 1n 1n 49n 100n)
+VRST rst 0 PULSE(0 1.8 5n 1n 1n 10n 10)
+.tran 0.5n 950n
+.subckt cmp inp inn out vdd
+MM1 x inn tail 0 nch W=10u L=1u ad=3p
+MM2 o inp tail 0 nch W=10u L=1u ad=3p
+MM3 x x vdd vdd pch W=10u L=1u
+MM4 o x vdd vdd pch W=10u L=1u
+MM5 out o vdd vdd pch W=4u L=1u
+MM6 out o 0 0 nch W=2u L=1u ad=0.6p
+RT tail 0 10000
+.ends cmp
+.hdl "cdac.va"
+.model cdac_m cdac
+.model sar_m sar
+.verilog "sar.v"
+.end

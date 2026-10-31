@@ -34,7 +34,7 @@ When the checks find an error, `schemify netlist` prints the findings, then `not
 | Dialect | Use it for | Editor file |
 |---|---|---|
 | `ngspice` | Simulating with ngspice. The default. | `.spice` |
-| `espice` | Simulating with ESPice. The ngspice text, except that Verilog-A sources load with `.hdl "<stem>.va"` lines and default Verilog-A instance lines carry their parameters (`m` written `mfactor`). | `.sp` |
+| `espice` | Simulating with ESPice. The ngspice text, except that Verilog-A sources load with `.hdl "<stem>.va"` lines and default Verilog-A instance lines carry their parameters (`m` written `mfactor`), and Verilog cells are ESPice devices whose sources load with `.verilog "<stem>.v"` lines. | `.sp` |
 | `xyce` | Xyce. `.temp` is written `.options device temp=…`; a `.control` block anywhere is an error (`E033`). | `.cir` |
 | `cdl` | LVS. No code blocks, corners, `.param` or `.control`. The netlisted cell is the top `.SUBCKT` with a `*.PININFO` line per subcircuit, keywords in capitals. | `.cdl` |
 | `spectre` | Spectre. `subckt`/`ends`, `parameters`, `include "<file>" section=<s>`. Names with characters outside `A-Z a-z 0-9 _` are escaped (`vdd\!`, `d\[3\]`). | `.scs` |
@@ -89,7 +89,7 @@ An impl without a `format` line for the dialect gets a default:
 |---|---|
 | `schematic`, `spice` text body | `X{name} {pins} {cell}` |
 | `veriloga` | `N{name} {pins} {model}` (ngspice loads the compiled OSDI file; not available for Xyce or CDL) |
-| `verilog` | `A{name} [{in_pins}] [{out_pins}] {model}` (ngspice `d_cosim`; ngspice only) |
+| `verilog` | `A{name} [{in_pins}] [{out_pins}] {model}` (ngspice `d_cosim`); ESPice `N{name} {pins} {model} {params}` with every parameter, defaults included (the A2D/D2A bridge's `vdd`, `vth`, `rout`, `trise`, …); not available for Xyce or CDL |
 
 The device letter of a default template is added only when the instance name does not already start with it: `X1` stays `X1`, `M1` becomes `XM1`. A dialect the selected impl cannot write is `E013`. A template that does not parse, or names something no pin, parameter or built-in provides, is `E008`.
 

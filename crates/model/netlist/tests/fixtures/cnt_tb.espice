@@ -1,0 +1,14 @@
+* cnt_tb (schemify espice)
+NU1 clk q[2] q[1] q[0] cnt vdd=1.8 vth=0.9 rout=100
+NU2 clk p[2] p[1] p[0] cnt vdd=1.8 vth=1.2 rout=100
+RRP[0] p[0] 0 100000
+RRP[1] p[1] 0 100000
+RRP[2] p[2] 0 100000
+RRQ[0] q[0] 0 100000
+RRQ[1] q[1] 0 100000
+RRQ[2] q[2] 0 100000
+VCLK clk 0 PULSE(0 1 10n 1n 1n 9n 20n)
+.tran 0.5n 170n
+.model cnt cnt
+.verilog "cnt.v"
+.end

@@ -1,6 +1,7 @@
 //! The compile steps of the runner (run spec §5) with a fake simulator: stand-in compilers
 //! that never block the poll and compile once for every job, the real Icarus when present,
-//! sources of derived `tech:` cells, and ESPice's copied Verilog-A sources and includes.
+//! sources of derived `tech:` cells, and ESPice's copied Verilog-A and Verilog sources and
+//! includes.
 
 mod common;
 
@@ -24,8 +25,8 @@ label 0bbbba 0 0 R0 out\nlabel 0bbbbb 0 20 R0 0\n\nvar R 1\n";
 
 /// A Verilog-A cell whose source is its `body` (no `file`).
 #[cfg(unix)]
-const VBODY: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\n\
-impl va veriloga\n  model vres\n\nbody va\n  | module vres(p, n);\n  | endmodule\n";
+const VBODY: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\
+\nimpl va veriloga\n  model vres\n\nbody va\n  | module vres(p, n);\n  | endmodule\n";
 
 /// A generated FinFET cell (pdk spec §2.2): an OSDI device whose Verilog-A `file` is relative
 /// to the PDK cell, reached through a `tech:` class.
@@ -38,8 +39,8 @@ const FIN_MAP: &str = "schemify 1 techmap\n  pdk fin\n\nclass nmos core\n  cell 
 const FIN_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa tech:nmos\n  at 0 0 R0\n  name M1\n  w 1u\n\nlabel 0bbbba 20 -30 R0 d\nlabel 0bbbbb -20 0 R0 g\nlabel 0bbbbc 20 30 R0 0\nlabel 0bbbbd 20 0 R0 0\n";
 
 /// A Verilog-A cell whose source is its `body`, beside `VRES` (a `file`) in one bench.
-const VGAIN: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\n\
-impl va veriloga\n  model vgain_m\n\nbody va\n  | module vgain(p, n);\n  | endmodule\n";
+const VGAIN: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\
+\nimpl va veriloga\n  model vgain_m\n\nbody va\n  | module vgain(p, n);\n  | endmodule\n";
 
 const ES_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa ./vres\n  at 0 0 R0\n  name N1\n\
 inst 0aaaab ./vgain\n  at 100 0 R0\n  name N2\n\n\
@@ -63,6 +64,26 @@ label 0bbbba 0 0 R0 out\nlabel 0bbbbb 0 20 R0 0\n\nvar R 1\n";
 /// A stand-in ESPice that fails unless the includes sit beside `vtop.va` in their layout.
 const FAKE_INC: &str = r#"for f in vtop.va macros.include sub/a.inc sub/b.inc; do [ -f "$f" ] || { echo "missing $f" >&2; exit 5; }; done
 [ -e nope.inc ] && { echo 'copied a commented include' >&2; exit 6; }
+printf 'Title: fake\nPlotname: Operating Point\nFlags: real\nNo. Variables: 1\nNo. Points: 1\nVariables:\n 0 v(out) voltage\nValues:\n0 1\n' > "$2"
+"#;
+
+/// Verilog cells for ESPice: a `file` that includes a header, a SystemVerilog `file` and a
+/// `body`.
+const VSAR: &str = "schemify 1 shprim\n\npin A in 0 0\npin B out 0 20\n\nparam vth 0.9\n\
+\nimpl v verilog\n  model vsar_m\n  file hdl/vsar.v\n";
+const VSV: &str = "schemify 1 shprim\n\npin A in 0 0\npin B out 0 20\n\nimpl v verilog\n  model vsv_m\n  \
+file hdl/vsv.sv\n";
+const VB: &str = "schemify 1 shprim\n\npin A in 0 0\npin B out 0 20\n\nimpl v verilog\n  model vb_m\n\n\
+body v\n  | module vb(A, B);\n  | endmodule\n";
+const V_BENCH: &str = "schemify 1 shbench\n\ninst 0aaaaa ./vsar\n  at 0 0 R0\n  name U1\n\
+inst 0aaaab ./vsv\n  at 100 0 R0\n  name U2\ninst 0aaaac ./vb\n  at 200 0 R0\n  name U3\n\n\
+label 0bbbba 0 0 R0 a\nlabel 0bbbbb 0 20 R0 out\nlabel 0bbbbc 100 0 R0 a\nlabel 0bbbbd 100 20 R0 y\n\
+label 0bbbbe 200 0 R0 a\nlabel 0bbbbf 200 20 R0 z\n\nvar R 1\n";
+
+/// A stand-in ESPice: fails unless the netlist loads the three sources with `.verilog` and
+/// they, and the header one includes, sit in its working directory.
+const FAKE_ESPICE_V: &str = r#"grep -qx '.verilog "vb.v"' "$1" && grep -qx '.verilog "vsar.v"' "$1" && grep -qx '.verilog "vsv.sv"' "$1" || { echo 'no .verilog' >&2; exit 3; }
+for f in vsar.v defs.vh vsv.sv vb.v; do [ -f "$f" ] || { echo "missing $f" >&2; exit 5; }; done
 printf 'Title: fake\nPlotname: Operating Point\nFlags: real\nNo. Variables: 1\nNo. Points: 1\nVariables:\n 0 v(out) voltage\nValues:\n0 1\n' > "$2"
 "#;
 
@@ -461,4 +482,69 @@ fn espice_copies_verilog_a_includes_beside_the_source() {
     assert_eq!(jobs.states(), [State::Failed]);
     let msg = results.errors().next().unwrap().message.to_owned();
     assert!(msg.contains("outside the source's directory"), "{msg}");
+}
+
+/// The espice dialect runs Verilog through ESPice (run spec §5, netlist spec §7.2a): no
+/// Icarus runs (it is absent), each source lands in the job directory unchanged, a `file`
+/// as `<stem>.v` with its `` `include``s beside it, a SystemVerilog `file` as `<stem>.sv`,
+/// a `body` as `<cell>.v`. A missing source file fails the job naming it.
+#[test]
+fn espice_copies_verilog_sources_without_compiling() {
+    let (p, top) = common::project(&[
+        ("vsar.shprim", VSAR),
+        ("vsv.shprim", VSV),
+        ("vb.shprim", VB),
+        ("tb.shbench", V_BENCH),
+    ]);
+    let plan = Plan::read(p.doc(top).unwrap()).unwrap();
+    let dir = common::tmp("espice-verilog");
+    let hdl = dir.join("hdl");
+    fs::create_dir_all(&hdl).unwrap();
+    let vsar = "`include \"defs.vh\"\nmodule vsar(A, B);\n  input A;\n  output B;\nendmodule\n";
+    let vsv = "module vsv(input logic A, output logic B);\nendmodule\n";
+    fs::write(hdl.join("vsar.v"), vsar).unwrap();
+    fs::write(hdl.join("defs.vh"), "`define W 1\n").unwrap();
+    fs::write(hdl.join("vsv.sv"), vsv).unwrap();
+    let go = || {
+        let mut j = Jobs::new();
+        j.push(None, None, NO_SAMPLE, &[]).unwrap();
+        common::run_dialect(&p, top, &plan, j, &[], Dialect::Espice, |d| {
+            let mut c = common::cfg(&dir, d, common::sh(FAKE_ESPICE_V), 1);
+            c.cache = dir.join("cache");
+            c.tools.iverilog = "iverilog-not-installed".into();
+            c
+        })
+    };
+    let (jobs, results, runner) = go();
+    let errs: Vec<_> = results.errors().collect();
+    assert_eq!(jobs.states(), [State::Done], "{errs:?}");
+    let job = runner.job_dir(0);
+    let read = |f: &str| fs::read_to_string(job.join(f)).unwrap();
+    assert_eq!(read("vsar.v"), vsar);
+    assert_eq!(read("defs.vh"), "`define W 1\n");
+    assert_eq!(
+        read("vsv.sv"),
+        vsv,
+        "SystemVerilog passes through unchanged"
+    );
+    assert_eq!(read("vb.v"), "module vb(A, B);\nendmodule\n");
+    let netlist = read("netlist.cir");
+    assert!(
+        netlist.contains("\nNU1 a out vsar_m vth=0.9\n"),
+        "{netlist}"
+    );
+    assert!(!netlist.contains("d_cosim"), "{netlist}");
+    let cache: Vec<_> = fs::read_dir(dir.join("cache")).unwrap().flatten().collect();
+    assert!(
+        cache
+            .iter()
+            .all(|f| f.path().extension().is_none_or(|x| x != "vvp")),
+        "nothing compiled: {cache:?}"
+    );
+    // Negative space: the `file` is gone, so the job fails naming it.
+    fs::remove_file(hdl.join("vsar.v")).unwrap();
+    let (jobs, results, _) = go();
+    assert_eq!(jobs.states(), [State::Failed]);
+    let msg = results.errors().next().unwrap().message.to_owned();
+    assert!(msg.contains("vsar.v"), "{msg}");
 }

@@ -1,0 +1,78 @@
+schemify 1 shcomp
+  doc "comparator: a 5-transistor OTA and an inverter, out high when inp > inn (fixture)"
+
+pin inp in -40 -20
+pin inn in -40 20
+pin out out 40 0
+pin vdd inout 0 -40
+
+impl sch schematic
+
+inst 0m0001 ./nmos
+  at 0 200 R0
+  name M1
+  W 10
+  L 1
+inst 0m0002 ./nmos
+  at 200 200 R0
+  name M2
+  W 10
+  L 1
+inst 0m0003 ./pmos
+  at 0 0 R0
+  name M3
+  W 10
+  L 1
+inst 0m0004 ./pmos
+  at 200 0 R0
+  name M4
+  W 10
+  L 1
+inst 0m0005 ./res
+  at 100 400 R0
+  name T
+  R 10k
+inst 0m0006 ./pmos
+  at 400 0 R0
+  name M5
+  W 4
+  L 1
+inst 0m0007 ./nmos
+  at 400 200 R0
+  name M6
+  W 2
+  L 1
+
+# M1/M2: the input pair (inn, inp) over a 10k tail; M3/M4: the mirror load into o;
+# M5/M6: the inverter that rails o, so out is high when inp > inn.
+label 0n0001 20 170 R0 x
+label 0n0002 -20 200 R0 inn
+label 0n0003 20 230 R0 tail
+label 0n0004 20 200 R0 0
+label 0n0005 220 170 R0 o
+label 0n0006 180 200 R0 inp
+label 0n0007 220 230 R0 tail
+label 0n0008 220 200 R0 0
+label 0n0009 20 -30 R0 vdd
+label 0n0010 -20 0 R0 x
+label 0n0011 20 30 R0 x
+label 0n0012 20 0 R0 vdd
+label 0n0013 220 -30 R0 vdd
+label 0n0014 180 0 R0 x
+label 0n0015 220 30 R0 o
+label 0n0016 220 0 R0 vdd
+label 0n0017 100 370 R0 tail
+label 0n0018 100 430 R0 0
+label 0n0019 420 -30 R0 vdd
+label 0n0020 380 0 R0 o
+label 0n0021 420 30 R0 out
+label 0n0022 420 0 R0 vdd
+label 0n0023 420 170 R0 out
+label 0n0024 380 200 R0 o
+label 0n0025 420 230 R0 0
+label 0n0026 420 200 R0 0
+
+port 0p0001 -100 -20 R0 inp
+port 0p0002 -100 20 R0 inn
+port 0p0003 500 0 R0 out
+port 0p0004 0 -100 R0 vdd

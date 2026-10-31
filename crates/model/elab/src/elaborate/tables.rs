@@ -40,7 +40,8 @@ pub enum Dialect {
     /// Structural Verilog.
     Verilog,
     /// ESPice: ngspice text, except that Verilog-A sources load with `.hdl` (netlist
-    /// spec §7.2a) instead of OSDI, and `verilog` leaves have no default template.
+    /// spec §7.2a) instead of OSDI, and `verilog` leaves are `N` devices whose source
+    /// loads with `.verilog` instead of an XSPICE `d_cosim`.
     Espice,
     /// HSPICE (netlist only, §7.2b): SPICE text with quoted corner paths.
     Hspice,

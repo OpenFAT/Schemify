@@ -1,9 +1,10 @@
 //! The spine's design steps (run spec §4, §5): the gate and design hash of a run, and
 //! per job `elaborate(overrides) → netlist::emit`, plus the sources the simulator needs
-//! compiled (Verilog-A → OSDI, Verilog → VVP) or copied (Verilog-A for ESPice's `.hdl`)
-//! first, and the relative corner paths the runner makes absolute. In: the project, the
-//! bench handle and the `jobs` table; out: the design [`Digest`] or [`Blocked`], and one
-//! [`Prepared`] netlist per job (var values and `op(…)` vectors recorded in `results`).
+//! compiled (Verilog-A → OSDI, Verilog → VVP) or copied (Verilog-A and Verilog for
+//! ESPice's `.hdl` and `.verilog`) first, and the relative corner paths the runner makes
+//! absolute. In: the project, the bench handle and the `jobs` table; out: the design
+//! [`Digest`] or [`Blocked`], and one [`Prepared`] netlist per job (var values and
+//! `op(…)` vectors recorded in `results`).
 //!
 //! Contents:
 //! - `pub enum Blocked`, `pub struct Source`, `pub enum Origin`, `pub enum Tool`,
@@ -36,8 +37,8 @@ pub struct Source {
     pub tool: Tool,
     /// Where the source text is.
     pub origin: Origin,
-    /// File name the netlist expects in the job directory (`<stem>.osdi|.vvp|.va`: the
-    /// `file` stem, else the cell stem).
+    /// File name the netlist expects in the job directory (`<stem>.osdi|.vvp|.va|.v|.sv`:
+    /// the `file` stem, else the cell stem).
     pub out: String,
 }
 
@@ -66,8 +67,8 @@ pub enum Tool {
     Openvaf,
     /// Icarus Verilog: Verilog → VVP (ngspice `d_cosim`).
     Iverilog,
-    /// No compiler: the Verilog-A source itself, copied as `<stem>.va` for ESPice's
-    /// `.hdl` (ESPice compiles it, netlist spec §7.2a).
+    /// No compiler: the source itself, copied as `<stem>.va` for ESPice's `.hdl` or as
+    /// `<stem>.v|.sv` for its `.verilog` (ESPice compiles it, netlist spec §7.2a).
     Copy,
 }
 
@@ -329,9 +330,11 @@ pub fn prepare<F: Funcs>(
 
 /// Returns the Verilog-A and Verilog sources of the leaf impls `e` uses (a `file`, or a
 /// `body` that is source: `netlist::compiled_source`; run spec §5), deduplicated by
-/// output name. For [`Dialect::Espice`] a Verilog-A source is [`Tool::Copy`] to
-/// `<stem>.va` (ESPice compiles it); otherwise it compiles with OpenVAF to `<stem>.osdi`.
-/// `e` must be elaborated for `dialect`.
+/// output name. For [`Dialect::Espice`] every source is [`Tool::Copy`] (ESPice compiles
+/// it): Verilog-A to `<stem>.va`, Verilog to `<stem>.v` (`<stem>.sv` for a SystemVerilog
+/// `file`, `netlist::verilog_ext`); otherwise Verilog-A compiles with OpenVAF to
+/// `<stem>.osdi` and Verilog with Icarus to `<stem>.vvp`. `e` must be elaborated for
+/// `dialect`.
 ///
 /// # Panics
 ///
@@ -355,6 +358,7 @@ pub fn sources(project: &Project, e: &Elab, dialect: Dialect) -> Vec<Source> {
         let (tool, ext) = match (e.names.get(interface.impl_lang[k]), dialect) {
             ("veriloga", Dialect::Espice) => (Tool::Copy, "va"),
             ("veriloga", _) => (Tool::Openvaf, "osdi"),
+            ("verilog", Dialect::Espice) => (Tool::Copy, netlist::verilog_ext(e, i)),
             _ => (Tool::Iverilog, "vvp"),
         };
         let (origin, stem) = if interface.impl_file[k] == Name::NONE {

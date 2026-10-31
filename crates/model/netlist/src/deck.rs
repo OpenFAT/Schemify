@@ -1,10 +1,11 @@
 //! The deck around the blocks (netlist spec §7.1–§7.6): elab's bench, globals, ports and
 //! leaf impls in; the title, globals, setup lines, bench vars and code, definition ports
-//! and parameter tuples, net respellings and once-only text (OSDI loads, models, impl
-//! bodies) of a [`crate::Lowered`] out.
+//! and parameter tuples, net respellings and once-only text (OSDI loads, models, espice's
+//! `.verilog` loads, impl bodies) of a [`crate::Lowered`] out.
 //!
 //! Contents:
 //! - `pub fn compiled_source(elab: &Elab, leaf: usize) -> bool`
+//! - `pub fn verilog_ext(elab: &Elab, leaf: usize) -> &'static str`
 //! - `pub(crate) fn frame(elab: &Elab, dialect: Dialect) -> Lowered`
 //! - `pub(crate) fn cdl_params(elab: &Elab, def: u32) -> Vec<ParamDef>`
 //! - `pub(crate) fn ports(elab: &Elab, def: u32, respellings: &[Respelling]) -> Vec<Port>`
@@ -59,6 +60,31 @@ pub fn compiled_source(elab: &Elab, leaf: usize) -> bool {
         "verilog" => has_file || !body(elab, leaf).is_empty(),
         _ => false,
     }
+}
+
+/// Returns the extension the source of `verilog` impl row `leaf` of `elab` has in an
+/// espice job directory (spec §7.2a, run spec §5): `sv` when its `file` is SystemVerilog
+/// (`.sv`, any case), which passes through unchanged, else `v` (a `body`, or any other
+/// `file`).
+///
+/// # Panics
+///
+/// Panics if `leaf` is not a `verilog` row of `elab.impls`.
+#[must_use]
+pub fn verilog_ext(elab: &Elab, leaf: usize) -> &'static str {
+    assert!(
+        leaf < elab.impls.cell.len(),
+        "impl row {leaf} of {}",
+        elab.impls.cell.len()
+    );
+    assert_eq!(lang(elab, leaf), "verilog", "impl row {leaf}");
+    let iface = &elab.cells[elab.impls.cell[leaf] as usize];
+    let file = iface.impl_file[elab.impls.index[leaf] as usize];
+    let sv = file != Name::NONE
+        && std::path::Path::new(elab.names.get(file))
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("sv"));
+    if sv { "sv" } else { "v" }
 }
 
 /// The deck around the blocks (spec §7.6.2–3): the title `<top cell> (schemify
@@ -242,9 +268,10 @@ pub(crate) fn xspice_spellings(elab: &Elab, plans: &Plans, dialect: Dialect) -> 
     out
 }
 
-/// Once-only text (spec §7.1, §7.6.3, §7.6.8): Verilog-A loads (`<stem>.va`; SpiceRack
-/// writes ngspice's OSDI load or espice's `.hdl`), the generated models, the impl bodies
-/// by (cell, impl). Only impls some emitted row uses.
+/// Once-only text (spec §7.1, §7.2a, §7.6.3, §7.6.8): Verilog-A loads (`<stem>.va`;
+/// SpiceRack writes ngspice's OSDI load or espice's `.hdl`), the generated models,
+/// espice's `.verilog` loads, the impl bodies by (cell, impl). Only impls some emitted row
+/// uses.
 pub(crate) fn once_only(lowered: &mut Lowered, elab: &Elab, dialect: Dialect, uses: &Uses) {
     assert_eq!(uses.impl_used.len(), elab.impls.cell.len());
     assert!(lowered.bodies.is_empty(), "once-only text is written once");
@@ -252,14 +279,20 @@ pub(crate) fn once_only(lowered: &mut Lowered, elab: &Elab, dialect: Dialect, us
         lowered.ir.top.models.is_empty(),
         "once-only text is written once"
     );
-    let (mut osdi, mut models) = (Vec::new(), Vec::new());
-    // OSDI (`.hdl` for espice) loads and models: ngspice and espice only (elab rejects
-    // veriloga elsewhere, and verilog outside ngspice and the verilog dialect).
+    let (mut osdi, mut verilog, mut models) = (Vec::new(), Vec::new(), Vec::new());
+    // Loads and models: ngspice and espice only (elab rejects veriloga elsewhere, and
+    // verilog outside ngspice, espice and the verilog dialect).
     if matches!(dialect, Dialect::Ngspice | Dialect::Espice) {
-        loads_and_models(elab, dialect, uses, &mut osdi, &mut models);
+        loads_and_models(elab, dialect, uses, [&mut osdi, &mut verilog], &mut models);
     }
     osdi.sort();
     osdi.dedup();
+    verilog.sort();
+    verilog.dedup();
+    assert!(
+        verilog.is_empty() || dialect == Dialect::Espice,
+        "only espice loads .verilog"
+    );
     models.sort();
     models.dedup();
     let osdi_loads: Vec<String> = osdi.into_iter().map(|stem| format!("{stem}.va")).collect();
@@ -277,7 +310,12 @@ pub(crate) fn once_only(lowered: &mut Lowered, elab: &Elab, dialect: Dialect, us
         .collect();
     lowered.ir.top.osdi_loads = osdi_loads;
     lowered.ir.top.models = model_defs;
-    lowered.bodies = bodies(elab, dialect, uses);
+    // ponytail: SpiceRack's deck spells no `.verilog` load, so espice's are once-only text
+    // ahead of the bodies; move them to `osdi_loads` when its writer learns the card.
+    let loads = verilog
+        .into_iter()
+        .map(|file| format!(".verilog \"{file}\"\n"));
+    lowered.bodies = loads.chain(bodies(elab, dialect, uses)).collect();
 }
 
 // ---- private ----
@@ -300,24 +338,35 @@ fn lang(elab: &Elab, leaf: usize) -> &str {
         .get(iface.impl_lang[elab.impls.index[leaf] as usize])
 }
 
-/// Collects the OSDI stems and `.model` lines of the used impls. A Verilog-A source (a
-/// `file`, or a `body` that is source) is compiled by the runner: one OSDI load per stem
-/// and a `.model` per model name (the impl's `model` attr, and each default-template
-/// row's model). Any other `veriloga` impl is precompiled: its body carries that text.
+/// Collects the OSDI stems, espice's `.verilog` file names and the `.model` lines of the
+/// used impls. A Verilog-A source (a `file`, or a `body` that is source) is the runner's:
+/// one OSDI load (`.hdl` for espice) per stem. Under espice a Verilog source is too: one
+/// `.verilog` load per source file (§7.2a). Each gets a `.model` per model name (the
+/// impl's `model` attr, and each default-template row's model) naming the module after
+/// its stem; a ngspice Verilog model is a d_cosim of its stem. Any other `veriloga` impl
+/// is precompiled: its body carries that text.
 fn loads_and_models(
     elab: &Elab,
     dialect: Dialect,
     uses: &Uses,
-    osdi: &mut Vec<String>,
+    [osdi, verilog]: [&mut Vec<String>; 2],
     models: &mut Vec<ModelLine>,
 ) {
     assert!(osdi.is_empty());
+    assert!(verilog.is_empty());
     assert!(models.is_empty());
-    let compiled_va = |leaf: usize| lang(elab, leaf) == "veriloga" && compiled_source(elab, leaf);
-    // Every used Verilog-A source loads once; a model's impl is always a used one.
+    let espice = dialect == Dialect::Espice;
+    // Every used source loads once; a model's impl is always a used one.
     let used = (0..elab.impls.cell.len()).filter(|&leaf| uses.impl_used[leaf]);
-    let sources = used.clone().filter(|&leaf| compiled_va(leaf));
-    osdi.extend(sources.map(|leaf| stem(elab, leaf)));
+    for leaf in used.clone().filter(|&leaf| compiled_source(elab, leaf)) {
+        match lang(elab, leaf) {
+            "veriloga" => osdi.push(stem(elab, leaf)),
+            "verilog" if espice => {
+                verilog.push(format!("{}.{}", stem(elab, leaf), verilog_ext(elab, leaf)));
+            }
+            _ => {}
+        }
+    }
     let named = used.filter_map(|leaf| {
         let iface = &elab.cells[elab.impls.cell[leaf] as usize];
         let model = iface.impl_model[elab.impls.index[leaf] as usize];
@@ -333,6 +382,11 @@ fn loads_and_models(
         let name = elab.names.get(model_use.model).to_owned();
         match lang(elab, leaf) {
             "veriloga" if compiled_source(elab, leaf) => models.push(ModelLine {
+                name,
+                kind: stem(elab, leaf),
+                simulation: None,
+            }),
+            "verilog" if espice && compiled_source(elab, leaf) => models.push(ModelLine {
                 name,
                 kind: stem(elab, leaf),
                 simulation: None,

@@ -420,7 +420,8 @@ fn default_line<'net, F: Fn(Name) -> &'net str>(
                 .flat_map(|p| iface.bits(p).iter().map(|b| elab.names.get(*b)));
             module_ports(out, row, bits);
         }
-        (Lang::VerilogA, Dialect::Ngspice | Dialect::Espice) => {
+        // ESPice runs a Verilog design as a device too (spec §7.2a): its `N` card.
+        (Lang::VerilogA, Dialect::Ngspice | Dialect::Espice) | (Lang::Verilog, Dialect::Espice) => {
             push_prefixed(out, b'N', row.name, dialect);
             for &net in row.conn {
                 out.push(' ');
@@ -429,7 +430,7 @@ fn default_line<'net, F: Fn(Name) -> &'net str>(
             out.push(' ');
             write_source(row, row.plan.model, out);
             if dialect == Dialect::Espice {
-                va_params(row, out);
+                n_params(row, out);
             }
             push_model(uses, model_name(), leaf);
         }
@@ -500,26 +501,31 @@ fn push_prefixed(out: &mut String, letter: u8, name: &str, dialect: Dialect) {
     assert!(out.len() > start);
 }
 
-/// Appends ` k=v` for every param of a Verilog-A leaf row that differs from its default
-/// (spec §7.2a: ESPice reads instance parameters from the `N` line), except computed params
-/// and the `model` param the line already names; `m` is written `mfactor`, the LRM name
-/// ESPice's Verilog-A instances take (`m=` is its `UnknownParameter`).
-fn va_params<'net, F: Fn(Name) -> &'net str>(row: &Row<'_, F>, out: &mut String) {
+/// Appends ` k=v` for the params of an ESPice `N` row in schema order (spec §7.2a: ESPice
+/// reads instance parameters from the `N` line), except computed params and the `model`
+/// param the line already names. A Verilog-A row writes those that differ from their
+/// default, since the module declares the same defaults, and `m` as `mfactor`, the LRM name
+/// ESPice's Verilog-A instances take (`m=` is its `UnknownParameter`). A Verilog row writes
+/// every one: its A2D/D2A bridge defaults (`vdd`, `vth`, `rout`, …) are VerA's, not the
+/// cell's.
+fn n_params<'net, F: Fn(Name) -> &'net str>(row: &Row<'_, F>, out: &mut String) {
     let elab = row.elab;
-    assert_eq!(row.plan.lang, Lang::VerilogA, "a Verilog-A row");
+    let va = row.plan.lang == Lang::VerilogA;
+    assert!(va || row.plan.lang == Lang::Verilog, "an N row");
     let params = elab.params_of(row.index);
     let model = match row.plan.model {
         Source::Param(k) => params.start + k as usize,
         _ => usize::MAX,
     };
     assert!(model == usize::MAX || params.contains(&model));
+    let skip = if va { COMPUTED | DEFAULT } else { COMPUTED };
     for k in params {
-        if elab.insts.param_flags[k] & (COMPUTED | DEFAULT) != 0 || k == model {
+        if elab.insts.param_flags[k] & skip != 0 || k == model {
             continue;
         }
         let name = elab.names.get(elab.insts.param_name[k]);
         out.push(' ');
-        out.push_str(if name.eq_ignore_ascii_case("m") {
+        out.push_str(if va && name.eq_ignore_ascii_case("m") {
             "mfactor"
         } else {
             name

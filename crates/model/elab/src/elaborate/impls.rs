@@ -125,7 +125,10 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
                     | Dialect::Hspice
                     | Dialect::Ltspice
             ) | ("veriloga", Dialect::Ngspice | Dialect::Espice)
-                | ("verilog", Dialect::Ngspice | Dialect::Verilog)
+                | (
+                    "verilog",
+                    Dialect::Ngspice | Dialect::Espice | Dialect::Verilog
+                )
         );
         if template.is_none() && !default_ok {
             let (cell, imp) = (f.cell, f.impl_name[k as usize]);

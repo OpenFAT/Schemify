@@ -1,0 +1,51 @@
+schemify 1 shbench
+  doc "8-bit SAR ADC: Verilog SAR logic, Verilog-A CDAC, transistor comparator; vin = 1.8 V x 183.5/256 converts to 183 (fixture)"
+
+inst 0s0001 ./sar
+  at 0 0 R0
+  name U1
+inst 0s0002 ./cdac
+  at 200 0 R0
+  name DAC
+inst 0s0003 ./cmp
+  at 400 0 R0
+  name X1
+inst 0s0004 ./vsrc
+  at 600 0 R0
+  name VDD
+  dc 1.8
+inst 0s0005 ./vsrc
+  at 700 0 R0
+  name VIN
+  dc 1.290234375
+
+label 0n0001 -40 -40 R0 clk
+label 0n0002 -40 -20 R0 rst
+label 0n0003 -40 0 R0 cmp
+label 0n0004 40 -40 R0 d[7:0]
+label 0n0005 40 -20 R0 eoc
+label 0n0006 160 0 R0 d[7:0]
+label 0n0007 240 0 R0 vdac
+label 0n0008 360 -20 R0 vin
+label 0n0009 360 20 R0 vdac
+label 0n0010 440 0 R0 cmp
+label 0n0011 400 -40 R0 vdd
+label 0n0012 600 -30 R0 vdd
+label 0n0013 600 30 R0 0
+label 0n0014 700 -30 R0 vin
+label 0n0015 700 30 R0 0
+
+output code "128*round(at(v(\"d[7]\"), 900n)/1.8)+64*round(at(v(\"d[6]\"), 900n)/1.8)+32*round(at(v(\"d[5]\"), 900n)/1.8)+16*round(at(v(\"d[4]\"), 900n)/1.8)+8*round(at(v(\"d[3]\"), 900n)/1.8)+4*round(at(v(\"d[2]\"), 900n)/1.8)+2*round(at(v(\"d[1]\"), 900n)/1.8)+round(at(v(\"d[0]\"), 900n)/1.8)"
+
+spec code
+  min 183
+  max 183
+
+code models spice
+  | .model nch nmos level=1 vto=0.5 kp=200u lambda=0.02
+  | .model pch pmos level=1 vto=-0.5 kp=100u lambda=0.02
+
+code tran spice
+  | VCLK clk 0 PULSE(0 1.8 50n 1n 1n 49n 100n)
+  | VRST rst 0 PULSE(0 1.8 5n 1n 1n 10n 10)
+  | .tran 0.5n 950n

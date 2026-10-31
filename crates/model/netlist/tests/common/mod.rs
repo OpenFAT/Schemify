@@ -1,4 +1,7 @@
-//! Shared test helpers: projects from file texts, ids, coordinates, elaboration.
+//! Shared test helpers: projects from file texts, ids, coordinates, elaboration and its
+//! blocking violations, the hand-written fixtures.
+//!
+//! Contents: `id`, `coord`, `project`, `request`, `elab`, `blocking`, `fixtures`, `fixture`.
 
 #![allow(dead_code, reason = "each test binary uses a subset")]
 
@@ -55,6 +58,16 @@ pub fn request(dialect: Dialect) -> Request<'static> {
 
 pub fn elab(p: &Project, top: DocHandle, dialect: Dialect) -> Elab {
     schemify_elab::elaborate(p, top, &request(dialect), &mut schemify_elab::no_funcs)
+}
+
+/// The blocking (error-severity) violations of `e`, `<code> <detail>` each.
+pub fn blocking(e: &Elab) -> Vec<String> {
+    e.violations
+        .rows
+        .iter()
+        .filter(|v| v.code.severity() == schemify_elab::Severity::Error)
+        .map(|v| format!("{} {}", v.code.as_str(), v.detail))
+        .collect()
 }
 
 /// The hand-written fixtures (`tests/fixtures/*.sh*`), file name and text, sorted.

@@ -1,0 +1,39 @@
+schemify 1 shbench
+  doc "two 3-bit Verilog counters on a 1 V clock: U2's vth sits above it, so only U1 counts (fixture)"
+
+inst 0t0001 ./cnt
+  at 0 0 R0
+  name U1
+inst 0t0002 ./cnt
+  at 0 200 R0
+  name U2
+  vth 1.2
+inst 0t0003 ./res
+  at 200 0 R0
+  name RQ[2:0]
+  R 100k
+inst 0t0004 ./res
+  at 300 0 R0
+  name RP[2:0]
+  R 100k
+
+label 0n0001 -40 0 R0 clk
+label 0n0002 40 0 R0 q[2:0]
+label 0n0003 -40 200 R0 clk
+label 0n0004 40 200 R0 p[2:0]
+label 0n0005 200 -30 R0 q[2:0]
+label 0n0006 200 30 R0 0
+label 0n0007 300 -30 R0 p[2:0]
+label 0n0008 300 30 R0 0
+
+output u1_20n "4*round(at(v(\"q[2]\"), 20n)/1.8)+2*round(at(v(\"q[1]\"), 20n)/1.8)+round(at(v(\"q[0]\"), 20n)/1.8)"
+output u1_60n "4*round(at(v(\"q[2]\"), 60n)/1.8)+2*round(at(v(\"q[1]\"), 60n)/1.8)+round(at(v(\"q[0]\"), 60n)/1.8)"
+output u1_80n "4*round(at(v(\"q[2]\"), 80n)/1.8)+2*round(at(v(\"q[1]\"), 80n)/1.8)+round(at(v(\"q[0]\"), 80n)/1.8)"
+output u1_140n "4*round(at(v(\"q[2]\"), 140n)/1.8)+2*round(at(v(\"q[1]\"), 140n)/1.8)+round(at(v(\"q[0]\"), 140n)/1.8)"
+output u1_160n "4*round(at(v(\"q[2]\"), 160n)/1.8)+2*round(at(v(\"q[1]\"), 160n)/1.8)+round(at(v(\"q[0]\"), 160n)/1.8)"
+output u2_80n "4*round(at(v(\"p[2]\"), 80n)/1.8)+2*round(at(v(\"p[1]\"), 80n)/1.8)+round(at(v(\"p[0]\"), 80n)/1.8)"
+output u2_160n "4*round(at(v(\"p[2]\"), 160n)/1.8)+2*round(at(v(\"p[1]\"), 160n)/1.8)+round(at(v(\"p[0]\"), 160n)/1.8)"
+
+code tran spice
+  | VCLK clk 0 PULSE(0 1 10n 1n 1n 9n 20n)
+  | .tran 0.5n 170n

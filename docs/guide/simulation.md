@@ -337,6 +337,7 @@ Differences that matter:
 | `op(inst, param)` outputs | yes | no (`X006`) |
 | Device values in Op Annotate (`gm`, `id`, …) | yes | no |
 | Verilog-A | compiled with OpenVAF to OSDI | read as source; compiled by ESPice with Zig 0.17 (`ZIG` or `zig` on `PATH`) |
+| Verilog | compiled with Icarus for XSPICE `d_cosim` | read as source; ESPice runs it as a device with an A2D threshold on each input and a D2A driver on each output |
 
 A simulator still running after one hour is killed and its job fails.
 
@@ -363,8 +364,9 @@ the path. Files a Verilog-A source pulls in with `` `include `` are copied next 
 Compiler output goes to `.schemify/build/<out>.log`; a failed compile fails every job that needs
 it and names the source.
 
-ESPice runs compile nothing ahead of time: the Verilog-A source is copied into the job directory,
-so you need no OpenVAF.
+ESPice runs compile nothing ahead of time: the Verilog-A or Verilog source is copied into the job
+directory, so you need neither OpenVAF nor Icarus. Give a Verilog cell the bridge parameters its
+logic needs (`param vdd 1.8`, `param vth 0.9`, …): every parameter goes on its `N` line.
 
 Verilog co-simulation through ngspice `d_cosim` is compiled and wired, but not yet tested end to
 end.

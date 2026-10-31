@@ -1,0 +1,26 @@
+schemify 1 shprim
+  doc "8-bit SAR logic, Verilog model with its A2D/D2A bridge parameters (fixture)"
+  prefix U
+
+pin clk in -40 -40
+  domain digital
+pin rst in -40 -20
+  domain digital
+pin cmp in -40 0
+  domain digital
+pin d[7:0] out 40 -40
+  domain digital
+pin eoc out 40 -20
+  domain digital
+
+param vdd 1.8
+param vth 0.9
+param vhys 0
+param rout 100
+param trise 1n
+param tfall 1n
+param ttol 20p
+
+impl rtl verilog
+  model sar_m
+  file hdl/sar.v

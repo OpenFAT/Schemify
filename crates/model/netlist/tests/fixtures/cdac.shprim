@@ -1,0 +1,12 @@
+schemify 1 shprim
+  doc "behavioural 8-bit CDAC, Verilog-A model (fixture)"
+  prefix N
+
+pin d[7:0] in -40 0
+pin out out 40 0
+
+param vref 1.8
+
+impl va veriloga
+  model cdac_m
+  file va/cdac.va
