@@ -283,6 +283,7 @@ fn with_bad_actor(tag: &str, fuel: u64) -> Session {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());

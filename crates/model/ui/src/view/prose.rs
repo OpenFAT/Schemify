@@ -17,6 +17,9 @@ use crate::prose::{CODE_SCALE, code_pad};
 use crate::state::UiState;
 use crate::tables::NodeIx;
 
+/// Formulas kept laid out; the cache is dropped whole when it fills.
+const MATH_CACHED: usize = 1024;
+
 /// A `prose` node: its markdown at its font and colour, wrapped to the width; clickable when it
 /// has a `command`.
 pub(crate) fn prose_node(v: &mut View, ui: &mut Ui, n: NodeIx) {
@@ -47,9 +50,6 @@ pub(crate) fn math_node(v: &mut View, ui: &mut Ui, n: NodeIx) {
 
 // ---- private ----
 
-/// Formulas kept laid out; the cache is dropped whole when it fills.
-const MATH_CACHED: usize = 1024;
-
 /// Markdown `src` at `px` in `fg`.
 // ponytail: parsed every frame; cache the blocks per source when docs pages get long.
 fn prose(st: &mut UiState, ui: &mut Ui, src: &str, px: f32, fg: Color32) {
@@ -77,10 +77,18 @@ fn prose(st: &mut UiState, ui: &mut Ui, src: &str, px: f32, fg: Color32) {
                     ui.vertical(|ui| rich(st, ui, text, &notes, px, fg, I));
                 });
             }
-            Block::Item { depth, marker, text } => {
+            Block::Item {
+                depth,
+                marker,
+                text,
+            } => {
                 ui.horizontal_top(|ui| {
                     ui.add_space(px * 1.5 * f32::from(*depth));
-                    let m = ui.painter().layout_no_wrap(format!("{marker} "), FontId::proportional(px), fg);
+                    let m = ui.painter().layout_no_wrap(
+                        format!("{marker} "),
+                        FontId::proportional(px),
+                        fg,
+                    );
                     ui.label(egui::WidgetText::Galley(m));
                     ui.vertical(|ui| rich(st, ui, text, &notes, px, fg, 0));
                 });
@@ -93,7 +101,15 @@ fn prose(st: &mut UiState, ui: &mut Ui, src: &str, px: f32, fg: Color32) {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         let font = FontId::monospace(px * CODE_SCALE);
-                        ui.label(egui::RichText::new(text).font(font).color(fg));
+                        // Whole-pixel rows, as `prose::code_metrics` states them, so a host
+                        // windowing a long block by row count paints what the whole block does.
+                        let line = ui.fonts_mut(|f| f.row_height(&font)).ceil();
+                        ui.label(
+                            egui::RichText::new(text)
+                                .font(font)
+                                .color(fg)
+                                .line_height(Some(line)),
+                        );
                     });
             }
             Block::Math(src) => {
@@ -120,8 +136,10 @@ fn prose(st: &mut UiState, ui: &mut Ui, src: &str, px: f32, fg: Color32) {
                     });
             }
             Block::Rule => {
-                let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-                ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, fg));
+                let (r, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+                ui.painter()
+                    .hline(r.x_range(), r.center().y, Stroke::new(1.0, fg));
             }
             Block::Note(..) => {}
             Block::Image(alt, path) => match st.texture(ui.ctx(), path) {
@@ -135,9 +153,21 @@ fn prose(st: &mut UiState, ui: &mut Ui, src: &str, px: f32, fg: Color32) {
             },
         }
     }
-    for (k, b) in blocks.iter().filter(|b| matches!(b, Block::Note(..))).enumerate() {
+    for (k, b) in blocks
+        .iter()
+        .filter(|b| matches!(b, Block::Note(..)))
+        .enumerate()
+    {
         if let Block::Note(_, text) = b {
-            rich(st, ui, &format!("{}. {text}", k + 1), &notes, px * 0.85, fg, 0);
+            rich(
+                st,
+                ui,
+                &format!("{}. {text}", k + 1),
+                &notes,
+                px * 0.85,
+                fg,
+                0,
+            );
         }
     }
 }
@@ -227,7 +257,10 @@ fn math(st: &mut UiState, ui: &mut Ui, src: &str, px: f32, fg: Color32) -> egui:
         Ok(m) => m,
         Err(_) => return ui.label(egui::RichText::new(src).monospace().color(fg)),
     };
-    let (rect, r) = ui.allocate_exact_size(vec2(m.width.max(1.0), (m.height + m.depth).max(1.0)), Sense::hover());
+    let (rect, r) = ui.allocate_exact_size(
+        vec2(m.width.max(1.0), (m.height + m.depth).max(1.0)),
+        Sense::hover(),
+    );
     let p = ui.painter();
     for k in 0..m.glyph_char.len() {
         let face = FACE_NAMES[usize::from(m.glyph_face[k])];
@@ -238,7 +271,11 @@ fn math(st: &mut UiState, ui: &mut Ui, src: &str, px: f32, fg: Color32) -> egui:
             .first()
             .and_then(|r| r.glyphs.first().map(|gl| r.pos.y + gl.pos.y))
             .unwrap_or(m.glyph_px[k] * 0.8);
-        p.galley(pos2(rect.left() + m.glyph_x[k], rect.top() + m.glyph_y[k] - base), g, fg);
+        p.galley(
+            pos2(rect.left() + m.glyph_x[k], rect.top() + m.glyph_y[k] - base),
+            g,
+            fg,
+        );
     }
     for &[x, y, w, h] in &m.rules {
         let rr = egui::Rect::from_min_size(pos2(rect.left() + x, rect.top() + y), vec2(w, h));

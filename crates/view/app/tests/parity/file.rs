@@ -69,13 +69,13 @@ fn recent_files_persist_and_reopen() {
     };
     {
         let mut ed = Editor::new(opts("top.shcomp")).unwrap();
-        ed.update(&InputEvents::default(), common::VIEW, 1);
+        ed.step(&InputEvents::default(), common::VIEW, 1);
         ed.command("file.open_most_recent", "");
-        ed.update(&InputEvents::default(), common::VIEW, 2);
+        ed.step(&InputEvents::default(), common::VIEW, 2);
         assert_eq!(ed.recent().len(), 1);
     }
     let mut ed = Editor::new(opts("inv.shcomp")).unwrap();
-    ed.update(&InputEvents::default(), common::VIEW, 1);
+    ed.step(&InputEvents::default(), common::VIEW, 1);
     let names: Vec<String> = ed
         .recent()
         .iter()
@@ -89,7 +89,7 @@ fn recent_files_persist_and_reopen() {
     let text = std::fs::read_to_string(state.join("recent")).unwrap();
     assert!(text.starts_with("schemify 1 config\n"), "{text}");
     // The File menu lists them; entry 1 opens top.shcomp in a tab.
-    ed.update(&InputEvents::default(), common::VIEW, 3);
+    ed.step(&InputEvents::default(), common::VIEW, 3);
     assert!(
         ed.shell()
             .strings()
@@ -97,13 +97,13 @@ fn recent_files_persist_and_reopen() {
             .is_some_and(|s| ed.shell().tables().nodes.find(s).is_some())
     );
     ed.command("file.open_recent.1", "");
-    ed.update(&InputEvents::default(), common::VIEW, 4);
+    ed.step(&InputEvents::default(), common::VIEW, 4);
     let (h, _) = ed.active().unwrap();
     assert!(ed.session().path(h).unwrap().ends_with("top.shcomp"));
     assert_eq!(ed.session().tabs().len(), 2);
     // Negative space: an index past the list is a status message, not a crash.
     ed.command("file.open_recent.9", "");
-    ed.update(&InputEvents::default(), common::VIEW, 5);
+    ed.step(&InputEvents::default(), common::VIEW, 5);
     assert!(ed.session().status().contains("no recent file"));
     let _ = std::fs::remove_dir_all(&state);
     let _ = std::fs::remove_dir_all(&dir);
@@ -186,7 +186,7 @@ fn image_exports_png_svg_pdf_eps() {
     let png = s.dir.join("out.png");
     s.run("file.image_export.png_export", png.to_str().unwrap());
     let bytes = std::fs::read(&png).unwrap_or_else(|_| panic!("{}", s.status()));
-    let px = schemify_render::Pixmap::from_png(std::io::Cursor::new(bytes)).expect("a PNG");
+    let px = schemify_render::Image::from_png(&bytes).expect("a PNG");
     common::check_golden("export_png", px);
     // SVG: one element per scene primitive (parsed back by element kind).
     let svg = s.dir.join("out.svg");

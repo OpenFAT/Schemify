@@ -3,17 +3,13 @@
 //! the same canvas pipelines as the window, so a golden shows what the window shows. Needs a
 //! GPU, a software one (lavapipe, llvmpipe, WARP) included.
 //!
-//! Contents: `pub struct Raster` (`new`, `canvas`, `render`), `pub struct Image` (`png`,
-//! `from_png`)
+//! Contents: `pub struct Raster` (`new`, `canvas`, `render`), `pub struct Image` (`pixel`,
+//! `png`, `from_png`)
 
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 
 use crate::device;
 use crate::gpu::{CanvasGpu, InstanceRows};
-
-/// The texture format offscreen frames are drawn in (the window's surfaces are 8-bit unorm
-/// too, so a golden matches the window).
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A headless GPU with egui-wgpu's renderer and the canvas in its callback resources.
 pub struct Raster {
@@ -33,6 +29,10 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+/// The texture format offscreen frames are drawn in (the window's surfaces are 8-bit unorm
+/// too, so a golden matches the window).
+const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
 impl std::fmt::Debug for Raster {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Raster").finish_non_exhaustive()
@@ -48,11 +48,22 @@ impl Raster {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Result<Raster, String> {
         let g = device::ladder(|fallback| {
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+            let instance = wgpu::Instance::new(
+                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+            );
             crate::window::block_on(device::open(&instance, None, fallback))
         })?;
-        let mut renderer = Renderer::new(&g.device, FORMAT, RendererOptions::default());
-        renderer.callback_resources.insert(CanvasGpu::new(&g.device, FORMAT));
+        let mut renderer = Renderer::new(
+            &g.device,
+            FORMAT,
+            RendererOptions {
+                dithering: false,
+                ..RendererOptions::default()
+            },
+        );
+        renderer
+            .callback_resources
+            .insert(CanvasGpu::new(&g.device, FORMAT));
         Ok(Raster {
             device: g.device,
             queue: g.queue,
@@ -61,6 +72,10 @@ impl Raster {
     }
 
     /// The canvas rows the next frame draws: pack them while egui runs the frame.
+    ///
+    /// # Panics
+    ///
+    /// Never: the canvas is inserted with the renderer.
     pub fn canvas(&mut self) -> &mut InstanceRows {
         let gpu = self.renderer.callback_resources.get_mut::<CanvasGpu>();
         &mut gpu.expect("the canvas is a resource").rows
@@ -71,7 +86,12 @@ impl Raster {
     /// # Panics
     ///
     /// Panics on an empty size or a GPU that cannot map its buffer.
-    pub fn render(&mut self, ctx: &egui::Context, mut out: egui::FullOutput, size: (u32, u32)) -> Image {
+    pub fn render(
+        &mut self,
+        ctx: &egui::Context,
+        mut out: egui::FullOutput,
+        size: (u32, u32),
+    ) -> Image {
         let (w, h) = size;
         assert!(w > 0 && h > 0, "an image has pixels");
         let ppp = out.pixels_per_point;
@@ -82,14 +102,23 @@ impl Raster {
         };
         for (id, deltas) in &out.textures_delta.set {
             for delta in deltas {
-                self.renderer.update_texture(&self.device, &self.queue, *id, delta);
+                self.renderer
+                    .update_texture(&self.device, &self.queue, *id, delta);
             }
         }
-        let gpu = self.renderer.callback_resources.get_mut::<CanvasGpu>().expect("the canvas is a resource");
+        let gpu = self
+            .renderer
+            .callback_resources
+            .get_mut::<CanvasGpu>()
+            .expect("the canvas is a resource");
         gpu.prepare(&self.device, &self.queue, &screen);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("raster"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -98,12 +127,19 @@ impl Raster {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("raster") });
-        let mut cmds = self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &prims, &screen);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("raster"),
+            });
+        let mut cmds =
+            self.renderer
+                .update_buffers(&self.device, &self.queue, &mut encoder, &prims, &screen);
         crate::window::draw(&self.renderer, &mut encoder, &view, &prims, &screen);
         // Rows of a buffer copy are padded to 256 bytes.
         let row = w * 4;
-        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("raster readback"),
             size: u64::from(padded) * u64::from(h),
@@ -120,7 +156,11 @@ impl Raster {
                     rows_per_image: Some(h),
                 },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         cmds.push(encoder.finish());
         self.queue.submit(cmds);
@@ -130,7 +170,11 @@ impl Raster {
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("the GPU finishes the frame");
         let mut rgba = Vec::with_capacity((row * h) as usize);
-        for line in slice.get_mapped_range().expect("the readback is mapped").chunks(padded as usize) {
+        for line in slice
+            .get_mapped_range()
+            .expect("the readback is mapped")
+            .chunks(padded as usize)
+        {
             rgba.extend_from_slice(&line[..row as usize]);
         }
         buffer.unmap();
@@ -138,13 +182,41 @@ impl Raster {
             self.renderer.free_texture(id);
         }
         out.textures_delta.clear();
-        let image = Image { width: w, height: h, rgba };
-        debug_assert_eq!(image.rgba.len(), (w * h * 4) as usize, "whole rows read back");
+        let image = Image {
+            width: w,
+            height: h,
+            rgba,
+        };
+        debug_assert_eq!(
+            image.rgba.len(),
+            (w * h * 4) as usize,
+            "whole rows read back"
+        );
         image
     }
 }
 
 impl Image {
+    /// The RGBA of pixel `(x, y)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `(x, y)` is outside the image.
+    #[must_use]
+    pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
+        assert!(
+            x < self.width && y < self.height,
+            "pixel ({x}, {y}) inside the image"
+        );
+        let i = (y as usize * self.width as usize + x as usize) * 4;
+        [
+            self.rgba[i],
+            self.rgba[i + 1],
+            self.rgba[i + 2],
+            self.rgba[i + 3],
+        ]
+    }
+
     /// The image as PNG bytes.
     ///
     /// # Errors
@@ -174,9 +246,16 @@ impl Image {
         let info = r.next_frame(&mut buf).map_err(|e| e.to_string())?;
         let rgba = match info.color_type {
             png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
-            png::ColorType::Rgb => buf[..info.buffer_size()].chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+            png::ColorType::Rgb => buf[..info.buffer_size()]
+                .chunks(3)
+                .flat_map(|p| [p[0], p[1], p[2], 255])
+                .collect(),
             other => return Err(format!("a {other:?} PNG")),
         };
-        Ok(Image { width: info.width, height: info.height, rgba })
+        Ok(Image {
+            width: info.width,
+            height: info.height,
+            rgba,
+        })
     }
 }

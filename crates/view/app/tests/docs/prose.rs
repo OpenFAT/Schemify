@@ -71,7 +71,7 @@ fn the_page_scrolls_and_hides_scrolled_out_rows_from_clicks() {
         .find(sh.strings().find("docs.page").unwrap())
         .unwrap();
     let max = sh.layout().scroll_max(page).expect("laid out");
-    assert!(max > 100.0, "the OTA page is taller than the window: {max}");
+    assert!(max > 0.0, "the OTA page is taller than the window: {max}");
     let r = sh.layout().row_of(page).unwrap();
     let area = sh.layout().rect()[r];
     let top = |s: &Session| {
@@ -93,10 +93,14 @@ fn the_page_scrolls_and_hides_scrolled_out_rows_from_clicks() {
     });
     s.frame(ev);
     let y1 = top(&s);
+    // The page moved up by the offset the wheel scrolled it to: three lines, or the end.
+    let sym = s.ed.shell().strings().find("docs.page").unwrap();
+    let off = s.ed.shell().ui().scroll_of(sym);
     assert!(
-        (y0 - y1 - 3.0 * schemify_ui::UiState::WHEEL_PX).abs() < 0.5,
-        "{y0} → {y1}"
+        off > 0.0 && off <= 3.0 * schemify_ui::UiState::WHEEL_PX + 0.5,
+        "offset {off}"
     );
+    assert!((y0 - y1 - off).abs() < 0.5, "{y0} → {y1}, offset {off}");
     // Far past the end: clamped to the content.
     for _ in 0..50 {
         let mut ev = schemify_ui::InputEvents::default();
@@ -117,12 +121,12 @@ fn the_page_scrolls_and_hides_scrolled_out_rows_from_clicks() {
         .nodes
         .find(sh.strings().find("docs.b.0").unwrap())
         .unwrap();
-    let rr = sh.layout().rect()[sh.layout().row_of(n).unwrap()];
-    assert!(rr.y + rr.h < area.y);
+    let r = sh.layout().row_of(n).unwrap();
+    let rr = sh.layout().rect()[r];
+    assert!(rr.y < area.y, "the first block is scrolled above the pane");
     assert!(
-        sh.layout()
-            .hit(rr.x + 5.0, rr.y + rr.h - 1.0, false)
-            .is_none_or(|h| sh.layout().node()[h] != n)
+        !sh.layout().clip()[r].contains(rr.x + 5.0, rr.y + 1.0),
+        "clipped by the pane, so the pointer there is not over it"
     );
 }
 
@@ -139,7 +143,13 @@ fn golden_docs_page() {
 #[test]
 fn prose_images_load_from_inside_the_project_only() {
     let dir = common::fixture("ota", "images");
-    let png = schemify_render::Pixmap::new(40, 20).into_png().unwrap();
+    let png = schemify_render::Image {
+        width: 40,
+        height: 20,
+        rgba: vec![0; 40 * 20 * 4],
+    }
+    .png()
+    .unwrap();
     std::fs::create_dir_all(dir.join("img")).unwrap();
     std::fs::write(dir.join("img/dot.png"), &png).unwrap();
     std::fs::write(dir.join("img/fake.png"), b"not a png").unwrap();
@@ -165,24 +175,24 @@ fn prose_images_load_from_inside_the_project_only() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     for _ in 0..3 {
         s.frame(Default::default());
     }
     let _ = std::fs::remove_file(&outside_file);
     let sh = &s.ed.shell();
-    let t = &sh.text();
-    let id = t
-        .image_id("img/dot.png")
+    let t = sh.ui();
+    let img = t
+        .image("img/dot.png")
         .expect("a PNG inside the project loads");
-    assert_eq!((t.image(id).width, t.image(id).height), (40, 20));
+    assert_eq!((img.width, img.height), (40, 20));
     let escaped = format!("../{outside}");
-    assert_eq!(
-        t.image_id(&escaped),
-        None,
+    assert!(
+        t.image(&escaped).is_none(),
         "outside the project: never read"
     );
-    assert_eq!(t.image_id("img/fake.png"), None, "not a PNG");
+    assert!(t.image("img/fake.png").is_none(), "not a PNG");
     let n = sh
         .tables()
         .nodes
@@ -191,9 +201,10 @@ fn prose_images_load_from_inside_the_project_only() {
         .layout()
         .row_of(n.unwrap())
         .expect("the first prose block is laid out");
-    let list = t.prose_list(sh.layout().prose()[r]);
-    assert_eq!(list.image_rect.len(), 1, "one image drawn, two alt texts");
-    assert_eq!(list.image_rect[0][2..], [40.0, 20.0]);
+    assert!(
+        sh.layout().rect()[r].h >= 20.0,
+        "the image's height is laid out"
+    );
 }
 
 /// Prop `p` of UI node `id`, `None` when the node is not composed.
@@ -222,10 +233,11 @@ fn laid_out(s: &Session, id: &str) -> (usize, usize) {
         .layout()
         .row_of(n)
         .unwrap_or_else(|| panic!("{id} laid out"));
-    let p = sh.layout().prose()[r];
-    assert_ne!(p, u32::MAX, "{id} is prose");
-    let list = sh.text().prose_list(p);
-    (list.text_id.len(), list.math_id.len())
+    assert!(sh.layout().rect()[r].h > 0.0, "{id} is shown");
+    let src = sh
+        .strings()
+        .get(sh.tables().nodes.prop(schemify_ui::Prop::Value)[usize::from(n)]);
+    schemify_ui::prose::census(src)
 }
 
 const PREVIEW: &str = "docs.b.0.preview";

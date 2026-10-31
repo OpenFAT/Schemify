@@ -24,7 +24,7 @@ use schemify_ui::{
 };
 use schemify_wave::{Applied, MAX_DATASETS, RawPlot, Request, Waves};
 
-/// What one dock frame ([`WavesView::update`]) asks of the editor.
+/// What one dock pass ([`WavesView::view`]) asks of the editor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DockFrame {
     /// The dock needs a repaint.
@@ -107,51 +107,96 @@ impl WavesView {
     }
 
     /// One pass of the dock in `ui`'s rectangle: its tables shown (taking keys when `keys`,
-    /// the pointer being over it), and on the frame's first pass its commands and the pointer
-    /// over its panes turned into viewer requests and applied; the panes are painted on every
-    /// pass. `Ctrl+W`, or Escape over the dock with nothing open, asks to close it.
-    pub fn view(&mut self, ui: &mut egui::Ui, keys: bool, now: u64) -> DockFrame {
+    /// the pointer being over it), and on the input's pass (`first`) its commands and the
+    /// pointer over its panes turned into viewer requests and applied; the panes are painted on
+    /// every pass. `Ctrl+W`, or Escape over the dock with nothing open, asks to close it.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a negative dock rectangle (egui never lays one out).
+    pub fn view(&mut self, ui: &mut egui::Ui, keys: bool, first: bool, now: u64) -> DockFrame {
         let ctx = ui.ctx().clone();
-        let first = ctx.current_pass_index() == 0;
         let rect = ui.max_rect();
         let size = (rect.width(), rect.height());
-        assert!(size.0 >= 0.0 && size.1 >= 0.0, "a dock of non-negative size");
+        assert!(
+            size.0 >= 0.0 && size.1 >= 0.0,
+            "a dock of non-negative size"
+        );
         if self.viewport != size {
             self.viewport = size;
             self.ui.set_capacity(0, 0);
             self.rebuild();
         }
         let idle = self.state.dialog().is_none() && !egui::Popup::is_any_open(&ctx);
-        let (ctrl_w, escape) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::W) && i.modifiers.command,
-                i.key_pressed(egui::Key::Escape),
-            )
-        });
+        // Each key with the modifiers it was pressed under (a frame may release them again).
+        let pressed = |key: egui::Key, command: bool| {
+            ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. }
+                        if *k == key && modifiers.command == command)
+                })
+            })
+        };
+        let (ctrl_w, escape) = (
+            pressed(egui::Key::W, true),
+            pressed(egui::Key::Escape, false),
+        );
         if first && (ctrl_w || (keys && escape && idle)) {
-            return DockFrame { redraw: true, close: true };
+            return DockFrame {
+                redraw: true,
+                close: true,
+            };
         }
         let mut routed = Routed::default();
         self.state.set_keys(keys);
-        schemify_ui::show(ui, &self.tables, &self.strings, &mut self.state, &mut self.frame, &mut routed);
+        schemify_ui::show(
+            ui,
+            &self.tables,
+            &self.strings,
+            &mut self.state,
+            &mut self.frame,
+            &mut routed,
+        );
         self.geo = Geometry::of(&self.tables, &self.frame, &self.strings);
-        let mut frame = DockFrame { redraw: false, close: false };
+        let mut frame = DockFrame {
+            redraw: false,
+            close: false,
+        };
         if first {
             frame.redraw = self.route(&ctx, &routed, ui.layer_id(), rect, now);
         }
-        schemify_ui::waves::paint_window(&ctx.layer_painter(ui.layer_id()), &self.geo, &self.waves, &self.ui);
+        schemify_ui::waves::paint_window(
+            &ctx.layer_painter(ui.layer_id()),
+            &self.geo,
+            &self.waves,
+            &self.ui,
+        );
         frame
     }
 
     /// The frame's dock commands and pane pointer events as viewer requests, applied; the
     /// lists refitted to their panels. Returns whether anything changed.
-    fn route(&mut self, ctx: &egui::Context, routed: &Routed, layer: egui::LayerId, rect: egui::Rect, now: u64) -> bool {
+    fn route(
+        &mut self,
+        ctx: &egui::Context,
+        routed: &Routed,
+        layer: egui::LayerId,
+        rect: egui::Rect,
+        now: u64,
+    ) -> bool {
         let (mut changed, mut recompose) = (false, false);
         for i in 0..routed.commands.len() {
             let name = self.strings.get(routed.commands.command[i]).to_owned();
             let node = self.strings.get(routed.commands.node[i]).to_owned();
-            let command = WaveCommand { name: &name, arg: routed.commands.arg(i), node: &node, now_ms: now };
-            let fx = self.ui.command(&self.waves, &self.geo, command, &mut self.requests);
+            let command = WaveCommand {
+                name: &name,
+                arg: routed.commands.arg(i),
+                node: &node,
+                now_ms: now,
+            };
+            let fx = self
+                .ui
+                .command(&self.waves, &self.geo, command, &mut self.requests);
             changed |= fx.redraw;
             recompose |= fx.recompose;
             self.show_dialog(fx.dialog);
@@ -160,7 +205,9 @@ impl WavesView {
         if self.state.dialog().is_none() {
             let mut events = InputEvents::default();
             schemify_ui::pointer_events(ctx, rect, layer, "waves", &mut events.events);
-            let fx = self.ui.route(&self.waves, &self.geo, &events, now, &mut self.requests);
+            let fx = self
+                .ui
+                .route(&self.waves, &self.geo, &events, now, &mut self.requests);
             changed |= fx.redraw;
             recompose |= fx.recompose;
             self.show_dialog(fx.dialog);
@@ -170,7 +217,10 @@ impl WavesView {
             let res = self.waves.apply(&r);
             recompose |= self.ui.note(&self.waves, &r, res.as_ref()).recompose;
         }
-        let fit = (WaveUi::rows_fit(self.geo.signals), WaveUi::rows_fit(self.geo.traces));
+        let fit = (
+            WaveUi::rows_fit(self.geo.signals),
+            WaveUi::rows_fit(self.geo.traces),
+        );
         recompose |= self.ui.set_capacity(fit.0, fit.1);
         if recompose {
             self.rebuild();
@@ -251,6 +301,7 @@ impl WavesView {
     }
 
     /// The source text of every trace, in legend order.
+    #[must_use]
     pub fn traces(&self) -> Vec<&str> {
         (0..self.waves.trace_count())
             .map(|i| self.waves.src(i))

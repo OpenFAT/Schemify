@@ -9,7 +9,8 @@ use schemify_ui::InputEvents;
 /// A field with an `input` command sends its text as typed and its `command` on Enter.
 #[test]
 fn a_field_sends_input_as_typed_and_submits_on_enter() {
-    let src = "node t.box text_input\n  parent status\n  value ab\n  input t.typed\n  command t.done\n";
+    let src =
+        "node t.box text_input\n  parent status\n  value ab\n  input t.typed\n  command t.done\n";
     let mut f = crate::fixture(&[src]);
     f.click("t.box");
     assert_eq!(f.state.focus(), f.sym("t.box"), "a click focuses the field");
@@ -19,7 +20,10 @@ fn a_field_sends_input_as_typed_and_submits_on_enter() {
     assert_eq!(f.commands(&out), ["t.typed"]);
     assert_eq!(out.commands.arg(0), "abc");
     let out = crate::key(&mut f, "Ctrl+S");
-    assert!(out.commands.is_empty(), "bindings wait while a field has the keyboard");
+    assert!(
+        out.commands.is_empty(),
+        "bindings wait while a field has the keyboard"
+    );
     let out = crate::key(&mut f, "Enter");
     assert_eq!(f.commands(&out), ["t.done"]);
     assert_eq!(out.commands.arg(0), "abc");

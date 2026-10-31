@@ -40,7 +40,7 @@ fn boots_without_the_default_ui_plugin() {
         s.text()
     );
     let px = s.render();
-    assert_eq!((px.width(), px.height()), (VIEW.0 as u16, VIEW.1 as u16));
+    assert_eq!((px.width, px.height), (VIEW.0 as u32, VIEW.1 as u32));
 }
 
 /// A plugin-owned command (the default UI's `help.keys`, bound to `/`) re-contributes UI.
@@ -90,6 +90,7 @@ fn manifest_plugins_load_in_order_and_receive_commands() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(Default::default());
     s.frame(Default::default());

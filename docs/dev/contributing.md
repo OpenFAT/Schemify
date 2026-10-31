@@ -30,13 +30,13 @@ The crates sit in four layer folders, and a crate depends only on its own layer 
 | `crates/protocol/` | `abi`, `format` | Wire and file formats every side shares: the plugin ABI, the line-record codec. Leaves. |
 | `crates/plugins/` | `plugin` | The wasm plugin host: capabilities, snapshots, request intake. |
 | `crates/model/` | `expr doc elab netlist wave run config cli ui canvas editor` | Owned tables and the transforms over them, the CLI and editor spines. All headless: no GPU or window crate (`tests/deps.rs`). |
-| `crates/view/` | `render`, `app` | The humble view: pixels, the window, paint caches. |
+| `crates/view/` | `render`, `app` | The window (egui-winit), the GPU (egui-wgpu, the canvas pipelines), paint caches. |
 
 The editor follows the one-way GUI architecture (`gui-architecture` skill, D4/D6/D39):
 
 - **Owner**: each table has one writing crate (`pub(crate)` mutation). Anyone else appends to a **request table** the owner drains in spine order.
 - **Spine**: one function per pipeline, one line per transform (`Editor::update` for a frame, the CLI's `spines`). Branches that choose which work happens sit in the spine; transforms are straight loops over whole tables.
-- **Humble view**: `app::paint` reads `Editor::picture` (borrowed, read-only tables) and reports back only through `Editor::painted`. A decision worth a test lives in the model as a pure function, never in the view.
+- **Humble view**: `ui::show` draws the composed UI tables as egui widgets and writes only its layout and request tables; `app::paint` fills the canvas slot from `Editor::canvas_picture` (borrowed, read-only tables) and reports back only through `Editor::painted`. A decision worth a test lives in the model as a pure function, never in the view.
 - **Idle at zero**: frames run on input, a worker's post, or a deadline from `wake_ms(&tables)`; with nothing pending the window sleeps.
 
 Place a file in the lowest crate that can import everything it needs and that owns the tables it writes. A helper that touches one owner's tables goes into that owner; a type several owners share goes into a leaf. Topic folders (`utils`, `common`, `helpers`) close cycles, so code is grouped by owner instead.
@@ -89,7 +89,7 @@ UI and visual work has its own guides under [skills/](skills/), read as document
 4. **Determinism.** The same input gives byte-identical output on Linux, macOS, Windows and the web: ordered collections in output paths, i32 milli-unit coordinates where the spec says i32 (D33), fixed reduction order.
 5. **Asserts** (TigerStyle). At least two per function on average: entry invariants and one exit invariant, positive and negative space, split rather than compound. Every table has a stated capacity; every loop and queue is bounded.
 6. **Safe Rust**: `#![forbid(unsafe_code)]`, unless a profile proves the need and a `// SAFETY:` comment states the obligation.
-7. **Dependencies** climb the ladder: stdlib, an existing dependency, a few lines of our own, then a new dependency justified in the PR. GPU and window crates (wgpu, winit, vello_cpu) live in `crates/view/`, wasmi in `plugin`, Lua in `config`; `tests/deps.rs` checks the headless core and the model.
+7. **Dependencies** climb the ladder: stdlib, an existing dependency, a few lines of our own, then a new dependency justified in the PR. GPU and window crates (wgpu, winit, egui-wgpu, egui-winit) live in `crates/view/`; egui itself (headless) is the view of `ui` and `editor`; wasmi lives in `plugin`, Lua in `config`; `tests/deps.rs` checks the headless core and the model.
 8. **Inert design files** (D7): nothing in a `.sh*` file can run a command.
 9. **Exhaustive boundary matches**: a `match` over an enum that crosses a crate boundary lists every variant, so a new variant is a compiler-listed set of sites.
 10. **Marked simplifications**: `// ponytail: <ceiling and upgrade path>`.

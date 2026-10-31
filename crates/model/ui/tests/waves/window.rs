@@ -46,15 +46,23 @@ fn window_composes_and_lists_fit_their_panels() {
     w.apply(vec![Request::AddPane, Request::AddPane]);
     assert_eq!(w.geo.panes.len(), 3);
     for pair in w.geo.panes.windows(2) {
-        assert!(pair[0].y + pair[0].h <= pair[1].y + 0.5);
-        assert!((pair[0].h - pair[1].h).abs() <= 1.0);
+        assert!(
+            pair[0].y + pair[0].h <= pair[1].y + 0.5,
+            "{:?}",
+            w.geo.panes
+        );
+        assert!((pair[0].h - pair[1].h).abs() <= 1.0, "{:?}", w.geo.panes);
     }
     // A smaller window re-measures the lists instead of overflowing.
     let before = rows.len();
     w.ui.set_capacity(0, 0);
     w.view((1200.0, 500.0));
     w.geo = Geometry::of(&w.tables, &w.frame, &w.strings);
-    assert!(WaveUi::rows_fit(w.geo.signals) < before as u16, "{:?} {before}", w.geo.signals);
+    assert!(
+        WaveUi::rows_fit(w.geo.signals) < before as u16,
+        "{:?} {before}",
+        w.geo.signals
+    );
 }
 
 #[test]

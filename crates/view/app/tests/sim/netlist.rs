@@ -188,6 +188,7 @@ fn netlist_command_writes_the_cli_bytes() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(InputEvents::default());
     s.key("n");
@@ -339,7 +340,27 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
             .strings()
             .find("textview")
             .expect("the text tab composed");
-    let at = 10_000.0 * 12.0;
+    // One text row's height as the editor windows by it (the code metrics of the body's font).
+    let line = {
+        let sh = s.ed.shell();
+        let style = sh
+            .strings()
+            .find("text-view-body")
+            .map_or(schemify_ui::NO_STYLE, |x| sh.tables().styles.row(x));
+        let px = sh
+            .tables()
+            .styles
+            .get(
+                style,
+                schemify_ui::Kind::Prose,
+                schemify_ui::StyleProp::Font,
+            )
+            .max(8);
+        schemify_ui::prose::code_metrics(sh.ctx(), px as u16)
+            .expect("metrics at the body's font")
+            .line
+    };
+    let at = 10_000.0 * line;
     s.ed.set_scroll(tv, at, 1e9);
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
@@ -356,7 +377,7 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
     let windowed = s.render();
     // Oracle: the lines from 9960 on as a short tab, scrolled by as much less.
     open_text(&mut s, body[9_960..10_200].join("\n"));
-    s.ed.set_scroll(tv, at - 9_960.0 * 12.0, 1e9);
+    s.ed.set_scroll(tv, at - 9_960.0 * line, 1e9);
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     let (kids, lines) = text_tab_nodes(&s);
@@ -367,7 +388,7 @@ fn a_long_text_tab_lays_out_a_window_of_lines() {
     );
     let oracle = s.render();
     assert!(
-        oracle.data() == windowed.data(),
+        oracle.rgba == windowed.rgba,
         "the window paints what the whole text does"
     );
     // Negative space: a line that wraps (here at 5000) is never above the window.

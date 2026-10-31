@@ -281,14 +281,23 @@ impl Session {
     ///
     /// No GPU, hardware or software (lavapipe, llvmpipe), is available.
     pub fn render(&mut self) -> Image {
-        let raster = self
-            .raster
-            .get_or_insert_with(|| Raster::new().expect("a GPU, hardware or software, for renders"));
+        let raster = self.raster.get_or_insert_with(|| {
+            Raster::new().expect("a GPU, hardware or software, for renders")
+        });
         self.now += 1000;
         let input = InputEvents::default().raw(VIEW);
-        let frame =
-            schemify_app::paint::frame(&mut self.ed, &mut self.caches, input, self.now, raster.canvas());
-        raster.render(self.ed.shell().ctx(), frame.output, (VIEW.0 as u32, VIEW.1 as u32))
+        let frame = schemify_app::paint::frame(
+            &mut self.ed,
+            &mut self.caches,
+            input,
+            self.now,
+            raster.canvas(),
+        );
+        raster.render(
+            self.ed.shell().ctx(),
+            frame.output,
+            (VIEW.0 as u32, VIEW.1 as u32),
+        )
     }
 }
 

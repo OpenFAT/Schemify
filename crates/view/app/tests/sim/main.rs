@@ -19,7 +19,7 @@ use common::{Session, fixture};
 use schemify_editor::checks::{LAYER_ERROR, LAYER_INFO, LAYER_WARN};
 use schemify_editor::editor::{Editor, Options};
 use schemify_run::{SimCommand, Tools};
-use schemify_ui::{InputEvent, InputEvents, Kind};
+use schemify_ui::{InputEvents, Kind};
 
 /// Reads `.param R=` from the netlist, sleeps, then writes an ASCII raw file with an operating
 /// point (v(in) = 1, v(out) = 0.5) and a transient where v(out) rises linearly from 0 to R
@@ -81,20 +81,36 @@ fn open_with(
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(InputEvents::default());
     s.frame(InputEvents::default());
     s
 }
 
-/// Runs the command bound to UI node `id` (AccessKit activation: no menu needs to be open).
+/// Clicks UI node `id`, first opening the menus that hold it (title, then each cascade).
 fn activate(s: &mut Session, id: &str) {
-    let sym =
-        s.ed.shell()
+    let chain: Vec<String> = {
+        let sh = s.ed.shell();
+        let n = &sh.tables().nodes;
+        let sym = sh
             .strings()
             .find(id)
             .unwrap_or_else(|| panic!("{id} interned"));
-    s.send([InputEvent::Activate { node: sym }]);
+        let mut at = n.find(sym).unwrap_or_else(|| panic!("{id} composed"));
+        let mut chain = Vec::new();
+        while n.parent()[usize::from(at)] != schemify_ui::NO_NODE {
+            at = n.parent()[usize::from(at)];
+            if n.kind()[usize::from(at)] == schemify_ui::Kind::Menu {
+                chain.push(sh.strings().get(n.id()[usize::from(at)]).to_owned());
+            }
+        }
+        chain
+    };
+    for menu in chain.iter().rev() {
+        s.click_node(menu);
+    }
+    s.click_node(id);
 }
 
 /// Ticks with no input until the run is idle (the window's timer path), bounded.

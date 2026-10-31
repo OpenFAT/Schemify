@@ -263,12 +263,23 @@ impl InputEvents {
     /// windowing backend would have sent for the same events. A key chord becomes the text it
     /// types when it is printable without Ctrl or Alt, otherwise a key event; `Mods` rows set
     /// the modifiers of the events after them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a text row's range lies outside [`InputEvents::text`] or the viewport is
+    /// negative.
     #[must_use]
     pub fn raw(&self, viewport: (f32, f32)) -> egui::RawInput {
         use egui::{Event, Modifiers, PointerButton, Pos2};
-        assert!(viewport.0 >= 0.0 && viewport.1 >= 0.0, "a viewport of non-negative size");
+        assert!(
+            viewport.0 >= 0.0 && viewport.1 >= 0.0,
+            "a viewport of non-negative size"
+        );
         let mut raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(viewport.0, viewport.1))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(viewport.0, viewport.1),
+            )),
             ..egui::RawInput::default()
         };
         let mut m = Modifiers::NONE;
@@ -280,29 +291,32 @@ impl InputEvents {
         for e in &self.events {
             let ev = match *e {
                 InputEvent::PointerMove { x, y } => Event::PointerMoved(Pos2::new(x, y)),
-                InputEvent::PointerDown { x, y, button: b } | InputEvent::PointerUp { x, y, button: b } => {
-                    Event::PointerButton {
-                        pos: Pos2::new(x, y),
-                        button: button(b),
-                        pressed: matches!(e, InputEvent::PointerDown { .. }),
+                InputEvent::PointerDown { x, y, button: b }
+                | InputEvent::PointerUp { x, y, button: b } => Event::PointerButton {
+                    pos: Pos2::new(x, y),
+                    button: button(b),
+                    pressed: matches!(e, InputEvent::PointerDown { .. }),
+                    modifiers: m,
+                },
+                InputEvent::PointerLeave => Event::PointerGone,
+                InputEvent::Wheel { x, y, dx, dy } => {
+                    // A backend reports where the pointer is before it scrolls there.
+                    raw.events.push(Event::PointerMoved(Pos2::new(x, y)));
+                    Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Line,
+                        delta: egui::vec2(dx, dy),
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Unknown,
                         modifiers: m,
                     }
                 }
-                InputEvent::PointerLeave => Event::PointerGone,
-                InputEvent::Wheel { dx, dy, .. } => Event::MouseWheel {
-                    unit: egui::MouseWheelUnit::Line,
-                    delta: egui::vec2(dx, dy),
-                    phase: egui::TouchPhase::Move,
-                    source: egui::MouseWheelSource::Unknown,
-                    modifiers: m,
-                },
-                InputEvent::Text { start, end } => Event::Text(self.text[start as usize..end as usize].to_owned()),
-                InputEvent::Preedit { start, end } => {
-                    Event::Ime(egui::ImeEvent::Preedit {
-                        text: self.text[start as usize..end as usize].to_owned(),
-                        active_range_chars: None,
-                    })
+                InputEvent::Text { start, end } => {
+                    Event::Text(self.text[start as usize..end as usize].to_owned())
                 }
+                InputEvent::Preedit { start, end } => Event::Ime(egui::ImeEvent::Preedit {
+                    text: self.text[start as usize..end as usize].to_owned(),
+                    active_range_chars: None,
+                }),
                 InputEvent::Mods { mods } => {
                     m = Modifiers {
                         alt: mods.0 & Mods::ALT != 0,
@@ -321,7 +335,10 @@ impl InputEvents {
             };
             raw.events.push(ev);
         }
-        debug_assert!(raw.events.len() <= 2 * self.events.len(), "at most two egui events per row");
+        debug_assert!(
+            raw.events.len() <= 2 * self.events.len(),
+            "at most two egui events per row"
+        );
         raw
     }
 }
@@ -343,7 +360,11 @@ fn chord_events(chord: Chord) -> Vec<egui::Event> {
     let printable = k < Key::NAMED && k != u32::from(' ');
     if printable && bits & (Mods::CTRL | Mods::ALT | Mods::SUPER) == 0 {
         let c = char::from_u32(k).unwrap_or('?');
-        let c = if bits & Mods::SHIFT != 0 { c.to_ascii_uppercase() } else { c };
+        let c = if bits & Mods::SHIFT != 0 {
+            c.to_ascii_uppercase()
+        } else {
+            c
+        };
         return vec![egui::Event::Text(c.to_string())];
     }
     let name = match chord.key() {
@@ -362,7 +383,27 @@ fn chord_events(chord: Chord) -> Vec<egui::Event> {
         Key::UP => "ArrowUp".to_owned(),
         Key::DOWN => "ArrowDown".to_owned(),
         _ if k > Key::NAMED + 0x100 => format!("F{}", k - Key::NAMED - 0x100),
-        _ => char::from_u32(k).map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default(),
+        _ => {
+            // A shifted symbol is its US-layout key with Shift, as a backend reports it.
+            let c = char::from_u32(k).unwrap_or('?');
+            let base = crate::keys::US_SHIFTED
+                .iter()
+                .find(|p| p.1 == c)
+                .map_or(c, |p| p.0);
+            if base != c {
+                return vec![egui::Event::Key {
+                    key: egui::Key::from_name(&base.to_string()).unwrap_or(egui::Key::Num0),
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers {
+                        shift: true,
+                        ..modifiers
+                    },
+                }];
+            }
+            c.to_ascii_uppercase().to_string()
+        }
     };
     let Some(key) = egui::Key::from_name(&name) else {
         return Vec::new();

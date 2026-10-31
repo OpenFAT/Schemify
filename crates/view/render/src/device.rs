@@ -24,7 +24,9 @@ pub(crate) async fn open(
     fallback: bool,
 ) -> Result<Opened, String> {
     let named = match fallback {
-        false => wgpu::util::initialize_adapter_from_env(instance, surface).await.ok(),
+        false => wgpu::util::initialize_adapter_from_env(instance, surface)
+            .await
+            .ok(),
         true => None,
     };
     let adapter = match named {
@@ -40,7 +42,8 @@ pub(crate) async fn open(
             .await
             .map_err(|e| e.to_string())?,
     };
-    let required_limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+    let required_limits =
+        wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
     let (device, queue) = adapter
         .request_device(&wgpu::DeviceDescriptor {
             required_limits,
@@ -48,7 +51,11 @@ pub(crate) async fn open(
         })
         .await
         .map_err(|e| e.to_string())?;
-    Ok(Opened { adapter, device, queue })
+    Ok(Opened {
+        adapter,
+        device,
+        queue,
+    })
 }
 
 /// Tries `open` on hardware, then (naming why) on the software adapter.
@@ -77,14 +84,30 @@ mod tests {
             tried.push(fallback);
             Ok::<_, String>(fallback)
         });
-        assert_eq!((first, &tried[..]), (Ok(false), &[false][..]), "hardware first, alone");
+        assert_eq!(
+            (first, &tried[..]),
+            (Ok(false), &[false][..]),
+            "hardware first, alone"
+        );
         tried.clear();
         let second = ladder(|fallback| {
             tried.push(fallback);
-            if fallback { Ok(1) } else { Err("no Vulkan".to_owned()) }
+            if fallback {
+                Ok(1)
+            } else {
+                Err("no Vulkan".to_owned())
+            }
         });
-        assert_eq!((second, &tried[..]), (Ok(1), &[false, true][..]), "then software");
+        assert_eq!(
+            (second, &tried[..]),
+            (Ok(1), &[false, true][..]),
+            "then software"
+        );
         let none = ladder::<()>(|fallback| Err(format!("{fallback}")));
-        assert_eq!(none, Err("hardware: false; software: true".to_owned()), "both named");
+        assert_eq!(
+            none,
+            Err("hardware: false; software: true".to_owned()),
+            "both named"
+        );
     }
 }

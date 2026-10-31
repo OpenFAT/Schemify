@@ -259,11 +259,12 @@ fn a_recent_file_of_another_project_switches_project() {
     };
     {
         let mut ed = Editor::new(opts(b.join("inv.shcomp"))).unwrap();
-        ed.update(&InputEvents::default(), common::VIEW, 1);
+        ed.step(&InputEvents::default(), common::VIEW, 1);
     }
     let ed = Editor::new(opts(a.join("top.shcomp"))).unwrap();
     let mut s = Session {
         caches: Default::default(),
+        raster: None,
         ed,
         now: 1,
         dir: a.clone(),
@@ -320,6 +321,7 @@ fn canvas_options_from_init_lua_reach_the_palette() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(InputEvents::default());
     assert_eq!((s.ed.opts().dim, s.ed.opts().width_tenths), (25, 15));

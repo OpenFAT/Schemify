@@ -33,7 +33,21 @@ pub(crate) fn field(v: &mut View, ui: &mut Ui, n: NodeIx) {
         w if w > 0.0 => w,
         _ => ui.available_width(),
     };
-    let edit = if multi { TextEdit::multiline(&mut buf) } else { TextEdit::singleline(&mut buf) };
+    // Ctrl+Enter submits a focused text area: taken before the edit inserts a line break.
+    let focused = ui.memory(|m| m.has_focus(v.egui_id(n)));
+    let submit = multi
+        && focused
+        && ui.input_mut(|i| {
+            let at = i.events.iter().position(|e| {
+                matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.ctrl)
+            });
+            at.map(|k| i.events.remove(k)).is_some()
+        });
+    let edit = if multi {
+        TextEdit::multiline(&mut buf)
+    } else {
+        TextEdit::singleline(&mut buf)
+    };
     let edit = edit
         .id(v.egui_id(n))
         .font(font(px))
@@ -45,7 +59,11 @@ pub(crate) fn field(v: &mut View, ui: &mut Ui, n: NodeIx) {
     let r = if multi {
         // A fixed height is the area's; else it grows with its lines up to AREA_EM_MAX.
         let fixed = v.px(n, StyleProp::Height);
-        let (max_h, min_h) = if fixed > 0.0 { (fixed, fixed) } else { (px * AREA_EM_MAX, 0.0) };
+        let (max_h, min_h) = if fixed > 0.0 {
+            (fixed, fixed)
+        } else {
+            (px * AREA_EM_MAX, 0.0)
+        };
         egui::ScrollArea::vertical()
             .id_salt(v.egui_id(n).with("area"))
             .max_height(max_h)
@@ -53,7 +71,10 @@ pub(crate) fn field(v: &mut View, ui: &mut Ui, n: NodeIx) {
             .show(ui, |ui| ui.add(edit))
             .inner
     } else {
-        ui.add_sized(vec2(width, ui.spacing().interact_size.y.max(px + 8.0)), edit)
+        ui.add_sized(
+            vec2(width, ui.spacing().interact_size.y.max(px + 8.0)),
+            edit,
+        )
     };
     if v.st.focus_next == id {
         r.request_focus();
@@ -63,12 +84,11 @@ pub(crate) fn field(v: &mut View, ui: &mut Ui, n: NodeIx) {
         let text = buf.clone();
         v.run(n, Prop::Input, &text);
     }
-    let (enter, ctrl) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.ctrl));
+    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if submit {
+        v.run(n, Prop::Command, &buf);
+    }
     if r.has_focus() {
-        if multi && enter && ctrl {
-            let text = buf.clone();
-            v.run(n, Prop::Command, &text);
-        }
         v.st.edit = Some((id, buf));
     } else if r.lost_focus() && enter && !multi {
         v.run(n, Prop::Command, &buf);

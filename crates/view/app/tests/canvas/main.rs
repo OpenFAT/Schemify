@@ -1,6 +1,6 @@
-//! Oracle for the editor's retained canvas rows (D39): one session painted every step with a
-//! painter that keeps its instance rows (so frames patch them where the tables changed), one
-//! painted with a fresh painter (so every frame packs every row afresh), both driven by the
+//! Oracle for the editor's retained canvas rows (D39): one session rendered every step with
+//! GPU rows it keeps (so frames patch them where the tables changed), one rendered with fresh
+//! rows and caches (so every frame packs every row afresh), both driven by the
 //! same seeded random
 //! actions — selections, deletes, undo/redo, shapes drawn with the shape tools, and the view
 //! options that change what the canvas draws (hidden layers, fill, line width, colors,
@@ -13,11 +13,11 @@ mod bytes;
 mod common;
 mod snapshot;
 
-use common::{Session, U, Ui, VIEW};
+use common::{Session, U, Ui};
 use schemify_canvas::{CanvasPrims, LAYER_DEAD};
 use schemify_editor::checks;
-use schemify_render::peniko::Color;
-use schemify_render::{CpuPainter, Pixmap};
+use schemify_render::Image;
+use schemify_render::gpu::InstanceRows;
 
 struct Rng(u64);
 
@@ -138,25 +138,29 @@ fn act(s: &mut Session, rng: &mut Rng) -> String {
     }
 }
 
-fn paint(s: &mut Session, p: &mut CpuPainter) -> Pixmap {
-    p.reset();
-    schemify_app::paint::frame(&mut s.ed, &mut s.caches, p);
-    p.finish(Color::BLACK)
+/// Renders `s`; `fresh` first drops its canvas rows and paint caches, so every row is packed
+/// anew.
+fn paint(s: &mut Session, fresh: bool) -> Image {
+    if fresh {
+        s.caches = Default::default();
+        if let Some(r) = s.raster.as_mut() {
+            *r.canvas() = InstanceRows::default();
+        }
+    }
+    s.render()
 }
 
 /// (largest channel difference, pixels differing by more than 1).
-fn compare(a: &Pixmap, b: &Pixmap) -> (u8, usize) {
+fn compare(a: &Image, b: &Image) -> (u8, usize) {
     let mut worst = 0u8;
     let mut off = 0usize;
-    let pixel_pairs = a.data().iter().zip(b.data());
-    for (x, y) in pixel_pairs {
-        let d = [
-            x.r.abs_diff(y.r),
-            x.g.abs_diff(y.g),
-            x.b.abs_diff(y.b),
-            x.a.abs_diff(y.a),
-        ];
-        let m = d.into_iter().max().unwrap_or(0);
+    for (x, y) in a.rgba.chunks(4).zip(b.rgba.chunks(4)) {
+        let m = x
+            .iter()
+            .zip(y)
+            .map(|(p, q)| p.abs_diff(*q))
+            .max()
+            .unwrap_or(0);
         worst = worst.max(m);
         off += usize::from(m > 1);
     }
@@ -224,10 +228,8 @@ fn walk(seed: u64, steps: usize) {
         &format!("canvas-fresh-{seed}"),
         Ui::Default,
     );
-    let (w, h) = (VIEW.0 as u16, VIEW.1 as u16);
-    let mut rows = CpuPainter::new(w, h, 1.0);
     let (mut rng_a, mut rng_b) = (Rng(seed), Rng(seed));
-    paint(&mut kept, &mut rows);
+    paint(&mut kept, false);
     for step in 0..steps {
         let what = act(&mut kept, &mut rng_a);
         act(&mut fresh, &mut rng_b);
@@ -237,13 +239,20 @@ fn walk(seed: u64, steps: usize) {
             "step {step} ({what}): same document"
         );
         markers_match(&kept, &format!("step {step} ({what})"));
-        let got = paint(&mut kept, &mut rows);
-        let want = paint(&mut fresh, &mut CpuPainter::new(w, h, 1.0));
+        let got = paint(&mut kept, false);
+        let want = paint(&mut fresh, true);
         let (worst, off) = compare(&got, &want);
+        if off * 1000 > got.rgba.len() / 4 {
+            let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+            common::save_png(&got, &tmp.join("kept.png"));
+            common::save_png(&want, &tmp.join("fresh.png"));
+        }
+        // Patched rows sit in other slots, so antialiased overlaps of one layer blend in another
+        // order: a few pixels (the GPU settled-frame oracle's bound, perf `SEAM_SHARE`).
         assert!(
-            worst <= 1,
-            "step {step} ({what}): the kept rows draw differently from fresh ones by {worst} \
-             ({off} pixels off by more than 1)"
+            off * 1000 <= got.rgba.len() / 4,
+            "step {step} ({what}): the kept rows draw differently from fresh ones in {off} \
+             pixels (worst {worst})"
         );
     }
 }
@@ -262,9 +271,8 @@ fn a_kept_canvas_equals_a_fresh_pack() {
 #[test]
 fn an_idle_frame_does_no_work() {
     let mut s = Session::open("inv", "top.shcomp", "idle", Ui::Default);
-    let mut p = CpuPainter::new(VIEW.0 as u16, VIEW.1 as u16, 1.0);
     for _ in 0..8 {
-        schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
+        s.render();
         if s.ed.wake_ms().is_none() {
             break;
         }
@@ -276,8 +284,7 @@ fn an_idle_frame_does_no_work() {
         assert!(!s.frame(Default::default()), "frame {k}: nothing changed");
         assert_eq!(s.ed.wake_ms(), None, "frame {k}: nothing scheduled");
         assert_eq!(s.ed.scene().built, built, "frame {k}: no scene build");
-        p.reset();
-        schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
+        s.render();
         assert_eq!(s.ed.wake_ms(), None, "frame {k}: paint schedules nothing");
     }
     // Negative space: input does work (a wheel notch zooms); its frame is complete, so no
@@ -290,8 +297,7 @@ fn an_idle_frame_does_no_work() {
         dy: 1.0,
     });
     assert!(s.frame(ev), "a zoom changes the picture");
-    p.reset();
-    schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
+    s.render();
     assert_eq!(s.ed.wake_ms(), None, "a zoom frame asks for no other");
     assert!(
         !s.frame(Default::default()),

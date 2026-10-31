@@ -135,6 +135,26 @@ pub enum Change<'diff> {
     Edits([(&'diff [u32], &'diff [u32]); 6]),
 }
 
+/// Labels under this many logical px are not drawn (and a table whose largest label is under
+/// it draws none).
+pub const TEXT_MIN_PX: f64 = 3.0;
+
+/// The dots of a readable grid ([`grid_dots`]): dot `(i, j)` sits at world
+/// `(i · pitch, j · pitch)`, for `i` in `i_first..=i_last` and `j` in `j_first..=j_last`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridDots {
+    /// Milli-units between neighbouring dots.
+    pub pitch: f64,
+    /// The first dot column in view.
+    pub i_first: i64,
+    /// The last dot column in view (`≥ i_first`).
+    pub i_last: i64,
+    /// The first dot row in view.
+    pub j_first: i64,
+    /// The last dot row in view (`≥ j_first`).
+    pub j_last: i64,
+}
+
 /// Dirty ranges kept per row array before they merge into one.
 const DIRTY_MAX: usize = 8;
 
@@ -158,26 +178,6 @@ pub(crate) fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>) {
         d.iter().any(|q| q.start <= start && end <= q.end),
         "the new range is noted"
     );
-}
-
-/// Labels under this many logical px are not drawn (and a table whose largest label is under
-/// it draws none).
-pub const TEXT_MIN_PX: f64 = 3.0;
-
-/// The dots of a readable grid ([`grid_dots`]): dot `(i, j)` sits at world
-/// `(i · pitch, j · pitch)`, for `i` in `i_first..=i_last` and `j` in `j_first..=j_last`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GridDots {
-    /// Milli-units between neighbouring dots.
-    pub pitch: f64,
-    /// The first dot column in view.
-    pub i_first: i64,
-    /// The last dot column in view (`≥ i_first`).
-    pub i_last: i64,
-    /// The first dot row in view.
-    pub j_first: i64,
-    /// The last dot row in view (`≥ j_first`).
-    pub j_last: i64,
 }
 
 /// The grid `step` milli-units apart as `view` shows it through `cam`: the dot pitch in

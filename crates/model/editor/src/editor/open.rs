@@ -105,6 +105,7 @@ impl Editor {
             dialog: Dialog::None,
             clipboard: Vec::new(),
             textures: Default::default(),
+            dock_split: super::probe::DOCK_SPLIT,
             rng: IdRng::new(opts.seed ^ 0x5eed),
             viewport: (0.0, 0.0),
             canvas_gen: [0; 5],

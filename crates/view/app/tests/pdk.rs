@@ -36,6 +36,7 @@ fn session(tag: &str) -> Session {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(Default::default());
     s

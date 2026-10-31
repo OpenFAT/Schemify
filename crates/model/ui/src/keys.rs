@@ -7,7 +7,7 @@
 //!   `DELETE`, `INSERT`, `HOME`, `END`, `PAGE_UP`, `PAGE_DOWN`, `LEFT`, `RIGHT`, `UP`, `DOWN`,
 //!   `PRINT`; `f(u8) -> Key`, `parse(&str) -> Option<Key>`
 //! - `pub struct Chord`: `new(Mods, Key) -> Chord`, `parse(&str) -> Option<Chord>`,
-//!   `mods(self) -> Mods`, `key(self) -> Key`
+//!   `mods(self) -> Mods`, `key(self) -> Key`; crate-only `const US_SHIFTED`
 
 /// Keyboard modifier bits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
@@ -24,6 +24,35 @@ pub struct Key(pub u32);
 /// it (`%` is Shift+5 on a US layout, and xschem writes it as plain `%`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Chord(u32);
+
+/// US-layout pairs of an unshifted key and the character Shift makes it type. egui names keys,
+/// not characters, so a chord like `Ctrl+#` (no text event while Ctrl is held) arrives as
+/// `3` with Shift; the keymap's characters are recovered through this table.
+// ponytail: the US layout only (xschem's bindings assume it); a layout table from the platform
+// when users of other layouts bind shifted symbols.
+pub(crate) const US_SHIFTED: [(char, char); 21] = [
+    ('1', '!'),
+    ('2', '@'),
+    ('3', '#'),
+    ('4', '$'),
+    ('5', '%'),
+    ('6', '^'),
+    ('7', '&'),
+    ('8', '*'),
+    ('9', '('),
+    ('0', ')'),
+    ('-', '_'),
+    ('=', '+'),
+    ('[', '{'),
+    (']', '}'),
+    ('\\', '|'),
+    (';', ':'),
+    ('\'', '"'),
+    ('`', '~'),
+    (',', '<'),
+    ('.', '>'),
+    ('/', '?'),
+];
 
 /// Offset of the function keys from [`Key::NAMED`], past every named key.
 const F_KEYS: u32 = 0x100;

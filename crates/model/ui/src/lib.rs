@@ -54,7 +54,10 @@ mod view;
 pub mod waves;
 
 pub use compose::{compose, patch_last};
-pub use fonts::{BOLD, FontGlyph, FontInfo, ITALIC, context, font_definitions, ui_font_glyphs, ui_font_info, ui_fonts};
+pub use fonts::{
+    BOLD, FontGlyph, FontInfo, ITALIC, context, font_definitions, ui_font_glyphs, ui_font_info,
+    ui_fonts,
+};
 pub use input::{Button, CommandRequests, InputEvent, InputEvents, Routed};
 pub use keys::{Chord, Key, Mods};
 pub use kinds::{Kind, Prop, StyleProp};

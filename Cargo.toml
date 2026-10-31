@@ -83,18 +83,14 @@ skrifa = { version = "0.44", default-features = false, features = ["std"] }
 # compositor has no server-side decorations (GNOME) the window gets smithay's plain fallback
 # frame: move/resize/close/maximize/minimize, no title text, no Adwaita styling.
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
-# The canvas tables' geometry (`canvas`, `render`): the kurbo vello_cpu uses, so all name one
-# `Rect`.
+# The canvas tables' geometry (`canvas`, `render`), so both name one `Rect`.
 kurbo = { version = "0.13", default-features = false, features = ["std"] }
-# Colours, brushes, fonts and images (`render`): the peniko vello_cpu uses.
-peniko = { version = "0.6", default-features = false, features = ["std"] }
-# Docs-page PNG decoding in the headless editor: the decoder vello_cpu already links.
+# Docs-page PNG decoding in the headless editor, PNG export and goldens (`render::Image`).
 png = { version = "0.18", default-features = false }
-# Render's own instanced pipelines (WGSL); render picks the backends per target.
+# The canvas's instanced pipelines (WGSL) and egui-wgpu; render picks the backends per target.
 wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
 # render's test that its shaders compile for WebGL2: the naga wgpu links, its GLSL writer on.
 naga = { version = "30", default-features = false, features = ["wgsl-in", "glsl-out"] }
-vello_cpu = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
@@ -104,7 +100,7 @@ debug = 1
 
 # D39 binary size (docs/dev/perf.md "Binary size"): code that is cold at run time is optimized for
 # size; the hot paths (parse, load, elaborate, netlist, expressions, waveforms, wasmi, render,
-# vello_cpu, text shaping, layout) stay at opt-level 3. The binary crates themselves
+# egui and its glyph rasterizer) stay at opt-level 3. The binary crates themselves
 # (schemify-cli, schemify-app) take no override: cargo then drops `CARGO_PROFILE_RELEASE_STRIP`
 # for their link (cargo 1.95), and the release env would ship symbols.
 [profile.release.package]
@@ -121,7 +117,6 @@ lua-lex = { opt-level = "z" }
 lua-code = { opt-level = "z" }
 lua-types = { opt-level = "z" }
 lua-gc = { opt-level = "z" }
-# Editor: accessibility over D-Bus (kept: accessibility is not optional) and its async runtime.
 accesskit = { opt-level = "z" }
 accesskit_atspi_common = { opt-level = "z" }
 accesskit_consumer = { opt-level = "z" }

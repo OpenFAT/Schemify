@@ -2,8 +2,8 @@
 //! titles and cascades), each painted from its style props, plus the menubar and the popups
 //! menus and dropdowns open.
 //!
-//! Contents: `pub const DISABLED_ALPHA`, `pub fn row_style`; crate-only `widget`, `menubar`,
-//! `separator`
+//! Contents: `pub const DISABLED_ALPHA`, `pub fn row_style`; crate-only `enum Shown`, `widget`,
+//! `menubar`, `separator`
 
 use egui::{Id, Pos2, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
 
@@ -34,13 +34,24 @@ pub(crate) enum Shown {
 ///
 /// Panics if `node` is not a node index.
 #[must_use]
-pub fn row_style(tables: &UiTables, title_style: u16, node: NodeIx, cascade: bool, title: bool, prop: StyleProp) -> u32 {
+pub fn row_style(
+    tables: &UiTables,
+    title_style: u16,
+    node: NodeIx,
+    cascade: bool,
+    title: bool,
+    prop: StyleProp,
+) -> u32 {
     let n = &tables.nodes;
     let i = usize::from(node);
     assert!(i < n.len(), "node index out of range");
     let class = n.class[i];
     if title {
-        let c = if class != NO_STYLE { class } else { title_style };
+        let c = if class != NO_STYLE {
+            class
+        } else {
+            title_style
+        };
         return tables.styles.get(c, Kind::Item, prop);
     }
     if cascade {
@@ -58,8 +69,7 @@ pub(crate) fn widget(v: &mut View, ui: &mut Ui, n: NodeIx) {
             popup(v, ui, n, &r);
         }
         Kind::Menu => {
-            let open = egui::Popup::is_id_open(ui.ctx(), popup_id(v, n));
-            let r = row(v, ui, n, Shown::Cascade, open);
+            let r = row(v, ui, n, Shown::Cascade, false);
             popup(v, ui, n, &r);
         }
         Kind::Label => {
@@ -140,21 +150,20 @@ fn popup(v: &mut View, ui: &Ui, n: NodeIx, r: &Response) -> bool {
         .fill(bg)
         .stroke(Stroke::new(border, border_c))
         .inner_margin(egui::Margin::symmetric(0, pad_y.min(127.0) as i8));
-    let cascade = v.kind(n) == Kind::Menu && v.t.nodes.parent[usize::from(n)] != crate::tables::NO_NODE
+    let cascade = v.kind(n) == Kind::Menu
+        && v.t.nodes.parent[usize::from(n)] != crate::tables::NO_NODE
         && v.kind(v.t.nodes.parent[usize::from(n)]) == Kind::Menu;
     let shown = if cascade {
-        let id = popup_id(v, n);
-        if r.hovered() {
-            egui::Popup::open_id(ui.ctx(), id);
-        }
-        egui::Popup::from_response(r)
-            .id(id)
-            .kind(egui::PopupKind::Menu)
-            .align(egui::RectAlign::RIGHT_START)
-            .frame(frame)
-            .gap(0.0)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .show(|ui| body(v, ui, n, min_w))
+        // A cascade nests in its menu's state (egui keeps one open popup per window).
+        let margin = egui::Margin::symmetric(0, pad_y.min(127.0) as i8);
+        let config = egui::containers::menu::MenuConfig::new().style(move |s: &mut egui::Style| {
+            s.visuals.window_fill = bg;
+            s.visuals.window_stroke = Stroke::new(border, border_c);
+            s.spacing.menu_margin = margin;
+        });
+        egui::containers::menu::SubMenu::new()
+            .config(config)
+            .show(ui, r, |ui| body(v, ui, n, min_w))
     } else {
         egui::Popup::menu(r)
             .id(popup_id(v, n))
@@ -190,24 +199,44 @@ fn row(v: &mut View, ui: &mut Ui, n: NodeIx, shown: Shown, active: bool) -> Resp
         style(StyleProp::Gap) as f32,
     );
     let label = v.prop(n, Prop::Label).to_owned();
-    let accel = if matches!(kind, Kind::Item) { v.prop(n, Prop::Accel).to_owned() } else { String::new() };
+    let accel = if matches!(kind, Kind::Item) {
+        v.prop(n, Prop::Accel).to_owned()
+    } else {
+        String::new()
+    };
     let checkable = !v.t.nodes.props[Prop::Checked as usize][usize::from(n)].is_none()
         && matches!(kind, Kind::Item | Kind::Checkbox);
     let checked = v.t.nodes.is_checked(v.s, n);
     let disabled = v.t.nodes.is_disabled(v.s, n);
     let arrow = cascade || kind == Kind::Dropdown;
-    let icon = (kind == Kind::Button).then(|| icon::parse(v.prop(n, Prop::Icon))).flatten();
+    let icon = (kind == Kind::Button)
+        .then(|| icon::parse(v.prop(n, Prop::Icon)))
+        .flatten();
     let painter = ui.painter().clone();
     let text = painter.layout_no_wrap(label.clone(), font(px), egui::Color32::PLACEHOLDER);
     let acc = painter.layout_no_wrap(accel.clone(), font(px), egui::Color32::PLACEHOLDER);
     let check_w = if checkable { px * 1.2 } else { 0.0 };
     let arrow_w = if arrow { px } else { 0.0 };
     let label_w = if icon.is_some() { 16.0 } else { text.size().x };
-    let acc_w = if accel.is_empty() { 0.0 } else { gap + acc.size().x };
-    let content = vec2(pad * 2.0 + check_w + label_w + acc_w + arrow_w, text.size().y.max(px) + pad_y * 2.0);
-    let fixed = vec2(style(StyleProp::Width) as f32, style(StyleProp::Height) as f32);
+    let acc_w = if accel.is_empty() {
+        0.0
+    } else {
+        gap + acc.size().x
+    };
+    let content = vec2(
+        pad * 2.0 + check_w + label_w + acc_w + arrow_w,
+        text.size().y.max(px) + pad_y * 2.0,
+    );
+    let fixed = vec2(
+        style(StyleProp::Width) as f32,
+        style(StyleProp::Height) as f32,
+    );
     let mut size = vec2(
-        if fixed.x > 0.0 { fixed.x } else { content.x.max(style(StyleProp::MinWidth) as f32) },
+        if fixed.x > 0.0 {
+            fixed.x
+        } else {
+            content.x.max(style(StyleProp::MinWidth) as f32)
+        },
         if fixed.y > 0.0 { fixed.y } else { content.y },
     );
     // Across a column cell (its minimum: nothing is placed in it yet) or a justified popup,
@@ -219,10 +248,23 @@ fn row(v: &mut View, ui: &mut Ui, n: NodeIx, shown: Shown, active: bool) -> Resp
         size.x = size.x.max(ui.available_width());
     }
     let clickable = !disabled && kind != Kind::Label;
-    let (rect, r) = ui.allocate_exact_size(size, if clickable { Sense::click() } else { Sense::hover() });
+    let (rect, r) = ui.allocate_exact_size(
+        size,
+        if clickable {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
     let hovered = clickable && r.hovered();
     let pick = |base: StyleProp, hover: StyleProp, act: StyleProp| {
-        let c = if active { style(act) } else if hovered { style(hover) } else { 0 };
+        let c = if active {
+            style(act)
+        } else if hovered {
+            style(hover)
+        } else {
+            0
+        };
         if c & 0xff != 0 { c } else { style(base) }
     };
     let bg = pick(StyleProp::Bg, StyleProp::HoverBg, StyleProp::ActiveBg);
@@ -245,14 +287,26 @@ fn row(v: &mut View, ui: &mut Ui, n: NodeIx, shown: Shown, active: bool) -> Resp
     if checkable && checked {
         let s = px * 0.35;
         let c = pos2(x + s, mid);
-        let pts = vec![pos2(c.x - s, c.y), pos2(c.x - s * 0.3, c.y + s * 0.7), pos2(c.x + s, c.y - s * 0.8)];
+        let pts = vec![
+            pos2(c.x - s, c.y),
+            pos2(c.x - s * 0.3, c.y + s * 0.7),
+            pos2(c.x + s, c.y - s * 0.8),
+        ];
         painter.add(Shape::line(pts, Stroke::new(1.5, fgc)));
     }
     x += check_w;
     match &icon {
         Some(icon) => {
             let at = Pos2::new(x, mid - 8.0);
-            paint_paths(&painter, &icon.fill, &icon.stroke, at, 1.0, icon::ICON_STROKE, fgc);
+            paint_paths(
+                &painter,
+                &icon.fill,
+                &icon.stroke,
+                at,
+                1.0,
+                icon::ICON_STROKE,
+                fgc,
+            );
         }
         None => {
             painter.galley(pos2(x, mid - text.size().y / 2.0), text.clone(), fgc);
@@ -267,9 +321,17 @@ fn row(v: &mut View, ui: &mut Ui, n: NodeIx, shown: Shown, active: bool) -> Resp
     if arrow {
         let (ax, s) = (rect.right() - pad - px * 0.5, px * 0.25);
         let pts = if cascade {
-            vec![pos2(ax - s * 0.5, mid - s), pos2(ax + s * 0.5, mid), pos2(ax - s * 0.5, mid + s)]
+            vec![
+                pos2(ax - s * 0.5, mid - s),
+                pos2(ax + s * 0.5, mid),
+                pos2(ax - s * 0.5, mid + s),
+            ]
         } else {
-            vec![pos2(ax - s, mid - s * 0.5), pos2(ax + s, mid - s * 0.5), pos2(ax, mid + s * 0.5)]
+            vec![
+                pos2(ax - s, mid - s * 0.5),
+                pos2(ax + s, mid - s * 0.5),
+                pos2(ax, mid + s * 0.5),
+            ]
         };
         painter.add(Shape::convex_polygon(pts, fgc, Stroke::NONE));
     }
@@ -282,5 +344,9 @@ fn row(v: &mut View, ui: &mut Ui, n: NodeIx, shown: Shown, active: bool) -> Resp
     r.widget_info(|| egui::WidgetInfo::selected(wt, !disabled, checked, &label));
     v.record(n, rect, None);
     let tip = v.prop(n, Prop::Tooltip).to_owned();
-    if tip.is_empty() { r } else { r.on_hover_text(tip) }
+    if tip.is_empty() {
+        r
+    } else {
+        r.on_hover_text(tip)
+    }
 }

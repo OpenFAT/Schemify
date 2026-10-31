@@ -4,10 +4,11 @@
 //! loaded docs images. Hover, focus, open menus and caret live in egui's memory.
 //!
 //! Contents:
-//! - `pub struct UiState`: `MAX_SCROLL`, `MAX_SPLIT`, `scroll_of`, `set_scroll`, `split_of`,
-//!   `set_split`, `set_dialog`, `set_dialog_at`, `dialog`, `dialog_at`, `focus`, `focus_text`,
-//!   `set_keys`, `set_image`, `image`
-//! - `pub struct Image`
+//! - `pub struct UiState`: `MAX_SCROLL`, `MAX_SPLIT`, `SCROLL_TRIES`, `WHEEL_PX`, `MAX_IMAGES`,
+//!   `scroll_of`, `set_scroll`, `split_of`, `set_split`, `set_dialog`, `set_dialog_at`, `dialog`,
+//!   `dialog_at`, `focus`, `focus_text`, `set_keys`, `set_image`, `image`; crate-only
+//!   `scroll_request`, `keep_scroll`, `texture`
+//! - `pub struct Image`; crate-only `struct NodeValue`
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,6 +24,8 @@ pub struct UiState {
     pub(crate) dialog_at: Option<(f32, f32)>,
     /// Bumped whenever a dialog opens, so a reopened dialog forgets where it was dragged.
     pub(crate) dialog_serial: u32,
+    /// The serial of the dialog last drawn (a new one is sized in a pass of its own).
+    pub(crate) dialog_drawn: u32,
     /// The focused text field and its edit buffer (the field shows the node's value otherwise).
     pub(crate) edit: Option<(Sym, String)>,
     /// A text field to focus the next time it is shown.
@@ -33,8 +36,9 @@ pub struct UiState {
     pub(crate) scroll: Vec<NodeValue>,
     /// Second-pane size of each dragged `split` node, by node id.
     pub(crate) split: Vec<NodeValue>,
-    /// Scroll nodes the host moved ([`UiState::set_scroll`]); the view scrolls them once.
-    pub(crate) scroll_requests: Vec<Sym>,
+    /// Scroll nodes the host moved ([`UiState::set_scroll`]), with the frames left to reach
+    /// the offset (egui clamps it to the content it measured last frame).
+    pub(crate) scroll_requests: Vec<(Sym, u8)>,
     /// Docs images by project-relative path, uploaded to egui on first use.
     pub(crate) images: HashMap<String, (Image, Option<egui::TextureHandle>)>,
     /// Laid-out formulas by (source, px bits).
@@ -74,6 +78,8 @@ impl UiState {
     pub const MAX_SCROLL: usize = 64;
     /// Split nodes whose divider positions are remembered; the oldest is forgotten beyond this.
     pub const MAX_SPLIT: usize = 64;
+    /// Frames a host's scroll request is retried while egui's content grows toward it.
+    pub const SCROLL_TRIES: u8 = 4;
     /// Logical px per wheel line (a backend's pixel scroll is divided by it).
     pub const WHEEL_PX: f32 = 40.0;
     /// Docs images kept; registering more forgets none but refuses the new one.
@@ -82,7 +88,11 @@ impl UiState {
     /// Scroll offset of `scroll` node `id` in pixels (0 when never scrolled).
     #[must_use]
     pub fn scroll_of(&self, id: Sym) -> f32 {
-        let v = self.scroll.iter().find(|s| s.id == id).map_or(0.0, |s| s.value);
+        let v = self
+            .scroll
+            .iter()
+            .find(|s| s.id == id)
+            .map_or(0.0, |s| s.value);
         debug_assert!(v >= 0.0, "offsets are clamped at zero");
         v
     }
@@ -92,22 +102,39 @@ impl UiState {
     pub fn set_scroll(&mut self, id: Sym, offset: f32, max: f32) {
         let v = offset.clamp(0.0, max.max(0.0));
         remember(&mut self.scroll, Self::MAX_SCROLL, id, v);
-        if !self.scroll_requests.contains(&id) && self.scroll_requests.len() < Self::MAX_SCROLL {
-            self.scroll_requests.push(id);
+        self.scroll_requests.retain(|r| r.0 != id);
+        if self.scroll_requests.len() < Self::MAX_SCROLL {
+            self.scroll_requests.push((id, Self::SCROLL_TRIES));
         }
         debug_assert!(self.scroll.len() <= Self::MAX_SCROLL);
     }
 
-    /// The offset the host asked `id` to scroll to, once.
-    pub(crate) fn take_scroll_request(&mut self, id: Sym) -> Option<f32> {
-        let k = self.scroll_requests.iter().position(|&s| s == id)?;
-        self.scroll_requests.swap_remove(k);
-        Some(self.scroll_of(id))
+    /// The offset the host asked `id` to scroll to, while it is pending.
+    pub(crate) fn scroll_request(&self, id: Sym) -> Option<f32> {
+        self.scroll_requests
+            .iter()
+            .any(|r| r.0 == id)
+            .then(|| self.scroll_of(id))
     }
 
-    /// Records where the view left `id` scrolled.
+    /// Records where the view left `id` scrolled. A pending request the view did not reach
+    /// yet (its content still growing) keeps its offset for a few more frames.
     pub(crate) fn keep_scroll(&mut self, id: Sym, offset: f32, max: f32) {
-        remember(&mut self.scroll, Self::MAX_SCROLL, id, offset.clamp(0.0, max.max(0.0)));
+        if let Some(k) = self.scroll_requests.iter().position(|r| r.0 == id) {
+            let want = self.scroll_of(id);
+            let tries = &mut self.scroll_requests[k].1;
+            *tries = tries.saturating_sub(1);
+            if (offset - want).abs() > 0.5 && *tries > 0 {
+                return;
+            }
+            self.scroll_requests.swap_remove(k);
+        }
+        remember(
+            &mut self.scroll,
+            Self::MAX_SCROLL,
+            id,
+            offset.clamp(0.0, max.max(0.0)),
+        );
     }
 
     /// Size in pixels of `split` node `id`'s second pane along the split's axis, once its

@@ -29,9 +29,14 @@ pub struct CanvasGpu {
     pub rows: InstanceRows,
 }
 
+/// The egui paint callback's payload: which [`Stage`] to draw.
+struct StageCallback(Stage);
+
 impl std::fmt::Debug for CanvasGpu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CanvasGpu").field("dirty", &self.rows.dirty_bytes()).finish_non_exhaustive()
+        f.debug_struct("CanvasGpu")
+            .field("dirty", &self.rows.dirty_bytes())
+            .finish_non_exhaustive()
     }
 }
 
@@ -47,11 +52,17 @@ impl CanvasGpu {
 
     /// Uploads the rows packed this frame and the camera of their frame (none drawn when the
     /// frame showed no canvas). Call after the frame's egui pass, before its render pass.
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, screen: &ScreenDescriptor) {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen: &ScreenDescriptor,
+    ) {
         self.pipelines.upload(device, queue, &mut self.rows);
         if let Some(frame) = self.rows.frame {
             let size = (screen.size_in_pixels[0], screen.size_in_pixels[1]);
-            self.pipelines.write_camera(queue, &frame, f64::from(screen.pixels_per_point), size);
+            self.pipelines
+                .write_camera(queue, &frame, f64::from(screen.pixels_per_point), size);
         }
         debug_assert_eq!(self.rows.dirty_bytes(), 0, "every packed row uploaded");
     }
@@ -60,18 +71,21 @@ impl CanvasGpu {
 impl Stage {
     /// The egui shape that draws this stage at its place in the shape list. `rect` is the
     /// whole screen: the stage draws in target pixels, clipped by its shape's clip rectangle.
-    #[must_use]
     pub fn shape(self, rect: egui::Rect) -> egui::Shape {
-        egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(rect, StageCallback(self)))
+        egui::Shape::Callback(egui_wgpu::Callback::new_paint_callback(
+            rect,
+            StageCallback(self),
+        ))
     }
 }
 
-// ---- private ----
-
-struct StageCallback(Stage);
-
 impl CallbackTrait for StageCallback {
-    fn paint(&self, info: egui::PaintCallbackInfo, pass: &mut wgpu::RenderPass<'static>, resources: &CallbackResources) {
+    fn paint(
+        &self,
+        info: egui::PaintCallbackInfo,
+        pass: &mut wgpu::RenderPass<'static>,
+        resources: &CallbackResources,
+    ) {
         let Some(gpu) = resources.get::<CanvasGpu>() else {
             return; // a renderer without the canvas (a UI-only raster)
         };

@@ -16,16 +16,16 @@
 //! Contents:
 //! - `pub const CORE_UI`
 //! - `pub struct Shell`, `Shell::strings`, `Shell::tables`, `Shell::ui`, `Shell::layout`,
-//!   `Shell::text`, `Shell::rejects`, `Shell::new`, `Shell::set_plugins`, `Shell::set_state`,
-//!   `Shell::refresh`, `Shell::invalidate`, `Shell::sym`, `Shell::canvas_rect`,
-//!   `Shell::palette`
+//!   `Shell::ctx`, `Shell::text`, `Shell::rejects`, `Shell::new`, `Shell::set_plugins`,
+//!   `Shell::set_state`, `Shell::refresh`, `Shell::invalidate`, `Shell::view`, `Shell::sym`,
+//!   `Shell::canvas_rect`, `Shell::palette`; crate-only `Shell::canvas_slot`
 
 use std::fmt;
 
 use schemify_canvas::{LAYERS, Palette};
 use schemify_ui::{
-    Contribution, Edit, Kind, Rect, Routed, Strings, StyleProp, Sym, UiLayout, UiState,
-    UiTables, records,
+    Contribution, Edit, Kind, Rect, Routed, Strings, StyleProp, Sym, UiLayout, UiState, UiTables,
+    records,
 };
 
 use crate::checks::{LAYER_ANNOT, LAYER_DIFF, LAYER_ERROR, LAYER_HILITE, LAYER_INFO, LAYER_WARN};
@@ -114,31 +114,37 @@ impl Default for Shell {
 
 impl Shell {
     /// String arena of every UI table; valid for the tables' current generation.
+    #[must_use]
     pub fn strings(&self) -> &Strings {
         &self.strings
     }
 
     /// `ui_nodes`, `ui_styles`, `keymap`; written only by `ui::compose` inside the frame.
+    #[must_use]
     pub fn tables(&self) -> &UiTables {
         &self.tables
     }
 
     /// Menus, dialog, hover and focus (owner: `ui`).
+    #[must_use]
     pub fn ui(&self) -> &UiState {
         &self.ui
     }
 
     /// The last frame's layout.
+    #[must_use]
     pub fn layout(&self) -> &UiLayout {
         &self.layout
     }
 
     /// The window's egui context: the backend tessellates and paints its output.
+    #[must_use]
     pub fn ctx(&self) -> &schemify_ui::egui::Context {
         &self.ctx
     }
 
     /// Lines of plugin contributions the UI parser rejected.
+    #[must_use]
     pub fn rejects(&self) -> usize {
         self.rejects
     }
@@ -284,7 +290,14 @@ impl Shell {
     /// has them while the pointer is over it).
     pub fn view(&mut self, ui: &mut schemify_ui::egui::Ui, keys: bool, out: &mut Routed) {
         self.ui.set_keys(keys);
-        schemify_ui::show(ui, &self.tables, &self.strings, &mut self.ui, &mut self.layout, out);
+        schemify_ui::show(
+            ui,
+            &self.tables,
+            &self.strings,
+            &mut self.ui,
+            &mut self.layout,
+            out,
+        );
         debug_assert_eq!(self.layout.len(), self.layout.rect().len());
     }
 
@@ -299,6 +312,7 @@ impl Shell {
     /// # Panics
     ///
     /// If a `viewport` dimension is negative.
+    #[must_use]
     pub fn canvas_rect(&self, viewport: (f32, f32)) -> Rect {
         assert!(viewport.0 >= 0.0, "a viewport of non-negative width");
         assert!(viewport.1 >= 0.0, "a viewport of non-negative height");
@@ -333,6 +347,7 @@ impl Shell {
     /// # Panics
     ///
     /// Never: the selection layer is one of the palette's layers.
+    #[must_use]
     pub fn palette(&self, light: bool) -> (Palette, u32) {
         let theme = if light { "light" } else { "dark" };
         let mut p = Palette::xschem_dark();

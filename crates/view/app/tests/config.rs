@@ -29,6 +29,7 @@ fn open_with(dir: &Path, init: &Path) -> Session {
     .expect("fixture opens");
     let mut s = Session {
         caches: Default::default(),
+        raster: None,
         ed,
         now: 1,
         dir: dir.to_path_buf(),

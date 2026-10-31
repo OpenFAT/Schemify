@@ -327,18 +327,18 @@ fn fits_when_the_first_viewport_is_empty() {
     })
     .unwrap();
     let none = schemify_ui::InputEvents::default();
-    ed.update(&none, (0.0, 0.0), 1000);
-    ed.update(&none, (0.0, 0.0), 2000);
+    ed.step(&none, (0.0, 0.0), 1000);
+    ed.step(&none, (0.0, 0.0), 2000);
     let unfitted = ed.camera();
     assert!(
         (unfitted.scale - want.scale).abs() > 1e-9,
         "no fit at an empty viewport"
     );
     assert!(
-        ed.update(&none, common::VIEW, 3000),
+        ed.step(&none, common::VIEW, 3000),
         "the fit asks for a frame"
     );
-    ed.update(&none, common::VIEW, 4000);
+    ed.step(&none, common::VIEW, 4000);
     let got = ed.camera();
     assert!(
         (got.scale - want.scale).abs() < 1e-12,

@@ -19,7 +19,7 @@
 //! Contents:
 //! - module `gpu`
 //! - re-exports: `App`, `RunError`, `Waker`, `run`, `block_on` (`window`); `Raster`, `Image`
-//!   (`raster`); `egui`, `kurbo`, `wgpu`
+//!   (`raster`); `egui`, `egui_wgpu`, `kurbo`, `wgpu`
 
 #![forbid(unsafe_code)]
 
@@ -34,4 +34,4 @@ pub use window::block_on;
 pub use window::{App, RunError, Waker, run};
 
 /// Re-exported so callers name the same egui, geometry and GPU types.
-pub use {egui, kurbo, wgpu};
+pub use {egui, egui_wgpu, kurbo, wgpu};

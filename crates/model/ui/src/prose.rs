@@ -8,11 +8,14 @@
 //! - `pub use` [`Segment`], [`split_plots`], [`image_line`], [`ImageLine`] (from the private `markdown`)
 //! - `pub const CODE_PX: RangeInclusive<u16>`, `pub const CODE_SCALE: f32`
 //! - `pub struct CodeMetrics { pad, line, advance }`
-//! - `pub fn code_metrics(ctx, px) -> Option<CodeMetrics>`
+//! - `pub fn code_metrics(ctx, px) -> Option<CodeMetrics>`; crate-only `code_pad(px) -> f32`
+//! - `pub fn census(src) -> (usize, usize)`
 
 use std::ops::RangeInclusive;
 
 use egui::FontId;
+
+use crate::markdown::{self, Block};
 
 pub use crate::markdown::{ImageLine, Segment, image_line, split_plots};
 
@@ -58,4 +61,50 @@ pub fn code_metrics(ctx: &egui::Context, px: u16) -> Option<CodeMetrics> {
 pub(crate) fn code_pad(px: f32) -> f32 {
     debug_assert!(px > 0.0, "a font size");
     (px * 0.5).round()
+}
+
+/// What the view draws for markdown `src`: `(text runs, formulas)`. A text run is a heading,
+/// paragraph, list item, quote, table cell, code block or footnote; a formula is an inline or
+/// display formula RaTeX lays out (one outside its subset shows as source text instead).
+#[must_use]
+pub fn census(src: &str) -> (usize, usize) {
+    let blocks = markdown::blocks(src);
+    let notes: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Note(label, _) => Some(label.as_str()),
+            _ => None,
+        })
+        .collect();
+    let formulas_of = |text: &str| {
+        let mut ok = |m: &str| crate::math::layout_math(m, 16.0).is_ok().then_some(0);
+        markdown::inlines(text, &notes, &mut ok).maths.len()
+    };
+    let (mut runs, mut formulas) = (0, 0);
+    for b in &blocks {
+        let texts: Vec<&str> = match b {
+            Block::Heading(_, t)
+            | Block::Para(t)
+            | Block::Quote(t)
+            | Block::Item { text: t, .. }
+            | Block::Note(_, t) => vec![t],
+            Block::Table(head, rows) => head
+                .iter()
+                .chain(rows.iter().flatten())
+                .map(String::as_str)
+                .collect(),
+            Block::Code(..) => {
+                runs += 1;
+                vec![]
+            }
+            Block::Math(m) => {
+                formulas += usize::from(crate::math::layout_math(m, 16.0).is_ok());
+                vec![]
+            }
+            Block::Rule | Block::Image(..) => vec![],
+        };
+        runs += texts.len();
+        formulas += texts.iter().map(|t| formulas_of(t)).sum::<usize>();
+    }
+    (runs, formulas)
 }

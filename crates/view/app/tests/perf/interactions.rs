@@ -2,8 +2,6 @@
 //! under 1 ms of CPU each (D39 amended 2026-10-18).
 
 use schemify_editor::editor::{Editor, Options};
-use schemify_render::Batch;
-use schemify_render::gpu::InstanceRows;
 use schemify_ui::{Button, Chord, InputEvent, InputEvents};
 
 use super::{Bench, Gpu, Measure, budget, event, schematic, tick_stats};
@@ -24,21 +22,8 @@ fn interactions(n: u32) {
         ..Default::default()
     })
     .expect("the fixture project opens");
-    ed.update(&InputEvents::default(), VIEW, 0);
-    let mut b = Bench {
-        caches: Default::default(),
-        ed,
-        scale: 1.0,
-        batch: Batch::default(),
-        rows: InstanceRows::default(),
-        now: 0,
-        gpu: Gpu::new(1.0),
-        cpu: Vec::new(),
-        render: Vec::new(),
-        gpu_ms: Vec::new(),
-        atlas: Vec::new(),
-        instances: Vec::new(),
-    };
+    ed.step(&InputEvents::default(), VIEW, 0);
+    let mut b = Bench::new(ed, 1.0, Gpu::new(1.0));
     let settle = |b: &mut Bench| {
         // Bounded by the background work a file opens: the disk hash takes ~282 ticks at 1M.
         for _ in 0..1024 {

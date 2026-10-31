@@ -162,7 +162,15 @@ impl CanvasCache {
         if !picture.overlay.is_empty() {
             rows.pack(OVERLAY, picture.overlay, palette, Change::All);
             shapes.push(Stage::Rows(OVERLAY).shape(screen));
-            labels::draw(ctx, view, cam, &picture.overlay.texts, None, palette, &mut shapes);
+            labels::draw(
+                ctx,
+                view,
+                cam,
+                &picture.overlay.texts,
+                None,
+                palette,
+                &mut shapes,
+            );
         }
         assert_eq!(self.diff.gens, picture.gens, "the diff is current");
         assert_eq!(self.diff.style, style, "the diff is current");

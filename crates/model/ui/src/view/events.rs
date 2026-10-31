@@ -1,7 +1,7 @@
 //! egui's input events turned into the two outputs the host routes: the canvas's pointer rows
 //! ([`InputEvent`], in logical px) and key chords looked up in the keymap.
 //!
-//! Contents: `pub fn pointer_events(ctx, rect, layer, salt, out)`; crate-only `canvas(v, ctx, rect, layer)`, `keys(v, ctx, typing)`, `chords_of(event, mods)`
+//! Contents: `pub fn pointer_events(ctx, rect, layer, salt, out)`; crate-only `canvas(v, ctx, rect, layer)`, `keys(v, ctx, typing)`, `chords_of(event, mods)`, `key_of(EKey) -> Option<Key>`
 
 use egui::{Event, Key as EKey, LayerId, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect};
 
@@ -20,13 +20,20 @@ pub(crate) fn canvas(v: &mut View, ctx: &egui::Context, rect: Rect, layer: Layer
 /// dialog), and every pointer event while a press that started there is held, as rows in
 /// logical px; a modifier change is a row before the event that shows it. `salt` keeps one
 /// region's capture apart from another's.
-pub fn pointer_events(ctx: &egui::Context, rect: Rect, layer: LayerId, salt: &str, out: &mut Vec<InputEvent>) {
+pub fn pointer_events(
+    ctx: &egui::Context,
+    rect: Rect,
+    layer: LayerId,
+    salt: &str,
+    out: &mut Vec<InputEvent>,
+) {
     let capture_id = egui::Id::unique(("schemify.capture", salt));
     let mods_id = egui::Id::unique(("schemify.mods", salt));
     let mut captured = ctx.data(|d| d.get_temp::<bool>(capture_id).unwrap_or(false));
     let mut last_mods = ctx.data(|d| d.get_temp::<u8>(mods_id).unwrap_or(0));
     let modal = ctx.memory(|m| m.top_modal_layer().is_some());
-    let over = |p: Pos2| rect.contains(p) && !modal && ctx.layer_id_at(p).is_none_or(|l| l == layer);
+    let over =
+        |p: Pos2| rect.contains(p) && !modal && ctx.layer_id_at(p).is_none_or(|l| l == layer);
     let (events, hover) = ctx.input(|i| (i.events.clone(), i.pointer.latest_pos()));
     let mut mods_of = |m: &Modifiers, out: &mut Vec<InputEvent>| {
         let bits = mods(m).0;
@@ -46,7 +53,9 @@ pub fn pointer_events(ctx: &egui::Context, rect: Rect, layer: LayerId, salt: &st
                 pressed,
                 modifiers,
             } if captured || over(*pos) => {
-                let Some(button) = button_of(*button) else { continue };
+                let Some(button) = button_of(*button) else {
+                    continue;
+                };
                 mods_of(modifiers, out);
                 let (x, y) = (pos.x, pos.y);
                 out.push(if *pressed {
@@ -62,7 +71,9 @@ pub fn pointer_events(ctx: &egui::Context, rect: Rect, layer: LayerId, salt: &st
                 modifiers,
                 ..
             } => {
-                let Some(p) = hover.filter(|p| over(*p)) else { continue };
+                let Some(p) = hover.filter(|p| over(*p)) else {
+                    continue;
+                };
                 mods_of(modifiers, out);
                 let lines = match unit {
                     MouseWheelUnit::Line => *delta,
@@ -90,11 +101,21 @@ pub fn pointer_events(ctx: &egui::Context, rect: Rect, layer: LayerId, salt: &st
 /// Key chords of this frame run their keymap command, unless a text field has the keyboard or a
 /// popup is open (no binding runs under an open menu).
 pub(crate) fn keys(v: &mut View, ctx: &egui::Context, typing: bool) {
+    // The modifiers each event was typed under: held from an earlier frame, or pressed and
+    // released within this one.
+    let held_id = egui::Id::unique("schemify.keys.held");
+    let (events, last) = ctx.input(|i| (i.events.clone(), i.modifiers));
+    let mut held = ctx
+        .data(|d| d.get_temp::<Modifiers>(held_id))
+        .unwrap_or(last);
+    ctx.data_mut(|d| d.insert_temp(held_id, last));
     if v.st.keys_off || typing || ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
-    let (events, held) = ctx.input(|i| (i.events.clone(), i.modifiers));
     for e in &events {
+        if let Event::ModifiersChanged(m) = e {
+            held = *m;
+        }
         for chord in chords_of(e, held) {
             if let Some(cmd) = v.t.keymap.lookup(chord) {
                 v.out.commands.push(cmd, Sym::NONE, "");
@@ -116,8 +137,21 @@ pub(crate) fn chords_of(e: &Event, held: Modifiers) -> Vec<Chord> {
         } => {
             let named = key_of(*key).filter(|k| k.0 >= Key::NAMED || *key == EKey::Space);
             let combo = modifiers.ctrl || modifiers.alt || modifiers.mac_cmd || modifiers.command;
-            let k = if combo { key_of(*key) } else { named };
-            k.map(|k| vec![Chord::new(mods(modifiers), k)]).unwrap_or_default()
+            // With Shift a digit or punctuation key types its shifted character.
+            let shifted = |k: Key| match (modifiers.shift, char::from_u32(k.0)) {
+                (true, Some(c)) => crate::keys::US_SHIFTED
+                    .iter()
+                    .find(|p| p.0 == c)
+                    .map_or(k, |p| Key(p.1 as u32)),
+                _ => k,
+            };
+            let k = if combo {
+                key_of(*key).map(shifted)
+            } else {
+                named
+            };
+            k.map(|k| vec![Chord::new(mods(modifiers), k)])
+                .unwrap_or_default()
         }
         Event::Text(t) if !(held.ctrl || held.alt || held.mac_cmd) => t
             .chars()
@@ -125,32 +159,6 @@ pub(crate) fn chords_of(e: &Event, held: Modifiers) -> Vec<Chord> {
             .map(|c| Chord::new(mods(&held), Key(c as u32)))
             .collect(),
         _ => Vec::new(),
-    }
-}
-
-fn mods(m: &Modifiers) -> Mods {
-    let mut bits = 0;
-    if m.ctrl {
-        bits |= Mods::CTRL;
-    }
-    if m.shift {
-        bits |= Mods::SHIFT;
-    }
-    if m.alt {
-        bits |= Mods::ALT;
-    }
-    if m.mac_cmd {
-        bits |= Mods::SUPER;
-    }
-    Mods(bits)
-}
-
-fn button_of(b: PointerButton) -> Option<Button> {
-    match b {
-        PointerButton::Primary => Some(Button::Left),
-        PointerButton::Middle => Some(Button::Middle),
-        PointerButton::Secondary => Some(Button::Right),
-        PointerButton::Extra1 | PointerButton::Extra2 => None,
     }
 }
 
@@ -189,4 +197,32 @@ pub(crate) fn key_of(k: EKey) -> Option<Key> {
         }
     };
     Some(named)
+}
+
+// ---- private ----
+
+fn mods(m: &Modifiers) -> Mods {
+    let mut bits = 0;
+    if m.ctrl {
+        bits |= Mods::CTRL;
+    }
+    if m.shift {
+        bits |= Mods::SHIFT;
+    }
+    if m.alt {
+        bits |= Mods::ALT;
+    }
+    if m.mac_cmd {
+        bits |= Mods::SUPER;
+    }
+    Mods(bits)
+}
+
+fn button_of(b: PointerButton) -> Option<Button> {
+    match b {
+        PointerButton::Primary => Some(Button::Left),
+        PointerButton::Middle => Some(Button::Middle),
+        PointerButton::Secondary => Some(Button::Right),
+        PointerButton::Extra1 | PointerButton::Extra2 => None,
+    }
 }

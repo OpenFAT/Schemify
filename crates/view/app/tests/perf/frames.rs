@@ -4,8 +4,6 @@
 use std::time::Instant;
 
 use schemify_editor::editor::{Editor, Options};
-use schemify_render::Batch;
-use schemify_render::gpu::InstanceRows;
 use schemify_ui::{Button, Chord, InputEvent, InputEvents};
 
 use super::{Bench, Gpu, Measure, budget, event, schematic, tick_stats};
@@ -24,7 +22,7 @@ fn frame_times(n: u32) {
         ..Default::default()
     })
     .expect("the fixture project opens");
-    ed.update(&InputEvents::default(), VIEW, 0);
+    ed.step(&InputEvents::default(), VIEW, 0);
     let open = t0.elapsed().as_secs_f64() * 1e3;
     let (objs, prims) = (ed.scene().objs.len(), ed.scene().prims.len());
     assert!(objs >= n as usize, "{objs} objects");
@@ -35,20 +33,7 @@ fn frame_times(n: u32) {
          (timestamp floor {floor:.3} ms, included in the GPU numbers)",
         gpu.as_ref().map_or("none (skipped)", |g| g.name.as_str())
     );
-    let mut b = Bench {
-        caches: Default::default(),
-        ed,
-        scale: 1.0,
-        batch: Batch::default(),
-        rows: InstanceRows::default(),
-        now: 0,
-        gpu,
-        cpu: Vec::new(),
-        render: Vec::new(),
-        gpu_ms: Vec::new(),
-        atlas: Vec::new(),
-        instances: Vec::new(),
-    };
+    let mut b = Bench::new(ed, 1.0, gpu);
     // The whole schematic in view (zoom full), first frame packs the rows.
     b.frame(&InputEvents::default(), 1000, Measure::Skip);
 
@@ -220,20 +205,7 @@ fn grid_lag(scale: f64, step: f32, grid: bool) {
         ..Default::default()
     })
     .expect("the fixture project opens");
-    let mut b = Bench {
-        caches: Default::default(),
-        ed,
-        scale,
-        batch: Batch::default(),
-        rows: InstanceRows::default(),
-        now: 0,
-        gpu: Gpu::new(scale),
-        cpu: Vec::new(),
-        render: Vec::new(),
-        gpu_ms: Vec::new(),
-        atlas: Vec::new(),
-        instances: Vec::new(),
-    };
+    let mut b = Bench::new(ed, scale, Gpu::new(scale));
     let whole = |b: &Bench| assert_eq!(b.ed.wake_ms(), None, "a camera frame asks for no other");
     if !grid {
         b.ed.command("options.draw_grid", "");

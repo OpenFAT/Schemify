@@ -117,7 +117,12 @@ impl Pipelines {
                 count: None,
             }],
         });
-        let uniform = buffer(device, "canvas camera", UNIFORM_BYTES as u64, wgpu::BufferUsages::UNIFORM);
+        let uniform = buffer(
+            device,
+            "canvas camera",
+            UNIFORM_BYTES as u64,
+            wgpu::BufferUsages::UNIFORM,
+        );
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("canvas camera"),
             layout: &layout,
@@ -133,7 +138,15 @@ impl Pipelines {
         });
         let canvas = |vs_fs, rows| {
             let blend = wgpu::BlendState::ALPHA_BLENDING;
-            pipeline(device, &pipeline_layout, &module, vs_fs, rows, format, blend)
+            pipeline(
+                device,
+                &pipeline_layout,
+                &module,
+                vs_fs,
+                rows,
+                format,
+                blend,
+            )
         };
         let p = Pipelines {
             background: canvas(("vs_bg", "fs_bg"), None),
@@ -149,7 +162,10 @@ impl Pipelines {
             buffers: Default::default(),
             uploaded: 0,
         };
-        debug_assert!(p.buffers.iter().flatten().all(Option::is_none), "no rows yet");
+        debug_assert!(
+            p.buffers.iter().flatten().all(Option::is_none),
+            "no rows yet"
+        );
         p
     }
 }
@@ -175,7 +191,6 @@ pub(super) fn buffer(
 }
 
 // ---- private ----
-
 
 /// A render pipeline of `module`'s `vs`/`fs` into `format`, its rows `stride`-byte instances
 /// with `attributes` (none: a full-quad pipeline), blended by `blend`.
@@ -334,7 +349,7 @@ mod tests {
             Ok(out)
         };
         // Every module exactly as `Pipelines::new` hands it to wgpu.
-        for (name, src) in [("canvas", CANVAS_WGSL), ("ui", UI_WGSL)] {
+        for (name, src) in [("canvas", CANVAS_WGSL)] {
             let out = glsl_of(src).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!out.is_empty(), "{name}: has entry points");
             for text in &out {

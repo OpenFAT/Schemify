@@ -2,7 +2,7 @@
 //! gestures map to the viewer requests they mean, commands drive the viewer tables end to end,
 //! the graph properties dialog round-trips, and the readout strings read the cursors.
 //!
-//! Contents: `pub(crate) const VIEW`, `pub(crate) struct Win` (`new`, `rebuild`, `apply`,
+//! Contents: `pub(crate) const VIEW`, `pub(crate) struct Win` (`new`, `rebuild`, `view`, `apply`,
 //! `route`, `show`, `command`, `rect`, `signal_rows`), `pub(crate) fn data() -> Waves`,
 //! `pub(crate) fn inside(r, outer) -> bool`; the tests live in `window`, `pointer`,
 //! `command`, `dialog` and `readout`.
@@ -15,8 +15,8 @@ mod window;
 
 use schemify_ui::waves::{DialogFx, Effect, Geometry, PROPS_DIALOG, WAVES_UI, WaveCommand, WaveUi};
 use schemify_ui::{
-    Contribution, InputEvent, InputEvents, Rect, Routed, Strings, Sym, UiLayout, UiState,
-    UiTables, compose, records,
+    Contribution, InputEvent, InputEvents, Rect, Routed, Strings, Sym, UiLayout, UiState, UiTables,
+    compose, records,
 };
 use schemify_wave::{RawPlot, Request, VarKind, Variable, Waves};
 
@@ -108,9 +108,18 @@ impl Win {
     pub(crate) fn view(&mut self, size: (f32, f32)) {
         for _ in 0..2 {
             let mut out = Routed::default();
-            let Win { strings, tables, ctx, state, frame, .. } = self;
+            let Win {
+                strings,
+                tables,
+                ctx,
+                state,
+                frame,
+                ..
+            } = self;
             let raw = InputEvents::default().raw(size);
-            let mut o = ctx.run_ui(raw, |ui| schemify_ui::show(ui, tables, strings, state, frame, &mut out));
+            let mut o = ctx.run_ui(raw, |ui| {
+                schemify_ui::show(ui, tables, strings, state, frame, &mut out)
+            });
             o.textures_delta.clear(); // no painter in a headless test
         }
     }

@@ -37,10 +37,14 @@ pub(crate) fn draw(
             continue; // dead
         }
         let px = f64::from(t.size[i]) * cam.scale;
-        let (x, y) = (f64::from(t.x[i]) * cam.scale + ox, f64::from(t.y[i]) * cam.scale + oy);
+        let (x, y) = (
+            f64::from(t.x[i]) * cam.scale + ox,
+            f64::from(t.y[i]) * cam.scale + oy,
+        );
         // A turned label extends left/up of its anchor too: only the size culls it.
         let rot = t.rot.get(i).copied().unwrap_or(0);
-        let visible = px >= TEXT_MIN_PX && (rot != 0 || (x < view.x1 && y < view.y1 && y + px * 2.0 > view.y0));
+        let visible = px >= TEXT_MIN_PX
+            && (rot != 0 || (x < view.x1 && y < view.y1 && y + px * 2.0 > view.y0));
         if !visible {
             continue;
         }
@@ -48,10 +52,15 @@ pub(crate) fn draw(
         let base = (px as f32).log2().ceil().exp2().clamp(OCTAVES.0, OCTAVES.1);
         let [r, g, b, a] = palette.color[layer].to_be_bytes();
         let color = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
-        let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), FontId::proportional(base), color));
+        let galley =
+            ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), FontId::proportional(base), color));
         let angle = f32::from(rot) * std::f32::consts::FRAC_PI_2;
-        let mut shape = Shape::Text(TextShape::new(egui::Pos2::ZERO, galley, color).with_angle(angle));
-        shape.transform(TSTransform::new(egui::vec2(x as f32, y as f32), px as f32 / base));
+        let mut shape =
+            Shape::Text(TextShape::new(egui::Pos2::ZERO, galley, color).with_angle(angle));
+        shape.transform(TSTransform::new(
+            egui::vec2(x as f32, y as f32),
+            px as f32 / base,
+        ));
         out.push(shape);
     }
     out.len() - before

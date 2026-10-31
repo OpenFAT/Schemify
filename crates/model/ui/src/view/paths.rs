@@ -42,6 +42,8 @@ pub(crate) fn paint_paths(
     }
 }
 
+// ---- private ----
+
 /// Flattens every path into its subpaths' polylines.
 fn subpaths(paths: &MathPaths, map: impl Fn([f32; 2]) -> Pos2) -> Vec<Vec<Pos2>> {
     let mut out: Vec<Vec<Pos2>> = Vec::new();
@@ -63,11 +65,17 @@ fn subpaths(paths: &MathPaths, map: impl Fn([f32; 2]) -> Pos2) -> Vec<Vec<Pos2>>
                 cur.push(last);
             }
             Verb::Quad => {
-                let (c, e) = (map(pt.next().unwrap_or_default()), map(pt.next().unwrap_or_default()));
+                let (c, e) = (
+                    map(pt.next().unwrap_or_default()),
+                    map(pt.next().unwrap_or_default()),
+                );
                 for k in 1..=CURVE_STEPS {
                     let t = k as f32 / CURVE_STEPS as f32;
                     let u = 1.0 - t;
-                    cur.push((last.to_vec2() * u * u + c.to_vec2() * 2.0 * u * t + e.to_vec2() * t * t).to_pos2());
+                    cur.push(
+                        (last.to_vec2() * u * u + c.to_vec2() * 2.0 * u * t + e.to_vec2() * t * t)
+                            .to_pos2(),
+                    );
                 }
                 last = e;
             }
@@ -132,9 +140,9 @@ fn fill_mesh(pts: &[Pos2], color: Color32) -> Mesh {
         let cross = (pb - pa).x * (pc - pa).y - (pb - pa).y * (pc - pa).x;
         let convex = if ccw { cross > 0.0 } else { cross < 0.0 };
         let empty = convex
-            && idx.iter().all(|&j| {
-                j == a || j == b || j == c || !inside(pts[j as usize], pa, pb, pc)
-            });
+            && idx
+                .iter()
+                .all(|&j| j == a || j == b || j == c || !inside(pts[j as usize], pa, pb, pc));
         if empty {
             mesh.add_triangle(a, b, c);
             idx.remove(i % n);
@@ -150,7 +158,9 @@ fn fill_mesh(pts: &[Pos2], color: Color32) -> Mesh {
 }
 
 fn inside(p: Pos2, a: Pos2, b: Pos2, c: Pos2) -> bool {
-    let s = |p1: Pos2, p2: Pos2, p3: Pos2| (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+    let s = |p1: Pos2, p2: Pos2, p3: Pos2| {
+        (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y)
+    };
     let (d1, d2, d3) = (s(p, a, b), s(p, b, c), s(p, c, a));
     let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
     let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;

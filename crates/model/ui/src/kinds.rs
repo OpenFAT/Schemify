@@ -132,7 +132,7 @@ named_enum!(
         /// Non-empty and not `"0"` disables activation.
         Disabled = "disabled",
         /// Text fields: command run with the field's text whenever an edit changes it (typing,
-        /// deletion, an IME commit), at most once per [`crate::route_input`] call and always
+        /// deletion, an IME commit), at most once per frame ([`crate::show`]) and always
         /// before the field loses focus; `command` still runs on Enter.
         Input = "input",
         /// Buttons: a vector icon drawn instead of the label, which stays the accessible name

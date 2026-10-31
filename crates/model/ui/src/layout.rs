@@ -3,9 +3,9 @@
 //! same rectangles the user sees.
 //!
 //! Contents:
-//! - `pub const NO_CLIP: Rect`, `pub const FLOAT_INSET: f32`, `pub const SPLIT_GAP: f32`,
-//!   `pub const SPLIT_MIN: f32`
-//! - `pub struct Rect`: `contains`, `intersect`
+//! - `pub const NO_CLIP: Rect`, `pub const AREA_EM_MAX: f32`, `pub const FLOAT_INSET: f32`,
+//!   `pub const SPLIT_GAP: f32`, `pub const SPLIT_MIN: f32`
+//! - `pub struct Rect`: `contains`, `intersect`; crate-only `of`
 //! - `pub struct Slot`
 //! - `pub struct UiLayout`: `len`, `is_empty`, `node`, `rect`, `clip`, `slot`, `row_of`,
 //!   `scroll_max`; crate-only `clear`, `push`, `set_scroll_max`

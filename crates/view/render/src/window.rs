@@ -8,7 +8,8 @@
 //! the loop waits: idle CPU is 0%.
 //!
 //! Contents: `pub trait App`, `pub struct Waker` (`wake`), `pub enum RunError`,
-//! `pub fn run`, `pub fn block_on` (native)
+//! `pub fn run`, `pub fn block_on` (native); crate-only `fn draw(renderer, encoder, target,
+//! prims, screen)`
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,6 +59,26 @@ pub enum RunError {
     NoGpu(String),
 }
 
+struct Shell<A: App> {
+    app: A,
+    title: String,
+    open: Option<Open>,
+    failed: Option<String>,
+}
+
+/// A window with its GPU, egui-winit state and egui-wgpu renderer.
+struct Open {
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    renderer: Renderer,
+    state: egui_winit::State,
+    /// When egui asked for its next frame (an animation, a tooltip delay).
+    repaint_at: Option<Instant>,
+}
+
 /// Opens a window titled `title` and runs `app` in it until it closes or asks to exit.
 ///
 /// # Errors
@@ -75,7 +96,9 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         open: None,
         failed: None,
     };
-    event_loop.run_app(&mut shell).map_err(|e| RunError::EventLoop(e.to_string()))?;
+    event_loop
+        .run_app(&mut shell)
+        .map_err(|e| RunError::EventLoop(e.to_string()))?;
     match shell.failed {
         Some(why) => Err(RunError::NoGpu(why)),
         None => Ok(()),
@@ -122,28 +145,8 @@ impl std::fmt::Display for RunError {
     }
 }
 
-impl std::error::Error for RunError {}
-
-// ---- private ----
-
-struct Shell<A: App> {
-    app: A,
-    title: String,
-    open: Option<Open>,
-    failed: Option<String>,
-}
-
-/// A window with its GPU, egui-winit state and egui-wgpu renderer.
-struct Open {
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
-    renderer: Renderer,
-    state: egui_winit::State,
-    /// When egui asked for its next frame (an animation, a tooltip delay).
-    repaint_at: Option<Instant>,
+impl std::error::Error for RunError {
+    // `Display` already states it; nothing more to add.
 }
 
 impl<A: App> ApplicationHandler for Shell<A> {
@@ -209,7 +212,10 @@ impl<A: App> ApplicationHandler for Shell<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let app = self.app.wake_ms().map(|ms| Instant::now() + Duration::from_millis(u64::from(ms)));
+        let app = self
+            .app
+            .wake_ms()
+            .map(|ms| Instant::now() + Duration::from_millis(u64::from(ms)));
         let egui = self.open.as_ref().and_then(|o| o.repaint_at);
         event_loop.set_control_flow(match app.into_iter().chain(egui).min() {
             Some(at) => ControlFlow::WaitUntil(at),
@@ -217,6 +223,33 @@ impl<A: App> ApplicationHandler for Shell<A> {
         });
     }
 }
+
+/// One render pass into `target`, cleared black: egui's primitives with the canvas stages
+/// among them.
+pub(crate) fn draw(
+    renderer: &Renderer,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    prims: &[egui::ClippedPrimitive],
+    screen: &ScreenDescriptor,
+) {
+    let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("egui"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
+    renderer.render(&mut pass.forget_lifetime(), prims, screen);
+}
+
+// ---- private ----
 
 impl<A: App> Shell<A> {
     fn fail(&mut self, event_loop: &ActiveEventLoop, why: String) {
@@ -233,20 +266,29 @@ fn open(window: Arc<Window>, ctx: egui::Context) -> Result<Open, String> {
     let size = window.inner_size();
     let (w, h) = (size.width.max(1), size.height.max(1));
     let (surface, g) = device::ladder(|fallback| {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let target: wgpu::SurfaceTarget<'static> = Arc::clone(&window).into();
         let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
         let g = block_on(device::open(&instance, Some(&surface), fallback))?;
         Ok((surface, g))
     })?;
     let info = g.adapter.get_info();
-    eprintln!("gpu: {} ({:?}, {:?})", info.name, info.device_type, info.backend);
+    eprintln!(
+        "gpu: {} ({:?}, {:?})",
+        info.name, info.device_type, info.backend
+    );
     let caps = surface.get_capabilities(&g.adapter);
     let format = caps
         .formats
         .iter()
         .copied()
-        .find(|f| matches!(f, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm))
+        .find(|f| {
+            matches!(
+                f,
+                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+            )
+        })
         .ok_or("no 8-bit surface format")?;
     let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
         wgpu::PresentMode::Mailbox
@@ -265,8 +307,17 @@ fn open(window: Arc<Window>, ctx: egui::Context) -> Result<Open, String> {
         view_formats: vec![],
     };
     surface.configure(&g.device, &config);
-    let mut renderer = Renderer::new(&g.device, format, RendererOptions::default());
-    renderer.callback_resources.insert(CanvasGpu::new(&g.device, format));
+    let mut renderer = Renderer::new(
+        &g.device,
+        format,
+        RendererOptions {
+            dithering: false,
+            ..RendererOptions::default()
+        },
+    );
+    renderer
+        .callback_resources
+        .insert(CanvasGpu::new(&g.device, format));
     let max_side = g.device.limits().max_texture_dimension_2d as usize;
     let state = egui_winit::State::new(
         ctx.clone(),
@@ -294,10 +345,18 @@ impl Open {
     /// the window, its shapes tessellated and drawn with the canvas stages, presented.
     fn frame<A: App>(&mut self, app: &mut A) {
         let input = self.state.take_egui_input(&self.window);
-        let canvas = self.renderer.callback_resources.get_mut::<CanvasGpu>().expect("the canvas is a resource");
+        let canvas = self
+            .renderer
+            .callback_resources
+            .get_mut::<CanvasGpu>()
+            .expect("the canvas is a resource");
         let mut out = app.frame(input, &mut canvas.rows);
-        self.state.handle_platform_output(&self.window, std::mem::take(&mut out.platform_output));
-        let delay = out.viewport_output.get(&egui::ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
+        self.state
+            .handle_platform_output(&self.window, std::mem::take(&mut out.platform_output));
+        let delay = out
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(Duration::MAX, |v| v.repaint_delay);
         self.repaint_at = (delay != Duration::MAX).then(|| Instant::now() + delay);
         let ppp = out.pixels_per_point;
         let ctx = app.ctx();
@@ -308,13 +367,19 @@ impl Open {
         };
         for (id, deltas) in &out.textures_delta.set {
             for delta in deltas {
-                self.renderer.update_texture(&self.device, &self.queue, *id, delta);
+                self.renderer
+                    .update_texture(&self.device, &self.queue, *id, delta);
             }
         }
-        let canvas = self.renderer.callback_resources.get_mut::<CanvasGpu>().expect("the canvas is a resource");
+        let canvas = self
+            .renderer
+            .callback_resources
+            .get_mut::<CanvasGpu>()
+            .expect("the canvas is a resource");
         canvas.prepare(&self.device, &self.queue, &screen);
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Success(t)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
                 self.window.request_redraw();
@@ -326,9 +391,17 @@ impl Open {
                 return;
             }
         };
-        let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        let mut cmds = self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &prims, &screen);
+        let target = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+        let mut cmds =
+            self.renderer
+                .update_buffers(&self.device, &self.queue, &mut encoder, &prims, &screen);
         draw(&self.renderer, &mut encoder, &target, &prims, &screen);
         cmds.push(encoder.finish());
         self.queue.submit(cmds);
@@ -339,29 +412,4 @@ impl Open {
         }
         out.textures_delta.clear();
     }
-}
-
-/// One render pass into `target`, cleared black: egui's primitives with the canvas stages
-/// among them.
-pub(crate) fn draw(
-    renderer: &Renderer,
-    encoder: &mut wgpu::CommandEncoder,
-    target: &wgpu::TextureView,
-    prims: &[egui::ClippedPrimitive],
-    screen: &ScreenDescriptor,
-) {
-    let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("egui"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: target,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
-        })],
-        ..Default::default()
-    });
-    renderer.render(&mut pass.forget_lifetime(), prims, screen);
 }

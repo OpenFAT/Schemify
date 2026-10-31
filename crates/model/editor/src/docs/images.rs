@@ -123,7 +123,11 @@ pub fn load_image(root: &Path, path: &str) -> Result<Image, String> {
         ));
     }
     let rgba = decode_png(&bytes, w, h).map_err(|e| format!("{path}: {e}"))?;
-    Ok(Image { width: w, height: h, rgba })
+    Ok(Image {
+        width: w,
+        height: h,
+        rgba,
+    })
 }
 
 /// Width and height from a PNG's signature and IHDR chunk; `None` when it is not one.

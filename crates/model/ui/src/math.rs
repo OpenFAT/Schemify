@@ -73,6 +73,18 @@ pub struct MathList {
     pub missing: u32,
 }
 
+/// KaTeX face names in [`MathList::glyph_face`] order ([`FontId`] spelling); each is an egui
+/// font family of the same name ([`crate::font_definitions`]).
+pub const FACE_NAMES: [&str; 19] = {
+    let mut out = [""; 19];
+    let mut i = 0;
+    while i < 19 {
+        out[i] = FACES[i].0;
+        i += 1;
+    }
+    out
+};
+
 /// One embedded KaTeX face: its [`FontId`] spelling and the bytes of `fonts/KaTeX_<name>.ttf`.
 macro_rules! face {
     ($name:literal) => {
@@ -89,19 +101,7 @@ macro_rules! face {
 }
 
 /// KaTeX faces in [`FontId`] spelling, with their bytes.
-/// KaTeX face names in [`MathList::glyph_face`] order ([`FontId`] spelling); each is an egui
-/// font family of the same name ([`crate::font_definitions`]).
-pub const FACE_NAMES: [&str; 19] = {
-    let mut out = [""; 19];
-    let mut i = 0;
-    while i < 19 {
-        out[i] = FACES[i].0;
-        i += 1;
-    }
-    out
-};
-
-pub(crate) const FACES: [(&str, &[u8]); 19] = [
+const FACES: [(&str, &[u8]); 19] = [
     face!("AMS-Regular"),
     face!("Caligraphic-Regular"),
     face!("Fraktur-Regular"),
@@ -141,6 +141,10 @@ pub(crate) fn face_bytes(name: &str) -> &'static [u8] {
 /// # Errors
 ///
 /// Returns RaTeX's parse message for input outside its LaTeX subset.
+/// # Panics
+///
+/// Panics if `px` is not finite and positive.
+///
 pub fn layout_math(src: &str, px: f32) -> Result<MathList, String> {
     use skrifa::MetadataProvider;
 

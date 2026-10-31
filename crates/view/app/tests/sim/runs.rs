@@ -112,7 +112,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     activate(&mut s, "waves.op_annotate");
     assert!(s.ed.annotations().has_source(SOURCE_OP));
     let px = s.render();
-    assert_eq!(px.width(), common::VIEW.0 as u16);
+    assert_eq!(px.width, common::VIEW.0 as u32);
     // Waves on the job, then cross-probe a click on the `out` wire.
     activate(&mut s, "results.waves");
     assert!(s.ed.waves_open(), "{}", s.status());
@@ -121,7 +121,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     s.click((0, 45 * U));
     assert_eq!(s.ed.waves_traces(), ["v(out)"], "{}", s.status());
     let px = s.render();
-    assert_eq!(px.height(), common::VIEW.1 as u16);
+    assert_eq!(px.height, common::VIEW.1 as u32);
     // Saved per D18 and reloaded by a fresh editor on the same project.
     let runs = s.dir.join(".schemify/runs");
     let dir = std::fs::read_dir(&runs)
@@ -143,6 +143,7 @@ fn simulate_polls_a_fake_simulator_to_results_waves_and_op() {
     // Both sessions remove the directory when dropped; the second removal finds nothing.
     let mut s2 = Session {
         caches: Default::default(),
+        raster: None,
         ed,
         now: 1,
         dir: s.dir.clone(),
@@ -185,6 +186,7 @@ fn plot_slots_overlay_every_sweep_point() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(InputEvents::default());
     s.key("s");
@@ -223,6 +225,7 @@ fn plot_slots_reach_cells_below_the_bench() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(InputEvents::default());
     s.key("s");
@@ -365,6 +368,7 @@ fn results_table_sorts_filters_and_scrolls_any_number_of_jobs() {
     assert_eq!(node_kind(&s, "results.gap-top.0"), Some(Kind::Panel));
     // Sort by tau (output 0: names sort `tau` < `v1m`), then reversed.
     s.ed.set_scroll(list, 0.0, 1e9);
+    s.frame(InputEvents::default()); // the header scrolls back into view
     activate(&mut s, "results.head.o0");
     let rows = s.ed.sim().table.rows.clone();
     assert_eq!(rows.len(), 200);

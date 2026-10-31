@@ -1,9 +1,9 @@
-//! Oracles for the UI tables and their egui view (docs/dev/testing.md): composition (last wins
-//! + health), what the view shows, routing (keys, menus, clicks, canvas events), dialogs,
+//! Oracles for the UI tables and their egui view (docs/dev/testing.md): composition (last
+//! wins, health), what the view shows, routing (keys, menus, clicks, canvas events), dialogs,
 //! split dividers and text fields, all through real egui frames with no window.
 //!
 //! Contents: `pub(crate) struct Fixture` (`sym`, `node`, `rect`, `route`, `center`, `click`,
-//! `commands`), `pub(crate) const VIEW`, `pub(crate) fn fixture(plugins) -> Fixture`,
+//! `click_at`, `commands`), `pub(crate) const VIEW`, `pub(crate) fn fixture(plugins) -> Fixture`,
 //! `pub(crate) fn key(f, chord) -> Routed`; the tests live in `compose`, `view` and `fields`.
 
 mod compose;
@@ -91,7 +91,9 @@ impl Fixture {
             frame,
             ..
         } = self;
-        let mut o = ctx.run_ui(raw, |ui| schemify_ui::show(ui, tables, strings, state, frame, &mut out));
+        let mut o = ctx.run_ui(raw, |ui| {
+            schemify_ui::show(ui, tables, strings, state, frame, &mut out)
+        });
         o.textures_delta.clear(); // no painter in a headless test
         out
     }
@@ -110,8 +112,16 @@ impl Fixture {
         ev.push(InputEvent::PointerMove { x, y });
         self.route(&ev);
         let mut ev = InputEvents::default();
-        ev.push(InputEvent::PointerDown { x, y, button: Button::Left });
-        ev.push(InputEvent::PointerUp { x, y, button: Button::Left });
+        ev.push(InputEvent::PointerDown {
+            x,
+            y,
+            button: Button::Left,
+        });
+        ev.push(InputEvent::PointerUp {
+            x,
+            y,
+            button: Button::Left,
+        });
         let out = self.route(&ev);
         self.route(&InputEvents::default());
         out

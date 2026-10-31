@@ -26,10 +26,11 @@ use std::time::Instant;
 
 use common::VIEW;
 use schemify_editor::editor::Editor;
-use schemify_render::gpu::{InstanceRows, Pipelines};
-use schemify_render::kurbo::Affine;
+use schemify_render::block_on;
+use schemify_render::egui;
+use schemify_render::egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
+use schemify_render::gpu::{CanvasGpu, InstanceRows};
 use schemify_render::wgpu;
-use schemify_render::{Batch, GpuPainter, block_on};
 use schemify_ui::{Button, Chord, InputEvent, InputEvents};
 
 fn id(prefix: char, n: u32) -> String {
@@ -77,13 +78,12 @@ fn schematic(n: u32) -> String {
 /// A headless GPU with timestamp queries: renders each benchmark frame as the window does.
 struct Gpu {
     name: String,
-    /// Target size in device px, and device px per logical px.
+    /// Target size in device px.
     size: (u32, u32),
-    scale: f64,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// The frame's pipelines, row buffers and atlas texture.
-    pipes: Pipelines,
+    /// egui-wgpu's renderer with the canvas (pipelines and rows) in its callback resources.
+    renderer: Renderer,
     /// The stand-in for the window surface.
     surface: wgpu::TextureView,
     /// The texture behind `surface` (read back by the oracle tests).
@@ -135,7 +135,18 @@ impl Gpu {
         let surface_tex =
             texture_of(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
         let surface = surface_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let pipes = Pipelines::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut renderer = Renderer::new(
+            &device,
+            format,
+            RendererOptions {
+                dithering: false,
+                ..RendererOptions::default()
+            },
+        );
+        renderer
+            .callback_resources
+            .insert(CanvasGpu::new(&device, format));
         let queries = device.create_query_set(&wgpu::QuerySetDescriptor {
             label: None,
             ty: wgpu::QueryType::Timestamp,
@@ -167,10 +178,9 @@ impl Gpu {
                 (f64::from(VIEW.0) * scale) as u32,
                 (f64::from(VIEW.1) * scale) as u32,
             ),
-            scale,
             device,
             queue,
-            pipes,
+            renderer,
             surface,
             surface_tex,
             queries,
@@ -180,30 +190,62 @@ impl Gpu {
         })
     }
 
-    /// Renders one painted frame exactly as the window does (the rows', the batch's and the
-    /// atlas's uploads, then the one pass into the surface), returning (CPU ms of the render
-    /// calls, GPU ms between timestamps around them).
-    fn render(&mut self, batch: &mut Batch, rows: &mut InstanceRows) -> (f64, f64) {
+    /// The canvas: its pipelines and the rows the frames pack.
+    fn canvas(&mut self) -> &mut CanvasGpu {
+        self.renderer
+            .callback_resources
+            .get_mut::<CanvasGpu>()
+            .expect("the canvas is a resource")
+    }
+
+    /// Renders one frame's tessellated output exactly as the window does (textures, rows and
+    /// camera uploaded, egui's buffers, then the one pass into the surface), returning (CPU ms
+    /// of the render calls, GPU ms between timestamps around them).
+    fn render(
+        &mut self,
+        prims: &[egui::ClippedPrimitive],
+        textures: &egui::TexturesDelta,
+        ppp: f32,
+    ) -> (f64, f64) {
         self.timed(|g| {
             let (w, h) = g.size;
+            let screen = ScreenDescriptor {
+                size_in_pixels: [w, h],
+                pixels_per_point: ppp,
+            };
+            for (id, deltas) in &textures.set {
+                for d in deltas {
+                    g.renderer.update_texture(&g.device, &g.queue, *id, d);
+                }
+            }
+            let (device, queue) = (g.device.clone(), g.queue.clone());
+            g.canvas().prepare(&device, &queue, &screen);
             let mut e = g.device.create_command_encoder(&Default::default());
-            g.pipes.upload(&g.device, &g.queue, rows);
-            g.pipes.upload_batch(&g.device, &g.queue, batch);
-            let canvas = rows.frame.take();
-            let (queue, surface) = (&g.queue, &g.surface);
-            let black = wgpu::Color::BLACK;
-            g.pipes.draw(
-                &mut e,
-                queue,
-                surface,
-                black,
-                rows,
-                batch,
-                canvas.as_ref(),
-                g.scale,
-                (w, h),
-            );
-            g.queue.submit([e.finish()]);
+            let mut cmds = g
+                .renderer
+                .update_buffers(&g.device, &g.queue, &mut e, prims, &screen);
+            {
+                let pass = e.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("bench"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &g.surface,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                g.renderer
+                    .render(&mut pass.forget_lifetime(), prims, &screen);
+            }
+            cmds.push(e.finish());
+            g.queue.submit(cmds);
+            for id in &textures.free {
+                g.renderer.free_texture(id);
+            }
         })
     }
 
@@ -262,14 +304,11 @@ enum Measure {
     Skip,
 }
 
-/// One benchmark run: the editor, its frame batch, the clock, and the samples.
+/// One benchmark run: the editor, its paint caches, the clock, and the samples.
 struct Bench {
     ed: Editor,
     caches: schemify_app::paint::Caches,
-    /// Device px per logical px (the window's scale factor).
-    scale: f64,
-    batch: Batch,
-    /// The canvas's GPU instance rows (the window's).
+    /// The canvas's instance rows when there is no GPU (with one, its canvas holds them).
     rows: InstanceRows,
     now: u64,
     gpu: Option<Gpu>,
@@ -277,39 +316,82 @@ struct Bench {
     /// CPU ms of the render calls (uploads and the pass).
     render: Vec<f64>,
     gpu_ms: Vec<f64>,
-    /// Atlas and instance bytes each measured frame uploaded.
-    atlas: Vec<f64>,
-    instances: Vec<f64>,
+    /// egui texture and mesh bytes each measured frame uploaded (KiB).
+    textures: Vec<f64>,
+    meshes: Vec<f64>,
 }
 
 impl Bench {
-    /// One frame as the window runs it; records its times when `measure`.
-    fn frame(&mut self, ev: &InputEvents, dt_ms: u64, measure: Measure) {
+    /// A bench over `ed` at `scale` device px per logical px, rendering on `gpu` when given.
+    fn new(ed: Editor, scale: f64, gpu: Option<Gpu>) -> Bench {
+        assert!(scale > 0.0, "a positive scale");
+        ed.shell().ctx().set_pixels_per_point(scale as f32);
+        Bench {
+            ed,
+            caches: Default::default(),
+            rows: InstanceRows::default(),
+            now: 0,
+            gpu,
+            cpu: Vec::new(),
+            render: Vec::new(),
+            gpu_ms: Vec::new(),
+            textures: Vec::new(),
+            meshes: Vec::new(),
+        }
+    }
+
+    /// One frame as the window runs it (the editor's egui pass with the canvas packed, egui's
+    /// tessellation, then the render); records its times when `measure`. Returns whether a
+    /// table changed.
+    fn frame(&mut self, ev: &InputEvents, dt_ms: u64, measure: Measure) -> bool {
         self.now += dt_ms;
         let t = Instant::now();
-        self.ed.update(ev, VIEW, self.now);
-        self.batch.begin_frame();
-        let mut p = GpuPainter {
-            batch: &mut self.batch,
-            base: Affine::scale(self.scale),
-            rows: Some(&mut self.rows),
+        let rows = match self.gpu.as_mut() {
+            Some(g) => &mut g.canvas().rows,
+            None => &mut self.rows,
         };
-        schemify_app::paint::frame(&mut self.ed, &mut self.caches, &mut p);
+        let mut f = schemify_app::paint::frame(
+            &mut self.ed,
+            &mut self.caches,
+            ev.raw(VIEW),
+            self.now,
+            rows,
+        );
+        let ctx = self.ed.shell().ctx().clone();
+        let ppp = f.output.pixels_per_point;
+        let prims = ctx.tessellate(std::mem::take(&mut f.output.shapes), ppp);
         let cpu = t.elapsed().as_secs_f64() * 1e3;
-        let rendered = self.gpu.as_mut().map(|g| {
-            let times = g.render(&mut self.batch, &mut self.rows);
-            (times, g.pipes.take_batch_uploaded())
-        });
-        self.rows.frame = None; // the render took it; without a GPU nobody does
+        let tex: usize = f
+            .output
+            .textures_delta
+            .set
+            .values()
+            .flatten()
+            .map(|d| d.image.width() * d.image.height() * 4)
+            .sum();
+        let mesh: usize = prims
+            .iter()
+            .map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(m) => m.vertices.len() * 20 + m.indices.len() * 4,
+                egui::epaint::Primitive::Callback(_) => 0,
+            })
+            .sum();
+        let rendered = self
+            .gpu
+            .as_mut()
+            .map(|g| g.render(&prims, &f.output.textures_delta, ppp));
+        f.output.textures_delta.clear();
+        self.rows.frame = None; // without a GPU nobody draws it
         if measure == Measure::Record {
             self.cpu.push(cpu);
-            if let Some(((v, g), uploaded)) = rendered {
+            if let Some((v, g)) = rendered {
                 self.render.push(v);
                 self.gpu_ms.push(g);
-                self.atlas.push(uploaded.atlas as f64 / 1024.0);
-                self.instances.push(uploaded.instances as f64 / 1024.0);
+                self.textures.push(tex as f64 / 1024.0);
+                self.meshes.push(mesh as f64 / 1024.0);
             }
         }
+        f.changed
     }
 
     /// Prints p50/p95/p99 of the samples since the last report, clears them, and returns the
@@ -334,18 +416,21 @@ impl Bench {
         };
         let cpu_pct = [q(0.5), q(0.95), q(0.99)];
         // Row bytes the frames since the last report uploaded (an edit's cost on the GPU side).
-        let uploaded = self.gpu.as_mut().map_or(0, |g| g.pipes.take_uploaded());
-        let (cpu, render, gpu, atlas, instances) = (
+        let uploaded = self
+            .gpu
+            .as_mut()
+            .map_or(0, |g| g.canvas().pipelines.take_uploaded());
+        let (cpu, render, gpu, textures, meshes) = (
             pct(&mut self.cpu),
             pct(&mut self.render),
             pct(&mut self.gpu_ms),
-            pct(&mut self.atlas),
-            pct(&mut self.instances),
+            pct(&mut self.textures),
+            pct(&mut self.meshes),
         );
         eprintln!(
-            "  {what:<8} {n:>3} frames  CPU update+paint p50/p95/p99 {cpu} ms  render calls \
-             {render} ms  GPU {gpu} ms  rows uploaded {} KiB  atlas {atlas} KiB/frame  \
-             instances {instances} KiB/frame",
+            "  {what:<8} {n:>3} frames  CPU frame (egui pass + tessellate) p50/p95/p99 {cpu} ms  \
+             render calls {render} ms  GPU {gpu} ms  rows uploaded {} KiB  textures {textures} \
+             KiB/frame  meshes {meshes} KiB/frame",
             uploaded / 1024
         );
         cpu_pct
@@ -366,8 +451,8 @@ impl Bench {
             self.cpu.truncate(c);
             self.render.truncate(v);
             self.gpu_ms.truncate(g);
-            self.atlas.truncate(v);
-            self.instances.truncate(v);
+            self.textures.truncate(v);
+            self.meshes.truncate(v);
         }
         assert!(out.len() < 64, "ticks end");
         out

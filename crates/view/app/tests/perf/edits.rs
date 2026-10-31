@@ -5,8 +5,6 @@ use std::fmt::Write;
 use std::time::Instant;
 
 use schemify_editor::editor::{Editor, Options};
-use schemify_render::Batch;
-use schemify_render::gpu::InstanceRows;
 use schemify_ui::{Button, InputEvent, InputEvents};
 
 use super::{Bench, Gpu, Measure, budget, event, id, key_event, schematic, tick_stats};
@@ -46,6 +44,7 @@ fn var_edit_with_1k_dependents_through_the_docs_page() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     for _ in 0..3 {
         s.frame(InputEvents::default());
@@ -93,21 +92,8 @@ fn edit_frames(n: u32) -> Vec<(&'static str, [f64; 3], f64)> {
         ..Default::default()
     })
     .expect("the fixture project opens");
-    ed.update(&InputEvents::default(), VIEW, 0);
-    let mut b = Bench {
-        caches: Default::default(),
-        ed,
-        scale: 1.0,
-        batch: Batch::default(),
-        rows: InstanceRows::default(),
-        now: 0,
-        gpu: Gpu::new(1.0),
-        cpu: Vec::new(),
-        render: Vec::new(),
-        gpu_ms: Vec::new(),
-        atlas: Vec::new(),
-        instances: Vec::new(),
-    };
+    ed.step(&InputEvents::default(), VIEW, 0);
+    let mut b = Bench::new(ed, 1.0, Gpu::new(1.0));
     let settle = |b: &mut Bench| {
         // Bounded by the background work a file opens: the disk hash takes ~282 ticks at 1M.
         for _ in 0..1024 {
@@ -342,20 +328,7 @@ fn shared_var_edit_frames_100k() {
         ..Default::default()
     })
     .unwrap();
-    let mut b = Bench {
-        caches: Default::default(),
-        ed,
-        scale: 1.0,
-        batch: Batch::default(),
-        rows: InstanceRows::default(),
-        now: 0,
-        gpu: Gpu::new(1.0),
-        cpu: Vec::new(),
-        render: Vec::new(),
-        gpu_ms: Vec::new(),
-        atlas: Vec::new(),
-        instances: Vec::new(),
-    };
+    let mut b = Bench::new(ed, 1.0, Gpu::new(1.0));
     for _ in 0..8 {
         b.frame(&InputEvents::default(), 1000, Measure::Skip);
     }

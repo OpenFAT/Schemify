@@ -15,9 +15,9 @@
 #![forbid(unsafe_code)]
 
 mod canvas;
-mod labels;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod headless;
+mod labels;
 pub mod paint;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod serve;

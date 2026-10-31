@@ -17,8 +17,8 @@ use schemify_ui::InputEvents;
 
 fn png_size(path: &Path) -> (u16, u16) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let px = schemify_render::Pixmap::from_png(std::io::Cursor::new(bytes)).expect("a PNG");
-    (px.width(), px.height())
+    let px = schemify_render::Image::from_png(&bytes).expect("a PNG");
+    (px.width as u16, px.height as u16)
 }
 
 fn open_with_config(dir: &Path, file: &str, init: &str) -> Session {
@@ -33,6 +33,7 @@ fn open_with_config(dir: &Path, file: &str, init: &str) -> Session {
     .expect("opens");
     let mut s = Session {
         caches: Default::default(),
+        raster: None,
         ed,
         now: 1,
         dir: dir.to_path_buf(),
@@ -242,6 +243,7 @@ fn fixture_copies_leave_editor_state_behind() {
     .expect("opens");
     let mut s = Session {
         caches: Default::default(),
+        raster: None,
         ed,
         now: 1,
         dir: dst,

@@ -116,13 +116,12 @@ Design (each job of a run, exactly where the native runner would start ngspice, 
 
 ## 7. Rendering
 
-Three tiers, tried in order; the first usable one draws every frame (`crates/view/render/src/window/`, `TIERS`):
+The editor draws through egui-wgpu with the canvas's instanced pipelines (D5 as amended 2026-10-30). **Open:** the web window is not yet ported to egui-winit; until it is, the web build does not draw. The port keeps the GPU tiers below; the CPU tier of the old renderer (vello_cpu) is gone with it.
 
-1. **WebGPU**, on winit's canvas, with the same instanced pipelines as natively (D5).
-2. **WebGL2**, through wgpu's GL backend with the same pipelines and shaders, on a canvas (`id="schemify-webgl"`, `pointer-events: none`) laid over winit's, which keeps the input: winit's canvas already holds the `webgpu` context of the first attempt, and a canvas has one context kind for life. The page's CSS sizes it as it sizes winit's. Its context is made first by us with `preserveDrawingBuffer: true` (and wgpu's `antialias: false`), so the probe below can read a composited frame back. The pipelines fit WebGL2: no compute, no storage buffers, instance strides ≤ 255 B, ≤ 16 vertex attributes and ≤ 15 inter-stage variables per pipeline, a 2048² atlas; the device is held to `Limits::downlevel_webgl2_defaults` on every backend, natively too.
-3. **The CPU**: every frame is rasterized by `CpuPainter` (vello_cpu, the painter of the native goldens) and put with `putImageData` on a 2D canvas (`id="schemify-cpu"`, `pointer-events: none`) laid over winit's (`crates/view/render/src/window/cpu_view.rs`). Cost: a full raster per frame; the editor redraws on input only (D39).
+1. **WebGPU**, on winit's canvas, with the same pipelines as natively.
+2. **WebGL2**, through wgpu's GL backend with the same pipelines and shaders. The canvas pipelines fit WebGL2: no compute, no storage buffers, instance strides ≤ 255 B, ≤ 16 vertex attributes and ≤ 15 inter-stage variables per pipeline; the device is held to `Limits::downlevel_webgl2_defaults` on every backend, natively too.
 
-A GPU tier is unusable when (a) the browser offers it no adapter, device or surface (browsers without WebGPU, a WebGL2 context refused), (b) its device is lost for any reason but our own drop, or (c) its first presented frame does not reach the page: 250 ms after it, one pixel at the centre of the tier's canvas read back through a 2D canvas (both APIs' canvas readback returns the last presented frame) has alpha 0, though every frame starts from the opaque background. (c) is what headless Chrome does with WebGPU on SwiftShader (no error at all) and on Vulkan (the swap-chain image fails to allocate): every WebGPU call succeeds and the page stays blank. A readback that itself fails counts as shown (the probe switches only on evidence). Each switch is one-way for the page and logged once on the console as `gpu: <tier> unusable (<reason>); drawing with WebGL2` or `…; drawing on the CPU`; the tier's GPU objects and canvas are dropped, and the next tier is sent every instance row and mask afresh. Input, storage and clipboard never depend on which tier draws.
+A GPU tier is unusable when the browser offers it no adapter, device or surface, or its device is lost for any reason but our own drop; the switch is one-way for the page and logged once on the console.
 
 The editor fits a cell's camera to the first non-empty canvas: the web canvas has no size until winit's first `Resized`, so the first updates see an empty viewport.
 

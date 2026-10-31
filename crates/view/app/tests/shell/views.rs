@@ -29,7 +29,7 @@ fn waves_window_opens_a_raw_file_and_closes() {
     s.click_node("dialog.choose.row.0");
     assert!(s.ed.waves_open(), "{}", s.status());
     let px = s.render();
-    assert_eq!(px.width(), VIEW.0 as u16);
+    assert_eq!(px.width, VIEW.0 as u32);
     s.key("Ctrl+W");
     assert!(!s.ed.waves_open());
 }
@@ -50,9 +50,9 @@ fn golden_editor_light_selection() {
 #[test]
 fn golden_editor_modern() {
     let mut s = Session::open("inv", "top.shcomp", "golden-modern", Ui::Default);
-    let rgb = |px: &schemify_render::Pixmap, x, y| {
-        let c = px.sample(x, y);
-        (c.r, c.g, c.b)
+    let rgb = |px: &schemify_render::Image, x, y| {
+        let c = px.pixel(x, y);
+        (c[0], c[1], c[2])
     };
     // Parity: xschem's black canvas and Tk-grey menubar.
     let parity = s.render();
@@ -138,21 +138,23 @@ fn waves_dock_divider_drags() {
         before.y1 <= f64::from(split) && before.y1 > 400.0,
         "{before:?}"
     );
+    // A drag as a pointer makes one: hover, press, moves over frames, release.
     let drag = |s: &mut Session, from: f32, to: f32| {
-        s.send([
-            InputEvent::PointerMove { x: 600.0, y: from },
-            InputEvent::PointerDown {
-                x: 600.0,
-                y: from,
-                button: Button::Left,
-            },
-            InputEvent::PointerMove { x: 600.0, y: to },
-            InputEvent::PointerUp {
-                x: 600.0,
-                y: to,
-                button: Button::Left,
-            },
-        ]);
+        s.send([InputEvent::PointerMove { x: 600.0, y: from }]);
+        s.send([InputEvent::PointerDown {
+            x: 600.0,
+            y: from,
+            button: Button::Left,
+        }]);
+        for k in 1..=4 {
+            let y = from + (to - from) * k as f32 / 4.0;
+            s.send([InputEvent::PointerMove { x: 600.0, y }]);
+        }
+        s.send([InputEvent::PointerUp {
+            x: 600.0,
+            y: to,
+            button: Button::Left,
+        }]);
     };
     drag(&mut s, split, 300.0);
     let after = s.ed.canvas_rect();
@@ -243,7 +245,7 @@ fn view_switcher_follows_the_file_kind() {
 #[test]
 fn view_switcher_floats_over_the_canvas() {
     use schemify_editor::session::View;
-    use schemify_ui::{FLOAT_INSET, Layer};
+    use schemify_ui::FLOAT_INSET;
     let mut s = Session::open("rc", "res.shprim", "switch-float", Ui::Default);
     let sh = &s.ed.shell();
     let row = |id: &str| {
@@ -255,10 +257,7 @@ fn view_switcher_floats_over_the_canvas() {
         sh.layout().row_of(n).unwrap()
     };
     let r = row("view.switch");
-    assert!(
-        sh.layout().rows(Layer::Overlay).contains(&r),
-        "painted above the canvas"
-    );
+    assert!(r > row("canvas"), "painted after (above) the canvas");
     let sw = sh.layout().rect()[r];
     let c = s.ed.canvas_rect();
     assert!((f64::from(sw.y) - (c.y0 + f64::from(FLOAT_INSET))).abs() < 0.5);
@@ -275,8 +274,8 @@ fn view_switcher_floats_over_the_canvas() {
     // padding, clear of the label.
     let probe = |s: &mut Session, b: schemify_ui::Rect| {
         let px = s.render();
-        let c = px.sample((b.x + 3.0) as u16, (b.y + b.h / 2.0) as u16);
-        (c.r, c.g, c.b)
+        let c = px.pixel((b.x + 3.0) as u32, (b.y + b.h / 2.0) as u32);
+        (c[0], c[1], c[2])
     };
     s.move_screen(0.0, 400.0);
     let (on0, off0) = (probe(&mut s, on), probe(&mut s, off));

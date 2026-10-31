@@ -1,4 +1,4 @@
-//! Idle, pan and zoom frames write no instance bytes and no UI bytes.
+//! Idle, pan and zoom frames write no instance bytes, and an idle window asks for no frame.
 
 use crate::common::{Session, Ui, VIEW};
 
@@ -9,21 +9,16 @@ use crate::common::{Session, Ui, VIEW};
 #[test]
 fn a_pan_or_zoom_frame_writes_no_instance_bytes() {
     use schemify_render::gpu::InstanceRows;
-    use schemify_render::kurbo::Affine;
-    use schemify_render::{Batch, GpuPainter};
-    use schemify_ui::{Button, InputEvent};
+    use schemify_ui::{Button, InputEvent, InputEvents};
     let mut s = Session::open("inv", "top.shcomp", "zero-bytes", Ui::Default);
-    let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
+    let mut rows = InstanceRows::default();
     // One frame painted as the window paints it; returns the row bytes it left to upload and
     // its camera, then takes the rows as the GPU does.
     let mut paint = |s: &mut Session| {
-        batch.begin_frame();
-        let mut p = GpuPainter {
-            batch: &mut batch,
-            base: Affine::IDENTITY,
-            rows: Some(&mut rows),
-        };
-        schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
+        s.now += 1000;
+        let input = InputEvents::default().raw(VIEW);
+        let mut f = schemify_app::paint::frame(&mut s.ed, &mut s.caches, input, s.now, &mut rows);
+        f.output.textures_delta.clear();
         let bytes = rows.dirty_bytes();
         let cam = rows.frame.take().expect("a canvas frame").cam;
         rows.clear_dirty();
@@ -71,76 +66,42 @@ fn a_pan_or_zoom_frame_writes_no_instance_bytes() {
     assert!(paint(&mut s).0 > 0, "an edit writes its rows");
 }
 
-/// The UI's retained rows through the real frame spine (`render::ui_rows`): once settled, a
-/// frame with no input and every pan frame write no UI byte; opening a menu takes overlay
-/// slots and writes them, closing it gives them back.
+/// An idle window asks egui for no frame (D39 idle 0%): once settled, a frame with no input
+/// reports a repaint delay of "never", and so does one a bounded number of frames after a zoom.
 #[test]
-fn idle_and_pan_frames_write_no_ui_bytes() {
-    use schemify_render::gpu::InstanceRows;
-    use schemify_render::kurbo::Affine;
-    use schemify_render::{Batch, GpuPainter};
-    use schemify_ui::{Button, InputEvent};
-    let mut s = Session::open("inv", "top.shcomp", "ui-bytes", Ui::Default);
-    let (mut batch, mut rows) = (Batch::default(), InstanceRows::default());
-    // One frame painted as the window paints it (until its glyphs settle); returns the UI
-    // bytes it left to upload, taken as the GPU takes them.
-    let mut paint = |s: &mut Session, batch: &mut Batch| {
-        let mut n = 0;
-        for _ in 0..16 {
-            batch.begin_frame();
-            let mut p = GpuPainter {
-                batch: &mut *batch,
-                base: Affine::IDENTITY,
-                rows: Some(&mut rows),
-            };
-            schemify_app::paint::frame(&mut s.ed, &mut s.caches, &mut p);
-            rows.frame = None;
-            rows.clear_dirty();
-            n += batch.ui.dirty_bytes();
-            batch.ui.clear_dirty();
-            if batch.settled() {
-                return n;
-            }
-        }
-        panic!("the frame settles");
-    };
-    assert!(
-        paint(&mut s, &mut batch) > 0,
-        "the first frame writes the UI"
-    );
-    s.frame(Default::default());
-    assert_eq!(
-        paint(&mut s, &mut batch),
-        0,
-        "an idle frame writes no UI byte"
-    );
-    let (x, y) = (VIEW.0 / 2.0, VIEW.1 / 2.0);
-    let mid = Button::Middle;
-    s.send([
-        InputEvent::PointerMove { x, y },
-        InputEvent::PointerDown { x, y, button: mid },
-    ]);
-    paint(&mut s, &mut batch);
-    for k in 1..=4 {
-        let x = x + 15.0 * k as f32;
-        s.send([InputEvent::PointerMove { x, y }]);
-        assert_eq!(
-            paint(&mut s, &mut batch),
-            0,
-            "pan frame {k} writes no UI byte"
+fn idle_frames_ask_for_no_repaint() {
+    use schemify_render::egui::ViewportId;
+    use schemify_ui::InputEvents;
+    let mut s = Session::open("inv", "top.shcomp", "idle-repaint", Ui::Default);
+    let delay = |s: &mut Session| {
+        s.now += 1000;
+        let mut rows = schemify_render::gpu::InstanceRows::default();
+        let mut f = schemify_app::paint::frame(
+            &mut s.ed,
+            &mut s.caches,
+            InputEvents::default().raw(VIEW),
+            s.now,
+            &mut rows,
         );
+        f.output.textures_delta.clear();
+        f.output.viewport_output[&ViewportId::ROOT].repaint_delay
+    };
+    for _ in 0..4 {
+        delay(&mut s);
     }
-    s.send([InputEvent::PointerUp { x, y, button: mid }]);
-    paint(&mut s, &mut batch);
-    let floats = batch.ui.bytes(1).len();
-    s.click_node("menu.file");
-    assert!(paint(&mut s, &mut batch) > 0, "the open menu is written");
-    assert!(batch.ui.bytes(1).len() > floats, "in overlay slots");
-    s.key("Escape");
-    paint(&mut s, &mut batch);
     assert_eq!(
-        batch.ui.bytes(1).len(),
-        floats,
-        "closed, its slots are given back"
+        delay(&mut s),
+        std::time::Duration::MAX,
+        "a settled idle frame wants no other"
     );
+    s.send([schemify_ui::InputEvent::Wheel {
+        x: 400.0,
+        y: 400.0,
+        dx: 0.0,
+        dy: 1.0,
+    }]);
+    // egui smooths a wheel notch over its next frames (about 0.2 s at 60 fps, `WheelState`)
+    // and holds tooltips back meanwhile: bounded, then it sleeps.
+    let settled = (0..30).any(|_| delay(&mut s) == std::time::Duration::MAX);
+    assert!(settled, "an idle window settles after a zoom");
 }

@@ -78,6 +78,10 @@ impl Editor {
     /// Borrows the canvas tables of the frame being painted; `None` while a text tab replaces
     /// the canvas. The borrow ends before the next [`Editor::update`]. A PNG export
     /// ([`Editor::take_raster`]) draws from the same tables through its own camera.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the grid pitch is not positive (the options never set one).
     pub fn canvas_picture(&self) -> Option<CanvasPicture<'_>> {
         if self.session.text_view().is_some() {
             return None;
@@ -152,7 +156,12 @@ impl Editor {
             let Some(row) = node.and_then(|n| s.layout.row_of(n)) else {
                 continue;
             };
-            let plot = self.sim.plots.iter().find(|x| x.expr == *expr).map(|x| &x.waves);
+            let plot = self
+                .sim
+                .plots
+                .iter()
+                .find(|x| x.expr == *expr)
+                .map(|x| &x.waves);
             let (Some(Ok(waves)), Some(slot)) = (plot, s.layout.slot()[row]) else {
                 continue;
             };
@@ -162,7 +171,14 @@ impl Editor {
             }
             let clip = Rect::from_min_size(pos2(clip.x, clip.y), vec2(clip.w, clip.h));
             let painter = ctx.layer_painter(slot.layer).with_clip_rect(clip);
-            schemify_ui::waves::paint_pane(&painter, rect, waves, 0, false, schemify_ui::waves::Drag::None);
+            schemify_ui::waves::paint_pane(
+                &painter,
+                rect,
+                waves,
+                0,
+                false,
+                schemify_ui::waves::Drag::None,
+            );
         }
         #[cfg(target_arch = "wasm32")]
         let _ = ctx;

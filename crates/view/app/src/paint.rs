@@ -30,16 +30,26 @@ pub struct Caches {
 
 impl std::fmt::Debug for Caches {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Caches").field("raster", &self.raster.is_some()).finish_non_exhaustive()
+        f.debug_struct("Caches")
+            .field("raster", &self.raster.is_some())
+            .finish_non_exhaustive()
     }
 }
 
 /// One window frame: the editor's frame over `input` with its canvas packed into `rows` (the
 /// window's GPU rows) and drawn as stages and labels in the canvas slot.
-pub fn frame(editor: &mut Editor, caches: &mut Caches, input: egui::RawInput, now_ms: u64, rows: &mut InstanceRows) -> Frame {
+pub fn frame(
+    editor: &mut Editor,
+    caches: &mut Caches,
+    input: egui::RawInput,
+    now_ms: u64,
+    rows: &mut InstanceRows,
+) -> Frame {
     rows.frame = None; // a frame without a canvas (a text tab) draws none
     let canvas = &mut caches.canvas;
-    editor.update(input, now_ms, &mut |ctx, picture| canvas.paint(ctx, picture, rows))
+    editor.update(input, now_ms, &mut |ctx, picture| {
+        canvas.paint(ctx, picture, rows)
+    })
 }
 
 /// Serves the PNG export the last frame asked for, if any: the scene and decor through the
@@ -56,13 +66,21 @@ pub fn serve_raster(editor: &mut Editor, caches: &mut Caches) {
 fn raster_png(editor: &Editor, caches: &mut Caches, raster: &Raster) -> Result<Vec<u8>, String> {
     assert!(raster.scale > 0.0, "raster scale {}", raster.scale);
     let side = 1.0..=f64::from(u16::MAX);
-    let (w_px, h_px) = ((raster.w * raster.scale).round(), (raster.h * raster.scale).round());
-    assert!(side.contains(&w_px) && side.contains(&h_px), "raster size {w_px} × {h_px}");
+    let (w_px, h_px) = (
+        (raster.w * raster.scale).round(),
+        (raster.h * raster.scale).round(),
+    );
+    assert!(
+        side.contains(&w_px) && side.contains(&h_px),
+        "raster size {w_px} × {h_px}"
+    );
     if caches.raster.is_none() {
         caches.raster = Some(schemify_render::Raster::new()?);
     }
     let gpu = caches.raster.as_mut().expect("opened above");
-    let picture = editor.canvas_picture().ok_or("a text tab shows no canvas")?;
+    let picture = editor
+        .canvas_picture()
+        .ok_or("a text tab shows no canvas")?;
     let (empty, no_marks) = (CanvasPrims::default(), Marks::default());
     // The drawing as exported: scene and decor through the export's view, nothing transient.
     let picture = CanvasPicture {

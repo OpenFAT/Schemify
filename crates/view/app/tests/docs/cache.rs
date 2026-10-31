@@ -24,6 +24,7 @@ fn open_edited(tag: &str, file: &str, edit: impl Fn(String) -> String) -> Sessio
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     for _ in 0..3 {
         s.frame(Default::default());
@@ -143,6 +144,7 @@ fn d20_param_cache_without_the_plugin_goes_with_its_default() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     for _ in 0..3 {
         s.frame(Default::default());

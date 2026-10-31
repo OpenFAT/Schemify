@@ -1,6 +1,7 @@
 //! Schemify's editor, headless: every table of an interactive session and the `frame` spine
-//! over the core's spines. `schemify-app` (binary `schemify-gui`, D39) gives it a window and
-//! paints it from [`editor::Editor::picture`]; nothing here links a GPU or window crate.
+//! over the core's spines, with its UI as egui frames. `schemify-app` (binary
+//! `schemify-gui`, D39) gives it a window, paints its egui output and draws the canvas from
+//! [`editor::Editor::canvas_picture`]; nothing here links a GPU or window crate.
 //! The headless CLI, project loading, the OS boundary and the package manager live in
 //! `schemify-cli` (binary `schemify`) and are re-exported here as [`libs`], [`platform`] and
 //! [`spines`].

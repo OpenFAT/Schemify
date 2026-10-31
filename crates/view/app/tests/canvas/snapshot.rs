@@ -47,6 +47,7 @@ fn the_plugin_snapshot_follows_random_edits() {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     s.frame(Default::default());
     let mut rng = Rng(11);
@@ -153,6 +154,7 @@ fn same_as_reopened(s: &mut Session, ctx: &str) {
         now: 1,
         dir,
         caches: Default::default(),
+        raster: None,
     };
     for _ in 0..8 {
         fresh.frame(Default::default());

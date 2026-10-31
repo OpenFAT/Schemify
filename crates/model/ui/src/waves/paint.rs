@@ -13,7 +13,10 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect as ERect, Shape, Stroke,
 
 use schemify_wave::{Axis, Cursor, PaneMode, Scale, TraceColumns, Waves};
 
-use super::{Drag, Geometry, READOUT_HEADINGS, WaveUi, legend_label, lane_name, measure_label, plot_area, readout_head, readout_rows};
+use super::{
+    Drag, Geometry, READOUT_HEADINGS, WaveUi, lane_name, legend_label, measure_label, plot_area,
+    readout_head, readout_rows,
+};
 use crate::graph;
 use crate::layout::Rect;
 use crate::view::color;
@@ -27,8 +30,15 @@ const ACTIVE: u32 = 0x5a8c_d2ff;
 const CURSOR: [u32; 2] = [0xffff_ffff, 0xff8c_ffff];
 
 /// Every pane of the window, the readout panel and the measurement tooltip.
+///
+/// # Panics
+///
+/// Panics on more pane rectangles than `waves` has panes.
 pub fn paint_window(p: &Painter, geo: &Geometry, waves: &Waves, ui: &WaveUi) {
-    assert!(geo.panes.len() <= waves.panes().len(), "more pane rects than panes");
+    assert!(
+        geo.panes.len() <= waves.panes().len(),
+        "more pane rects than panes"
+    );
     let several = geo.panes.len() > 1;
     for (k, &r) in geo.panes.iter().enumerate() {
         let active = several && usize::from(ui.active_pane()) == k;
@@ -44,6 +54,10 @@ pub fn paint_window(p: &Painter, geo: &Geometry, waves: &Waves, ui: &WaveUi) {
 
 /// Pane `k` of `waves` in `area`: grid and ticks, the plot in its mode, cursors, the box-zoom
 /// band of `drag`, the legend, and an outline when `active`.
+///
+/// # Panics
+///
+/// Panics if `waves` has no pane `k`.
 pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, drag: Drag) {
     assert!(usize::from(k) < waves.panes().len(), "no pane {k}");
     let pane = rect(area);
@@ -68,7 +82,13 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
             continue;
         }
         p.vline(x, plot.y_range(), Stroke::new(1.0, grid));
-        text(p, &schemify_wave::format_si(t, digits), pos2(x, plot.bottom() + 2.0), Align2::CENTER_TOP, label);
+        text(
+            p,
+            &schemify_wave::format_si(t, digits),
+            pos2(x, plot.bottom() + 2.0),
+            Align2::CENTER_TOP,
+            label,
+        );
     }
     if !digital {
         axis_ticks(ya, (pr.h / 26.0).clamp(2.0, 10.0) as u8, &mut ticks);
@@ -79,7 +99,13 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
                 continue;
             }
             p.hline(plot.x_range(), y, Stroke::new(1.0, grid));
-            text(p, &schemify_wave::format_si(t, digits), pos2(plot.left() - 4.0, y), Align2::RIGHT_CENTER, label);
+            text(
+                p,
+                &schemify_wave::format_si(t, digits),
+                pos2(plot.left() - 4.0, y),
+                Align2::RIGHT_CENTER,
+                label,
+            );
         }
     }
     p.rect_stroke(plot, 0.0, Stroke::new(1.0, grid), egui::StrokeKind::Inside);
@@ -101,7 +127,13 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
         clipped.vline(x, plot.y_range(), Stroke::new(1.0, col));
         let tag = ERect::from_min_max(pos2(x - 6.0, plot.top()), pos2(x + 6.0, plot.top() + 13.0));
         clipped.rect_filled(tag, 0.0, col);
-        text(&clipped, cursor_name(c), tag.center(), Align2::CENTER_CENTER, color(BG));
+        text(
+            &clipped,
+            cursor_name(c),
+            tag.center(),
+            Align2::CENTER_CENTER,
+            color(BG),
+        );
     }
     for c in [Cursor::A, Cursor::B] {
         let Some(at) = waves.hcursors(usize::from(k))[c as usize].filter(|_| !digital) else {
@@ -113,15 +145,34 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
         }
         let col = color(CURSOR[c as usize]);
         clipped.hline(plot.x_range(), y, Stroke::new(1.0, col));
-        let tag = ERect::from_min_max(pos2(plot.left(), y - 6.5), pos2(plot.left() + 12.0, y + 6.5));
+        let tag = ERect::from_min_max(
+            pos2(plot.left(), y - 6.5),
+            pos2(plot.left() + 12.0, y + 6.5),
+        );
         clipped.rect_filled(tag, 0.0, col);
-        text(&clipped, cursor_name(c), tag.center(), Align2::CENTER_CENTER, color(BG));
+        text(
+            &clipped,
+            cursor_name(c),
+            tag.center(),
+            Align2::CENTER_CENTER,
+            color(BG),
+        );
     }
-    if let Drag::Box { pane, x0, y0, x1, y1 } = drag
+    if let Drag::Box {
+        pane,
+        x0,
+        y0,
+        x1,
+        y1,
+    } = drag
         && pane == k
     {
         let band = ERect::from_two_pos(pos2(x0, y0), pos2(x1, y1));
-        clipped.rect_filled(band, 0.0, Color32::from_rgba_unmultiplied(120, 160, 255, 48));
+        clipped.rect_filled(
+            band,
+            0.0,
+            Color32::from_rgba_unmultiplied(120, 160, 255, 48),
+        );
         let edge = Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 190, 255, 220));
         clipped.rect_stroke(band, 0.0, edge, egui::StrokeKind::Inside);
     }
@@ -129,14 +180,26 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
         let lh = plot.height() / traces_of(waves, k).count().max(1) as f32;
         for (j, i) in traces_of(waves, k).enumerate() {
             let y = plot.top() + (j as f32 + 0.5) * lh;
-            text(p, lane_name(waves.src(i)), pos2(plot.left() - 4.0, y), Align2::RIGHT_CENTER, color(waves.color(i)));
+            text(
+                p,
+                lane_name(waves.src(i)),
+                pos2(plot.left() - 4.0, y),
+                Align2::RIGHT_CENTER,
+                color(waves.color(i)),
+            );
         }
     } else {
         let mut lx = plot.left() + 2.0;
         let mut t = String::new();
         for i in traces_of(waves, k) {
             legend_label(waves, i, &mut t);
-            let r = text(p, &t, pos2(lx, pane.top() + 2.0), Align2::LEFT_TOP, color(waves.color(i)));
+            let r = text(
+                p,
+                &t,
+                pos2(lx, pane.top() + 2.0),
+                Align2::LEFT_TOP,
+                color(waves.color(i)),
+            );
             lx += r.width() + 14.0;
             if lx > plot.right() {
                 break;
@@ -144,7 +207,12 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
         }
     }
     if active {
-        p.rect_stroke(pane.expand(0.5), 0.0, Stroke::new(1.0, color(ACTIVE)), egui::StrokeKind::Inside);
+        p.rect_stroke(
+            pane.expand(0.5),
+            0.0,
+            Stroke::new(1.0, color(ACTIVE)),
+            egui::StrokeKind::Inside,
+        );
     }
 }
 
@@ -187,7 +255,10 @@ fn lines(p: &Painter, waves: &Waves, k: u8, sx: &Scale, sy: &Scale) {
             pts.clear();
             schemify_wave::decimate(&x[r.clone()], &y[r], sx, sy, &mut pts);
             if pts.len() >= 2 {
-                p.add(Shape::line(pts.iter().map(|q| pos2(q[0], q[1])).collect(), stroke));
+                p.add(Shape::line(
+                    pts.iter().map(|q| pos2(q[0], q[1])).collect(),
+                    stroke,
+                ));
             }
         }
     }
@@ -227,7 +298,8 @@ fn lanes(p: &Painter, waves: &Waves, k: u8, sx: &Scale, plot: ERect) {
                 let b = ERect::from_min_max(pos2(x0, hi), pos2(x1, lo));
                 p.rect_stroke(b, 0.0, stroke, egui::StrokeKind::Middle);
                 if x1 - x0 >= 16.0 {
-                    let g = p.layout_no_wrap(props.radix.format(v), FontId::proportional(TICK_PX), col);
+                    let g =
+                        p.layout_no_wrap(props.radix.format(v), FontId::proportional(TICK_PX), col);
                     if g.size().x + 4.0 <= x1 - x0 {
                         p.galley(b.center() - g.size() / 2.0, g, col);
                     }
@@ -268,12 +340,19 @@ fn histogram(p: &Painter, waves: &Waves, k: u8, xa: Axis, sx: &Scale, sy: &Scale
         let mut outline = vec![pos2(edge(0), base)];
         for (b, &c) in bins.iter().enumerate() {
             let h = sy.px(f64::from(c));
-            p.rect_filled(ERect::from_two_pos(pos2(edge(b), h), pos2(edge(b + 1), base)), 0.0, fill);
+            p.rect_filled(
+                ERect::from_two_pos(pos2(edge(b), h), pos2(edge(b + 1), base)),
+                0.0,
+                fill,
+            );
             outline.push(pos2(edge(b), h));
             outline.push(pos2(edge(b + 1), h));
         }
         outline.push(pos2(edge(n), base));
-        p.add(Shape::line(outline, Stroke::new(waves.style(i).width() as f32, color(waves.color(i)))));
+        p.add(Shape::line(
+            outline,
+            Stroke::new(waves.style(i).width() as f32, color(waves.color(i))),
+        ));
     }
 }
 

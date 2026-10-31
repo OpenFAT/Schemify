@@ -23,13 +23,12 @@ const EDITOR_ONLY: &[&str] = &[
     "winit",
     "smithay-client-toolkit",
     "x11rb",
-    "parley",
-    "fontique",
-    "harfrust",
+    "egui",
+    "epaint",
+    "egui-wgpu",
+    "egui-winit",
     "skrifa",
     "read-fonts",
-    "swash",
-    "taffy",
     "accesskit",
     "accesskit_winit",
     "accesskit_unix",
@@ -108,8 +107,8 @@ fn the_canvas_tables_link_no_editor_crate() {
 
 /// The editor's model and frame spine run headless (`schemify-gui cmd`, the JSON-RPC
 /// server's tables, frame tests): the GPU, window and accessibility-backend crates belong
-/// to `schemify-app` and `schemify-render` only. Text shaping, layout and LaTeX are the UI
-/// tables' (`schemify-ui`), so they stay.
+/// to `schemify-app` and `schemify-render` only. egui (the UI tables' view, `schemify-ui`)
+/// and its CPU glyph rasterizer (epaint's `vello_cpu`) and LaTeX layout stay.
 #[test]
 fn the_editor_links_no_gpu_or_window_crate() {
     const GPU_OR_WINDOW: &[&str] = &[
@@ -121,7 +120,8 @@ fn the_editor_links_no_gpu_or_window_crate() {
         "naga",
         "ash",
         "glow",
-        "vello_cpu",
+        "egui-wgpu",
+        "egui-winit",
         "winit",
         "smithay-client-toolkit",
         "x11rb",

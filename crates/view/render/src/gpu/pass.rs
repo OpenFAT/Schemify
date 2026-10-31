@@ -16,7 +16,7 @@ use super::{Frame, InstanceRows, SOURCES, Stage, TRI};
 
 impl Pipelines {
     /// Writes the rows' dirty ranges to their buffers (a buffer too small is replaced by one
-    /// twice the size and written whole) and clears them. Call before [`Pipelines::draw`].
+    /// twice the size and written whole) and clears them. Call before [`Pipelines::draw_stage`].
     ///
     /// Cost: one `write_buffer` per dirty range.
     ///
@@ -84,7 +84,13 @@ impl Pipelines {
     /// # Panics
     ///
     /// Panics when rows were packed since the last [`Pipelines::upload`].
-    pub fn draw_stage(&self, pass: &mut wgpu::RenderPass<'_>, rows: &InstanceRows, stage: Stage, size: (u32, u32)) {
+    pub fn draw_stage(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        rows: &InstanceRows,
+        stage: Stage,
+        size: (u32, u32),
+    ) {
         assert_eq!(rows.dirty_bytes(), 0, "rows uploaded before they are drawn");
         pass.set_viewport(0.0, 0.0, size.0 as f32, size.1 as f32, 0.0, 1.0);
         pass.set_bind_group(0, &self.bind, &[]);

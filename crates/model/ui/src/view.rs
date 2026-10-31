@@ -11,12 +11,15 @@
 //! column stretches its children across, a row centres them unless `stretch` is set.
 //!
 //! Contents:
+//! - crate-only `struct View`: the per-frame walk shared by [`row`], [`field`], [`prose`];
+//!   `style`, `px`, `font`, `prop`, `id`, `kind`, `egui_id`, `record`, `run`, `frame`, `node`,
+//!   `container`, `framed`
 //! - `pub fn show(ui, tables, strings, state, layout, out)`
-//! - crate-only `View`: the per-frame walk shared by [`row`], [`field`], [`prose`]
+//! - crate-only `fn color(u32) -> Color32`, `fn font(f32) -> FontId`
 
 use egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Order, Rect as ERect,
-    Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
+    Align, Align2, Color32, CornerRadius, FontId, Id, Layout, Margin, Order, Rect as ERect, Sense,
+    Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
 
 use crate::input::Routed;
@@ -32,9 +35,27 @@ mod paths;
 mod prose;
 mod row;
 
-pub(crate) use paths::paint_paths;
 pub use events::pointer_events;
+pub(crate) use paths::paint_paths;
 pub use row::{DISABLED_ALPHA, row_style};
+
+/// One frame's walk over the tables.
+pub(crate) struct View<'a> {
+    pub(crate) t: &'a UiTables,
+    pub(crate) s: &'a Strings,
+    pub(crate) st: &'a mut UiState,
+    pub(crate) lay: &'a mut UiLayout,
+    pub(crate) out: &'a mut Routed,
+    /// The innermost scroll viewport the current node is drawn in.
+    pub(crate) clip: Rect,
+    /// The `menu-title` selector's row.
+    pub(crate) title_style: u16,
+    /// Drawing a `scroll` node's content: heights are unbounded there.
+    pub(crate) in_scroll: bool,
+    /// The view's egui id (its `ui`'s): node ids are salted with it, so two views of one
+    /// window (string tables of their own) never share egui memory.
+    pub(crate) salt: Id,
+}
 
 /// Font size when no style sets one.
 const FONT_PX: f32 = 13.0;
@@ -45,7 +66,8 @@ const FONT_PX: f32 = 13.0;
 /// a frame's view twice, and only the first pass sees the input).
 ///
 /// The canvas and graph nodes leave a reserved shape ([`Slot`] in `layout`) for the host to
-/// paint after the view, so the schematic sits under the floats and popups.
+/// paint after the view, so the schematic sits under the floats and popups. Node ids are salted
+/// with `ui`'s id: give each view of a window a stable one (`UiBuilder::id_salt`).
 pub fn show(
     ui: &mut Ui,
     tables: &UiTables,
@@ -66,6 +88,8 @@ pub fn show(
         out,
         clip: NO_CLIP,
         title_style: title,
+        in_scroll: false,
+        salt: ui.scope_id(),
     };
     // Keys typed this frame belong to the field focused when it began (Enter may blur it).
     let typing = ui.ctx().egui_wants_keyboard_input();
@@ -73,25 +97,24 @@ pub fn show(
     let root = (0..n.len()).find(|&i| n.kind[i] == Kind::Window && n.parent[i] == NO_NODE);
     if let Some(root) = root {
         let rect = ui.max_rect();
-        let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
-        v.sized(&mut child, root as NodeIx, rect.size(), true, true, false, None);
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        v.sized(
+            &mut child,
+            root as NodeIx,
+            rect.size(),
+            true,
+            true,
+            false,
+            None,
+        );
     }
     v.dialog(ui.ctx());
     events::keys(&mut v, ui.ctx(), typing);
     debug_assert_eq!(v.lay.len(), v.lay.rect().len(), "layout columns in step");
-}
-
-/// One frame's walk over the tables.
-pub(crate) struct View<'a> {
-    pub(crate) t: &'a UiTables,
-    pub(crate) s: &'a Strings,
-    pub(crate) st: &'a mut UiState,
-    pub(crate) lay: &'a mut UiLayout,
-    pub(crate) out: &'a mut Routed,
-    /// The innermost scroll viewport the current node is drawn in.
-    pub(crate) clip: Rect,
-    /// The `menu-title` selector's row.
-    pub(crate) title_style: u16,
 }
 
 impl View<'_> {
@@ -99,7 +122,9 @@ impl View<'_> {
     pub(crate) fn style(&self, n: NodeIx, p: StyleProp) -> u32 {
         let i = usize::from(n);
         debug_assert!(i < self.t.nodes.len(), "node index out of range");
-        self.t.styles.get(self.t.nodes.class[i], self.t.nodes.kind[i], p)
+        self.t
+            .styles
+            .get(self.t.nodes.class[i], self.t.nodes.kind[i], p)
     }
 
     /// Length style `p` of `n` in px.
@@ -128,9 +153,9 @@ impl View<'_> {
         self.t.nodes.kind[usize::from(n)]
     }
 
-    /// egui id of node `n`, stable across recomposition (its record id).
+    /// egui id of node `n`, stable across recomposition (its record id in this view).
     pub(crate) fn egui_id(&self, n: NodeIx) -> Id {
-        Id::unique(("ui", self.id(n).raw()))
+        self.salt.with(("ui", self.id(n).raw()))
     }
 
     /// Records that `n` was shown at `r`.
@@ -151,8 +176,13 @@ impl View<'_> {
         let border = self.px(n, StyleProp::Border);
         egui::Frame::new()
             .fill(color(self.style(n, StyleProp::Bg)))
-            .stroke(Stroke::new(border, color(self.style(n, StyleProp::BorderColor))))
-            .corner_radius(CornerRadius::same(self.style(n, StyleProp::Radius).min(255) as u8))
+            .stroke(Stroke::new(
+                border,
+                color(self.style(n, StyleProp::BorderColor)),
+            ))
+            .corner_radius(CornerRadius::same(
+                self.style(n, StyleProp::Radius).min(255) as u8,
+            ))
             .inner_margin(Margin::symmetric(
                 self.style(n, StyleProp::Pad).min(127) as i8,
                 self.style(n, StyleProp::PadY).min(127) as i8,
@@ -197,7 +227,12 @@ impl View<'_> {
 
     /// Runs `f` inside `n`'s frame, the frame filling the size the cell asked the node to fill
     /// (`ui`'s minimum). Returns the frame's rectangle.
-    pub(crate) fn framed(&mut self, ui: &mut Ui, n: NodeIx, f: impl FnOnce(&mut Self, &mut Ui)) -> ERect {
+    pub(crate) fn framed(
+        &mut self,
+        ui: &mut Ui,
+        n: NodeIx,
+        f: impl FnOnce(&mut Self, &mut Ui),
+    ) -> ERect {
         let frame = self.frame(n);
         let fill = (ui.min_size() - frame.total_margin().sum()).max(Vec2::ZERO);
         let cell = ui.max_rect();
@@ -224,7 +259,11 @@ impl View<'_> {
             .children(n)
             .filter(|&c| self.kind(c) != Kind::Dialog)
             .collect();
-        let layout = if row { Layout::left_to_right(Align::Min) } else { Layout::top_down(Align::Min) };
+        let layout = if row {
+            Layout::left_to_right(Align::Min)
+        } else {
+            Layout::top_down(Align::Min)
+        };
         // A row centres its children across when its height is known (fixed or filled).
         let cross = (row && !stretch && ui.min_size().y > 0.0).then(|| ui.min_size().y);
         ui.with_layout(layout, |ui| {
@@ -233,11 +272,17 @@ impl View<'_> {
             for (k, &c) in kids.iter().enumerate() {
                 let avail = ui.available_rect_before_wrap().size();
                 let share = (grow[k] > 0.0).then(|| {
+                    // Each later sibling's gap, and the last size of each that does not grow.
                     let later: f32 = kids[k + 1..]
                         .iter()
                         .zip(&grow[k + 1..])
-                        .filter(|(_, g)| **g == 0.0)
-                        .map(|(&s, _)| self.last_size(ui, s, row) + gap)
+                        .map(|(&s, g)| {
+                            gap + if *g == 0.0 {
+                                self.last_size(ui, s, row)
+                            } else {
+                                0.0
+                            }
+                        })
                         .sum();
                     let main = if row { avail.x } else { avail.y };
                     ((main - later) * grow[k] / grow[k..].iter().sum::<f32>()).max(0.0)
@@ -256,7 +301,10 @@ impl View<'_> {
     /// main axis when `grown`, across when `fill_cross`, centred in a `center`-tall row.
     /// Returns the rectangle it took (never larger than the cell, so an overflowing row stays
     /// inside its parent).
-    #[expect(clippy::too_many_arguments, reason = "one placement, read once per child")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one placement, read once per child"
+    )]
     fn sized(
         &mut self,
         ui: &mut Ui,
@@ -268,30 +316,54 @@ impl View<'_> {
         center: Option<f32>,
     ) -> ERect {
         // egui's sizing pass measures natural sizes: nothing stretches or grows in it.
-        let (grown, fill_cross) = if ui.is_sizing_pass() { (false, false) } else { (grown, fill_cross) };
+        let (grown, fill_cross) = if ui.is_sizing_pass() {
+            (false, false)
+        } else {
+            (grown, fill_cross)
+        };
         // A grown cell's main size (free space, a dragged split) wins over a fixed style.
         let mut fixed = vec2(self.px(c, StyleProp::Width), self.px(c, StyleProp::Height));
         if grown {
             *if row { &mut fixed.x } else { &mut fixed.y } = 0.0;
         }
-        let cell = vec2(
-            if fixed.x > 0.0 { fixed.x } else { size.x.max(0.0) },
-            if fixed.y > 0.0 { fixed.y } else { size.y.max(0.0) },
+        let mut cell = vec2(
+            if fixed.x > 0.0 {
+                fixed.x
+            } else {
+                size.x.max(0.0)
+            },
+            if fixed.y > 0.0 {
+                fixed.y
+            } else {
+                size.y.max(0.0)
+            },
         );
+        // Scrolled content has no height limit: what is left of the viewport (negative once
+        // scrolled past) must not cut a child short.
+        if self.in_scroll && fixed.y == 0.0 && (row || !grown) {
+            cell.y = f32::INFINITY;
+        }
         let (fill_main, fill_x) = (grown, if row { grown } else { fill_cross });
         let fill_y = if row { fill_cross } else { fill_main };
         let mut at = ui.available_rect_before_wrap().min;
         if let Some(h) = center {
-            let last = ui.data(|d| d.get_temp::<f32>(self.egui_id(c).with("cross")).unwrap_or(h));
+            let last = ui.data(|d| {
+                d.get_temp::<f32>(self.egui_id(c).with("cross"))
+                    .unwrap_or(h)
+            });
             at.y += ((h - last) / 2.0).max(0.0);
         }
         let rect = ERect::from_min_size(at, cell);
-        let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)));
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
         child.shrink_clip_rect(rect);
         if fill_x || fixed.x > 0.0 {
             child.set_min_width(cell.x);
         }
-        if fill_y || fixed.y > 0.0 {
+        if (fill_y || fixed.y > 0.0) && cell.y.is_finite() {
             child.set_min_height(cell.y);
         }
         child.set_min_width(self.px(c, StyleProp::MinWidth).min(cell.x));
@@ -309,7 +381,14 @@ impl View<'_> {
 
     /// `c`'s main-axis size in the previous frame (0 the first time).
     fn last_size(&self, ui: &Ui, c: NodeIx, row: bool) -> f32 {
-        let fixed = self.px(c, if row { StyleProp::Width } else { StyleProp::Height });
+        let fixed = self.px(
+            c,
+            if row {
+                StyleProp::Width
+            } else {
+                StyleProp::Height
+            },
+        );
         if fixed > 0.0 {
             return fixed;
         }
@@ -325,9 +404,6 @@ impl View<'_> {
         if before.is_none_or(|b| (b - size).abs() > 0.5) {
             ui.data_mut(|d| d.insert_temp(key.with("prev"), size));
             if before.is_some() {
-                if std::env::var_os("SCHEMIFY_FLEX_DEBUG").is_some() {
-                    eprintln!("flex: {} {:?} -> {size}", self.s.get(self.id(c)), before);
-                }
                 ui.ctx().request_discard("a flex child changed size");
             }
         }
@@ -339,17 +415,23 @@ impl View<'_> {
         let mut area = egui::ScrollArea::vertical()
             .id_salt(self.egui_id(n))
             .auto_shrink(false);
-        if let Some(o) = self.st.take_scroll_request(id) {
+        if let Some(o) = self.st.scroll_request(id) {
             area = area.vertical_scroll_offset(o);
         }
         let outer_clip = self.clip;
         let mut scrolled = (0.0, 0.0);
+        let outer_scroll = self.in_scroll;
         let r = self.framed(ui, n, |v, ui| {
             let o = area.show(ui, |ui| {
                 v.clip = Rect::of(ui.clip_rect()).intersect(&outer_clip);
+                v.in_scroll = true;
                 v.children(ui, n);
+                v.in_scroll = outer_scroll;
             });
-            scrolled = (o.state.clamped_offset().y, (o.content_size.y - o.inner_rect.height()).max(0.0));
+            scrolled = (
+                o.state.clamped_offset().y,
+                (o.content_size.y - o.inner_rect.height()).max(0.0),
+            );
         });
         self.clip = outer_clip;
         let (offset, max) = scrolled;
@@ -372,11 +454,18 @@ impl View<'_> {
         let second = b.map_or(0.0, |b| {
             let natural = self.last_size(ui, b, row);
             let want = self.st.split_of(self.id(n)).unwrap_or(natural);
-            want.clamp(SPLIT_MIN.min(total), (total - gap - SPLIT_MIN).max(SPLIT_MIN.min(total)))
+            want.clamp(
+                SPLIT_MIN.min(total),
+                (total - gap - SPLIT_MIN).max(SPLIT_MIN.min(total)),
+            )
         });
         let first = (total - second - if b.is_some() { gap } else { 0.0 }).max(0.0);
         let frame_r = self.frame(n).show(ui, |ui| {
-            let layout = if row { Layout::left_to_right(Align::Min) } else { Layout::top_down(Align::Min) };
+            let layout = if row {
+                Layout::left_to_right(Align::Min)
+            } else {
+                Layout::top_down(Align::Min)
+            };
             ui.with_layout(layout, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 let cross = if row { rect.height() } else { rect.width() };
@@ -392,8 +481,13 @@ impl View<'_> {
                     });
                 }
                 if resp.dragged() {
-                    let d = if row { resp.drag_delta().x } else { resp.drag_delta().y };
-                    let px = (second - d).clamp(SPLIT_MIN, (total - gap - SPLIT_MIN).max(SPLIT_MIN));
+                    let d = if row {
+                        resp.drag_delta().x
+                    } else {
+                        resp.drag_delta().y
+                    };
+                    let px =
+                        (second - d).clamp(SPLIT_MIN, (total - gap - SPLIT_MIN).max(SPLIT_MIN));
                     self.st.set_split(self.id(n), px);
                 }
                 debug_assert!(div.width() >= 0.0);
@@ -428,7 +522,14 @@ impl View<'_> {
 
     /// A `graph` node: a reserved shape the host fills with the plot.
     fn graph(&mut self, ui: &mut Ui, n: NodeIx) {
-        let size = vec2(ui.available_width(), self.px(n, StyleProp::Height).max(120.0));
+        // A grown cell asks the graph to fill it (its minimum); else its height, or 120 px.
+        let fill = ui.min_size().y;
+        let h = if fill > 1.0 {
+            fill
+        } else {
+            self.px(n, StyleProp::Height).max(120.0)
+        };
+        let size = vec2(ui.available_width(), h);
         let (rect, _) = ui.allocate_exact_size(size, Sense::click_and_drag());
         let slot = Slot {
             layer: ui.layer_id(),
@@ -449,6 +550,11 @@ impl View<'_> {
             return;
         };
         let id = self.egui_id(n).with(self.st.dialog_serial);
+        if self.st.dialog_drawn != self.st.dialog_serial {
+            // egui sizes a new area invisibly first; place it within this frame.
+            self.st.dialog_drawn = self.st.dialog_serial;
+            ctx.request_discard("a dialog opened");
+        }
         let at = self.st.dialog_at;
         let area = egui::Modal::default_area(id);
         let area = match at {
@@ -487,4 +593,3 @@ pub(crate) fn color(c: u32) -> Color32 {
 pub(crate) fn font(px: f32) -> FontId {
     FontId::proportional(px)
 }
-

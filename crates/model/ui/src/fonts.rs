@@ -55,6 +55,11 @@ pub struct FontGlyph {
     pub advance: u16,
 }
 
+/// egui family of bold prose text (KaTeX Sans Serif Bold, then the UI faces).
+pub const BOLD: &str = "bold";
+/// egui family of italic prose text (KaTeX Sans Serif Italic, then the UI faces).
+pub const ITALIC: &str = "italic";
+
 /// The embedded UI faces in the fallback order UI text shapes with: the Noto Sans subset,
 /// then KaTeX Main for the arrows and relations it lacks (→ ≤ ≥). Both are TrueType files
 /// under the SIL OFL 1.1, which allows embedding: exporters embed them so printed text uses
@@ -133,6 +138,74 @@ pub fn ui_font_glyphs(text: &str, out: &mut Vec<FontGlyph>) {
     assert_eq!(out.len() - before, text.chars().count());
 }
 
+/// The embedded faces as egui fonts: proportional text is the Noto Sans subset with KaTeX
+/// Main behind it ([`ui_fonts`]' fallback order), monospace is KaTeX Typewriter, [`BOLD`] and
+/// [`ITALIC`] are KaTeX Sans Serif, and each KaTeX face is also a family under its own name
+/// ([`crate::math::FACE_NAMES`]) for the `math` widget. No system font is read.
+#[must_use]
+pub fn font_definitions() -> FontDefinitions {
+    let mut d = FontDefinitions::empty();
+    let mut add = |name: &str, bytes: &'static [u8]| {
+        d.font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+    };
+    add("noto", NOTO_SANS);
+    for name in math::FACE_NAMES {
+        add(name, math::face_bytes(name));
+    }
+    let ui = ["noto".to_owned(), "Main-Regular".to_owned()];
+    let with_ui = |first: &str| [vec![first.to_owned()], ui.to_vec()].concat();
+    d.families.insert(FontFamily::Proportional, ui.to_vec());
+    d.families
+        .insert(FontFamily::Monospace, with_ui("Typewriter-Regular"));
+    d.families
+        .insert(FontFamily::Name(BOLD.into()), with_ui("SansSerif-Bold"));
+    d.families
+        .insert(FontFamily::Name(ITALIC.into()), with_ui("SansSerif-Italic"));
+    for name in math::FACE_NAMES {
+        d.families
+            .insert(FontFamily::Name(name.into()), with_ui(name));
+    }
+    debug_assert_eq!(
+        d.font_data.len(),
+        1 + math::FACE_NAMES.len(),
+        "every face once"
+    );
+    debug_assert_eq!(
+        d.families.len(),
+        4 + math::FACE_NAMES.len(),
+        "every family once"
+    );
+    d
+}
+
+/// A new egui context with the embedded fonts ([`font_definitions`]); every Schemify window
+/// and raster runs its frames through one of these.
+///
+/// # Panics
+///
+/// Never: three passes is a non-zero count.
+#[must_use]
+pub fn context() -> egui::Context {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(font_definitions());
+    // A frame may need three passes: the input's, the model's change, a new dialog's place.
+    ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(3).expect("three"));
+    ctx.all_styles_mut(|s| {
+        s.interaction.tooltip_delay = 0.4;
+        // Clicks on text belong to the row or page under it, not to a text selection.
+        s.interaction.selectable_labels = false;
+        // A wheel notch scrolls at once (the host windows long lists by the offset).
+        s.scroll_animation = egui::style::ScrollAnimation::none();
+        s.spacing.item_spacing = egui::Vec2::ZERO;
+    });
+    debug_assert!(
+        ctx.global_style().spacing.item_spacing == egui::Vec2::ZERO,
+        "gaps come from styles"
+    );
+    ctx
+}
+
 // ---- private ----
 
 /// Face `face` of [`ui_fonts`], parsed.
@@ -168,51 +241,4 @@ mod tests {
         assert!(g[..5].iter().all(|x| x.id < ui_font_info(x.face).glyphs));
         assert_eq!(g[5].id, 0, "outside both faces: .notdef");
     }
-}
-
-/// egui family of bold prose text (KaTeX Sans Serif Bold, then the UI faces).
-pub const BOLD: &str = "bold";
-/// egui family of italic prose text (KaTeX Sans Serif Italic, then the UI faces).
-pub const ITALIC: &str = "italic";
-
-/// The embedded faces as egui fonts: proportional text is the Noto Sans subset with KaTeX
-/// Main behind it ([`ui_fonts`]' fallback order), monospace is KaTeX Typewriter, [`BOLD`] and
-/// [`ITALIC`] are KaTeX Sans Serif, and each KaTeX face is also a family under its own name
-/// ([`crate::math::FACE_NAMES`]) for the `math` widget. No system font is read.
-#[must_use]
-pub fn font_definitions() -> FontDefinitions {
-    let mut d = FontDefinitions::empty();
-    let mut add = |name: &str, bytes: &'static [u8]| {
-        d.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
-    };
-    add("noto", NOTO_SANS);
-    for name in math::FACE_NAMES {
-        add(name, math::face_bytes(name));
-    }
-    let ui = ["noto".to_owned(), "Main-Regular".to_owned()];
-    let with_ui = |first: &str| [vec![first.to_owned()], ui.to_vec()].concat();
-    d.families.insert(FontFamily::Proportional, ui.to_vec());
-    d.families.insert(FontFamily::Monospace, with_ui("Typewriter-Regular"));
-    d.families.insert(FontFamily::Name(BOLD.into()), with_ui("SansSerif-Bold"));
-    d.families.insert(FontFamily::Name(ITALIC.into()), with_ui("SansSerif-Italic"));
-    for name in math::FACE_NAMES {
-        d.families.insert(FontFamily::Name(name.into()), with_ui(name));
-    }
-    debug_assert_eq!(d.font_data.len(), 1 + math::FACE_NAMES.len(), "every face once");
-    debug_assert_eq!(d.families.len(), 4 + math::FACE_NAMES.len(), "every family once");
-    d
-}
-
-/// A new egui context with the embedded fonts ([`font_definitions`]); every Schemify window
-/// and raster runs its frames through one of these.
-#[must_use]
-pub fn context() -> egui::Context {
-    let ctx = egui::Context::default();
-    ctx.set_fonts(font_definitions());
-    ctx.all_styles_mut(|s| {
-        s.interaction.tooltip_delay = 0.4;
-        s.spacing.item_spacing = egui::Vec2::ZERO;
-    });
-    debug_assert!(ctx.global_style().spacing.item_spacing == egui::Vec2::ZERO, "gaps come from styles");
-    ctx
 }

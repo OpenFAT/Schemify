@@ -371,6 +371,7 @@ fn crash_recovery_asks_to_recover_or_discard() {
     let open = |dir: &Path| {
         let mut s = Session {
             caches: Default::default(),
+            raster: None,
             ed: Editor::new(Options {
                 path: Some(dir.join("top.shcomp")),
                 seed: 7,
