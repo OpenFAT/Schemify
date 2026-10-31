@@ -25,7 +25,8 @@
       # release (publish.yaml): `nix run 'github:OpenFAT/Schemify#latest'` installs the
       # newest without compiling.
       sources = lib.importJSON ./sources.json;
-      latest = if sources == { } then null else lib.last (lib.sort lib.versionOlder (lib.attrNames sources));
+      latest =
+        if sources == { } then null else lib.last (lib.sort lib.versionOlder (lib.attrNames sources));
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -153,7 +154,12 @@
           # the user's own PATH finds it.
           postInstall = ''
             wrapProgram $out/bin/schemify \
-              --suffix PATH : ${pkgs.lib.makeBinPath [ pkgs.git pkgs.curl ]}
+              --suffix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.git
+                  pkgs.curl
+                ]
+              }
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux "wrapProgram $out/bin/schemify-gui --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (runtimeLibs pkgs)}"}
           '';
           meta = {
@@ -223,7 +229,12 @@
             for p in schemify schemify-gui; do
               wrapProgram $out/bin/$p \
                 ${lib.optionalString pkgs.stdenv.isLinux "--prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (runtimeLibs pkgs)}"} \
-                --suffix PATH : ${lib.makeBinPath [ pkgs.git pkgs.curl ]}
+                --suffix PATH : ${
+                  lib.makeBinPath [
+                    pkgs.git
+                    pkgs.curl
+                  ]
+                }
             done
           '';
           meta = {
@@ -271,30 +282,38 @@
       });
 
       devShells = forAll (pkgs: {
-        default = pkgs.mkShell {
-          packages =
-            (with pkgs; [
-              # Rust 1.95.0: cargo, rustc, clippy, rustfmt, rust-analyzer, rust-lld (guests).
-              (toolchain pkgs)
-              # Web glue.
-              (wasmBindgenCli pkgs)
-              # Headless GUI runs and screenshots (docs/dev/contributing.md).
-              cage
-              grim
-              wtype
-              # Misc.
-              socat
-              nixfmt
-              # Verilog-A → OSDI for the runner's compile step (run spec §5); dev shell only,
-              # not wrapped into the package (its LLVM closure is large).
-              openvaf
-            ])
-            ++ simulators pkgs;
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);
-          shellHook = ''
-            export LD_LIBRARY_PATH="$LD_LIBRARY_PATH''${LD_LIBRARY_PATH:+:}/run/opengl-driver/lib"
-          '';
-        };
+        default = pkgs.mkShell (
+          {
+            packages =
+              (with pkgs; [
+                # Rust 1.95.0: cargo, rustc, clippy, rustfmt, rust-analyzer, rust-lld (guests).
+                (toolchain pkgs)
+                # Web glue.
+                (wasmBindgenCli pkgs)
+                # Headless GUI runs and screenshots (docs/dev/contributing.md).
+                cage
+                grim
+                wtype
+                # Misc.
+                socat
+                nixfmt
+                # Verilog-A → OSDI for the runner's compile step (run spec §5); dev shell only,
+                # not wrapped into the package (its LLVM closure is large).
+                openvaf
+              ])
+              ++ simulators pkgs;
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);
+            shellHook = ''
+              export LD_LIBRARY_PATH="$LD_LIBRARY_PATH''${LD_LIBRARY_PATH:+:}/run/opengl-driver/lib"
+            '';
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            # Mesa's software Vulkan (lavapipe) for the app's GPU-drawn goldens on a host with no
+            # driver (CI). Added to the host's drivers, not replacing them; the device ladder
+            # prefers hardware.
+            VK_ADD_DRIVER_FILES = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.parsed.cpu.name}.json";
+          }
+        );
       });
 
       formatter = forAll (pkgs: pkgs.nixfmt);
