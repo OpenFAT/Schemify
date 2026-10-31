@@ -111,7 +111,7 @@ fn interactions(n: u32) {
     eprintln!("  after the drop: {}", tick_stats(b.ticks()));
     // Open the Tools menu (a click on its title), close it.
     let escape = event(InputEvent::Key {
-        chord: Chord::parse("Escape").expect("chord"),
+        chord: "Escape".parse::<Chord>().expect("chord"),
     });
     for _ in 0..8 {
         b.click_node("menu.tools", 300, Measure::Record);
@@ -128,7 +128,7 @@ fn interactions(n: u32) {
     click.push(release(inst));
     b.frame(&click, 500, Measure::Skip);
     let q = event(InputEvent::Key {
-        chord: Chord::parse("q").expect("chord"),
+        chord: "q".parse::<Chord>().expect("chord"),
     });
     b.frame(&q, 300, Measure::Skip);
     b.click_node("dialog.props.val.0", 300, Measure::Skip);

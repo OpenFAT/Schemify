@@ -49,15 +49,15 @@ fn default_ui_composes_without_health_rows() {
         ]
     );
     assert_eq!(
-        f.tables.keymap.lookup(Chord::parse("Ctrl+S").unwrap()),
+        f.tables.keymap.lookup("Ctrl+S".parse::<Chord>().unwrap()),
         Some(f.sym("file.save"))
     );
     assert_eq!(
-        f.tables.keymap.lookup(Chord::parse("shift+z").unwrap()),
+        f.tables.keymap.lookup("shift+z".parse::<Chord>().unwrap()),
         Some(f.sym("view.zoom_in"))
     );
     assert_eq!(
-        f.tables.keymap.lookup(Chord::parse("%").unwrap()),
+        f.tables.keymap.lookup("%".parse::<Chord>().unwrap()),
         Some(f.sym("options.draw_grid"))
     );
 }
@@ -101,7 +101,7 @@ fn plugins_override_last_wins_with_health_report() {
         "order -1 sorts first"
     );
     assert_eq!(
-        f.tables.keymap.lookup(Chord::parse("Ctrl+S").unwrap()),
+        f.tables.keymap.lookup("Ctrl+S".parse::<Chord>().unwrap()),
         Some(f.sym("count_nets.run"))
     );
     assert_eq!(n.owner()[f.node("tools.count_nets") as usize], 1);

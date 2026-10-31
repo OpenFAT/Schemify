@@ -261,7 +261,7 @@ fn record(
     match t[0] {
         "node" => {
             arity(3)?;
-            let kind = Kind::parse(t[2]).ok_or(RejectReason::UnknownKind)?;
+            let kind: Kind = t[2].parse().map_err(|_| RejectReason::UnknownKind)?;
             let id = strings.intern(t[1]);
             out.edits.push(Edit::Node { id, kind });
             Ok(Context::Node(id))
@@ -285,7 +285,7 @@ fn record(
         }
         "key" => {
             arity(3)?;
-            let chord = Chord::parse(t[1]).ok_or(RejectReason::BadValue)?;
+            let chord: Chord = t[1].parse().map_err(|_| RejectReason::BadValue)?;
             out.edits.push(Edit::Key {
                 chord,
                 command: strings.intern(t[2]),
@@ -313,7 +313,7 @@ fn attr(
         Context::None => Err(RejectReason::OrphanAttr),
         Context::Node(id) => node_attr(id, t[0], t[1], strings, region, out),
         Context::Style(selector) => {
-            let prop = StyleProp::parse(t[0]).ok_or(RejectReason::UnknownProp)?;
+            let prop: StyleProp = t[0].parse().map_err(|_| RejectReason::UnknownProp)?;
             let value = prop.parse_value(t[1]).ok_or(RejectReason::BadValue)?;
             out.edits.push(Edit::Style {
                 selector,
@@ -348,7 +348,7 @@ fn node_attr(
             Edit::Order { id, order }
         }
         _ => {
-            let prop = Prop::parse(name).ok_or(RejectReason::UnknownProp)?;
+            let prop: Prop = name.parse().map_err(|_| RejectReason::UnknownProp)?;
             let text = matches!(
                 prop,
                 Prop::Label | Prop::Value | Prop::Tooltip | Prop::Accel
@@ -550,7 +550,7 @@ mod tests {
         assert_eq!(
             c.edits[6],
             Edit::Key {
-                chord: Chord::parse("ctrl-s").unwrap(),
+                chord: "ctrl-s".parse::<Chord>().unwrap(),
                 command: save
             }
         );

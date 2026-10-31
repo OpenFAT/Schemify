@@ -5,9 +5,13 @@
 //! - `pub struct Mods(pub u8)`: `CTRL`, `SHIFT`, `ALT`, `SUPER`
 //! - `pub struct Key(pub u32)`: `NAMED`, the named keys `ESCAPE`, `ENTER`, `TAB`, `BACKSPACE`,
 //!   `DELETE`, `INSERT`, `HOME`, `END`, `PAGE_UP`, `PAGE_DOWN`, `LEFT`, `RIGHT`, `UP`, `DOWN`,
-//!   `PRINT`; `f(u8) -> Key`, `parse(&str) -> Option<Key>`
-//! - `pub struct Chord`: `new(Mods, Key) -> Chord`, `parse(&str) -> Option<Chord>`,
-//!   `mods(self) -> Mods`, `key(self) -> Key`; crate-only `const US_SHIFTED`
+//!   `PRINT`; `f(u8) -> Key`, `FromStr`
+//! - `pub struct Chord`: `new(Mods, Key) -> Chord`, `FromStr`, `mods(self) -> Mods`,
+//!   `key(self) -> Key`; crate-only `const US_SHIFTED`
+
+use std::str::FromStr;
+
+use crate::kinds::ParseWordError;
 
 /// Keyboard modifier bits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
@@ -19,7 +23,7 @@ pub struct Key(pub u32);
 
 /// A key plus modifiers, normalized so that the same physical chord always packs the same way.
 ///
-/// Normalization (shared by [`Chord::parse`] and event translation): letters are lowercased and
+/// Normalization (shared by [`Chord::from_str`] and event translation): letters are lowercased and
 /// keep `Shift`; other printable characters drop `Shift`, because the character already encodes
 /// it (`%` is Shift+5 on a US layout, and xschem writes it as plain `%`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -145,23 +149,26 @@ impl Key {
         );
         key
     }
+}
+
+impl FromStr for Key {
+    type Err = ParseWordError;
 
     /// Parses a key name: one character, a named key (case-insensitive, with the aliases
     /// `Escape`, `Return`, `Delete`, `Insert`, `Space`), or `F1`..`F24`.
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Key> {
+    fn from_str(s: &str) -> Result<Key, ParseWordError> {
         let mut chars = s.chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
             let key = Key(c as u32);
             debug_assert!(key.0 < Self::NAMED, "a character sits below the named keys");
-            return Some(key);
+            return Ok(key);
         }
         let alias = match s.to_ascii_lowercase().as_str() {
             "escape" => "Esc",
             "return" => "Enter",
             "delete" => "Del",
             "insert" => "Ins",
-            "space" => return Some(Key(' ' as u32)),
+            "space" => return Ok(Key(' ' as u32)),
             _ => s,
         };
         if let Some(i) = NAMED_KEYS
@@ -169,15 +176,16 @@ impl Key {
             .position(|n| n.eq_ignore_ascii_case(alias))
         {
             debug_assert!(i < NAMED_KEYS.len());
-            return Some(Key(Self::NAMED + i as u32));
+            return Ok(Key(Self::NAMED + i as u32));
         }
-        let n: u8 = s.strip_prefix(['F', 'f'])?.parse().ok()?;
+        let digits = s.strip_prefix(['F', 'f']).ok_or(ParseWordError)?;
+        let n: u8 = digits.parse().map_err(|_| ParseWordError)?;
         let key = (1..=24).contains(&n).then(|| Key::f(n));
         debug_assert!(
             key.is_none_or(|k| k.0 < 1 << 24),
             "a key fits a chord's 24 bits"
         );
-        key
+        key.ok_or(ParseWordError)
     }
 }
 
@@ -211,10 +219,31 @@ impl Chord {
         chord
     }
 
+    /// Modifier bits.
+    #[must_use]
+    pub fn mods(self) -> Mods {
+        Mods((self.0 >> 24) as u8)
+    }
+
+    /// Key code.
+    #[must_use]
+    pub fn key(self) -> Key {
+        let key = Key(self.0 & 0xff_ffff);
+        debug_assert_eq!(
+            (u32::from(self.mods().0) << 24) | key.0,
+            self.0,
+            "modifiers and key repack to the chord"
+        );
+        key
+    }
+}
+
+impl FromStr for Chord {
+    type Err = ParseWordError;
+
     /// Parses `Ctrl+Shift+S`, `Shift-Ins`, `Alt+-`, `%`: modifiers (`Ctrl`/`Control`, `Shift`,
     /// `Alt`, `Super`/`Cmd`, case-insensitive) each followed by `+` or `-`, then a [`Key`] name.
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Chord> {
+    fn from_str(s: &str) -> Result<Chord, ParseWordError> {
         const MODS: [(&str, u8); 6] = [
             ("ctrl", Mods::CTRL),
             ("control", Mods::CTRL),
@@ -242,26 +271,8 @@ impl Chord {
             rest.len() <= s.len(),
             "modifiers are consumed from the front"
         );
-        let chord = Chord::new(Mods(mods), Key::parse(rest)?);
+        let chord = Chord::new(Mods(mods), rest.parse()?);
         debug_assert_eq!(chord.mods().0 & !Mods::SHIFT, mods & !Mods::SHIFT);
-        Some(chord)
-    }
-
-    /// Modifier bits.
-    #[must_use]
-    pub fn mods(self) -> Mods {
-        Mods((self.0 >> 24) as u8)
-    }
-
-    /// Key code.
-    #[must_use]
-    pub fn key(self) -> Key {
-        let key = Key(self.0 & 0xff_ffff);
-        debug_assert_eq!(
-            (u32::from(self.mods().0) << 24) | key.0,
-            self.0,
-            "modifiers and key repack to the chord"
-        );
-        key
+        Ok(chord)
     }
 }

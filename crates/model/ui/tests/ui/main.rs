@@ -138,7 +138,9 @@ impl Fixture {
 pub(crate) fn key(f: &mut Fixture, chord: &str) -> Routed {
     let mut ev = InputEvents::default();
     ev.push(InputEvent::Key {
-        chord: Chord::parse(chord).expect("the test names a valid chord"),
+        chord: chord
+            .parse::<Chord>()
+            .expect("the test names a valid chord"),
     });
     f.route(&ev)
 }

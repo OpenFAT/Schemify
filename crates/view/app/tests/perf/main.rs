@@ -525,7 +525,7 @@ fn event(e: InputEvent) -> InputEvents {
 
 /// A key press as the window delivers it (modifiers down, the key, modifiers up).
 fn key_event(c: &str) -> InputEvents {
-    let chord = Chord::parse(c).expect("chord");
+    let chord = c.parse::<Chord>().expect("chord");
     let mut ev = event(InputEvent::Mods { mods: chord.mods() });
     ev.push(InputEvent::Key { chord });
     ev.push(InputEvent::Mods {

@@ -104,7 +104,7 @@ fn frame_times(n: u32) {
     // click frames, then the delete and undo frames, are measured.
     let key = |c: &str| {
         event(InputEvent::Key {
-            chord: Chord::parse(c).expect("chord"),
+            chord: c.parse::<Chord>().expect("chord"),
         })
     };
     // The whole schematic in view again, so the wires clicked below are on the canvas.
