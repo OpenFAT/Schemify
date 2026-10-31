@@ -17,6 +17,9 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+# Always ui/target: an inherited CARGO_TARGET_DIR outside the repository escapes the
+# path remap below and changes the modules' bytes (CI builds with none).
+unset CARGO_TARGET_DIR
 fixtures="$here/../crates/plugins/plugin/tests/fixtures"
 assets="$here/../crates/model/editor/assets"
 host="$(rustc -vV | sed -n 's/^host: //p')"
@@ -43,7 +46,7 @@ CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" \
 
 # Copies module $1 into directory $2, enforcing the size limit $3 (KB, default 200).
 install_wasm() {
-  local wasm="${CARGO_TARGET_DIR:-$here/target}/wasm32-unknown-unknown/release/$1.wasm"
+  local wasm="$here/target/wasm32-unknown-unknown/release/$1.wasm"
   local limit="${3:-200}"
   local size
   size=$(wc -c <"$wasm")
