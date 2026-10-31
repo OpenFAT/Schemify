@@ -7,7 +7,7 @@
 //! - `pub struct UiState`: `MAX_SCROLL`, `MAX_SPLIT`, `SCROLL_TRIES`, `WHEEL_PX`, `MAX_IMAGES`,
 //!   `scroll_of`, `set_scroll`, `split_of`, `set_split`, `set_dialog`, `set_dialog_at`, `dialog`,
 //!   `dialog_at`, `focus`, `focus_text`, `set_keys`, `set_image`, `image`; crate-only
-//!   `scroll_request`, `keep_scroll`, `texture`
+//!   `scroll_request`, `keep_scroll`, `icon`, `texture`
 //! - `pub struct Image`; crate-only `struct NodeValue`
 
 use std::collections::HashMap;
@@ -43,6 +43,8 @@ pub struct UiState {
     pub(crate) images: HashMap<String, (Image, Option<egui::TextureHandle>)>,
     /// Laid-out formulas by (source, px bits).
     pub(crate) math: HashMap<(String, u32), Result<Arc<MathList>, String>>,
+    /// Parsed button icons by their data's symbol (a button's `icon` prop).
+    pub(crate) icons: HashMap<Sym, Option<Arc<crate::icon::Icon>>>,
 }
 
 /// One row of a per-node table of [`UiState`]: a node id and its remembered pixels.
@@ -236,6 +238,24 @@ impl UiState {
     #[must_use]
     pub fn image(&self, path: &str) -> Option<&Image> {
         self.images.get(path).map(|i| &i.0)
+    }
+
+    /// The parsed icon of data `src` (`None`: not an icon), parsed once per string.
+    pub(crate) fn icon(
+        &mut self,
+        strings: &crate::strings::Strings,
+        src: Sym,
+    ) -> Option<Arc<crate::icon::Icon>> {
+        if src.is_none() {
+            return None;
+        }
+        if self.icons.len() >= Self::MAX_IMAGES * 4 {
+            self.icons.clear(); // bounded: live state text could intern new data each frame
+        }
+        self.icons
+            .entry(src)
+            .or_insert_with(|| crate::icon::parse(strings.get(src)).map(Arc::new))
+            .clone()
     }
 
     /// The egui texture of the image at `path`, uploaded on first use.

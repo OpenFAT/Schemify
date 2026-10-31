@@ -107,6 +107,8 @@ fn frame_times(n: u32) {
             chord: Chord::parse(c).expect("chord"),
         })
     };
+    // The whole schematic in view again, so the wires clicked below are on the canvas.
+    b.frame(&key("f"), 50, Measure::Skip);
     let select = |b: &mut Bench, k: i32, measure: Measure| {
         let at = b.ed.to_screen((70 * U + 200 * U * (k % 4), -30 * U));
         b.frame(

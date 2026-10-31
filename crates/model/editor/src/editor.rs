@@ -558,9 +558,11 @@ impl Editor {
             }
             changed |= self.spine(&ctx, &routed, now_ms);
         }
-        // The kept output paints the slots: the shown frame's, or the input's when it changed
-        // nothing (then it is the only one).
-        if (step.paint || !changed) && !ctx.will_discard() {
+        // Every pass paints the slots, so the canvas labels' text layouts stay in egui's
+        // cache (it drops a layout the previous pass did not use); the second paint of a
+        // frame finds the rows current and only repeats the labels.
+        let _ = step.paint;
+        if !ctx.will_discard() {
             self.paint_graphs(&ctx);
             self.paint_canvas(&ctx, canvas);
         }

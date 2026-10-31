@@ -210,7 +210,9 @@ fn row(v: &mut View, ui: &mut Ui, n: NodeIx, shown: Shown, active: bool) -> Resp
     let disabled = v.t.nodes.is_disabled(v.s, n);
     let arrow = cascade || kind == Kind::Dropdown;
     let icon = (kind == Kind::Button)
-        .then(|| icon::parse(v.prop(n, Prop::Icon)))
+        .then(|| {
+            v.st.icon(v.s, v.t.nodes.props[Prop::Icon as usize][usize::from(n)])
+        })
         .flatten();
     let painter = ui.painter().clone();
     let text = painter.layout_no_wrap(label.clone(), font(px), egui::Color32::PLACEHOLDER);
