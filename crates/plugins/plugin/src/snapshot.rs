@@ -362,13 +362,13 @@ impl Snapshots {
     /// table's epoch.
     fn column_mut(&mut self, table: Table, column: u32, ty: ColType) -> &mut Column {
         let columns = table.columns();
-        let name = table.name();
+        let name = table.as_str();
         assert!(
             (column as usize) < columns.len(),
             "{name} has no column {column}"
         );
         let definition = columns[column as usize];
-        let (field, expected) = (definition.name, definition.ty.name());
+        let (field, expected) = (definition.name, definition.ty.as_str());
         assert_eq!(definition.ty, ty, "{name}.{field} is {expected}");
         let data = &mut self.tables[table as usize];
         data.epoch = data.epoch.wrapping_add(1);

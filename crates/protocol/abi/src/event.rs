@@ -219,7 +219,7 @@ impl<'buf> Event<'buf> {
                 bytes,
             },
             ("rejected", Some(record)) => Event::Rejected {
-                code: Code::parse(values.need_plain()?).ok_or(Code::Parse)?,
+                code: values.need_plain()?.parse()?,
                 record,
             },
             _ => return Err(Code::Parse),
@@ -294,7 +294,7 @@ impl Event<'_> {
             }
             Event::Rejected { code, record } => {
                 out.push(b' ');
-                out.extend_from_slice(code.name().as_bytes());
+                out.extend_from_slice(code.as_str().as_bytes());
                 Some(record)
             }
         };

@@ -113,7 +113,7 @@ impl<'chunk> Output<'chunk> {
         let mut values = text::values(rest);
         let out = match word {
             "contribute" => {
-                let kind = Kind::parse(values.need_plain()?).ok_or(Code::Parse)?;
+                let kind: Kind = values.need_plain()?.parse()?;
                 let scope = if kind.scoped() {
                     values.need()?
                 } else {
@@ -128,7 +128,7 @@ impl<'chunk> Output<'chunk> {
             }
             "edit" => {
                 let doc = values.need_num()?;
-                let mode = EditMode::parse(values.need_plain()?).ok_or(Code::Parse)?;
+                let mode: EditMode = values.need_plain()?.parse()?;
                 let label = values.need()?;
                 values.end()?;
                 let ops = text::verbatim_body(body)?;
@@ -168,7 +168,7 @@ impl<'chunk> Output<'chunk> {
                 Output::Timer { id, ms }
             }
             "log" => {
-                let level = Level::parse(values.need_plain()?).ok_or(Code::Parse)?;
+                let level: Level = values.need_plain()?.parse()?;
                 let text = values.need()?;
                 values.end()?;
                 each_attr(body, |_, _| Err(Code::Parse))?;
@@ -211,7 +211,7 @@ impl Out {
     ///
     /// Panics if `kind` is scoped ([`Kind::Annotations`]); use [`Out::contribute_scoped`].
     pub fn contribute(&mut self, kind: Kind, body: &str) {
-        assert!(!kind.scoped(), "{} needs a scope", kind.name());
+        assert!(!kind.scoped(), "{} needs a scope", kind.as_str());
         self.contribution(kind, None, body);
     }
 
@@ -221,7 +221,7 @@ impl Out {
     ///
     /// Panics if `kind` is not scoped.
     pub fn contribute_scoped(&mut self, kind: Kind, scope: &str, body: &str) {
-        assert!(kind.scoped(), "{} takes no scope", kind.name());
+        assert!(kind.scoped(), "{} takes no scope", kind.as_str());
         self.contribution(kind, Some(scope), body);
     }
 
@@ -239,7 +239,7 @@ impl Out {
     /// writes a record the host rejects (`E_PARSE`).
     pub fn edit(&mut self, doc: u32, mode: EditMode, label: &str, ops: &str) {
         let start = self.text.len();
-        self.line(format_args!("edit {doc} {} ", mode.name()));
+        self.line(format_args!("edit {doc} {} ", mode.as_str()));
         text::push_value(&mut self.text, label);
         self.text.push('\n');
         text::push_verbatim(&mut self.text, ops);
@@ -290,7 +290,7 @@ impl Out {
     /// Logs `text` at `level`; any string is safe (quoted and escaped as needed).
     pub fn log_at(&mut self, level: Level, text: &str) {
         let start = self.text.len();
-        self.line(format_args!("log {} ", level.name()));
+        self.line(format_args!("log {} ", level.as_str()));
         text::push_value(&mut self.text, text);
         self.text.push('\n');
         self.debug_check_record(start);
@@ -308,7 +308,7 @@ impl Out {
     fn contribution(&mut self, kind: Kind, scope: Option<&str>, body: &str) {
         debug_assert_eq!(kind.scoped(), scope.is_some());
         let start = self.text.len();
-        self.line(format_args!("contribute {}", kind.name()));
+        self.line(format_args!("contribute {}", kind.as_str()));
         if let Some(scope) = scope {
             self.text.push(' ');
             text::push_value(&mut self.text, scope);

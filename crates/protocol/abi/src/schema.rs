@@ -10,7 +10,7 @@
 //! - `pub struct ColumnDef { name, ty }`
 //! - `pub trait Scalar` (`u8`, `u16`, `u32`, `i32`; sealed by `sealed::Sealed`): `TY`,
 //!   `put_le`, `get_le`
-//! - `pub enum Table`: `ALL`, `COUNT`, `pub const fn name(self) -> &'static str`,
+//! - `pub enum Table`: `ALL`, `COUNT`, `pub const fn as_str(self) -> &'static str`, `Display`,
 //!   `columns(self) -> &'static [ColumnDef]`, `from_raw(raw: u32) -> Option<Table>`
 //! - `pub mod col`: one module per table, one `u32` constant per column
 
@@ -106,7 +106,7 @@ macro_rules! tables {
 
             /// Returns the spec name.
             #[must_use]
-            pub const fn name(self) -> &'static str {
+            pub const fn as_str(self) -> &'static str {
                 match self { $(Table::$T => $tname,)* }
             }
 
@@ -124,6 +124,12 @@ macro_rules! tables {
                 let table = Table::ALL.get(usize::try_from(raw).ok()?).copied()?;
                 debug_assert_eq!(table as u32, raw);
                 Some(table)
+            }
+        }
+
+        impl std::fmt::Display for Table {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.pad(self.as_str())
             }
         }
 

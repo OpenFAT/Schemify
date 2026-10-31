@@ -26,7 +26,7 @@ fn ada(snake: &str) -> String {
 
 /// `E_DENIED` → `denied`.
 fn code_snake(c: Code) -> String {
-    c.name()[2..].to_ascii_lowercase()
+    c.as_str()[2..].to_ascii_lowercase()
 }
 
 fn c() -> String {
@@ -34,32 +34,32 @@ fn c() -> String {
         "#define SCH_ABI_VERSION {ABI_VERSION}u\n\n/* Error codes (ABI §8); imports return them negated. */\nenum sch_code {{\n"
     );
     for &c in Code::ALL {
-        s += &format!("    SCH_{} = {},\n", c.name(), c as u32);
+        s += &format!("    SCH_{} = {},\n", c.as_str(), c as u32);
     }
     s += "};\nstatic const char *const sch_code_names[] = {\n    0,\n";
     for &c in Code::ALL {
-        s += &format!("    \"{}\",\n", c.name());
+        s += &format!("    \"{}\",\n", c.as_str());
     }
     s += "};\n\n/* Snapshot tables (ABI §4). */\nenum sch_table {\n";
     for &t in Table::ALL {
         s += &format!(
             "    SCH_{} = {},\n",
-            t.name().to_ascii_uppercase(),
+            t.as_str().to_ascii_uppercase(),
             t as u32
         );
     }
     s += "};\n\n/* Column ids, SCH_<TABLE>_<COLUMN>, with their element types. */\nenum sch_column {\n";
     for &t in Table::ALL {
         for (i, col) in t.columns().iter().enumerate() {
-            let name = format!("SCH_{}_{}", t.name(), col.name).to_ascii_uppercase();
-            s += &format!("    {name} = {i}, /* {} */\n", col.ty.name());
+            let name = format!("SCH_{}_{}", t.as_str(), col.name).to_ascii_uppercase();
+            s += &format!("    {name} = {i}, /* {} */\n", col.ty.as_str());
         }
     }
     s += "};\n\n/* Log levels. */\nenum sch_level {\n";
     for &l in Level::ALL {
         s += &format!(
             "    SCH_{} = {},\n",
-            l.name().to_ascii_uppercase(),
+            l.as_str().to_ascii_uppercase(),
             l as u32
         );
     }
@@ -67,8 +67,8 @@ fn c() -> String {
     for &k in Kind::ALL {
         s += &format!(
             "#define SCH_KIND_{} \"{}\"\n",
-            k.name().to_ascii_uppercase(),
-            k.name()
+            k.as_str().to_ascii_uppercase(),
+            k.as_str()
         );
     }
     s
@@ -83,32 +83,32 @@ fn zig() -> String {
     }
     s += "};\n/// Wire names of `Code`, indexed by `code - 1`.\npub const code_names = [_][]const u8{\n";
     for &c in Code::ALL {
-        s += &format!("    \"{}\",\n", c.name());
+        s += &format!("    \"{}\",\n", c.as_str());
     }
     s += "};\n\n/// Snapshot tables (ABI §4).\npub const Table = enum(u32) {\n";
     for &t in Table::ALL {
-        s += &format!("    {},\n", t.name());
+        s += &format!("    {},\n", t.as_str());
     }
     s += "};\n\n/// Column ids per table: `col.nets.pin_count`.\npub const col = struct {\n";
     for &t in Table::ALL {
-        s += &format!("    pub const {} = struct {{\n", t.name());
+        s += &format!("    pub const {} = struct {{\n", t.as_str());
         for (i, col) in t.columns().iter().enumerate() {
             s += &format!(
                 "        pub const {}: u32 = {i}; // {}\n",
                 col.name,
-                col.ty.name()
+                col.ty.as_str()
             );
         }
         s += "    };\n";
     }
     s += "};\n\n/// Log levels.\npub const Level = enum(u32) {\n";
     for &l in Level::ALL {
-        let n = l.name();
+        let n = l.as_str();
         s += &format!("    {},\n", if n == "error" { "@\"error\"" } else { n });
     }
     s += "};\n\n/// Contribution kinds (ABI §1); `@tagName` is the wire name.\npub const Kind = enum {\n";
     for &k in Kind::ALL {
-        s += &format!("    {},\n", k.name());
+        s += &format!("    {},\n", k.as_str());
     }
     s.push_str("};\n");
     s
@@ -123,31 +123,31 @@ fn odin() -> String {
     }
     s += "}\n// Wire names of `Code`.\nCODE_NAMES :: [Code]string {\n";
     for &c in Code::ALL {
-        s += &format!("\t.{} = \"{}\",\n", ada(&code_snake(c)), c.name());
+        s += &format!("\t.{} = \"{}\",\n", ada(&code_snake(c)), c.as_str());
     }
     s += "}\n\n// Snapshot tables (ABI §4).\nTable :: enum u32 {\n";
     for &t in Table::ALL {
-        s += &format!("\t{},\n", ada(t.name()));
+        s += &format!("\t{},\n", ada(t.as_str()));
     }
     s += "}\n\n// Column ids per table: `u32(Nets_Col.Pin_Count)`.\n";
     for &t in Table::ALL {
-        s += &format!("{}_Col :: enum u32 {{\n", ada(t.name()));
+        s += &format!("{}_Col :: enum u32 {{\n", ada(t.as_str()));
         for col in t.columns() {
-            s += &format!("\t{}, // {}\n", ada(col.name), col.ty.name());
+            s += &format!("\t{}, // {}\n", ada(col.name), col.ty.as_str());
         }
         s += "}\n";
     }
     s += "\n// Log levels.\nLevel :: enum u32 {\n";
     for &l in Level::ALL {
-        s += &format!("\t{},\n", ada(l.name()));
+        s += &format!("\t{},\n", ada(l.as_str()));
     }
     s += "}\n\n// Contribution kinds (ABI §1).\nKind :: enum {\n";
     for &k in Kind::ALL {
-        s += &format!("\t{},\n", ada(k.name()));
+        s += &format!("\t{},\n", ada(k.as_str()));
     }
     s += "}\n// Wire names of `Kind`.\nKIND_NAMES :: [Kind]string {\n";
     for &k in Kind::ALL {
-        s += &format!("\t.{} = \"{}\",\n", ada(k.name()), k.name());
+        s += &format!("\t.{} = \"{}\",\n", ada(k.as_str()), k.as_str());
     }
     s.push_str("}\n");
     s
@@ -163,31 +163,31 @@ fn go() -> String {
     s += ")\n\nvar codeNames = [...]string{\"\", ";
     s += &Code::ALL
         .iter()
-        .map(|c| format!("\"{}\"", c.name()))
+        .map(|c| format!("\"{}\"", c.as_str()))
         .collect::<Vec<_>>()
         .join(", ");
     s += "}\n\n// Table is a snapshot table id (ABI §4).\ntype Table uint32\n\nconst (\n";
     for &t in Table::ALL {
-        s += &format!("\t{} Table = {}\n", camel(t.name()), t as u32);
+        s += &format!("\t{} Table = {}\n", camel(t.as_str()), t as u32);
     }
     s += ")\n\n// Column ids, <Table><Column>.\nconst (\n";
     for &t in Table::ALL {
         for (i, col) in t.columns().iter().enumerate() {
             s += &format!(
                 "\t{}{} uint32 = {i} // {}\n",
-                camel(t.name()),
+                camel(t.as_str()),
                 camel(col.name),
-                col.ty.name()
+                col.ty.as_str()
             );
         }
     }
     s += ")\n\n// Level is a log level.\ntype Level uint32\n\nconst (\n";
     for &l in Level::ALL {
-        s += &format!("\tLevel{} Level = {}\n", camel(l.name()), l as u32);
+        s += &format!("\tLevel{} Level = {}\n", camel(l.as_str()), l as u32);
     }
     s += ")\n\n// Kind is a contribution kind (ABI §1).\ntype Kind string\n\nconst (\n";
     for &k in Kind::ALL {
-        s += &format!("\tKind{} Kind = \"{}\"\n", camel(k.name()), k.name());
+        s += &format!("\tKind{} Kind = \"{}\"\n", camel(k.as_str()), k.as_str());
     }
     s.push_str(")\n");
     s
@@ -203,30 +203,30 @@ fn assemblyscript() -> String {
     s += "}\n/** Wire names of `Code`, indexed by the code. */\nexport const CODE_NAMES: StaticArray<string> = [\"\", ";
     s += &Code::ALL
         .iter()
-        .map(|c| format!("\"{}\"", c.name()))
+        .map(|c| format!("\"{}\"", c.as_str()))
         .collect::<Vec<_>>()
         .join(", ");
     s += "];\n\n/** Snapshot tables (ABI §4). */\nexport enum Table {\n";
     for &t in Table::ALL {
-        s += &format!("  {} = {},\n", camel(t.name()), t as u32);
+        s += &format!("  {} = {},\n", camel(t.as_str()), t as u32);
     }
     s += "}\n\n/** Column ids, <TABLE>_<COLUMN>. */\n";
     for &t in Table::ALL {
         for (i, col) in t.columns().iter().enumerate() {
-            let name = format!("{}_{}", t.name(), col.name).to_ascii_uppercase();
-            s += &format!("export const {name}: u32 = {i}; // {}\n", col.ty.name());
+            let name = format!("{}_{}", t.as_str(), col.name).to_ascii_uppercase();
+            s += &format!("export const {name}: u32 = {i}; // {}\n", col.ty.as_str());
         }
     }
     s += "\n/** Log levels. */\nexport enum Level {\n";
     for &l in Level::ALL {
-        s += &format!("  {} = {},\n", camel(l.name()), l as u32);
+        s += &format!("  {} = {},\n", camel(l.as_str()), l as u32);
     }
     s += "}\n\n/** Contribution kinds (ABI §1). */\n";
     for &k in Kind::ALL {
         s += &format!(
             "export const KIND_{} = \"{}\";\n",
-            k.name().to_ascii_uppercase(),
-            k.name()
+            k.as_str().to_ascii_uppercase(),
+            k.as_str()
         );
     }
     s
