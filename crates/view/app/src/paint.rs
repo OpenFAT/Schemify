@@ -75,7 +75,14 @@ fn raster_png(editor: &Editor, caches: &mut Caches, raster: &Raster) -> Result<V
         "raster size {w_px} × {h_px}"
     );
     if caches.raster.is_none() {
-        caches.raster = Some(schemify_render::Raster::new()?);
+        // ponytail: the web has no blocking GPU open; a web PNG export would draw on the
+        // window's device instead.
+        #[cfg(target_arch = "wasm32")]
+        return Err("PNG export needs the desktop build".to_owned());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            caches.raster = Some(schemify_render::Raster::new()?);
+        }
     }
     let gpu = caches.raster.as_mut().expect("opened above");
     let picture = editor

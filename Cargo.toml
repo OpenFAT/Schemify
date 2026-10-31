@@ -70,8 +70,10 @@ wasmi = { version = "2", default-features = false, features = ["std", "validate"
 # accessibility); it is headless, so `ui` and `editor` use it and stay testable without a GPU.
 # egui-winit and egui-wgpu put it in a window; only crates/view/render may use them
 # (docs/dev/contributing.md rule 7). No default fonts: the embedded faces are set by `ui`.
+# egui-winit's native features (AccessKit, the clipboard, Wayland and X11) are set by
+# `render` for native targets: the clipboard crate does not build for the web.
 egui = { version = "0.37", default-features = false }
-egui-winit = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "wayland", "x11"] }
+egui-winit = { version = "0.37", default-features = false }
 egui-wgpu = { version = "0.37", default-features = false, features = ["winit"] }
 ratex-parser = "0.1.14"
 ratex-layout = "0.1.14"
@@ -94,6 +96,8 @@ naga = { version = "30", default-features = false, features = ["wgsl-in", "glsl-
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
+# The web's `Instant` (std's panics in a browser), as winit's event loop takes it.
+web-time = "1.1"
 
 [profile.release]
 debug = 1

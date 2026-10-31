@@ -59,7 +59,13 @@ impl TextGpu {
         assert!(!format.is_srgb(), "egui draws into a gamma target");
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("labels"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/labels.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/src/shaders/labels.wgsl"
+                ))
+                .into(),
+            ),
         });
         let locals = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("labels locals"),

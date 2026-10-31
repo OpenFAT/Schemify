@@ -148,9 +148,9 @@ impl Editor {
     /// layer, clipped to the scroll pane it sits in (nothing else shares the page's layer, so
     /// the plot goes on top of it rather than into the reserved shape).
     pub(crate) fn paint_graphs(&self, ctx: &schemify_ui::egui::Context) {
-        use schemify_ui::egui::{Rect, pos2, vec2};
         #[cfg(not(target_arch = "wasm32"))]
         for (id, expr) in &self.graphs {
+            use schemify_ui::egui::{Rect, pos2, vec2};
             let s = &self.shell;
             let node = s.strings.find(id).and_then(|sym| s.tables.nodes.find(sym));
             let Some(row) = node.and_then(|n| s.layout.row_of(n)) else {

@@ -116,12 +116,12 @@ Design (each job of a run, exactly where the native runner would start ngspice, 
 
 ## 7. Rendering
 
-The editor draws through egui-wgpu with the canvas's instanced pipelines (D5 as amended 2026-10-30). **Open:** the web window is not yet ported to egui-winit; until it is, the web build does not draw. The port keeps the GPU tiers below; the CPU tier of the old renderer (vello_cpu) is gone with it.
+The editor draws through egui-wgpu with the canvas's instanced pipelines (D5 as amended 2026-10-30), in a winit canvas appended to the page at the browser window's size; egui-winit turns its events into egui input. The GPU opens asynchronously and the loop draws once it has (`render::window`). The tier is picked when the GPU opens; the CPU tier of the old renderer (vello_cpu) is gone, and a PNG export is a desktop feature for now (the web has no blocking GPU open; it would draw on the window's device).
 
-1. **WebGPU**, on winit's canvas, with the same pipelines as natively.
+1. **WebGPU**, when the browser has it (`wgpu::util::new_instance_with_webgpu_detection`), with the same pipelines as natively.
 2. **WebGL2**, through wgpu's GL backend with the same pipelines and shaders. The canvas pipelines fit WebGL2: no compute, no storage buffers, instance strides ≤ 255 B, ≤ 16 vertex attributes and ≤ 15 inter-stage variables per pipeline; the device is held to `Limits::downlevel_webgl2_defaults` on every backend, natively too.
 
-A GPU tier is unusable when the browser offers it no adapter, device or surface, or its device is lost for any reason but our own drop; the switch is one-way for the page and logged once on the console.
+Neither tier opening is logged on the console and the page stays blank. **Open** (2026-10-31): no switch to WebGL2 after a WebGPU device is lost (a reload picks the tier again), the canvas does not follow later browser-window resizes, and `tests/web/` still drives the removed CPU tier (`schemify-cpu`, `schemify-webgl` overlay).
 
 The editor fits a cell's camera to the first non-empty canvas: the web canvas has no size until winit's first `Resized`, so the first updates see an empty viewport.
 

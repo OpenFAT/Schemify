@@ -6,8 +6,11 @@
 //! Contents: `pub struct Raster` (`new`, `canvas`, `render`), `pub struct Image` (`pixel`,
 //! `png`, `from_png`)
 
-use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
+#[cfg(not(target_arch = "wasm32"))]
+use egui_wgpu::RendererOptions;
+use egui_wgpu::{Renderer, ScreenDescriptor};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::device;
 use crate::gpu::{CanvasGpu, InstanceRows};
 

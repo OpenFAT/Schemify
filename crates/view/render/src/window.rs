@@ -7,12 +7,22 @@
 //! repaint requests (an animation, a second layout pass) are honoured. With nothing pending
 //! the loop waits: idle CPU is 0%.
 //!
+//! On the web (web spec §7) the window is a canvas appended to the page, the GPU opens
+//! asynchronously (WebGPU when the browser has it, else WebGL2 through wgpu's GL backend) and
+//! hands itself to the loop through the [`Waker`]'s proxy, and [`run`] returns once the loop
+//! is spawned.
+//!
 //! Contents: `pub trait App`, `pub struct Waker` (`wake`), `pub enum RunError`,
 //! `pub fn run`, `pub fn block_on` (native); crate-only `fn draw(renderer, encoder, target,
 //! prims, screen)`
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use winit::application::ApplicationHandler;
@@ -64,6 +74,11 @@ struct Shell<A: App> {
     title: String,
     open: Option<Open>,
     failed: Option<String>,
+    /// Web: the window being opened, filled by the async GPU open, taken on its wake.
+    #[cfg(target_arch = "wasm32")]
+    opening: std::rc::Rc<std::cell::RefCell<Option<Result<Open, String>>>>,
+    #[cfg(target_arch = "wasm32")]
+    proxy: EventLoopProxy<()>,
 }
 
 /// A window with its GPU, egui-winit state and egui-wgpu renderer.
@@ -79,7 +94,8 @@ struct Open {
     repaint_at: Option<Instant>,
 }
 
-/// Opens a window titled `title` and runs `app` in it until it closes or asks to exit.
+/// Opens a window titled `title` and runs `app` in it until it closes or asks to exit (web:
+/// returns once the loop is spawned; a later failure goes to the browser console).
 ///
 /// # Errors
 ///
@@ -90,15 +106,28 @@ pub fn run<A: App + 'static>(title: &str, mut app: A) -> Result<(), RunError> {
         .map_err(|e| RunError::EventLoop(e.to_string()))?;
     event_loop.set_control_flow(ControlFlow::Wait);
     app.set_waker(Waker(event_loop.create_proxy()));
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut shell = Shell {
         app,
         title: title.to_owned(),
         open: None,
         failed: None,
+        #[cfg(target_arch = "wasm32")]
+        opening: Default::default(),
+        #[cfg(target_arch = "wasm32")]
+        proxy: event_loop.create_proxy(),
     };
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::EventLoopExtWebSys;
+        event_loop.spawn_app(shell);
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     event_loop
         .run_app(&mut shell)
         .map_err(|e| RunError::EventLoop(e.to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
     match shell.failed {
         Some(why) => Err(RunError::NoGpu(why)),
         None => Ok(()),
@@ -156,17 +185,30 @@ impl<A: App> ApplicationHandler for Shell<A> {
         }
         let attrs = Window::default_attributes()
             .with_title(&self.title)
-            .with_inner_size(LogicalSize::new(1280.0, 800.0));
+            .with_inner_size(initial_size());
+        #[cfg(target_arch = "wasm32")]
+        let attrs = winit::platform::web::WindowAttributesExtWebSys::with_append(attrs, true);
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => return self.fail(event_loop, e.to_string()),
         };
-        match open(window, self.app.ctx()) {
+        #[cfg(not(target_arch = "wasm32"))]
+        match open_native(window, self.app.ctx()) {
             Ok(o) => {
                 o.window.request_redraw();
                 self.open = Some(o);
             }
             Err(e) => self.fail(event_loop, e),
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let (slot, proxy) = (self.opening.clone(), self.proxy.clone());
+            let ctx = self.app.ctx();
+            wasm_bindgen_futures::spawn_local(async move {
+                *slot.borrow_mut() = Some(open_web(window, ctx).await);
+                // Err only once the loop is gone.
+                let _ = proxy.send_event(());
+            });
         }
     }
 
@@ -176,7 +218,21 @@ impl<A: App> ApplicationHandler for Shell<A> {
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, (): ()) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let opened = self.opening.borrow_mut().take();
+            if let Some(opened) = opened {
+                match opened {
+                    Ok(o) => {
+                        o.window.request_redraw();
+                        self.open = Some(o);
+                    }
+                    Err(e) => return self.fail(event_loop, e),
+                }
+            }
+        }
+        let _ = event_loop;
         if let Some(o) = &self.open {
             o.window.request_redraw();
         }
@@ -254,17 +310,30 @@ pub(crate) fn draw(
 impl<A: App> Shell<A> {
     fn fail(&mut self, event_loop: &ActiveEventLoop, why: String) {
         assert!(self.failed.is_none(), "the loop exits on the first failure");
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::error_1(&format!("schemify: no GPU: {why}").into());
         self.app.close();
         self.failed = Some(why);
         event_loop.exit();
     }
 }
 
-/// The window's GPU: a surface, the first adapter of the ladder that draws it, egui-wgpu's
-/// renderer with the canvas in its callback resources, and egui-winit's state.
-fn open(window: Arc<Window>, ctx: egui::Context) -> Result<Open, String> {
-    let size = window.inner_size();
-    let (w, h) = (size.width.max(1), size.height.max(1));
+/// The window's first size: 1280 × 800, or the browser window's on the web.
+fn initial_size() -> LogicalSize<f64> {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(w) = web_sys::window() {
+        let x = w.inner_width().ok().and_then(|v| v.as_f64());
+        let y = w.inner_height().ok().and_then(|v| v.as_f64());
+        if let (Some(x), Some(y)) = (x, y) {
+            return LogicalSize::new(x, y);
+        }
+    }
+    LogicalSize::new(1280.0, 800.0)
+}
+
+/// The window's GPU: the first adapter of the ladder that draws it ([`finish`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn open_native(window: Arc<Window>, ctx: egui::Context) -> Result<Open, String> {
     let (surface, g) = device::ladder(|fallback| {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -273,6 +342,31 @@ fn open(window: Arc<Window>, ctx: egui::Context) -> Result<Open, String> {
         let g = block_on(device::open(&instance, Some(&surface), fallback))?;
         Ok((surface, g))
     })?;
+    finish(window, ctx, surface, g)
+}
+
+/// The window's GPU on the web: WebGPU when the browser has it, else WebGL2 ([`finish`]).
+// ponytail: no switch to WebGL2 after a lost WebGPU device; a reload picks the tier again.
+#[cfg(target_arch = "wasm32")]
+async fn open_web(window: Arc<Window>, ctx: egui::Context) -> Result<Open, String> {
+    let desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    let instance = wgpu::util::new_instance_with_webgpu_detection(desc).await;
+    let target: wgpu::SurfaceTarget<'static> = Arc::clone(&window).into();
+    let surface = instance.create_surface(target).map_err(|e| e.to_string())?;
+    let g = device::open(&instance, Some(&surface), false).await?;
+    finish(window, ctx, surface, g)
+}
+
+/// A surface on the opened GPU, egui-wgpu's renderer with the canvas in its callback
+/// resources, and egui-winit's state.
+fn finish(
+    window: Arc<Window>,
+    ctx: egui::Context,
+    surface: wgpu::Surface<'static>,
+    g: device::Opened,
+) -> Result<Open, String> {
+    let size = window.inner_size();
+    let (w, h) = (size.width.max(1), size.height.max(1));
     let info = g.adapter.get_info();
     eprintln!(
         "gpu: {} ({:?}, {:?})",

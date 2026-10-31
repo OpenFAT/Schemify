@@ -58,11 +58,13 @@ pub(crate) async fn open(
     })
 }
 
-/// Tries `open` on hardware, then (naming why) on the software adapter.
+/// Tries `open` on hardware, then (naming why) on the software adapter (native: the web's
+/// browser picks its adapter).
 ///
 /// # Errors
 ///
 /// Both rungs failed; the message names each one's reason.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ladder<T>(mut open: impl FnMut(bool) -> Result<T, String>) -> Result<T, String> {
     let hardware = match open(false) {
         Ok(g) => return Ok(g),
