@@ -36,6 +36,9 @@ commands:
                                        hspice cdl spectre verilog; default: as for run)
   check <cell> [--config C] [--corner K]
                                        report violations (exit 1 on errors)
+  tree <cell|bench> [--config C]... [--json]
+                                       the hierarchy, each node's selected impl, and count_va:
+                                       the Verilog-A nodes still selected (a view per config)
   run <bench> [--config C]... [--corner K]... [--sweep S]... [--mc M] [--set VAR=EXPR]...
           [--jobs N] [--dialect D]     simulate a .shbench and print outputs and specs
                                        (D: ngspice espice xyce ltspice spectre; default: the
@@ -107,6 +110,7 @@ fn main() -> ExitCode {
         "git-setup" => files::git_setup(rest),
         "netlist" => design::netlist(&config, rest),
         "check" => design::check(rest),
+        "tree" => design::tree(rest),
         "run" => design::run(&config, rest),
         "publish" => publish::publish(rest),
         "pack" => Ok(schemify_cli::pack::main(&config, rest)),

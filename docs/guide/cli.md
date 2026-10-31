@@ -41,6 +41,7 @@ Every command follows one rule:
 | [`edit`](#edit) | Open the editor. |
 | [`netlist`](#netlist) | Write a cell's netlist. |
 | [`check`](#check) | Report violations. |
+| [`tree`](#tree) | Print the hierarchy, each node's impl and the Verilog-A count. |
 | [`run`](#run) | Simulate a bench and print its outputs and specs. |
 | [`fmt`](#fmt) | Rewrite files in canonical form. |
 | [`diff`](#diff) | Record-level diff of two files. |
@@ -105,6 +106,40 @@ Elaborates the cell and prints each violation on stderr as `<code> <cell> [<path
 
 ```sh
 schemify check tb.shbench --corner ff
+```
+
+### tree
+
+```
+schemify tree <cell.shcomp | bench.shbench> [--config C]... [--json]
+```
+
+Prints the hierarchy, one node per line, with the impl each node elaborates to (the netlister's selection, [netlist.md](../spec/netlist.md) §2) and `count_va`, the number of Verilog-A nodes still selected. In a top-down flow every node starts as a Verilog-A model and retires to its schematic when its transistors pass its bench, so `count_va` is the progress bar: it only goes down, and the design is done at 0.
+
+```text
+opamp2                schematic       va=2  devices=1
+├─ XS1 stage1         schematic       va=1
+│  ├─ XDP diffpair *  beh (veriloga)  va=1  devices=5
+│  └─ XLD mirror *    schematic       va=0  devices=2
+└─ XS2 cs_stage *     beh (veriloga)  va=1  devices=4
+count_va = 2
+```
+
+- A node is an instance of a `.shcomp` cell, shown as `<instance> <cell>`. Instances of `.shprim` cells (core devices, `tech:` cells, PDK and project primitives) are devices: `devices=N` counts those in a node's schematic, and they are never Verilog-A. Ignored instances (`ignore`) are left out, as the netlist leaves them out.
+- `*` marks a cell whose header says `category fundamental` (a leaf by definition).
+- A node is Verilog-A when its impl's lang is `veriloga`, or `spice` with a body that loads an `.hdl` (shown `beh (spice .hdl)`).
+- A node's children are elaborated only when the node elaborates to its schematic. Below any other node (a Verilog-A model, a SPICE body) its children are still shown, each with its own default impl, and marked `-`: they are not in the netlist of this view.
+- `va=N` counts the Verilog-A nodes of a subtree, the node included and those marked `-` too: a model hidden by a behavioral parent has not retired either. The Verilog-A nodes without `-` are the Verilog-A instances the netlist of this view has, one per instance path.
+- A cell's tree has the cell as its root, with its `default` impl: what an instance of the cell gets in a bench without config rules.
+- On a bench, each instance of a `.shcomp` (each DUT) is a root. The bench's `config` header attribute applies, or each `--config` in turn: one tree per config, headed `config <C>`.
+- `--json` writes one line per tree: `{"config": <C or null>, "roots": [...], "count_va": N}`, each node `{"path", "cell", "impl", "lang", "veriloga", "fundamental", "elaborated", "va", "devices", "children"}`. `path` is the instance path a config `inst` rule names (`/XDUT/XS1`; `""` for the root of a cell's tree).
+
+Elaboration is `check`'s, with ngspice's rules (every core lang has a default template there, so no node drops out for want of a format), and its violations print on stderr the same way. Exit 0, also when `count_va` > 0; 1 when a violation is an error (an unresolved cell's `E001`, `E031`, …; the tree still prints); 2 for usage or I/O errors, and for a file that is neither a `.shcomp` nor a `.shbench`.
+
+```sh
+schemify tree opamp2.shcomp                                      # the design as it stands
+schemify tree opamp2_ac.shbench --config children --config golden
+schemify tree opamp2.shcomp --json | jq .count_va
 ```
 
 ### run

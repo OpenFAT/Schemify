@@ -1,0 +1,22 @@
+schemify 1 shprim
+  doc "EKV MOSFET stand-in for a PDK device"
+  prefix M
+  category device
+
+pin d inout 20 -30
+pin g in -20 0
+pin s inout 20 30
+
+param type 1
+  kind int
+param beta 1m
+param vth 0.4
+param va 10
+param cgs 0
+
+impl dev veriloga
+  model dev_mos
+  file va/dev/mos_ekv.va
+  format spice "N{name} {d} {g} {s} dev_mos type={type} beta={beta} vth={vth} va={va} cgs={cgs}"
+
+rect -10 -20 20 20

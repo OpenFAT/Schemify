@@ -13,10 +13,11 @@
 //! - [`zip`] — project archives in and out (web spec §3).
 //! - [`hosted`] — projects published on a static site beside the web editor (`schemify
 //!   publish`, web spec §3.1).
+//! - [`tree`] — `schemify tree`: the hierarchy, each node's selected impl and `count_va`.
 //!
 //! The `schemify` binary itself is `src/cmd/` (one file per command group).
 //!
-//! Contents: `pub mod hosted, libs, mcp, pack, platform, rpc, spines, zip`.
+//! Contents: `pub mod hosted, libs, mcp, pack, platform, rpc, spines, tree, zip`.
 
 #![forbid(unsafe_code)]
 
@@ -27,4 +28,5 @@ pub mod pack;
 pub mod platform;
 pub mod rpc;
 pub mod spines;
+pub mod tree;
 pub mod zip;

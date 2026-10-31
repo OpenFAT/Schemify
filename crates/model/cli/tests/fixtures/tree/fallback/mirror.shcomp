@@ -1,0 +1,47 @@
+schemify 1 shcomp
+  doc "FUNDAMENTAL: PMOS 1:1 current mirror"
+  default beh
+  prefix X
+  category fundamental
+
+pin in inout -40 0
+pin out out 40 0
+pin rail inout 0 -40
+
+impl schematic schematic
+impl beh spice
+  format spice "N{name} {in} {out} {rail} beh_mirror type=-1 ratio=1 inom=50u vov=0.2 vth=0.4 rout=200k cin=50f"
+
+rect -30 -30 30 30
+
+line -40 0 -30 0
+line 40 0 30 0
+line 0 -40 0 -30
+
+stext -30 -45 R0 {name}
+  size 0.14
+stext -30 35 R0 {cell}
+  size 0.14
+
+inst b9 ./mos
+  at 0 0 R0
+  name M3
+  type -1
+  beta 3.688e-3
+  cgs 25f
+inst c0 ./mos
+  at 100 0 R0
+  name M4
+  type -1
+  beta 3.688e-3
+  cgs 25f
+label c1 -20 0 R0 in
+label c2 80 0 R0 in
+label c3 120 30 R0 rail
+port c4 20 -30 R0 in
+port c5 120 -30 R0 out
+port c6 20 30 R0 rail
+
+body beh
+  | .hdl "${PWD}/va/beh/cmirror.va"
+  | .model beh_mirror cmirror

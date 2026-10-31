@@ -1,0 +1,42 @@
+# retired: none
+opamp2                beh (veriloga)  va=5  devices=1
+├─ XS1 stage1         beh (veriloga)  va=3  -
+│  ├─ XDP diffpair *  beh (veriloga)  va=1  devices=5  -
+│  └─ XLD mirror *    beh (veriloga)  va=1  devices=2  -
+└─ XS2 cs_stage *     beh (veriloga)  va=1  devices=4  -
+count_va = 5
+# retired: cs_stage
+opamp2                beh (veriloga)  va=4  devices=1
+├─ XS1 stage1         beh (veriloga)  va=3  -
+│  ├─ XDP diffpair *  beh (veriloga)  va=1  devices=5  -
+│  └─ XLD mirror *    beh (veriloga)  va=1  devices=2  -
+└─ XS2 cs_stage *     schematic       va=0  devices=4  -
+count_va = 4
+# retired: cs_stage mirror
+opamp2                beh (veriloga)  va=3  devices=1
+├─ XS1 stage1         beh (veriloga)  va=2  -
+│  ├─ XDP diffpair *  beh (veriloga)  va=1  devices=5  -
+│  └─ XLD mirror *    schematic       va=0  devices=2  -
+└─ XS2 cs_stage *     schematic       va=0  devices=4  -
+count_va = 3
+# retired: cs_stage mirror diffpair
+opamp2                beh (veriloga)  va=2  devices=1
+├─ XS1 stage1         beh (veriloga)  va=1  -
+│  ├─ XDP diffpair *  schematic       va=0  devices=5  -
+│  └─ XLD mirror *    schematic       va=0  devices=2  -
+└─ XS2 cs_stage *     schematic       va=0  devices=4  -
+count_va = 2
+# retired: cs_stage mirror diffpair stage1
+opamp2                beh (veriloga)  va=1  devices=1
+├─ XS1 stage1         schematic       va=0  -
+│  ├─ XDP diffpair *  schematic       va=0  devices=5  -
+│  └─ XLD mirror *    schematic       va=0  devices=2  -
+└─ XS2 cs_stage *     schematic       va=0  devices=4  -
+count_va = 1
+# retired: cs_stage mirror diffpair stage1 opamp2
+opamp2                schematic  va=0  devices=1
+├─ XS1 stage1         schematic  va=0
+│  ├─ XDP diffpair *  schematic  va=0  devices=5
+│  └─ XLD mirror *    schematic  va=0  devices=2
+└─ XS2 cs_stage *     schematic  va=0  devices=4
+count_va = 0

@@ -1,0 +1,52 @@
+schemify 1 shcomp
+  doc "BLOCK: 5T OTA (first stage)"
+  default beh
+  prefix X
+  category block
+
+pin inp in -40 -20
+pin inn in -40 20
+pin out out 40 0
+pin vdd inout 0 -40
+pin vss inout 0 40
+
+param gm 1m
+param itail 100u
+
+impl schematic schematic
+impl beh spice
+  format spice "N{name} {inp} {inn} {out} {vdd} {vss} beh_stage1 gm={gm} itail={itail} rout=100k fp2=1.59g vsat_hi=0.2 vsat_lo=0.5"
+
+rect -30 -30 30 30
+
+line -40 -20 -30 -20
+line -40 20 -30 20
+line 40 0 30 0
+line 0 -40 0 -30
+line 0 40 0 30
+
+stext -30 -45 R0 {name}
+  size 0.14
+stext -30 35 R0 {cell}
+  size 0.14
+
+inst e2 ./diffpair
+  at 0 0 R0
+  name XDP
+  gm gm
+  itail itail
+inst e3 ./mirror
+  at 200 0 R0
+  name XLD
+label e4 40 -20 R0 d1
+label e5 160 0 R0 d1
+label e6 240 0 R0 out
+port e7 -40 -20 R0 inp
+port e8 -40 20 R0 inn
+port e9 40 20 R0 out
+port f0 200 -40 R0 vdd
+port f1 0 40 R0 vss
+
+body beh
+  | .hdl "${PWD}/va/beh/ota_beh.va"
+  | .model beh_stage1 ota_beh

@@ -1,0 +1,71 @@
+schemify 1 shbench
+  doc "Golden bench of opamp2 (open loop, CL 2 pF)"
+  config current
+
+inst j5 ./opamp2
+  at 0 0 R0
+  name XDUT
+inst h0 core:vsource
+  at -200 0 R0
+  name VDD
+  value 1.8
+inst h1 core:vsource
+  at -300 0 R0
+  name VCM
+  value "dc 0.9 ac 1"
+inst h2 core:ind
+  at 100 100 R0
+  name LFB
+  value 1G
+inst h3 core:cap
+  at 200 100 R0
+  name CFB
+  value 1
+inst h4 core:cap
+  at 300 100 R0
+  name CLA
+  value 2p
+label h5 -200 -30 R0 vdd
+label h6 -200 30 R0 0
+label h7 -300 -30 R0 cm
+label h8 -300 30 R0 0
+label h9 100 70 R0 oa
+label j0 100 130 R0 fb
+label j1 200 70 R0 fb
+label j2 200 130 R0 0
+label j3 300 70 R0 oa
+label j4 300 130 R0 0
+label j6 -40 -20 R0 cm
+label j7 -40 20 R0 fb
+label j8 40 0 R0 oa
+label j9 0 -40 R0 vdd
+label k0 0 40 R0 0
+
+config children
+  order beh
+  cell ./opamp2 schematic
+
+config current
+
+config diagram
+  cell ./opamp2 schematic
+
+config golden
+  cell ./opamp2 beh
+
+config xtor
+  order schematic
+
+output A0_dB db(at(v(oa),1))
+output PM phase_margin(v(oa))
+output UGF cross(db(v(oa)),0,-1)
+
+spec A0_dB
+  min 70
+spec PM
+  min 55
+spec UGF
+  min 60meg
+
+code an spice
+  | .ac dec 50 1 10G

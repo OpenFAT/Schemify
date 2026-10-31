@@ -3,13 +3,14 @@
 //! §1–§7a). Each is one spine over `schemify_cli::spines`, the steps the editor shares.
 //!
 //! Contents: `fn netlist(&Config, &[String]) -> Exit`, `fn check(&[String]) -> Exit`,
-//! `fn run(&Config, &[String]) -> Exit`.
+//! `fn tree(&[String]) -> Exit`, `fn run(&Config, &[String]) -> Exit`.
 
 use std::path::Path;
 
 use schemify_cli::spines::{self, OpenError, Opened};
-use schemify_cli::{libs, platform};
+use schemify_cli::{libs, platform, rpc, tree};
 use schemify_config::Config;
+use schemify_doc::FileKind;
 use schemify_elab::{self as elab, Dialect, Elab, Request};
 
 use crate::{DESIGN_ERROR, Exit, OK, USAGE_ERROR, usage};
@@ -76,6 +77,56 @@ pub fn check(args: &[String]) -> Exit {
     };
     let e = elaborate_all(&mut o, &req)?;
     Ok(if report(&e) { DESIGN_ERROR } else { OK })
+}
+
+/// `tree`: load → per view (each `--config`, else the default) elaborate as `check` does →
+/// violations → tree rows (`tree::Walk`) → text, or one JSON line per view. Exit 1 when a
+/// view has an error (`E…`), as `check`; `count_va` never changes the exit code.
+pub fn tree(args: &[String]) -> Exit {
+    let (file, configs, json) = tree_args(args).ok_or_else(usage)?;
+    let mut o = open_design(file)?;
+    let bench = match o.project.doc(o.top).map(schemify_doc::Document::kind) {
+        Some(FileKind::Shbench) => true,
+        Some(FileKind::Shcomp) => false,
+        _ => {
+            eprintln!("{file}: tree takes a .shcomp or a .shbench");
+            return Err(USAGE_ERROR);
+        }
+    };
+    let env = spines::env_pairs();
+    let env = pairs(&env);
+    let views: Vec<Option<&str>> = match configs.as_slice() {
+        [] => vec![None],
+        named => named.iter().map(|c| Some(*c)).collect(),
+    };
+    let mut walk = tree::Walk::new(&env);
+    let (mut out, mut errors) = (String::new(), false);
+    for config in views {
+        let e = elaborate_all(&mut o, &tree::request(config, &env))?;
+        errors |= report(&e);
+        let rows = if bench {
+            walk.bench(&mut o, &e)
+        } else {
+            walk.cell(&mut o, &e)
+        };
+        let nodes = rows.map_err(|msg| {
+            eprintln!("{file}: {msg}");
+            DESIGN_ERROR
+        })?;
+        if json {
+            rpc::write(&tree::json(config, &nodes), &mut out);
+            out.push('\n');
+        } else {
+            if let Some(c) = config {
+                out.push_str("config ");
+                out.push_str(c);
+                out.push('\n');
+            }
+            tree::text(&nodes, &mut out);
+        }
+    }
+    print!("{out}");
+    Ok(if errors { DESIGN_ERROR } else { OK })
 }
 
 /// `run`: plan → expand → design hash (gate) → per job prepare + submit → wait → outputs
@@ -214,6 +265,25 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
     }
     a.cell = cell?;
     Some(a)
+}
+
+/// `tree`'s arguments: the file, the `--config`s in order, `--json`; `None` as
+/// [`design_args`].
+fn tree_args(args: &[String]) -> Option<(&str, Vec<&str>, bool)> {
+    let (mut file, mut configs, mut json) = (None, Vec::new(), false);
+    let mut it = args.iter();
+    // Bounded by `args`: every pass consumes at least one argument.
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--config" => configs.push(it.next()?.as_str()),
+            "--json" => json = true,
+            s if s.starts_with('-') => return None,
+            s if file.is_none() => file = Some(s),
+            _ => return None,
+        }
+    }
+    assert!(configs.len() <= args.len());
+    Some((file?, configs, json))
 }
 
 /// Opens the project around `file` with `file` open; notes go to stderr as `note: …`.

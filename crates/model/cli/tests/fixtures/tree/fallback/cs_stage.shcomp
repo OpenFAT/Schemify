@@ -1,0 +1,62 @@
+schemify 1 shcomp
+  doc "FUNDAMENTAL: PMOS common-source stage with NMOS current-source load"
+  default beh
+  prefix X
+  category fundamental
+
+pin in in -40 0
+pin out out 40 0
+pin vdd inout 0 -40
+pin vss inout 0 40
+
+impl schematic schematic
+impl beh spice
+  format spice "N{name} {in} {out} {vdd} {vss} beh_cs_stage type=-1 gm=5m id=500u vth=0.4 rout=20k vdsat_l=0.2"
+
+rect -30 -30 30 30
+
+line -40 0 -30 0
+line 40 0 30 0
+line 0 -40 0 -30
+line 0 40 0 30
+
+stext -30 -45 R0 {name}
+  size 0.14
+stext -30 35 R0 {cell}
+  size 0.14
+
+inst c7 ./mos
+  at 0 0 R0
+  name M6
+  type -1
+  beta 3.688e-2
+  va 20
+inst c8 ./mos
+  at 100 0 R0
+  name M7
+  beta 3.688e-2
+  va 20
+inst c9 ./mos
+  at 200 0 R0
+  name M8
+  beta 3.688e-3
+  va 20
+inst d0 core:isource
+  at 300 0 R0
+  name IREF
+  value 50u
+label d1 120 -30 R0 out
+label d2 80 0 R0 nb
+label d3 220 -30 R0 nb
+label d4 180 0 R0 nb
+label d5 220 30 R0 vss
+label d6 300 30 R0 nb
+label d7 300 -30 R0 0
+port d8 -20 0 R0 in
+port d9 20 -30 R0 out
+port e0 20 30 R0 vdd
+port e1 120 30 R0 vss
+
+body beh
+  | .hdl "${PWD}/va/beh/cs_stage.va"
+  | .model beh_cs_stage cs_stage

@@ -1,0 +1,70 @@
+schemify 1 shcomp
+  doc "FUNDAMENTAL: NMOS differential pair + tail"
+  default beh
+  prefix X
+  category fundamental
+
+pin g1 in -40 -20
+pin g2 in -40 20
+pin d1 out 40 -20
+pin d2 out 40 20
+pin rail inout 0 40
+
+param gm 1m
+param itail 100u
+
+impl schematic schematic
+impl beh spice
+  format spice "N{name} {g1} {g2} {d1} {d2} {rail} beh_diffpair type=1 gm={gm} itail={itail} vth=0.4 vdsat_t=0.15 ro=200k"
+
+rect -30 -30 30 30
+
+line -40 -20 -30 -20
+line -40 20 -30 20
+line 40 -20 30 -20
+line 40 20 30 20
+line 0 40 0 30
+
+stext -30 -45 R0 {name}
+  size 0.14
+stext -30 35 R0 {cell}
+  size 0.14
+
+inst a0 ./mos
+  at 0 0 R0
+  name M1
+  beta 3.935e-2
+inst a1 ./mos
+  at 100 0 R0
+  name M2
+  beta 3.935e-2
+inst a2 ./mos
+  at 200 0 R0
+  name M5
+  beta 1.588e-2
+inst a3 ./mos
+  at 300 0 R0
+  name M6
+  beta 1.588e-2
+inst a4 core:isource
+  at 400 0 R0
+  name IREF
+  value {itail}
+label a5 20 30 R0 tail
+label a6 120 30 R0 tail
+label a7 220 -30 R0 tail
+label a8 180 0 R0 nb
+label a9 320 -30 R0 nb
+label b0 280 0 R0 nb
+label b1 400 30 R0 nb
+label b2 320 30 R0 rail
+label b3 400 -30 R0 0
+port b4 -20 0 R0 g1
+port b5 80 0 R0 g2
+port b6 20 -30 R0 d1
+port b7 120 -30 R0 d2
+port b8 220 30 R0 rail
+
+body beh
+  | .hdl "${PWD}/va/beh/diffpair_tail.va"
+  | .model beh_diffpair diffpair_tail

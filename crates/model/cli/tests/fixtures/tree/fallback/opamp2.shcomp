@@ -1,0 +1,58 @@
+schemify 1 shcomp
+  doc "SYSTEM: two-stage Miller op-amp"
+  default beh
+  prefix X
+  category system
+
+pin inp in -40 -20
+pin inn in -40 20
+pin out out 40 0
+pin vdd inout 0 -40
+pin vss inout 0 40
+
+impl schematic schematic
+impl beh spice
+  format spice "N{name} {inp} {inn} {out} {vdd} {vss} beh_opamp2 a0=1e4 gbw=100meg fp2=400meg sr=63e6 voh=0.2 vol=0.2"
+
+rect -30 -30 30 30
+
+line -40 -20 -30 -20
+line -40 20 -30 20
+line 40 0 30 0
+line 0 -40 0 -30
+line 0 40 0 30
+
+stext -30 -45 R0 {name}
+  size 0.14
+stext -30 35 R0 {cell}
+  size 0.14
+
+inst f2 ./stage1
+  at 0 0 R0
+  name XS1
+inst f3 ./cs_stage
+  at 200 0 R0
+  name XS2
+inst f4 core:cap
+  at 200 100 R0
+  name CC
+  value 1.59p
+label f5 -40 -20 R0 inn
+label f6 -40 20 R0 inp
+label f7 40 0 R0 o1
+label f8 160 0 R0 o1
+label f9 200 70 R0 o1
+label g0 200 130 R0 out
+label g1 0 -40 R0 vdd
+label g2 200 -40 R0 vdd
+label g3 0 40 R0 vss
+label g4 200 40 R0 vss
+port g5 -100 0 R0 inp
+port g6 -100 40 R0 inn
+port g7 240 0 R0 out
+port g8 0 -100 R0 vdd
+port g9 0 100 R0 vss
+
+body beh
+  | .hdl "${PWD}/va/beh/opamp_beh.va"
+  | .model beh_opamp2 opamp_beh
