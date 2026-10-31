@@ -6,24 +6,25 @@
 //! No threads and no callbacks: children write `stdout.log`/`stderr.log` in their job
 //! directory; [`Runner::poll`] reaps exited children, kills those past the timeout, tails
 //! stdout for progress and starts queued jobs. A job holds its worker slot while its
-//! sources compile (the build cache, `cache.rs`).
+//! sources compile (the build cache, `cache.rs`). With a [`RunnerConfig::host`] every job
+//! runs on that machine through `ssh` (`remote.rs`), its whole output in `stderr.log`.
 //!
 //! Contents:
 //! - `pub const NETLIST`, `RAW`, `STDOUT`, `STDERR`, `COMMAND`, `RESULTS: &str`,
 //!   `pub const WORKERS_MAX: u16`
-//! - `pub struct SimCommand` (`default_for`), `pub struct Tools` (`set_sims`, `sim`),
-//!   `pub struct RunnerConfig` (`new`)
+//! - `pub struct RunnerConfig` (`new`); its programs are `tools.rs`'s [`Tools`]
 //! - `pub struct Progress`
 //! - `pub struct Runner`: `new`, `config`, `job_dir`, `submit`, `busy`, `progress`,
 //!   `poll`, `wait`, `cancel`, `cancel_all`, `save`
 
-use crate::SIMULATORS;
 use crate::cache::Cache;
 use crate::jobs::{Jobs, State};
 use crate::plan::Plan;
 use crate::prepare::{Prepared, Source};
 use crate::process::{self, Process};
+use crate::remote::{self, REMOTE_WORKERS_MAX};
 use crate::results::Results;
+use crate::tools::Tools;
 use schemify_doc::Digest;
 use schemify_elab::Dialect;
 use std::collections::VecDeque;
@@ -31,7 +32,7 @@ use std::fs::{self, File};
 use std::io::{self, SeekFrom};
 use std::iter;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -50,32 +51,6 @@ pub const RESULTS: &str = "results";
 /// Most workers one runner starts at once.
 pub const WORKERS_MAX: u16 = 1024;
 
-/// A simulator command line from the user config (`sim <name>` with `path`, `args`,
-/// `env`; config spec §3). `{netlist}` and `{raw}` in `args` become the job's file names;
-/// the working directory is the job directory; the process environment is inherited with
-/// `env` set on top.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SimCommand {
-    /// Program, looked up on `PATH` when it has no directory part.
-    pub path: String,
-    /// Arguments.
-    pub args: Vec<String>,
-    /// Variables set for the simulator (ESPice's `ZIG`, the Zig its `.hdl` compiles with).
-    pub env: Vec<(String, String)>,
-}
-
-/// External programs a runner may start, all from the user config.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Tools {
-    /// Each simulator's command line, in [`SIMULATORS`] order; a runner starts the one
-    /// of its [`RunnerConfig::dialect`].
-    pub sims: [SimCommand; SIMULATORS.len()],
-    /// OpenVAF (`<src> -o <out>`).
-    pub openvaf: String,
-    /// Icarus Verilog (`-o <out> <src>`).
-    pub iverilog: String,
-}
-
 /// One job's progress line ([`Runner::progress`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Progress<'runner> {
@@ -90,8 +65,8 @@ pub struct Progress<'runner> {
 pub struct RunnerConfig {
     /// Programs.
     pub tools: Tools,
-    /// The simulator every job runs in (one of [`SIMULATORS`]; its netlists are in this
-    /// dialect).
+    /// The simulator every job runs in (one of [`SIMULATORS`](crate::SIMULATORS); its
+    /// netlists are in this dialect).
     pub dialect: Dialect,
     /// Run directory: job `j` runs in `<dir>/<j>`.
     pub dir: PathBuf,
@@ -100,10 +75,15 @@ pub struct RunnerConfig {
     /// On-disk directory of each library row (the `lib` of `Origin::File` and
     /// [`Prepared::base`]); row 0 is the project directory.
     pub lib_dirs: Vec<PathBuf>,
-    /// Simulators running at once, `1..=WORKERS_MAX`.
+    /// Simulators running at once, `1..=WORKERS_MAX` (at most [`REMOTE_WORKERS_MAX`] with a
+    /// [`RunnerConfig::host`]).
     pub workers: u16,
     /// Wall-clock limit per job and per compile; the child is killed after it.
     pub timeout: Duration,
+    /// The ssh destination every job runs on (a PDK that stays on its server, run spec §5):
+    /// the job directory goes there, the simulator runs there, the raw file and the output
+    /// come back. `None`: here.
+    pub host: Option<String>,
 }
 
 /// Jobs waiting for and holding worker slots, and the compilers they wait on. Dropping a
@@ -129,96 +109,15 @@ struct Running {
     process: Process,
     /// Bytes of stdout already scanned.
     log_pos: u64,
-    /// Last non-empty stdout line.
+    /// Last non-empty stdout line (stderr for a remote job).
     last: String,
-}
-
-impl SimCommand {
-    /// Returns the default command line of simulator `d` (run spec §5): batch mode, the
-    /// job's netlist in, a raw file out the reader loads.
-    ///
-    /// - ngspice `ngspice -b -r {raw} {netlist}` (D15);
-    /// - ESPice `espice -b --tokenizer=ngspice -r {raw} {netlist}` (the ngspice deck
-    ///   syntax the espice dialect writes; ESPice's default `--format` is ngspice binary);
-    /// - Xyce `Xyce -r {raw} {netlist}` (a binary raw file);
-    /// - LTspice `ltspice -b {netlist}` (it writes `netlist.raw` beside the deck);
-    /// - Spectre `spectre -format nutbin -raw {raw} {netlist}` (Nutmeg binary, not PSF).
-    ///
-    /// # Panics
-    ///
-    /// Panics if `d` is not one of [`SIMULATORS`].
-    #[must_use]
-    pub fn default_for(d: Dialect) -> SimCommand {
-        assert!(SIMULATORS.contains(&d), "{} is not a simulator", d.as_str());
-        let (path, args): (&str, &[&str]) = match d {
-            Dialect::Ngspice => ("ngspice", &["-b", "-r", "{raw}", "{netlist}"]),
-            Dialect::Espice => (
-                "espice",
-                &["-b", "--tokenizer=ngspice", "-r", "{raw}", "{netlist}"],
-            ),
-            Dialect::Xyce => ("Xyce", &["-r", "{raw}", "{netlist}"]),
-            Dialect::Ltspice => ("ltspice", &["-b", "{netlist}"]),
-            Dialect::Spectre => (
-                "spectre",
-                &["-format", "nutbin", "-raw", "{raw}", "{netlist}"],
-            ),
-            Dialect::Cdl | Dialect::Verilog | Dialect::Hspice => unreachable!("checked above"),
-        };
-        let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
-        assert!(
-            args.iter().any(|a| a == "{netlist}"),
-            "the job's netlist goes in"
-        );
-        SimCommand {
-            path: path.to_owned(),
-            args,
-            env: Vec::new(),
-        }
-    }
-}
-
-impl Tools {
-    /// Gives every simulator the command line `cmd` (a test harness's fake simulator, the
-    /// editor's `--sim`).
-    pub fn set_sims(&mut self, cmd: &SimCommand) {
-        for s in &mut self.sims {
-            s.clone_from(cmd);
-        }
-        debug_assert!(
-            self.sims.iter().all(|s| s == cmd),
-            "every simulator runs `cmd`"
-        );
-    }
-
-    /// Returns the command line of simulator `d`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `d` is not one of [`SIMULATORS`].
-    #[must_use]
-    pub fn sim(&self, d: Dialect) -> &SimCommand {
-        let Some(k) = SIMULATORS.iter().position(|s| *s == d) else {
-            panic!("{} is not a simulator", d.as_str());
-        };
-        &self.sims[k]
-    }
-}
-
-impl Default for Tools {
-    fn default() -> Tools {
-        Tools {
-            sims: SIMULATORS.map(SimCommand::default_for),
-            openvaf: "openvaf".to_owned(),
-            iverilog: "iverilog".to_owned(),
-        }
-    }
 }
 
 impl RunnerConfig {
     /// Returns the defaults for a project at `root`: run directory
     /// `.schemify/runs/<first 16 hex digits of design>`, cache `.schemify/build`, the
     /// project directory as library row 0, ngspice, one worker per available core, one
-    /// hour per job.
+    /// hour per job, every job run here.
     #[must_use]
     pub fn new(root: &Path, design: &Digest) -> RunnerConfig {
         let hex = schemify_doc::hex(design);
@@ -232,6 +131,7 @@ impl RunnerConfig {
             lib_dirs: vec![root.to_path_buf()],
             workers: cores.clamp(1, usize::from(WORKERS_MAX)) as u16,
             timeout: Duration::from_secs(3600),
+            host: None,
         };
         // Provable from the clamp: a postcondition, not a documented panic.
         debug_assert!((1..=WORKERS_MAX).contains(&c.workers));
@@ -342,10 +242,11 @@ impl Runner {
 
     /// Advances every job one step without blocking: reaps exited compilers and
     /// simulators (a simulator's raw file goes through [`Results::record`]), kills those
-    /// past the timeout, tails stdout, admits queued jobs into free worker slots (starting
-    /// the compiles their sources need: one compiler per stale cache output, shared by
-    /// every job that needs it) and starts the simulator of every job whose sources are
-    /// ready. Appends to `finished` every job that reached `Done` or `Failed` in this call.
+    /// past the timeout, tails stdout (stderr for a remote job), admits queued jobs into free
+    /// worker slots (starting the compiles their sources need: one compiler per stale cache
+    /// output, shared by every job that needs it) and starts the simulator of every job whose
+    /// sources are ready. Appends to `finished` every job that reached `Done` or `Failed` in
+    /// this call.
     ///
     /// Cost: one `try_wait` per child and a stat of each source of an admitted job;
     /// compilers and simulators are child processes, so nothing here waits for them.
@@ -363,11 +264,17 @@ impl Runner {
     ) {
         let before = finished.len();
         self.cache.reap(&self.config);
+        // A remote job's whole output streams into its stderr.log (crate::remote).
+        let log = if self.config.host.is_some() {
+            STDERR
+        } else {
+            STDOUT
+        };
         let mut i = 0;
         while i < self.running.len() {
             let dir = self.job_dir(self.running[i].job);
             let r = &mut self.running[i];
-            tail(&dir, r);
+            tail(&dir.join(log), r);
             let Some(outcome) = r.process.reap(self.config.timeout, "simulator") else {
                 i += 1;
                 continue;
@@ -378,7 +285,10 @@ impl Runner {
         }
         // Each pass admits at least one queued job, or ends: a start that fails frees its
         // slot for the next queued job in the same poll.
-        let workers = usize::from(self.config.workers);
+        let workers = match self.config.host {
+            Some(_) => usize::from(self.config.workers.min(REMOTE_WORKERS_MAX)),
+            None => usize::from(self.config.workers),
+        };
         let passes_max = self.queue.len() + 1;
         let mut passes = 0;
         loop {
@@ -550,15 +460,23 @@ impl Runner {
             .chain(args.iter().cloned())
             .collect();
         let line = words.join(" ");
-        fs::write(dir.join(COMMAND), format!("{line}\n"))
-            .map_err(|e| format!("cannot create {COMMAND}: {e}"))?;
-        let mut cmd = Command::new(&sim.path);
-        cmd.args(args)
-            .envs(sim.env.iter().map(|(k, v)| (k, v)))
-            .current_dir(&dir);
-        let process = Process::spawn(&mut cmd, out, err).map_err(|e| {
-            process::spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e)
-        })?;
+        let shown = match &self.config.host {
+            Some(host) => format!("ssh {host} {line}\n"),
+            None => format!("{line}\n"),
+        };
+        fs::write(dir.join(COMMAND), shown).map_err(|e| format!("cannot create {COMMAND}: {e}"))?;
+        let process = if let Some(host) = &self.config.host {
+            drop(out); // stays empty: the remote output streams into stderr.log
+            remote::spawn(&self.config.tools.ssh, host, &dir, &words, &sim.env, err)?
+        } else {
+            let mut cmd = Command::new(&sim.path);
+            cmd.args(args)
+                .envs(sim.env.iter().map(|(k, v)| (k, v)))
+                .current_dir(&dir);
+            Process::spawn(&mut cmd, Stdio::null(), out, err).map_err(|e| {
+                process::spawn_error(&sim.path, "simulator", "the user config `sim` entry", &e)
+            })?
+        };
         let before = self.running.len();
         self.running.push(Running {
             job: q.job,
@@ -581,6 +499,9 @@ impl Runner {
     ) {
         assert_eq!(jobs.state(j), State::Running, "only a running job finishes");
         let dir = self.job_dir(j);
+        if self.config.host.is_some() {
+            remote::tidy(&dir);
+        }
         let status = match outcome {
             Ok(s) => s,
             Err(msg) => return results.fail(jobs, j, msg),
@@ -588,11 +509,14 @@ impl Runner {
         let why = || process::last_line(&dir.join(STDERR)).unwrap_or_default();
         if !status.success() {
             let sim = &self.config.tools.sim(self.config.dialect).path;
-            let msg = format!(
-                "`{sim}` exited with {status}: {} (see {})",
-                why(),
-                dir.display()
-            );
+            let msg = match &self.config.host {
+                Some(host) => remote::failure(host, sim, status, &why(), &dir),
+                None => format!(
+                    "`{sim}` exited with {status}: {} (see {})",
+                    why(),
+                    dir.display()
+                ),
+            };
             return results.fail(jobs, j, msg);
         }
         match read_raw(&dir) {
@@ -628,12 +552,13 @@ fn read_raw(dir: &Path) -> io::Result<Vec<u8>> {
     })
 }
 
-/// Scans new complete stdout lines (at most 64 KiB per call) and keeps the last one.
-fn tail(dir: &Path, r: &mut Running) {
+/// Scans new complete lines of the log `path` (at most 64 KiB per call) and keeps the last
+/// one.
+fn tail(path: &Path, r: &mut Running) {
     use std::io::{Read, Seek};
 
     const CHUNK: u64 = 1 << 16;
-    let Ok(mut f) = File::open(dir.join(STDOUT)) else {
+    let Ok(mut f) = File::open(path) else {
         return;
     };
     let mut buf = Vec::new();

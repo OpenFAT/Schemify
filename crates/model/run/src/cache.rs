@@ -18,7 +18,7 @@ use crate::runner::RunnerConfig;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Compile state of one run's sources. Dropping it kills its compilers.
 #[derive(Default)]
@@ -295,7 +295,7 @@ fn spawn_compile(config: &RunnerConfig, s: &Source) -> Result<Option<Compiling>,
     };
     let log = File::create(config.cache.join(format!("{}.log", s.out))).map_err(cache)?;
     let stderr_log = log.try_clone().map_err(cache)?;
-    let process = Process::spawn(&mut cmd, log, stderr_log).map_err(|e| {
+    let process = Process::spawn(&mut cmd, Stdio::null(), log, stderr_log).map_err(|e| {
         let need = format!("needed to compile {} ({what})", src.display());
         format!(
             "{}; {need}",

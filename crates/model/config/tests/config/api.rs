@@ -87,6 +87,7 @@ schemify.pack.add {{
             description: vec![String::new(), String::new()],
         },
         sims,
+        hosts: Vec::new(),
         packs: vec![
             PackSpec {
                 grant: vec!["read_project".into(), "spawn:ngspice".into()],

@@ -13,8 +13,8 @@ use omnilua::{Function, Lua, Table as LuaTable, Value};
 use crate::lua::{self, Shared};
 use crate::table::{LINE_WIDTH_TENTHS_MAX, LINE_WIDTH_TENTHS_MIN, STEP_MAX, STEP_MIN};
 use crate::{
-    Event, HOOKS_MAX, Hook, KEYMAPS_MAX, Level, Request, SIM_ENV_MAX, Sim, SimKind, Target,
-    USER_LAYERS,
+    Event, HOOKS_MAX, HOST_SIMS_MAX, Hook, KEYMAPS_MAX, Level, Request, SIM_ENV_MAX, Sim, SimKind,
+    Target, USER_LAYERS,
 };
 
 /// An error string for the prelude to raise, or `None` on success.
@@ -287,8 +287,9 @@ fn on(_: &Lua, state: &Shared, (event, f): (Value, Value)) -> Raised {
     Ok(None)
 }
 
-/// `schemify.sim(name, { path, args, env })`: sets one program row; any bad field leaves the
-/// row as it was.
+/// `schemify.sim(name, { path, args, env, host })`: sets one program row, or with a `host`
+/// one simulator's row on that ssh destination (`path` optional there: the default program
+/// on the host's `PATH`); any bad field leaves the rows as they were.
 fn sim(_: &Lua, state: &Shared, (name, spec): (Value, Value)) -> Raised {
     let Some(name) = lua::string(&name) else {
         return Ok(Some(lua::bad_arg(1, "sim", "string", &name)));
@@ -301,8 +302,28 @@ fn sim(_: &Lua, state: &Shared, (name, spec): (Value, Value)) -> Raised {
     let Value::Table(spec) = spec else {
         return Ok(Some(lua::bad_arg(2, "sim", "table", &spec)));
     };
-    let Some(path) = lua::string(&lua::field(&spec, "path")).filter(|p| !p.is_empty()) else {
-        return Ok(Some(format!("sim `{name}`: `path` is required")));
+    let host = match lua::field(&spec, "host") {
+        Value::Nil => None,
+        h => match lua::string(&h).filter(|h| crate::valid_host(h)) {
+            Some(h) if SimKind::SIMULATORS.contains(&kind) => Some(h),
+            Some(_) => {
+                return Ok(Some(format!(
+                    "sim `{name}`: a compiler runs here (no `host`)"
+                )));
+            }
+            None => {
+                return Ok(Some(format!(
+                    "sim `{name}`: `host` must be an ssh destination `[user@]host` (a name or \
+                     ~/.ssh/config alias; no port or options)"
+                )));
+            }
+        },
+    };
+    // On a host an absent `path` is the simulator's default program there.
+    let path = match lua::string(&lua::field(&spec, "path")).filter(|p| !p.is_empty()) {
+        Some(p) => p,
+        None if host.is_some() => String::new(),
+        None => return Ok(Some(format!("sim `{name}`: `path` is required"))),
     };
     let args = match lua::field(&spec, "args") {
         Value::Nil => Some(Vec::new()),
@@ -324,8 +345,45 @@ fn sim(_: &Lua, state: &Shared, (name, spec): (Value, Value)) -> Raised {
             "sim `{name}`: `env` must map at most {SIM_ENV_MAX} names to strings"
         )));
     };
-    state.borrow_mut().table.sims[kind as usize] = Some(Sim { path, args, env });
-    Ok(None)
+    let row = Sim { path, args, env };
+    match host {
+        None => {
+            state.borrow_mut().table.sims[kind as usize] = Some(row);
+            Ok(None)
+        }
+        Some(host) => Ok(host_row(state, kind, host, row)),
+    }
+}
+
+/// Sets simulator `kind`'s row on `host`, replacing an earlier one; an error string when a
+/// word holds a control character or the rows are at [`HOST_SIMS_MAX`].
+fn host_row(state: &Shared, kind: SimKind, host: String, row: Sim) -> Option<String> {
+    assert!(SimKind::SIMULATORS.contains(&kind), "a compiler runs here");
+    assert!(crate::valid_host(&host), "{host}");
+    // The words reach the host's login shell inside one quoted line (run spec §5): a newline
+    // would end it under csh.
+    let words = std::iter::once(&row.path)
+        .chain(&row.args)
+        .chain(row.env.iter().flat_map(|(k, v)| [k, v]));
+    if words.flat_map(|w| w.chars()).any(char::is_control) {
+        let name = kind.word();
+        return Some(format!(
+            "sim `{name}` on {host}: no control characters in `path`, `args` or `env`"
+        ));
+    }
+    let mut state = state.borrow_mut();
+    let hosts = &mut state.table.hosts;
+    match hosts.iter().position(|r| r.0 == kind && r.1 == host) {
+        Some(i) => hosts[i].2 = row,
+        None if hosts.len() >= HOST_SIMS_MAX => {
+            return Some(format!(
+                "more than {HOST_SIMS_MAX} `sim` rows with a `host`"
+            ));
+        }
+        None => hosts.push((kind, host, row)),
+    }
+    assert!(hosts.len() <= HOST_SIMS_MAX);
+    None
 }
 
 /// `{ NAME = "value", … }` as pairs sorted by name, so the row does not depend on Lua's

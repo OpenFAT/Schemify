@@ -25,7 +25,8 @@
 //!    [`Table`] (options, keymaps, sims, package specs, hooks) and, per Lua call, the
 //!    [`Request`]s it queued (commands, notifications, errors).
 //! 2. One config per process. Keymaps ≤ [`KEYMAPS_MAX`], packages ≤ [`PACKS_MAX`], hooks ≤
-//!    [`HOOKS_MAX`], seven programs, eight options; ≤ [`REQUESTS_MAX`] requests per call.
+//!    [`HOOKS_MAX`], seven programs plus ≤ [`HOST_SIMS_MAX`] simulators on other hosts, eight
+//!    options; ≤ [`REQUESTS_MAX`] requests per call.
 //! 3. Steps are i32 milli-units (D33) in `[1, 10^9]`; a Lua function is a [`FnId`] (u16:
 //!    keymaps + hooks < 2^13); `fuel` u64 in `[10^6, 10^11]` (plugin ABI §2).
 //! 4. The binaries read the table at startup (the editor re-reads keymaps when they change);
@@ -62,9 +63,9 @@ mod table;
 
 pub use cli::{GUI_USAGE, Launch, Startup};
 pub use table::{
-    Event, FnId, HOOKS_MAX, Hook, KEYMAPS_MAX, Keymaps, Level, Options, PACKS_MAX, PackSpec,
-    REQUESTS_MAX, Request, SIM_ENV_MAX, Sim, SimKind, Source, Table, Target, USER_LAYERS,
-    fn_of_command,
+    Event, FnId, HOOKS_MAX, HOST_SIMS_MAX, Hook, KEYMAPS_MAX, Keymaps, Level, Options, PACKS_MAX,
+    PackSpec, REQUESTS_MAX, Request, SIM_ENV_MAX, Sim, SimKind, Source, Table, Target, USER_LAYERS,
+    fn_of_command, valid_host,
 };
 
 /// Lua VM instructions per call (spec §4).

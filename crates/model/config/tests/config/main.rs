@@ -8,13 +8,14 @@
 //! test harness.
 //!
 //! Contents: `pub(crate) const SHA`, `pub(crate) fn run(src: &str)`,
-//! `pub(crate) fn errors(out: &[Request]) -> Vec<&str>`; the tests live in `api`, `sandbox`
-//! and `cli`.
+//! `pub(crate) fn errors(out: &[Request]) -> Vec<&str>`; the tests live in `api`, `hosts`,
+//! `sandbox` and `cli`.
 
 #![cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 
 mod api;
 mod cli;
+mod hosts;
 mod sandbox;
 
 use schemify_config::{Config, Level, Request};

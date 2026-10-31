@@ -5,10 +5,12 @@
 //!
 //! Contents:
 //! - `pub const KEYMAPS_MAX`, `pub const PACKS_MAX`, `pub const HOOKS_MAX`,
-//!   `pub const REQUESTS_MAX`, `pub const SIM_ENV_MAX`, `pub const USER_LAYERS`
+//!   `pub const REQUESTS_MAX`, `pub const SIM_ENV_MAX`, `pub const HOST_SIMS_MAX`,
+//!   `pub const USER_LAYERS`
 //! - the option domains: `pub(crate) const STEP_MIN`, `STEP_MAX`, `DIM_MAX`,
 //!   `LINE_WIDTH_TENTHS_MIN`, `LINE_WIDTH_TENTHS_MAX`
 //! - `pub struct Table`, `Table::sim(&self, kind: SimKind) -> Option<&Sim>`,
+//!   `Table::sim_on(&self, kind: SimKind, host: &str) -> Option<&Sim>`,
 //!   `Table::assert_invariants(&self)`
 //! - `pub struct Options` (`impl Default`), `Options::assert_in_domain(&self)`
 //! - `pub struct Hook`, `pub struct FnId`, `pub enum Target`
@@ -20,6 +22,7 @@
 //! - `pub enum Event`, `Event::ALL`, `Event::word(self)`, `Event::from_word(word: &str)`
 //! - `pub enum Level`, `pub enum Request`
 //! - `pub fn fn_of_command(name: &str) -> Option<FnId>`
+//! - `pub fn valid_host(dest: &str) -> bool`
 
 use std::path::PathBuf;
 
@@ -33,6 +36,8 @@ pub const HOOKS_MAX: usize = 1024;
 pub const REQUESTS_MAX: usize = 256;
 /// Most `env` entries of one `schemify.sim` row.
 pub const SIM_ENV_MAX: usize = 64;
+/// Most `schemify.sim` rows that name a `host` (spec §3).
+pub const HOST_SIMS_MAX: usize = 64;
 /// Canvas layers a colour can be set for (`layer_colors`, xschem's 22 `cadlayers`).
 pub const USER_LAYERS: usize = 22;
 /// Smallest snap or grid step, milli-units (spec §3).
@@ -56,6 +61,11 @@ pub struct Table {
     pub keymaps: Keymaps,
     /// Program per [`SimKind`] (index = position in [`SimKind::ALL`]); `None` = the default.
     pub sims: [Option<Sim>; SimKind::ALL.len()],
+    /// Simulators on other machines (`schemify.sim(name, { host = … })`, spec §3): (simulator,
+    /// ssh destination, row), unique by (simulator, destination), in declaration order, at
+    /// most [`HOST_SIMS_MAX`]. Only these hosts run jobs: a project names a host through its
+    /// PDK (run spec §5), never a row (D7).
+    pub hosts: Vec<(SimKind, String, Sim)>,
     /// Package specs in declaration order, names unique, at most [`PACKS_MAX`].
     pub packs: Vec<PackSpec>,
     /// Event hooks in registration order, at most [`HOOKS_MAX`].
@@ -143,7 +153,8 @@ pub enum SimKind {
 /// One `schemify.sim` row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sim {
-    /// Program (on `PATH` when it has no directory part); never empty.
+    /// Program (on `PATH` when it has no directory part). Empty only in a [`Table::hosts`]
+    /// row: the simulator's default program on the host's `PATH`.
     pub path: String,
     /// Arguments (`{netlist}`, `{raw}` placeholders for the simulators).
     pub args: Vec<String>,
@@ -188,14 +199,6 @@ pub struct PackSpec {
     pub lazy_command: Vec<String>,
     /// Events that load the plugin on first delivery.
     pub lazy_event: Vec<Event>,
-}
-
-impl PackSpec {
-    /// Returns whether the plugin waits for a command or an event before it loads.
-    #[must_use]
-    pub fn is_lazy(&self) -> bool {
-        !self.lazy_command.is_empty() || !self.lazy_event.is_empty()
-    }
 }
 
 /// Events a hook or a lazy package can wait for (plugin ABI §6 wire words).
@@ -283,11 +286,54 @@ pub fn fn_of_command(name: &str) -> Option<FnId> {
     Some(FnId(id))
 }
 
+/// Returns whether `dest` is an ssh destination a `sim` row may name (spec §3, run spec §5):
+/// `[user@]host` with `user` `[a-z_][a-z0-9._-]{0,31}` and `host` a name or `~/.ssh/config`
+/// alias `[A-Za-z0-9][A-Za-z0-9.-]{0,252}`. No port, IPv6 literal or ssh option: those live
+/// in `~/.ssh/config`, so a destination never starts with `-` and never passes for an option.
+#[must_use]
+pub fn valid_host(dest: &str) -> bool {
+    let (user, host) = dest
+        .split_once('@')
+        .map_or((None, dest), |(u, h)| (Some(u), h));
+    let user_ok = user.is_none_or(|u| {
+        let b = u.as_bytes();
+        (1..=32).contains(&b.len())
+            && (b[0].is_ascii_lowercase() || b[0] == b'_')
+            && b.iter()
+                .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
+    });
+    let h = host.as_bytes();
+    let host_ok = (1..=253).contains(&h.len())
+        && h[0].is_ascii_alphanumeric()
+        && h.iter()
+            .all(|&c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-');
+    let ok = user_ok && host_ok;
+    // Provable from the grammar above: postconditions, not documented panics.
+    debug_assert!(
+        !ok || !dest.starts_with('-'),
+        "a destination is never an option"
+    );
+    debug_assert!(!ok || !dest.contains(char::is_whitespace));
+    ok
+}
+
 impl Table {
     /// The configured program of `kind`, if any.
     #[must_use]
     pub fn sim(&self, kind: SimKind) -> Option<&Sim> {
         self.sims[kind as usize].as_ref()
+    }
+
+    /// The row of simulator `kind` on the ssh destination `host`, if the config names one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the row found is a compiler's (a table this crate did not write).
+    #[must_use]
+    pub fn sim_on(&self, kind: SimKind, host: &str) -> Option<&Sim> {
+        let row = self.hosts.iter().find(|r| r.0 == kind && r.1 == host);
+        assert!(row.is_none_or(|r| SimKind::SIMULATORS.contains(&r.0)));
+        row.map(|r| &r.2)
     }
 
     /// Asserts what every table this crate hands out holds: the capacities, the keymap
@@ -300,7 +346,12 @@ impl Table {
         assert!(keymaps.chord.len() <= KEYMAPS_MAX);
         assert!(self.packs.len() <= PACKS_MAX);
         assert!(self.hooks.len() <= HOOKS_MAX);
+        assert!(self.hosts.len() <= HOST_SIMS_MAX);
         self.opts.assert_in_domain();
+        for (kind, host, _) in &self.hosts {
+            assert!(SimKind::SIMULATORS.contains(kind), "a compiler runs here");
+            assert!(valid_host(host), "{host}");
+        }
         for sim in self.sims.iter().flatten() {
             assert!(!sim.path.is_empty());
             assert!(sim.env.len() <= SIM_ENV_MAX);
@@ -432,6 +483,14 @@ impl Source {
             Source::Url { .. } => "url",
             Source::Path(_) => "path",
         }
+    }
+}
+
+impl PackSpec {
+    /// Returns whether the plugin waits for a command or an event before it loads.
+    #[must_use]
+    pub fn is_lazy(&self) -> bool {
+        !self.lazy_command.is_empty() || !self.lazy_event.is_empty()
     }
 }
 

@@ -36,7 +36,7 @@
 //!   `results_file`: `write_results`, `read_results`; `plan`: `Plan` and its rows;
 //!   `prepare`: `design`, `prepare`, `sources`, `Prepared`; `mc`: `Yield`, `sim_seed`,
 //!   `yield_summary`; `optimize`: `Optimizer`, `OptRun`; `runner`: `Runner`,
-//!   `RunnerConfig`, `Tools`, `SimCommand`
+//!   `RunnerConfig`; `tools`: `Tools`, `SimCommand`; `remote`: `REMOTE_WORKERS_MAX`
 //!
 //! # Example
 //!
@@ -76,12 +76,16 @@ mod plan;
 mod prepare;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+#[cfg(not(target_arch = "wasm32"))]
+mod remote;
 mod results;
 mod results_file;
 #[cfg(not(target_arch = "wasm32"))]
 mod runner;
 #[cfg(feature = "sweep")]
 mod sweep;
+#[cfg(not(target_arch = "wasm32"))]
+mod tools;
 
 pub use jobs::{DEFAULT, JOBS_MAX, Jobs, NO_SAMPLE, Select, State, expand};
 #[cfg(feature = "mc")]
@@ -93,13 +97,16 @@ pub use plan::{
     SAMPLES_MAX, SWEEP_POINTS_MAX, Spec, Sweep, TABLE_MAX, Var,
 };
 pub use prepare::{BenchBase, Blocked, Origin, Prepared, Source, Tool, design, prepare, sources};
+#[cfg(not(target_arch = "wasm32"))]
+pub use remote::REMOTE_WORKERS_MAX;
 pub use results::{ErrorRow, JOB_LEVEL, Pass, Results};
 pub use results_file::{read_results, write_results};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{
-    COMMAND, NETLIST, Progress, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, SimCommand,
-    Tools, WORKERS_MAX,
+    COMMAND, NETLIST, Progress, RAW, RESULTS, Runner, RunnerConfig, STDERR, STDOUT, WORKERS_MAX,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use tools::{SimCommand, Tools};
 
 /// The simulators a native run starts (run spec §5), in detection order: ESPice first (user
 /// decision 2026-10-25: the default simulator, installed separately); the other dialects

@@ -21,9 +21,15 @@ pub(crate) struct Process {
 }
 
 impl Process {
-    /// Spawns `cmd` with stdin closed and stdout/stderr into `out`/`err`.
-    pub(crate) fn spawn(cmd: &mut Command, out: File, err: File) -> io::Result<Process> {
-        let child = cmd.stdin(Stdio::null()).stdout(out).stderr(err).spawn()?;
+    /// Spawns `cmd` reading `stdin` (closed for simulators and compilers, the upload of a
+    /// remote job) with stdout/stderr into `out`/`err`.
+    pub(crate) fn spawn(
+        cmd: &mut Command,
+        stdin: Stdio,
+        out: File,
+        err: File,
+    ) -> io::Result<Process> {
+        let child = cmd.stdin(stdin).stdout(out).stderr(err).spawn()?;
         Ok(Process {
             child,
             started: Instant::now(),

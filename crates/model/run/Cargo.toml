@@ -36,6 +36,10 @@ name = "runner"
 required-features = ["sweep", "corners", "mc"]
 
 [[test]]
+name = "remote"
+required-features = ["sweep", "corners", "mc"]
+
+[[test]]
 name = "expand"
 required-features = ["sweep", "corners", "mc"]
 
