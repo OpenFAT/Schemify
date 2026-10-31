@@ -4,7 +4,7 @@
 //!
 //! Contents: `WaveUi::contribute(waves, strings) -> Contribution`
 
-use schemify_wave::{LineStyle, PaneMode, Radix, TRACE_COLORS, Waves};
+use schemify_wave::{AxisScale, LineStyle, PaneMode, Radix, TRACE_COLORS, Waves};
 
 use super::{ROW_H, WaveUi};
 use crate::kinds::{Kind, Prop, StyleProp};
@@ -169,15 +169,18 @@ impl WaveUi {
         let (on, off) = (s("1"), s("0"));
         let active = usize::from(self.active_pane);
         let pane = waves.panes().get(active);
-        let log_x = if active < waves.panes().len() {
-            waves.x_of(active).log
+        let x_axis = if active < waves.panes().len() {
+            waves.x_of(active)
         } else {
-            waves.x().log
+            waves.x()
         };
         let cur = waves.cursors();
         for (id, v) in [
-            ("waves.log_x", log_x),
-            ("waves.log_y", pane.is_some_and(|p| p.log)),
+            ("waves.log_x", x_axis.scale == AxisScale::Log),
+            (
+                "waves.log_y",
+                pane.is_some_and(|p| p.scale == AxisScale::Log),
+            ),
             ("waves.cursor_a", cur[0].is_some()),
             ("waves.cursor_b", cur[1].is_some()),
         ] {

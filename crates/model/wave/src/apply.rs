@@ -6,7 +6,7 @@
 
 use core::ops::Range;
 
-use crate::axis::{self, Axis, UNIT};
+use crate::axis::{self, Axis, AxisScale, UNIT};
 use crate::decimate::{self, MinMax};
 use crate::pane::{MAX_PANES, MAX_TRACES, PaneMode, PaneProps, TRACE_COLORS};
 use crate::request::{Applied, Request, ViewError};
@@ -99,13 +99,13 @@ impl Waves {
             }
             Request::SetX { pane, lo, hi } => {
                 let p = self.pane_index(*pane)?;
-                let a = typed_axis(*lo, *hi, self.x_of(p).log)?;
+                let a = typed_axis(*lo, *hi, self.x_of(p).scale)?;
                 self.map_x(p, |_| a);
                 Applied::Done
             }
             Request::SetY { pane, lo, hi } => {
                 let p = self.pane_index(*pane)?;
-                self.panes[p] = typed_axis(*lo, *hi, self.panes[p].log)?;
+                self.panes[p] = typed_axis(*lo, *hi, self.panes[p].scale)?;
                 Applied::Done
             }
             Request::Autoscale => {
@@ -126,9 +126,10 @@ impl Waves {
             Request::LogX { pane, on } => self.log_x(*pane, *on)?,
             Request::LogY { pane, on } => {
                 let p = self.pane_index(*pane)?;
-                if *on != self.panes[p].log {
+                let scale = scale_of(*on);
+                if scale != self.panes[p].scale {
                     let keep = self.panes[p];
-                    self.panes[p].log = *on;
+                    self.panes[p].scale = scale;
                     if !self.autoscale_y(*pane) && !self.panes[p].valid() {
                         self.panes[p] = keep;
                         return Err(ViewError::NotPositive);
@@ -164,9 +165,18 @@ impl Waves {
 
 // ---- private ----
 
-/// The axis a typed range names, keeping `log`; refused when not [`Axis::valid`].
-fn typed_axis(lo: f64, hi: f64, log: bool) -> Result<Axis, ViewError> {
-    let a = Axis { lo, hi, log };
+/// The scale a log toggle request asks for.
+fn scale_of(log: bool) -> AxisScale {
+    if log {
+        AxisScale::Log
+    } else {
+        AxisScale::Linear
+    }
+}
+
+/// The axis a typed range names, keeping `scale`; refused when not [`Axis::valid`].
+fn typed_axis(lo: f64, hi: f64, scale: AxisScale) -> Result<Axis, ViewError> {
+    let a = Axis { lo, hi, scale };
     if !a.valid() {
         return Err(ViewError::Range(lo, hi));
     }
@@ -408,26 +418,31 @@ impl Waves {
     /// suit the new scale; refused when no data does.
     fn log_x(&mut self, pane: u8, on: bool) -> Result<Applied, ViewError> {
         let p = self.pane_index(pane)?;
+        let scale = scale_of(on);
         if self.props[p].own_x() {
-            if on != self.pane_x[p].log {
+            if scale != self.pane_x[p].scale {
                 let keep = self.pane_x[p];
-                self.pane_x[p].log = on;
+                self.pane_x[p].scale = scale;
                 if !self.pane_x[p].valid() && !self.autoscale_own_x(p) {
                     self.pane_x[p] = keep;
                     return Err(ViewError::NotPositive);
                 }
                 self.autoscale_y(pane);
             }
-        } else if on != self.x.log {
+        } else if scale != self.x.scale {
             let keep = self.x;
-            self.x.log = on;
+            self.x.scale = scale;
             if !self.x.valid() && !self.autoscale_x() {
                 self.x = keep;
                 return Err(ViewError::NotPositive);
             }
             self.autoscale_every_y();
         }
-        assert_eq!(self.x_of(p).log, on, "pane {p} shows the requested scale");
+        assert_eq!(
+            self.x_of(p).scale,
+            scale,
+            "pane {p} shows the requested scale"
+        );
         Ok(Applied::Done)
     }
 
@@ -442,18 +457,18 @@ impl Waves {
                 continue;
             }
             any = true;
-            let s = axis::span(self.xy(i).x, self.x.log);
+            let s = axis::span(self.xy(i).x, self.x.scale);
             lo = lo.min(s.min);
             hi = hi.max(s.max);
         }
         if !any && let Some(d) = self.datasets.first() {
-            let s = axis::span(d.scale(), self.x.log);
+            let s = axis::span(d.scale(), self.x.scale);
             (lo, hi) = (s.min, s.max);
         }
-        let Some(a) = axis::fit_range(lo, hi, self.x.log, 0.0) else {
+        let Some(a) = axis::fit_range(lo, hi, self.x.scale, 0.0) else {
             return false;
         };
-        assert_eq!(a.log, self.x.log, "fitting keeps the scale");
+        assert_eq!(a.scale, self.x.scale, "fitting keeps the scale");
         self.x = a;
         true
     }
@@ -465,22 +480,22 @@ impl Waves {
             self.props[p].own_x(),
             "pane {p} shows the shared x axis, not its own"
         );
-        let log = self.pane_x[p].log;
+        let scale = self.pane_x[p].scale;
         let histogram = self.props[p].mode == PaneMode::Histogram;
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for i in self.traces_in(p as u8) {
             let TraceColumns { x, y } = self.xy(i);
             let col = if histogram { y } else { x };
             for s in &self.steps(i)[self.shown_steps(i)] {
-                let step = axis::span(&col[s.start as usize..s.end as usize], log);
+                let step = axis::span(&col[s.start as usize..s.end as usize], scale);
                 lo = lo.min(step.min);
                 hi = hi.max(step.max);
             }
         }
-        let Some(a) = axis::fit_range(lo, hi, log, 0.0) else {
+        let Some(a) = axis::fit_range(lo, hi, scale, 0.0) else {
             return false;
         };
-        assert_eq!(a.log, log, "fitting keeps the scale");
+        assert_eq!(a.scale, scale, "fitting keeps the scale");
         self.pane_x[p] = a;
         true
     }
@@ -502,7 +517,7 @@ impl Waves {
     fn autoscale_y(&mut self, pane: u8) -> bool {
         let p = usize::from(pane);
         assert!(p < self.panes.len(), "no pane {pane}");
-        let log = self.panes[p].log;
+        let scale = self.panes[p].scale;
         if self.props[p].mode == PaneMode::Histogram {
             let mut counts = Vec::new();
             let mut most = 1u32;
@@ -511,9 +526,12 @@ impl Waves {
                 most = most.max(counts.iter().copied().max().unwrap_or(0));
             }
             self.panes[p] = Axis {
-                lo: if log { 0.5 } else { 0.0 },
+                lo: match scale {
+                    AxisScale::Linear => 0.0,
+                    AxisScale::Log => 0.5,
+                },
                 hi: f64::from(most) * 1.05,
-                log,
+                scale,
             };
             assert!(self.panes[p].valid(), "a count axis is valid");
             return true;
@@ -524,7 +542,7 @@ impl Waves {
             let TraceColumns { x, y } = self.xy(i);
             let steps = &self.steps(i)[self.shown_steps(i)];
             let seen = decimate::extent(x, y, steps, x_axis.lo, x_axis.hi);
-            let min = if log && seen.min <= 0.0 {
+            let min = if scale == AxisScale::Log && seen.min <= 0.0 {
                 min_positive(x, y, steps, x_axis.lo, x_axis.hi)
             } else {
                 seen.min
@@ -532,10 +550,10 @@ impl Waves {
             all.min = all.min.min(min);
             all.max = all.max.max(seen.max);
         }
-        let Some(a) = axis::fit_range(all.min, all.max, log, 0.05) else {
+        let Some(a) = axis::fit_range(all.min, all.max, scale, 0.05) else {
             return false;
         };
-        assert_eq!(a.log, log, "fitting keeps the scale");
+        assert_eq!(a.scale, scale, "fitting keeps the scale");
         self.panes[p] = a;
         true
     }

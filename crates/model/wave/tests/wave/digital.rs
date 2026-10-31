@@ -2,7 +2,7 @@
 //! oracle, metamorphic relations of thresholding, and `bin_counts` conservation properties.
 
 use proptest::prelude::*;
-use schemify_wave::{Run, Scale, bin_counts, logic, logic_runs};
+use schemify_wave::{AxisScale, Run, Scale, bin_counts, logic, logic_runs};
 
 // ---- private ----
 
@@ -73,7 +73,7 @@ fn scale_over(x: &[f64], from: f64, to: f64, px: f32) -> Scale {
     Scale::new(
         lo + from * (hi - lo),
         lo + to * (hi - lo),
-        false,
+        AxisScale::Linear,
         3.0,
         3.0 + px,
     )
@@ -140,9 +140,10 @@ proptest! {
         log: bool,
     ) {
         let (t0, t1) = if log { (-1.0, range.1.log10().max(0.5)) } else { range };
+        let scale = if log { AxisScale::Log } else { AxisScale::Linear };
         let count = |y: &[f64]| {
             let mut bins = vec![0u32; n];
-            bin_counts(y, t0, t1, log, &mut bins);
+            bin_counts(y, t0, t1, scale, &mut bins);
             bins
         };
         let (ca, cb) = (count(&a), count(&b));
@@ -176,13 +177,19 @@ fn bins_place_centres_exactly_and_ends_inside() {
         &[0.5, 1.5, 2.5, 3.5, 0.0, 4.0, -0.1, 4.1, f64::NAN],
         0.0,
         4.0,
-        false,
+        AxisScale::Linear,
         &mut bins,
     );
     assert_eq!(bins, [2, 1, 1, 2]);
     // On a log axis, decades are bins and values <= 0 are not counted.
     let mut bins = [0u32; 3];
-    bin_counts(&[2.0, 20.0, 200.0, 0.0, -5.0], 0.0, 3.0, true, &mut bins);
+    bin_counts(
+        &[2.0, 20.0, 200.0, 0.0, -5.0],
+        0.0,
+        3.0,
+        AxisScale::Log,
+        &mut bins,
+    );
     assert_eq!(bins, [1, 1, 1]);
 }
 
@@ -191,7 +198,7 @@ fn busy_columns_and_gaps() {
     // A clock much faster than a pixel column is busy; columns past the data are left out.
     let x: Vec<f64> = (0..1000).map(|k| f64::from(k) * 1e-3).collect();
     let y: Vec<f64> = (0..1000).map(|k| f64::from(k % 2)).collect();
-    let sx = Scale::new(0.0, 2.0, false, 0.0, 20.0);
+    let sx = Scale::new(0.0, 2.0, AxisScale::Linear, 0.0, 20.0);
     let mut runs = Vec::new();
     logic_runs(&x, &y, Some(0.5), &sx, &mut runs);
     assert_eq!(

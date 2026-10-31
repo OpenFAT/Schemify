@@ -31,7 +31,7 @@
 
 use core::ops::Range;
 
-use crate::axis::{self, Axis, UNIT};
+use crate::axis::{self, Axis, AxisScale, UNIT};
 use crate::digital;
 use crate::pane::{LineStyle, MAX_BINS, MAX_DATASETS, MAX_PANES, MAX_TRACES, PaneMode, PaneProps};
 use crate::plot::RawPlot;
@@ -94,8 +94,8 @@ impl Waves {
         let x = datasets
             .first()
             .and_then(|d| {
-                let s = axis::span(d.scale(), /* log */ false);
-                axis::fit_range(s.min, s.max, /* log */ false, 0.0)
+                let s = axis::span(d.scale(), AxisScale::Linear);
+                axis::fit_range(s.min, s.max, AxisScale::Linear, 0.0)
             })
             .unwrap_or(UNIT);
         let w = Waves {
@@ -408,7 +408,7 @@ impl Waves {
         for s in &self.steps(i)[self.shown_steps(i)] {
             let y = &y[s.start as usize..s.end as usize];
             let (t0, t1) = (x_axis.t(x_axis.lo), x_axis.t(x_axis.hi));
-            digital::bin_counts(y, t0, t1, x_axis.log, out);
+            digital::bin_counts(y, t0, t1, x_axis.scale, out);
         }
         assert_eq!(out.len(), bins, "one count per bin");
     }

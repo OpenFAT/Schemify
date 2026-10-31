@@ -278,6 +278,7 @@ mod tests {
     use core::slice;
 
     use super::*;
+    use crate::axis::AxisScale;
     use crate::digital;
 
     /// Deterministic xorshift in [-1, 1).
@@ -361,10 +362,10 @@ mod tests {
         let n = 50_000;
         let xs: Vec<f64> = (0..n).map(|i| f64::from(i) * 1e-6).collect();
         let ys: Vec<f64> = (0..n).map(|_| rng(&mut seed)).collect();
-        for log in [false, true] {
-            let (lo, hi) = (0.0123 + f64::from(u8::from(log)) * 1e-4, 0.0377);
-            let sx = Scale::new(lo, hi, log, 10.0, 310.0);
-            let sy = Scale::new(-1.0, 1.0, false, 200.0, 0.0);
+        for (scale, nudge) in [(AxisScale::Linear, 0.0), (AxisScale::Log, 1e-4)] {
+            let (lo, hi) = (0.0123 + nudge, 0.0377);
+            let sx = Scale::new(lo, hi, scale, 10.0, 310.0);
+            let sy = Scale::new(-1.0, 1.0, AxisScale::Linear, 200.0, 0.0);
             let mut pts = Vec::new();
             decimate(&xs, &ys, &sx, &sy, &mut pts);
             let want = naive_columns(&xs, &ys, &sx, 300);
@@ -376,7 +377,7 @@ mod tests {
                 assert_eq!(
                     (a, b),
                     (sy.px(want[c].1), sy.px(want[c].0)),
-                    "column {c} log {log}"
+                    "column {c} {scale:?}"
                 );
                 assert_eq!(pair[0][0], 10.0 + c as f32 + 0.5);
             }
@@ -391,8 +392,8 @@ mod tests {
     fn sparse_view_draws_every_sample_plus_edge_neighbours() {
         let xs = [0.0, 1.0, 2.0, 3.0, 4.0];
         let ys = [0.0, 1.0, 0.0, 1.0, 0.0];
-        let sx = Scale::new(1.5, 2.5, false, 0.0, 100.0);
-        let sy = Scale::new(0.0, 1.0, false, 100.0, 0.0);
+        let sx = Scale::new(1.5, 2.5, AxisScale::Linear, 0.0, 100.0);
+        let sy = Scale::new(0.0, 1.0, AxisScale::Linear, 100.0, 0.0);
         let mut pts = Vec::new();
         decimate(&xs, &ys, &sx, &sy, &mut pts);
         assert_eq!(pts, vec![[-50.0, 0.0], [50.0, 100.0], [150.0, 0.0]]);
@@ -449,8 +450,8 @@ mod tests {
             l2_s * 1e3,
             l2_s / l2_v
         );
-        let sx = Scale::new(0.0, xs[n as usize - 1], false, 0.0, 1500.0);
-        let sy = Scale::new(-1.0, 1.0, false, 400.0, 0.0);
+        let sx = Scale::new(0.0, xs[n as usize - 1], AxisScale::Linear, 0.0, 1500.0);
+        let sy = Scale::new(-1.0, 1.0, AxisScale::Linear, 400.0, 0.0);
         let dec = |k: fn(&[f64]) -> MinMax| {
             let mut out = Vec::with_capacity(4000);
             decimate_with(k, black_box(&xs), black_box(&ys), &sx, &sy, &mut out);
@@ -477,18 +478,15 @@ mod tests {
             digital::logic_runs(black_box(&xs), black_box(&bus), None, &sx, &mut out);
             out.len()
         });
-        let hist = |log: bool| {
+        let hist = |scale, t0| {
             let mut bins = [0u32; 64];
-            digital::bin_counts(
-                black_box(&ys),
-                if log { -3.0 } else { -1.0 },
-                0.0,
-                log,
-                &mut bins,
-            );
+            digital::bin_counts(black_box(&ys), t0, 0.0, scale, &mut bins);
             bins[0] as usize
         };
-        let (h_lin, h_log) = (time(&|| hist(false)), time(&|| hist(true)));
+        let (h_lin, h_log) = (
+            time(&|| hist(AxisScale::Linear, -1.0)),
+            time(&|| hist(AxisScale::Log, -3.0)),
+        );
         println!(
             "1M f64: logic_runs threshold {lr_t:.3} ms, bus {lr_b:.3} ms; \
              bin_counts linear {h_lin:.3} ms, log {h_log:.3} ms"

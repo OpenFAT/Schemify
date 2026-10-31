@@ -101,14 +101,17 @@ impl WaveUi {
         let pane = d.pane;
         let p = usize::from(pane);
         let mut out = vec![Request::SetPane { pane, props }];
-        for (k, log, what) in [(3, waves.x_of(p).log, "x"), (5, waves.panes()[p].log, "y")] {
+        for (k, scale, what) in [
+            (3, waves.x_of(p).scale, "x"),
+            (5, waves.panes()[p].scale, "y"),
+        ] {
             if (v[k], v[k + 1]) == (d.shown[k], d.shown[k + 1]) {
                 continue;
             }
             let (Some(lo), Some(hi)) = (v[k], v[k + 1]) else {
                 return Err(format!("{what} min/max: two numbers"));
             };
-            if !(Axis { lo, hi, log }).valid() {
+            if !(Axis { lo, hi, scale }).valid() {
                 return Err(format!("{what} range: invalid ({lo} .. {hi})"));
             }
             out.push(if k == 3 {
