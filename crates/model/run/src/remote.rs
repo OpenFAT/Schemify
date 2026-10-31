@@ -270,10 +270,16 @@ fn double_quoted(out: &mut String, w: &str) {
     assert!(out.len() >= start + w.len() + 2);
 }
 
-/// `'s'` for the login shell (sh or csh), each `'` written `'\''`.
+/// `'s'` for the login shell (sh or csh), each `'` written `'\''` and each `!` written
+/// `'\!'`: csh expands history (`!`) even inside single quotes, and `\!` outside them reads
+/// as a plain `!` to both shells.
 fn single_quoted(s: &str) -> String {
-    let q = format!("'{}'", s.replace('\'', r"'\''"));
+    let q = format!("'{}'", s.replace('\'', r"'\''").replace('!', r"'\!'"));
     assert!(q.len() >= s.len() + 2);
+    assert!(
+        q.match_indices('!').all(|(i, _)| q[..i].ends_with('\\')),
+        "every `!` escaped, so csh does not expand it"
+    );
     q
 }
 
@@ -348,6 +354,7 @@ mod tests {
         double_quoted(&mut w, "a\"b\\c$d`e'f");
         assert_eq!(w, r#""a\"b\\c\$d\`e'f""#);
         assert_eq!(single_quoted("it's"), r"'it'\''s'");
+        assert_eq!(single_quoted("a!b"), r"'a'\!'b'");
         let c = command("ssh", "pdk@h", &argv, &[]);
         let args: Vec<_> = c
             .get_args()

@@ -8,8 +8,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::thread;
-use std::time::Duration;
 
 use common::core;
 use schemify_cli::rpc::{self, Json};
@@ -206,6 +204,8 @@ fn malformed_input_never_stops_the_stream() {
 fn listens_on_a_unix_socket() {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixStream;
+    use std::thread;
+    use std::time::Duration;
     let dir = scratch("sock");
     let sock = dir.join("s.sock");
     let mut child = core(&dir)
