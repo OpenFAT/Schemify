@@ -6,9 +6,9 @@
 //! - `pub struct Run`
 //! - `pub fn logic_runs(xs: &[f64], ys: &[f64], threshold: Option<f64>, sx: &Scale, out: &mut Vec<Run>)`
 //! - `pub fn logic(y: f64, threshold: Option<f64>) -> u32`
-//! - `pub fn bin_counts(y: &[f64], t0: f64, t1: f64, log: bool, bins: &mut [u32])`
+//! - `pub fn bin_counts(y: &[f64], t0: f64, t1: f64, scale: AxisScale, bins: &mut [u32])`
 
-use crate::axis::Scale;
+use crate::axis::{AxisScale, Scale};
 use crate::decimate;
 
 /// One run of equal pixel columns of a digital lane (spec waves §4): columns `c0..c1` counted
@@ -102,20 +102,21 @@ pub fn logic(y: f64, threshold: Option<f64>) -> u32 {
     }
 }
 
-/// Adds the samples of `y` to `bins` equal bins over `[t0, t1]` in transformed units (`log10`
-/// when `log`, spec waves §5): bin `⌊(t − t0) · bins / (t1 − t0)⌋`, `t1` itself in the last bin.
-/// Samples outside the range or not finite after the transform are not counted.
+/// Adds the samples of `y` to `bins` equal bins over `[t0, t1]` in `scale`'s transformed units
+/// (spec waves §5): bin `⌊(t − t0) · bins / (t1 − t0)⌋`, `t1` itself in the last bin. Samples
+/// outside the range or not finite after the transform are not counted.
 ///
 /// # Panics
 ///
 /// Panics if `bins` is empty or `t0 < t1` does not hold with both finite.
-pub fn bin_counts(y: &[f64], t0: f64, t1: f64, log: bool, bins: &mut [u32]) {
+pub fn bin_counts(y: &[f64], t0: f64, t1: f64, scale: AxisScale, bins: &mut [u32]) {
     assert!(!bins.is_empty(), "no bins");
     assert!(t0.is_finite(), "bin range start {t0} is not finite");
     assert!(t1.is_finite(), "bin range end {t1} is not finite");
     assert!(t0 < t1, "empty bin range {t0} .. {t1}");
     let n = bins.len();
     let k = n as f64 / (t1 - t0);
+    let log = scale == AxisScale::Log;
     debug_assert!(
         bins.iter()
             .all(|&c| c as usize <= (u32::MAX as usize).saturating_sub(y.len())),

@@ -4,7 +4,9 @@
 //! Contents:
 //! - `pub fn ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>)`
 //! - `pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>)`
-//! - `pub fn tick_digits(ts: &[f64], log: bool) -> usize`
+//! - `pub fn tick_digits(ts: &[f64], scale: AxisScale) -> usize`
+
+use schemify_wave::AxisScale;
 
 /// Writes "nice" tick positions (steps of 1, 2 or 5 × 10^k) covering `[lo, hi]` into `out`,
 /// at most `max_ticks + 1` of them.
@@ -92,12 +94,12 @@ pub fn log_ticks(lo: f64, hi: f64, max_ticks: u8, out: &mut Vec<f64>) {
 /// is narrow next to its distance from zero (a 50 ps window at 4.2 ms needs 9), at most 15. A
 /// log axis, fewer than two ticks, or ticks not ascending get 3.
 #[must_use]
-pub fn tick_digits(ts: &[f64], log: bool) -> usize {
+pub fn tick_digits(ts: &[f64], scale: AxisScale) -> usize {
     let (Some(&a), Some(&b)) = (ts.first(), ts.get(1)) else {
         return 3;
     };
     let big = ts.iter().fold(0.0f64, |m, t| m.max(t.abs()));
-    if log || b <= a || big == 0.0 {
+    if scale == AxisScale::Log || b <= a || big == 0.0 {
         return 3;
     }
     debug_assert!(big >= b.abs(), "the largest magnitude bounds every tick");
@@ -112,26 +114,30 @@ mod tests {
 
     #[test]
     fn tick_digits_tell_ticks_apart() {
-        // (ticks, log, digits)
-        let cases: [(&[f64], bool, usize); 6] = [
-            (&[0.0, 5e-6, 10e-6], false, 3),
-            (&[-100.0, -80.0, -60.0], false, 3),
-            (&[1e3, 1e4], true, 3),
-            (&[1.0], false, 3),
-            (&[], false, 3),
-            (&[2.0, 1.0], false, 3), // descending
+        // (ticks, scale, digits)
+        let cases: [(&[f64], AxisScale, usize); 6] = [
+            (&[0.0, 5e-6, 10e-6], AxisScale::Linear, 3),
+            (&[-100.0, -80.0, -60.0], AxisScale::Linear, 3),
+            (&[1e3, 1e4], AxisScale::Log, 3),
+            (&[1.0], AxisScale::Linear, 3),
+            (&[], AxisScale::Linear, 3),
+            (&[2.0, 1.0], AxisScale::Linear, 3), // descending
         ];
-        for (ts, log, d) in cases {
-            assert_eq!(tick_digits(ts, log), d, "{ts:?}");
+        for (ts, scale, d) in cases {
+            assert_eq!(tick_digits(ts, scale), d, "{ts:?}");
         }
         let narrow = [4.2e-3, 4.2e-3 + 1e-11, 4.2e-3 + 2e-11];
-        let d = tick_digits(&narrow, false);
+        let d = tick_digits(&narrow, AxisScale::Linear);
         let s: Vec<String> = narrow
             .iter()
             .map(|&t| schemify_wave::format_si(t, d))
             .collect();
         assert!(s[0] != s[1] && s[1] != s[2], "{s:?}");
-        assert_eq!(tick_digits(&[1e15, 1e15 + 1.0], false), 15, "capped");
+        assert_eq!(
+            tick_digits(&[1e15, 1e15 + 1.0], AxisScale::Linear),
+            15,
+            "capped"
+        );
     }
 
     #[test]

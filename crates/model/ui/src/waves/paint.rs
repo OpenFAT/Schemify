@@ -11,7 +11,7 @@
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect as ERect, Shape, Stroke, pos2};
 
-use schemify_wave::{Axis, Cursor, PaneMode, Scale, TraceColumns, Waves};
+use schemify_wave::{Axis, AxisScale, Cursor, PaneMode, Scale, TraceColumns, Waves};
 
 use super::{
     Drag, Geometry, READOUT_HEADINGS, WaveUi, lane_name, legend_label, measure_label, plot_area,
@@ -75,7 +75,7 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
     let digital = props.mode == PaneMode::Digital;
     let mut ticks = Vec::new();
     axis_ticks(xa, (pr.w / 90.0).clamp(2.0, 12.0) as u8, &mut ticks);
-    let digits = graph::tick_digits(&ticks, xa.log);
+    let digits = graph::tick_digits(&ticks, xa.scale);
     for &t in &ticks {
         let x = sx.px(t).floor() + 0.5;
         if x < plot.left() - 0.5 || x > plot.right() + 0.5 {
@@ -92,7 +92,7 @@ pub fn paint_pane(p: &Painter, area: Rect, waves: &Waves, k: u8, active: bool, d
     }
     if !digital {
         axis_ticks(ya, (pr.h / 26.0).clamp(2.0, 10.0) as u8, &mut ticks);
-        let digits = graph::tick_digits(&ticks, ya.log);
+        let digits = graph::tick_digits(&ticks, ya.scale);
         for &t in &ticks {
             let y = sy.px(t).floor() + 0.5;
             if y < plot.top() - 0.5 || y > plot.bottom() + 0.5 {
@@ -232,10 +232,9 @@ fn text(p: &Painter, t: &str, at: Pos2, align: Align2, c: Color32) -> ERect {
 
 fn axis_ticks(a: Axis, n: u8, out: &mut Vec<f64>) {
     assert!(n >= 2, "an axis shows at least two ticks");
-    if a.log {
-        graph::log_ticks(a.lo, a.hi, n, out);
-    } else {
-        graph::ticks(a.lo, a.hi, n, out);
+    match a.scale {
+        AxisScale::Linear => graph::ticks(a.lo, a.hi, n, out),
+        AxisScale::Log => graph::log_ticks(a.lo, a.hi, n, out),
     }
 }
 

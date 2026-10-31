@@ -6,8 +6,8 @@ use std::ptr;
 
 use proptest::prelude::*;
 use schemify_wave::{
-    Applied, Axis, Cursor, MAX_PANES, RawPlot, Request, TraceColumns, VarKind, Variable, ViewError,
-    Waves, group_datasets,
+    Applied, Axis, AxisScale, Cursor, MAX_PANES, RawPlot, Request, TraceColumns, VarKind, Variable,
+    ViewError, Waves, group_datasets,
 };
 
 use crate::fixture;
@@ -28,7 +28,7 @@ fn rc() -> Waves {
 
 fn near(a: Axis, b: Axis) -> bool {
     let tol = 1e-9 * (b.hi - b.lo).abs().max(1e-300);
-    a.log == b.log && (a.lo - b.lo).abs() <= tol && (a.hi - b.hi).abs() <= tol
+    a.scale == b.scale && (a.lo - b.lo).abs() <= tol && (a.hi - b.hi).abs() <= tol
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn first_trace_autoscales_and_measurements_report_values() {
         Axis {
             lo: 0.0,
             hi: t[t.len() - 1],
-            log: false
+            scale: AxisScale::Linear
         }
     );
     let y = w.panes()[0];
@@ -83,13 +83,13 @@ fn complex_traces_show_magnitude_on_log_axes() {
     w.apply(&Request::LogY { pane: 0, on: true }).unwrap();
     let f = w.datasets()[0].scale();
     assert_eq!(
-        (w.x().lo, w.x().hi, w.x().log),
-        (f[0], f[f.len() - 1], true)
+        (w.x().lo, w.x().hi, w.x().scale),
+        (f[0], f[f.len() - 1], AxisScale::Log)
     );
     let y = w.panes()[0];
     // |H| peaks at Q/sqrt(1 - 1/4Q²) = 1.155 (Q = 1) and falls to 2.5e-6 at 100 MHz.
     assert!(
-        y.log && y.lo > 0.0 && y.lo < 2.5e-6 && y.hi > 1.155,
+        y.scale == AxisScale::Log && y.lo > 0.0 && y.lo < 2.5e-6 && y.hi > 1.155,
         "{y:?}"
     );
     let v = w.value_at(0, 1e3).unwrap();

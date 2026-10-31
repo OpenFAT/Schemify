@@ -6,7 +6,7 @@
 use schemify_ui::waves;
 use schemify_ui::waves::{DialogFx, Drag};
 use schemify_ui::{Button, InputEvent, Kind, Prop, StyleProp};
-use schemify_wave::{Cursor, PALETTE, Request};
+use schemify_wave::{AxisScale, Cursor, PALETTE, Request};
 
 use crate::Win;
 
@@ -55,7 +55,7 @@ fn commands_drive_the_viewer() {
     assert_eq!(w.waves.cursors()[0], None);
     let reqs = w.command("waves.log_x", "", "", 0);
     w.apply(reqs);
-    assert!(w.waves.x().log && w.waves.x().lo > 0.0);
+    assert!(w.waves.x().scale == AxisScale::Log && w.waves.x().lo > 0.0);
     // The Log X box follows the table.
     let id = w.strings.find("waves.log_x").unwrap();
     let n = w.tables.nodes.find(id).unwrap();

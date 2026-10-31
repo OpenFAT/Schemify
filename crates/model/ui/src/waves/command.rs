@@ -8,7 +8,7 @@
 
 use schemify_wave::calc;
 use schemify_wave::{
-    Applied, Cursor, LineStyle, PALETTE, PaneMode, Radix, Request, ViewError, Waves,
+    Applied, AxisScale, Cursor, LineStyle, PALETTE, PaneMode, Radix, Request, ViewError, Waves,
 };
 
 use super::dialog;
@@ -253,14 +253,14 @@ impl WaveUi {
             "waves.remove_pane" => out.push(Request::RemovePane { pane: active }),
             "waves.autoscale" => out.push(Request::Autoscale),
             "waves.log_x" => {
-                let on = !waves.x_of(usize::from(active)).log;
+                let on = waves.x_of(usize::from(active)).scale == AxisScale::Linear;
                 out.push(Request::LogX { pane: active, on });
             }
             "waves.log_y" => {
                 let on = waves
                     .panes()
                     .get(usize::from(active))
-                    .is_some_and(|p| !p.log);
+                    .is_some_and(|p| p.scale == AxisScale::Linear);
                 out.push(Request::LogY { pane: active, on });
             }
             "waves.cursor_a" | "waves.cursor_b" => {

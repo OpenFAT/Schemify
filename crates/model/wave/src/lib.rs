@@ -46,7 +46,7 @@ mod si;
 mod trace;
 mod waves;
 
-pub use axis::{Axis, Scale};
+pub use axis::{Axis, AxisScale, Scale};
 pub use decimate::decimate;
 pub use digital::{Run, bin_counts, logic, logic_runs};
 pub use pane::{
