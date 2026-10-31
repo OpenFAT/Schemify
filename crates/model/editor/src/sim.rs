@@ -61,7 +61,7 @@ mod table;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use schemify_doc::DocHandle;
+use schemify_doc::{Assignment, DocHandle};
 use schemify_elab::Dialect;
 use schemify_plugin::{PluginId, RunRequest};
 use schemify_run::{Jobs, OptRun, Plan, Results, Tools};
@@ -122,8 +122,8 @@ pub struct Best {
     pub bench: DocHandle,
     /// Transaction label.
     pub label: String,
-    /// `(var, canonical number text)` per varied var.
-    pub values: Vec<(String, String)>,
+    /// Per varied var, its canonical number text.
+    pub values: Vec<Assignment>,
 }
 
 /// What one [`Sim::poll`] produced for the rest of the frame.

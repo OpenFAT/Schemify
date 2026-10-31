@@ -17,7 +17,7 @@
 //! - `pub fn violation_line(&Names, &Violation) -> String`
 //! - `pub fn dialect_of(&str) -> Option<Dialect>`, `pub fn dialect_word(Dialect) -> &str`
 //! - `pub fn netlist_file(&Path, &str, Dialect) -> PathBuf`
-//! - `pub fn env_pairs() -> Vec<(String, String)>`
+//! - `pub fn env_pairs() -> Vec<Assignment>`
 //! - `pub fn open_file(&Path, u64) -> Result<Opened, OpenError>`
 //! - `pub fn bench_name(&Project, impl Fn(u8) -> Option<&Path>, &Path) -> Option<String>`
 //! - re-exported from `sim`: `SIMULATORS`, `sim_dialect`, `pin`, `run_dialect`, `tools`
@@ -35,7 +35,7 @@ pub use sim::{SIMULATORS, pin, run_dialect, sim_dialect};
 
 use std::path::{Path, PathBuf};
 
-use schemify_doc::{DocHandle, Project};
+use schemify_doc::{Assignment, DocHandle, Project};
 use schemify_elab::{Dialect, Elab, Funcs, Name, Names, Request, Violation};
 
 use crate::libs;
@@ -195,11 +195,13 @@ pub fn netlist_file(root: &Path, stem: &str, d: Dialect) -> PathBuf {
 /// (run spec §4), sorted by name so the hash does not depend on the OS's listing order.
 /// Empty on the web.
 #[must_use]
-pub fn env_pairs() -> Vec<(String, String)> {
+pub fn env_pairs() -> Vec<Assignment> {
     #[cfg(not(target_arch = "wasm32"))]
-    let mut v: Vec<(String, String)> = std::env::vars().collect();
+    let mut v: Vec<Assignment> = std::env::vars()
+        .map(|(name, value)| Assignment { name, value })
+        .collect();
     #[cfg(target_arch = "wasm32")]
-    let mut v: Vec<(String, String)> = Vec::new();
+    let mut v: Vec<Assignment> = Vec::new();
     v.sort_unstable();
     v
 }

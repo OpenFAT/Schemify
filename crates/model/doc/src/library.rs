@@ -33,7 +33,7 @@ use crate::document::Document;
 use crate::record::RecordBuf;
 use crate::sha256::{self, Digest, Sha256};
 use crate::strings::{Strings, Sym};
-use crate::{Code, Diag};
+use crate::{Assignment, Code, Diag};
 use schemify_format::{Document as FormatDoc, FileKind, RecordKind};
 
 /// The reserved library name of technology classes (pdk spec §5).
@@ -173,7 +173,7 @@ pub(crate) struct Manifest {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ManifestRest {
     pub(crate) plugins: Vec<RecordBuf>,
-    pub(crate) sets: Vec<(String, String)>,
+    pub(crate) sets: Vec<Assignment>,
 }
 
 /// Highest rank an indexed cell keeps: the symbol graphics (rank 2), so an editor draws
@@ -388,7 +388,10 @@ pub(crate) fn parse_manifest(
                 libs.push(f[0], source, subdir);
             }
             RecordKind::Plugin => rest.plugins.push(RecordBuf::from_format(&d, r)),
-            RecordKind::Set => rest.sets.push((f[0].to_owned(), f[1].to_owned())),
+            RecordKind::Set => rest.sets.push(Assignment {
+                name: f[0].to_owned(),
+                value: f[1].to_owned(),
+            }),
             RecordKind::Header
             | RecordKind::Pin
             | RecordKind::Param

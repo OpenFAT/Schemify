@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use schemify_canvas::CanvasPrims;
-use schemify_doc::{DocHandle, Document, Op, TableId, Target as DocTarget};
+use schemify_doc::{Assignment, DocHandle, Document, Op, TableId, Target as DocTarget};
 use schemify_elab::{Dialect, Request};
 use schemify_expr::Value;
 use schemify_format::RecordKind;
@@ -44,8 +44,8 @@ pub(super) struct Duplicates {
 }
 
 /// Borrows the session's `${NAME}` environment pairs in the shape elab and run take.
-pub(super) fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
-    let refs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+pub(super) fn env_refs(env: &[Assignment]) -> Vec<Assignment<&str>> {
+    let refs: Vec<Assignment<&str>> = env.iter().map(Assignment::as_deref).collect();
     assert_eq!(refs.len(), env.len());
     refs
 }

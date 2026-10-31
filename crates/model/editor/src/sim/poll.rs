@@ -13,7 +13,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use schemify_doc::{DocHandle, Project};
+use schemify_doc::{Assignment, DocHandle, Project};
 use schemify_elab::Funcs;
 use schemify_run::{Blocked, Plan, Runner, RunnerConfig, State};
 
@@ -33,7 +33,7 @@ impl Sim {
     pub fn poll<F: Funcs>(
         &mut self,
         project: &Project,
-        env: &[(&str, &str)],
+        env: &[Assignment<&str>],
         funcs: &mut F,
     ) -> Polled {
         assert!(self.runs.len() <= RUNS_MAX);
@@ -99,7 +99,10 @@ impl Sim {
                         .map(|(p, &v)| {
                             let mut t = String::new();
                             schemify_expr::write_num(&mut t, v);
-                            (p.name.clone(), t)
+                            Assignment {
+                                name: p.name.clone(),
+                                value: t,
+                            }
                         })
                         .collect();
                     out.best.push(Best {
@@ -202,7 +205,7 @@ impl Sim {
     pub fn check_stale<F: Funcs>(
         &mut self,
         session: &mut Session,
-        env: &[(&str, &str)],
+        env: &[Assignment<&str>],
         funcs: &mut F,
         generation: u32,
     ) {

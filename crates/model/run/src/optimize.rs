@@ -25,6 +25,7 @@ use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::nelder_mead::{NelderMead, UNEVALUATED};
 use crate::plan::{self, Goal, Plan, PlanError};
 use crate::results::Results;
+use schemify_doc::Assignment;
 use std::error::Error;
 use std::fmt;
 use std::ops::Range;
@@ -483,12 +484,15 @@ impl OptRun {
                 t
             })
             .collect();
-        let assigns: Vec<(&str, &str)> = self
+        let assigns: Vec<Assignment<&str>> = self
             .opt
             .params()
             .iter()
             .zip(&texts)
-            .map(|(p, t)| (p.name.as_str(), t.as_str()))
+            .map(|(p, t)| Assignment {
+                name: p.name.as_str(),
+                value: t.as_str(),
+            })
             .collect();
         let start = jobs.len();
         for point in &self.points {

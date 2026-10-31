@@ -11,7 +11,7 @@
 use crate::jobs::{Jobs, NO_SAMPLE, State};
 use crate::results::{ErrorRow, JOB_LEVEL, Pass, Results};
 use schemify_abi::text;
-use schemify_doc::Digest;
+use schemify_doc::{Assignment, Digest};
 
 /// One job record being read: complete when the next record starts.
 struct JobRecord {
@@ -20,7 +20,7 @@ struct JobRecord {
     corner: Option<String>,
     sample: u32,
     seed: u32,
-    sets: Vec<(String, String)>,
+    sets: Vec<Assignment>,
     /// `var`, `value`, `pass` and `error` lines, applied once the job has a row.
     fields: Vec<FieldLine>,
 }
@@ -88,8 +88,8 @@ pub fn write_results(jobs: &Jobs, r: &Results) -> String {
         if let Some(seed) = jobs.seed(j) {
             attr(&mut out, "seed", &[&seed.to_string()]);
         }
-        for (v, x) in jobs.assignments(j) {
-            attr(&mut out, "set", &[v, x]);
+        for a in jobs.assignments(j) {
+            attr(&mut out, "set", &[a.name, a.value]);
         }
         for (v, n) in r.vars().iter().enumerate() {
             if let Some(x) = r.var_value(j, v as u16) {
@@ -247,7 +247,10 @@ impl JobRecord {
                 Ok(s) if s != 0 => self.seed = s,
                 _ => return Err(bad(n, "bad seed")),
             },
-            ("set", 3) => self.sets.push((f[1].clone(), f[2].clone())),
+            ("set", 3) => self.sets.push(Assignment {
+                name: f[1].clone(),
+                value: f[2].clone(),
+            }),
             _ => self.fields.push(FieldLine { line: n, values: f }),
         }
         Ok(())
@@ -256,11 +259,7 @@ impl JobRecord {
     /// Appends the job to `jobs` and its values, verdicts and errors to `r`.
     fn flush(self, jobs: &mut Jobs, r: &mut Results) -> Result<(), String> {
         assert_eq!(r.rows(), jobs.len(), "the previous job flushed its row");
-        let sets: Vec<(&str, &str)> = self
-            .sets
-            .iter()
-            .map(|(a, b)| (a.as_str(), b.as_str()))
-            .collect();
+        let sets: Vec<Assignment<&str>> = self.sets.iter().map(Assignment::as_deref).collect();
         let j = jobs
             .push_row(
                 self.config.as_deref(),

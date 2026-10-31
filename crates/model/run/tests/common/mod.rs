@@ -5,7 +5,7 @@
 //! `run_env`, `run_dialect`, `have_ngspice`, `have`, `first_of`.
 #![allow(dead_code)] // each test binary uses a subset
 
-use schemify_doc::{Digest, DocHandle, Project};
+use schemify_doc::{Assignment, Digest, DocHandle, Project};
 use schemify_elab::Dialect;
 use schemify_run::{Jobs, Plan, Results, Runner, RunnerConfig, SimCommand};
 use std::env;
@@ -156,7 +156,7 @@ pub fn run_env(
     top: DocHandle,
     plan: &Plan,
     jobs: Jobs,
-    env: &[(&str, &str)],
+    env: &[Assignment<&str>],
     cfg: impl FnOnce(&Digest) -> RunnerConfig,
 ) -> (Jobs, Results, Runner) {
     run_dialect(p, top, plan, jobs, env, Dialect::Ngspice, cfg)
@@ -168,7 +168,7 @@ pub fn run_dialect(
     top: DocHandle,
     plan: &Plan,
     mut jobs: Jobs,
-    env: &[(&str, &str)],
+    env: &[Assignment<&str>],
     dialect: Dialect,
     cfg: impl FnOnce(&Digest) -> RunnerConfig,
 ) -> (Jobs, Results, Runner) {

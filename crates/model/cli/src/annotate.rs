@@ -28,9 +28,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use schemify_doc::{
-    DocHandle, Document, Edit, EditRequest, FileKind, LibSource, Loc, Mode, Op, Outcome, Project,
-    RecordBuf, RecordKind, Records, Strings, TableId, Target, Transaction, apply_edits,
-    ops_to_text,
+    Assignment, DocHandle, Document, Edit, EditRequest, FileKind, LibSource, Loc, Mode, Op,
+    Outcome, Project, RecordBuf, RecordKind, Records, Strings, TableId, Target, Transaction,
+    apply_edits, ops_to_text,
 };
 use schemify_elab::{Dialect, Request, elaborate, impl_ports, no_funcs};
 
@@ -162,7 +162,7 @@ fn annotate(a: &Args) -> Result<(), Fail> {
     let scanned = netlist::scan(&text).map_err(refuse)?;
 
     let env = env_pairs();
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let env: Vec<Assignment<&str>> = env.iter().map(Assignment::as_deref).collect();
     let cell = elaborate(&o.project, o.top, &request(None, None, &env), &mut no_funcs);
     let row = cell.cells[0].row as usize;
     assert!(
@@ -283,7 +283,7 @@ fn annotate(a: &Args) -> Result<(), Fail> {
 fn request<'a>(
     config: Option<&'a str>,
     corner: Option<&'a str>,
-    env: &'a [(&'a str, &'a str)],
+    env: &'a [Assignment<&'a str>],
 ) -> Request<'a> {
     Request {
         config,

@@ -10,7 +10,7 @@ use std::path::Path;
 use schemify_cli::spines::{self, OpenError, Opened};
 use schemify_cli::{libs, platform, rpc, tree};
 use schemify_config::Config;
-use schemify_doc::FileKind;
+use schemify_doc::{Assignment, FileKind};
 use schemify_elab::{self as elab, Dialect, Elab, Request};
 
 use crate::{DESIGN_ERROR, Exit, OK, USAGE_ERROR, usage};
@@ -24,7 +24,7 @@ struct DesignArgs {
     corners: Vec<String>,
     sweeps: Vec<String>,
     montecarlo: Option<String>,
-    sets: Vec<(String, String)>,
+    sets: Vec<Assignment>,
     out: Option<String>,
     allow_errors: bool,
     jobs: Option<u16>,
@@ -252,8 +252,11 @@ fn design_args(args: &[String]) -> Option<DesignArgs> {
             "--sweep" => a.sweeps.push(it.next()?.clone()),
             "--mc" => a.montecarlo = Some(it.next()?.clone()),
             "--set" => {
-                let (k, v) = it.next()?.split_once('=')?;
-                a.sets.push((k.to_owned(), v.to_owned()));
+                let (name, value) = it.next()?.split_once('=')?;
+                a.sets.push(Assignment {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                });
             }
             "-o" => a.out = Some(it.next()?.clone()),
             "--allow-errors" => a.allow_errors = true,
@@ -329,12 +332,9 @@ fn report(e: &Elab) -> bool {
     errors
 }
 
-/// Borrows owned `(key, value)` pairs as the `&str` pairs the elab and run requests take.
-fn pairs(owned: &[(String, String)]) -> Vec<(&str, &str)> {
-    owned
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect()
+/// Borrows owned assignments as the `&str` ones the elab and run requests take.
+fn pairs(owned: &[Assignment]) -> Vec<Assignment<&str>> {
+    owned.iter().map(Assignment::as_deref).collect()
 }
 
 /// Borrows owned strings as the `&str` lists the run selection takes.

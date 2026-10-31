@@ -2,6 +2,7 @@
 //! cycles, gating waivers, valid rules and D20 cached values.
 
 use crate::common;
+use schemify_doc::Assignment;
 use schemify_elab::{CellState, CornerLine, Dialect, Request, Target, Val, no_funcs};
 use schemify_expr::Value;
 
@@ -17,7 +18,7 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
         ("amp.shcomp", amp),
         ("tb.shbench", bench),
     ]);
-    let run = |corner: Option<&str>, ovr: &[(&str, &str)], d: Dialect| {
+    let run = |corner: Option<&str>, ovr: &[Assignment<&str>], d: Dialect| {
         let req = Request {
             config: None,
             corner,
@@ -67,7 +68,8 @@ fn params_evaluate_in_parent_then_child_scope_with_corner_and_overrides() {
     let blocks: Vec<&str> = e.bench.code_name.iter().map(|n| e.names.get(*n)).collect();
     assert_eq!(blocks, ["a1", "b2"]);
     // Default corner from the header; overrides win over the corner's set, in order.
-    let e = run(None, &[("vdd", "2"), ("vdd", "2.5")], Dialect::Ngspice);
+    let vdd = |value| Assignment { name: "vdd", value };
+    let e = run(None, &[vdd("2"), vdd("2.5")], Dialect::Ngspice);
     let Target::Def(d) = e.insts.target[super::row(&e, e.top, "X1")] else {
         panic!()
     };

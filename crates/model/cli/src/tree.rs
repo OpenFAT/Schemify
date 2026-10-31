@@ -29,7 +29,7 @@
 //! - `pub struct Node { depth, path, cell, imp, lang, veriloga, fundamental, elaborated,
 //!   devices, va, end }`
 //! - `pub struct Walk`: `Walk::new`, `Walk::bench`, `Walk::cell`
-//! - `pub fn request(Option<&str>, &[(&str, &str)]) -> Request`
+//! - `pub fn request(Option<&str>, &[Assignment<&str>]) -> Request`
 //! - `pub fn count_va(&[Node]) -> u32`
 //! - `pub fn text(&[Node], &mut String)`
 //! - `pub fn json(Option<&str>, &[Node]) -> Json`
@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use schemify_doc::FileKind;
+use schemify_doc::{Assignment, FileKind};
 use schemify_elab::{DEPTH_MAX, Dialect, Elab, Ignore, Request, Target, no_funcs};
 
 use crate::rpc::Json;
@@ -98,7 +98,7 @@ const _: () = assert!(NODES_MAX <= u32::MAX as usize);
 /// The request every tree elaboration uses: `check`'s dialect (ngspice), which has a
 /// default template for every core lang, so no node drops out for want of a format.
 #[must_use]
-pub fn request<'a>(config: Option<&'a str>, env: &'a [(&'a str, &'a str)]) -> Request<'a> {
+pub fn request<'a>(config: Option<&'a str>, env: &'a [Assignment<&'a str>]) -> Request<'a> {
     Request {
         config,
         corner: None,
@@ -111,7 +111,7 @@ pub fn request<'a>(config: Option<&'a str>, env: &'a [(&'a str, &'a str)]) -> Re
 impl<'a> Walk<'a> {
     /// Starts a walk whose own elaborations expand `${NAME}` from `env` (spec §7.1).
     #[must_use]
-    pub fn new(env: &'a [(&'a str, &'a str)]) -> Walk<'a> {
+    pub fn new(env: &'a [Assignment<&'a str>]) -> Walk<'a> {
         Walk {
             alone: request(None, env),
             elabs: HashMap::new(),

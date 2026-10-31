@@ -125,8 +125,8 @@ fn base_expr<'text>(
     }
     let set = corner
         .and_then(|c| plan.corner(c))
-        .and_then(|c| c.sets.iter().rev().find(|(v, _)| v == var));
-    set.map(|(_, x)| x.as_str())
+        .and_then(|c| c.sets.iter().rev().find(|a| a.name == var));
+    set.map(|a| a.value.as_str())
         .or_else(|| plan.var(var).map(|v| v.expr.as_str()))
 }
 

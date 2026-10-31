@@ -58,7 +58,7 @@
 //! # Contents
 //!
 //! The re-exports below, plus `pub enum Code` (`meaning`, `is_warning`; crate:
-//! `from_format`) and `pub struct Diag`.
+//! `from_format`), `pub struct Diag` and `pub struct Assignment` (`as_deref`).
 
 #![forbid(unsafe_code)]
 
@@ -150,6 +150,29 @@ pub struct Diag {
     pub line: u32,
     /// Which rule, beyond the code's meaning.
     pub detail: &'static str,
+}
+
+/// One `name = value` pair: a project `set` entry, an environment variable, a corner's
+/// `set` line or a job's var assignment (elab applies them in order, a later one of the
+/// same name wins). `S` is `String` in owned tables and `&str` in the slices handed to
+/// elab and the run tables, which borrow from the caller and allocate nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Assignment<S = String> {
+    /// Var or variable name.
+    pub name: S,
+    /// Value or expression text.
+    pub value: S,
+}
+
+impl Assignment {
+    /// Returns the pair borrowed from `self`.
+    #[must_use]
+    pub fn as_deref(&self) -> Assignment<&str> {
+        Assignment {
+            name: &self.name,
+            value: &self.value,
+        }
+    }
 }
 
 impl Code {
