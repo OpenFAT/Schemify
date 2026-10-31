@@ -11,17 +11,20 @@
 # Reproducible: the CI `guests` job rebuilds every module and fails when a committed one
 # differs. The bytes depend only on the sources, the lockfile and the toolchain: build in
 # `nix develop` (the rustc and wasm-ld flake.lock pins; CI does) or commit the modules of the
-# CI `guests` artifact. Host paths are remapped out of the modules (panic locations of path
-# and registry crates would otherwise name this checkout).
+# CI `guests` artifact. The build runs in one fixed directory, $stage, holding a copy of the
+# checkout's tracked and unignored files: cargo hashes the absolute path of crates outside
+# this workspace's root (the abi and the plugin test guests) into their symbols, so a build in
+# another checkout's directory gives other bytes. $stage is remapped out of the modules
+# (panic locations name /schemify), as is the registry.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"
-# Always ui/target: an inherited CARGO_TARGET_DIR outside the repository escapes the
-# path remap below and changes the modules' bytes (CI builds with none).
+# Always $stage/ui/target: a target directory elsewhere escapes the remap below.
 unset CARGO_TARGET_DIR
-fixtures="$here/../crates/plugins/plugin/tests/fixtures"
-assets="$here/../crates/model/editor/assets"
+fixtures="$root/crates/plugins/plugin/tests/fixtures"
+assets="$root/crates/model/editor/assets"
+stage=/tmp/schemify-guests
 host="$(rustc -vV | sed -n 's/^host: //p')"
 pinned="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$here/Cargo.toml")"
 if ! rustc -V | grep -q "^rustc $pinned\(\.0\)\? "; then
@@ -29,7 +32,7 @@ if ! rustc -V | grep -q "^rustc $pinned\(\.0\)\? "; then
     "not match the committed ones byte for byte" >&2
 fi
 # Unit separator between flags: paths may contain spaces.
-export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$root=/schemify"$'\x1f'"--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$stage=/schemify"$'\x1f'"--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo"
 
 if [[ ! -x "$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld" ]] \
    && [[ -z "${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER:-}" ]]; then
@@ -40,13 +43,29 @@ if [[ ! -x "$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld" ]] \
   fi
 fi
 
+# One build at a time owns $stage. flock is util-linux; without it (macOS) builds are not
+# serialized.
+if command -v flock >/dev/null; then
+  exec 9>"$stage.lock"
+  flock 9
+fi
+# Fresh sources, kept target: everything but ui/target goes, then the copy lands with new
+# mtimes, so cargo rebuilds every path crate from these sources and keeps registry crates.
+mkdir -p "$stage/ui"
+find "$stage" -mindepth 1 -maxdepth 1 ! -name ui -exec rm -rf {} +
+find "$stage/ui" -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
+git -C "$root" ls-files -z --cached --others --exclude-standard \
+  | while IFS= read -r -d '' f; do [[ -e "$root/$f" ]] && printf '%s\0' "$f"; done \
+  | tar -C "$root" --null -T - -cf - \
+  | tar -C "$stage" -xmf -
+
 # Six jobs: the machine's agents share its RAM (docs/dev/contributing.md).
 CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}" \
-  cargo build --manifest-path "$here/Cargo.toml" --release --target wasm32-unknown-unknown
+  cargo build --manifest-path "$stage/ui/Cargo.toml" --release --target wasm32-unknown-unknown
 
 # Copies module $1 into directory $2, enforcing the size limit $3 (KB, default 200).
 install_wasm() {
-  local wasm="$here/target/wasm32-unknown-unknown/release/$1.wasm"
+  local wasm="$stage/ui/target/wasm32-unknown-unknown/release/$1.wasm"
   local limit="${3:-200}"
   local size
   size=$(wc -c <"$wasm")
