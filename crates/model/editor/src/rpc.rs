@@ -42,7 +42,7 @@ pub fn dispatch(ed: &mut Editor, method: &str, params: &Json) -> Dispatched {
     }
     let args: Option<Vec<&str>> = match params {
         Json::Arr(items) => items.iter().map(Json::as_str).collect(),
-        _ => None,
+        Json::Null | Json::Bool(_) | Json::Num(_) | Json::Str(_) | Json::Obj(_) => None,
     };
     let Some(args) = args else {
         return Dispatched::Ready(Err((INVALID_PARAMS, "params: an array of strings".into())));

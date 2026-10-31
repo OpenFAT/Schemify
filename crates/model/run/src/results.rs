@@ -433,7 +433,13 @@ impl Results {
                         code: Code::X004,
                         why: format!("op(): {why}"),
                     }),
-                d => Err(OpMissing {
+                d @ (Dialect::Xyce
+                | Dialect::Cdl
+                | Dialect::Spectre
+                | Dialect::Verilog
+                | Dialect::Espice
+                | Dialect::Hspice
+                | Dialect::Ltspice) => Err(OpMissing {
                     code: Code::X006,
                     why: format!(
                         "op() needs device operating-point data, which {} does not provide",
@@ -568,7 +574,9 @@ fn eval_scalar<'value>(
     {
         Value::Num(x) => x,
         Value::Int(i) => i as f64,
-        v => return Err(format!("is not a number: {v:?}")),
+        v @ (Value::Bool(_) | Value::Cnum { .. } | Value::Str(_)) => {
+            return Err(format!("is not a number: {v:?}"));
+        }
     };
     assert!(
         x.is_finite(),

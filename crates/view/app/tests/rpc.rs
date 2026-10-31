@@ -45,7 +45,7 @@ fn every_registered_command_is_reachable() {
     ));
     let err = |r: Dispatched| match r {
         Dispatched::Ready(Err(e)) => Some(e.0),
-        _ => None,
+        Dispatched::Queued(_) | Dispatched::Ready(_) => None,
     };
     assert_eq!(
         err(rpc::dispatch(&mut s.ed, "no.such_command", &none)),

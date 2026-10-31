@@ -62,7 +62,27 @@ pub(super) fn patch_doc_groups(
         let snap = match table {
             T::Instances => Table::Instances,
             T::Wires => Table::Wires,
-            _ => Table::Labels,
+            T::Pins
+            | T::Params
+            | T::Impls
+            | T::Graphics
+            | T::Labels
+            | T::Ports
+            | T::Noconns
+            | T::Texts
+            | T::Shapes
+            | T::Constraints
+            | T::Waivers
+            | T::DocBlocks
+            | T::Bodies
+            | T::Corners
+            | T::Configs
+            | T::Sweeps
+            | T::Montecarlos
+            | T::Optimizes
+            | T::Outputs
+            | T::Specs
+            | T::Codes => Table::Labels,
         };
         let (old, new) = (s.rows(snap) as usize, doc.table_len(table));
         if rows.is_empty() && old == new {
@@ -84,7 +104,19 @@ pub(super) fn patch_doc_groups(
         let (net, shadow) = match snap {
             Table::Wires => (col::wires::NET, &mut f.wire_net),
             Table::Labels => (col::labels::NET, &mut f.label_net),
-            _ => continue,
+            Table::Docs
+            | Table::Instances
+            | Table::Nets
+            | Table::InstParams
+            | Table::Paths
+            | Table::NameMap
+            | Table::Violations
+            | Table::DocVars
+            | Table::BenchSpecs
+            | Table::BenchOutputs
+            | Table::Results
+            | Table::Selection
+            | Table::UiNodes => continue,
         };
         let pad = vec![u32::MAX; new - kept];
         s.splice::<u32>(snap, net, kept..old, &pad);
@@ -262,7 +294,19 @@ fn fill_doc_table(
             s.splice::<i32>(snap, col::wires::X2, at.clone(), &t.x2[rows.clone()]);
             s.splice::<i32>(snap, col::wires::Y2, at, &t.y2[rows]);
         }
-        _ => {
+        Table::Docs
+        | Table::Labels
+        | Table::Nets
+        | Table::InstParams
+        | Table::Paths
+        | Table::NameMap
+        | Table::Violations
+        | Table::DocVars
+        | Table::BenchSpecs
+        | Table::BenchOutputs
+        | Table::Results
+        | Table::Selection
+        | Table::UiNodes => {
             let t = doc.labels();
             s.splice::<u32>(snap, col::labels::DOC, at.clone(), &vec![id; n]);
             let raw: Vec<u32> = t.id[rows.clone()].iter().map(|i| i.0).collect();

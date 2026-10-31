@@ -389,7 +389,42 @@ pub(crate) fn parse_manifest(
             }
             RecordKind::Plugin => rest.plugins.push(RecordBuf::from_format(&d, r)),
             RecordKind::Set => rest.sets.push((f[0].to_owned(), f[1].to_owned())),
-            _ => {}
+            RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Line
+            | RecordKind::Rect
+            | RecordKind::Arc
+            | RecordKind::Circle
+            | RecordKind::Poly
+            | RecordKind::Stext
+            | RecordKind::Inst
+            | RecordKind::Wire
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => {}
         }
     }
     if !core_declared {

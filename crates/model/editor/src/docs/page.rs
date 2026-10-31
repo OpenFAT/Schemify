@@ -143,7 +143,43 @@ pub fn contribute(
                 }
                 v += 1;
             }
-            _ => {}
+            RecordKind::Header
+            | RecordKind::Pin
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Line
+            | RecordKind::Rect
+            | RecordKind::Arc
+            | RecordKind::Circle
+            | RecordKind::Poly
+            | RecordKind::Stext
+            | RecordKind::Inst
+            | RecordKind::Wire
+            | RecordKind::Label
+            | RecordKind::Port
+            | RecordKind::Noconn
+            | RecordKind::Text
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => {}
         }
     }
     assert!(v <= n, "vars are a subset of the blocks");
@@ -307,7 +343,7 @@ fn var_row(
     let (text, ok) = match val {
         Val::Err(e) => (format!("{:?} {}", e.code, e.message), false),
         Val::Upstream => ("(an input has an error)".to_owned(), false),
-        _ => {
+        Val::Int(_) | Val::Num(_) | Val::Bool(_) | Val::Cnum(..) | Val::Str(_) => {
             let shown = super::value_text(val, unit.unwrap_or(""));
             match bound_status(val, min, max, cell) {
                 Some(why) => (format!("= {shown}  ({why})"), false),
@@ -372,6 +408,6 @@ fn eval_in_cell(src: &str, cell: &CellState) -> Option<f64> {
     match prog.eval(&inputs, &mut Scratch::default()).ok()? {
         Value::Num(x) => Some(x),
         Value::Int(i) => Some(i as f64),
-        _ => None,
+        Value::Bool(_) | Value::Cnum { .. } | Value::Str(_) => None,
     }
 }

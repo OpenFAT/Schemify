@@ -100,7 +100,43 @@ impl Editor {
                 let what = match rec.kind {
                     RecordKind::Label => "net",
                     RecordKind::Port => "pin",
-                    _ => "text",
+                    RecordKind::Header
+                    | RecordKind::Pin
+                    | RecordKind::Param
+                    | RecordKind::Impl
+                    | RecordKind::Line
+                    | RecordKind::Rect
+                    | RecordKind::Arc
+                    | RecordKind::Circle
+                    | RecordKind::Poly
+                    | RecordKind::Stext
+                    | RecordKind::Inst
+                    | RecordKind::Wire
+                    | RecordKind::Noconn
+                    | RecordKind::Text
+                    | RecordKind::Shape
+                    | RecordKind::Constraint
+                    | RecordKind::Waive
+                    | RecordKind::Prose
+                    | RecordKind::Var
+                    | RecordKind::Body
+                    | RecordKind::Corner
+                    | RecordKind::Config
+                    | RecordKind::Sweep
+                    | RecordKind::Montecarlo
+                    | RecordKind::Optimize
+                    | RecordKind::Output
+                    | RecordKind::Spec
+                    | RecordKind::Code
+                    | RecordKind::Lib
+                    | RecordKind::Plugin
+                    | RecordKind::Set
+                    | RecordKind::Locked
+                    | RecordKind::Key
+                    | RecordKind::Sim
+                    | RecordKind::PluginOrder
+                    | RecordKind::Class
+                    | RecordKind::Unknown => "text",
                 };
                 title = format!("{} {}", rec.kind.word(), rec.fields[4]);
                 fields.push(field(what, what, &rec.fields[4], true));
@@ -119,7 +155,39 @@ impl Editor {
                 fields.push(field("name", "name", &rec.fields[0], true));
                 fields.push(field("dir", "dir (in/out/inout)", &rec.fields[1], true));
             }
-            _ => {
+            RecordKind::Header
+            | RecordKind::Param
+            | RecordKind::Impl
+            | RecordKind::Line
+            | RecordKind::Rect
+            | RecordKind::Arc
+            | RecordKind::Circle
+            | RecordKind::Poly
+            | RecordKind::Stext
+            | RecordKind::Noconn
+            | RecordKind::Shape
+            | RecordKind::Constraint
+            | RecordKind::Waive
+            | RecordKind::Prose
+            | RecordKind::Var
+            | RecordKind::Body
+            | RecordKind::Corner
+            | RecordKind::Config
+            | RecordKind::Sweep
+            | RecordKind::Montecarlo
+            | RecordKind::Optimize
+            | RecordKind::Output
+            | RecordKind::Spec
+            | RecordKind::Code
+            | RecordKind::Lib
+            | RecordKind::Plugin
+            | RecordKind::Set
+            | RecordKind::Locked
+            | RecordKind::Key
+            | RecordKind::Sim
+            | RecordKind::PluginOrder
+            | RecordKind::Class
+            | RecordKind::Unknown => {
                 self.session
                     .say(format!("{}: no editable properties yet", rec.kind.word()));
                 return;
@@ -172,7 +240,9 @@ impl Editor {
         let rec = doc.record(loc);
         let tkey = match rec.kind.key() {
             KeyRule::Position => loc.row.to_string(),
-            _ => rec.fields[0].clone(),
+            KeyRule::Header | KeyRule::Id | KeyRule::Name | KeyRule::TypeName => {
+                rec.fields[0].clone()
+            }
         };
         let target = Target::new(rec.kind, &tkey);
         let mut ops = Vec::new();

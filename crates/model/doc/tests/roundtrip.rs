@@ -172,7 +172,41 @@ fn gen_file(rng: &mut Mix, kind: FileKind) -> String {
                 RecordKind::Arc | RecordKind::Circle => 3,
                 RecordKind::Stext => 2,
                 RecordKind::Poly => 4 + 2 * rng.below(3) as usize,
-                _ => 4,
+                RecordKind::Header
+                | RecordKind::Pin
+                | RecordKind::Param
+                | RecordKind::Impl
+                | RecordKind::Line
+                | RecordKind::Rect
+                | RecordKind::Inst
+                | RecordKind::Wire
+                | RecordKind::Label
+                | RecordKind::Port
+                | RecordKind::Noconn
+                | RecordKind::Text
+                | RecordKind::Shape
+                | RecordKind::Constraint
+                | RecordKind::Waive
+                | RecordKind::Prose
+                | RecordKind::Var
+                | RecordKind::Body
+                | RecordKind::Corner
+                | RecordKind::Config
+                | RecordKind::Sweep
+                | RecordKind::Montecarlo
+                | RecordKind::Optimize
+                | RecordKind::Output
+                | RecordKind::Spec
+                | RecordKind::Code
+                | RecordKind::Lib
+                | RecordKind::Plugin
+                | RecordKind::Set
+                | RecordKind::Locked
+                | RecordKind::Key
+                | RecordKind::Sim
+                | RecordKind::PluginOrder
+                | RecordKind::Class
+                | RecordKind::Unknown => 4,
             };
             for _ in 0..n {
                 d.push_field(&c(rng));
@@ -187,7 +221,43 @@ fn gen_file(rng: &mut Mix, kind: FileKind) -> String {
                     d.push_field(text(rng));
                     d.push_attr("hcenter");
                 }
-                _ => {}
+                RecordKind::Header
+                | RecordKind::Pin
+                | RecordKind::Param
+                | RecordKind::Impl
+                | RecordKind::Line
+                | RecordKind::Rect
+                | RecordKind::Circle
+                | RecordKind::Poly
+                | RecordKind::Inst
+                | RecordKind::Wire
+                | RecordKind::Label
+                | RecordKind::Port
+                | RecordKind::Noconn
+                | RecordKind::Text
+                | RecordKind::Shape
+                | RecordKind::Constraint
+                | RecordKind::Waive
+                | RecordKind::Prose
+                | RecordKind::Var
+                | RecordKind::Body
+                | RecordKind::Corner
+                | RecordKind::Config
+                | RecordKind::Sweep
+                | RecordKind::Montecarlo
+                | RecordKind::Optimize
+                | RecordKind::Output
+                | RecordKind::Spec
+                | RecordKind::Code
+                | RecordKind::Lib
+                | RecordKind::Plugin
+                | RecordKind::Set
+                | RecordKind::Locked
+                | RecordKind::Key
+                | RecordKind::Sim
+                | RecordKind::PluginOrder
+                | RecordKind::Class
+                | RecordKind::Unknown => {}
             }
             if g % 2 == 0 {
                 d.push_attr("layer");

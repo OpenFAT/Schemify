@@ -272,7 +272,41 @@ impl Live {
                 RecordKind::Port => PORTS,
                 RecordKind::Noconn => NOCONNS,
                 RecordKind::Inst if attr == Some("at") => INSTS,
-                _ => continue,
+                RecordKind::Header
+                | RecordKind::Pin
+                | RecordKind::Param
+                | RecordKind::Impl
+                | RecordKind::Line
+                | RecordKind::Rect
+                | RecordKind::Arc
+                | RecordKind::Circle
+                | RecordKind::Poly
+                | RecordKind::Stext
+                | RecordKind::Inst
+                | RecordKind::Text
+                | RecordKind::Shape
+                | RecordKind::Constraint
+                | RecordKind::Waive
+                | RecordKind::Prose
+                | RecordKind::Var
+                | RecordKind::Body
+                | RecordKind::Corner
+                | RecordKind::Config
+                | RecordKind::Sweep
+                | RecordKind::Montecarlo
+                | RecordKind::Optimize
+                | RecordKind::Output
+                | RecordKind::Spec
+                | RecordKind::Code
+                | RecordKind::Lib
+                | RecordKind::Plugin
+                | RecordKind::Set
+                | RecordKind::Locked
+                | RecordKind::Key
+                | RecordKind::Sim
+                | RecordKind::PluginOrder
+                | RecordKind::Class
+                | RecordKind::Unknown => continue,
             };
             if !matches!(op, Op::Insert { .. }) {
                 named.extend(ObjId::find(key, s).map(|id| (t, id)));

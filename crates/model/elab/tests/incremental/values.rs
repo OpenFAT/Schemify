@@ -350,7 +350,10 @@ fn cached_attribute_edits_refresh_without_a_rebuild() {
      -> Option<Result<schemify_expr::Value<'static>, schemify_expr::Error>> {
         (name == "gmid.w").then(|| match args[0] {
             schemify_expr::Value::Int(i) => Ok(schemify_expr::Value::Num(i as f64 * 10.0)),
-            _ => Ok(schemify_expr::Value::Num(-1.0)),
+            schemify_expr::Value::Num(_)
+            | schemify_expr::Value::Bool(_)
+            | schemify_expr::Value::Cnum { .. }
+            | schemify_expr::Value::Str(_) => Ok(schemify_expr::Value::Num(-1.0)),
         })
     };
     let mut st = CellState::build(&p, h, &mut funcs).unwrap();

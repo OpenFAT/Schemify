@@ -310,7 +310,7 @@ fn index_all(project: &mut Project, root: &Path, keep: Option<&Path>) -> Result<
             LibSource::Builtin => None,
             // A one-file library: indexed below, after the libraries its cells name.
             LibSource::Map { .. } => None,
-            other => {
+            other @ (LibSource::Git { .. } | LibSource::Url { .. }) => {
                 notes.push(format!(
                     "lib {}: {} sources are not fetched yet",
                     libs.name[row],
@@ -347,7 +347,11 @@ fn index_all(project: &mut Project, root: &Path, keep: Option<&Path>) -> Result<
             .find(schemify_doc::TECH_LIB)
             .and_then(|r| match &project.libs().source[r] {
                 LibSource::Map { path } => Some(path.clone()),
-                _ => None,
+                LibSource::Project
+                | LibSource::Builtin
+                | LibSource::Path { .. }
+                | LibSource::Git { .. }
+                | LibSource::Url { .. } => None,
             });
     if let Some(path) = map {
         match platform::read(&root.join(&path)) {

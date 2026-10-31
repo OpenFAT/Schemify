@@ -84,7 +84,11 @@ impl Model {
                     KeyRule::Name if self.name_taken(rec.kind, &rec.fields[0], None) => {
                         return Err("E024");
                     }
-                    _ => {}
+                    KeyRule::Header
+                    | KeyRule::Id
+                    | KeyRule::Name
+                    | KeyRule::TypeName
+                    | KeyRule::Position => {}
                 }
                 let recs = self.tables.entry(table).or_default();
                 let pos = match at {
@@ -217,7 +221,9 @@ impl Model {
         let recs = self.tables.get(&table)?;
         let row = match t.kind.key() {
             KeyRule::Position => t.key.parse::<usize>().ok().filter(|&r| r < recs.len())?,
-            _ => recs.iter().position(|r| r.fields[0] == t.key)?,
+            KeyRule::Header | KeyRule::Id | KeyRule::Name | KeyRule::TypeName => {
+                recs.iter().position(|r| r.fields[0] == t.key)?
+            }
         };
         (recs[row].kind == t.kind).then_some((table, row))
     }

@@ -238,7 +238,40 @@ fn form_of(rec: &RecordBuf) -> Option<(&str, usize)> {
             Some(f @ ("line" | "rect" | "poly")) => Some((f, 2)),
             _ => None,
         },
-        _ => None,
+        RecordKind::Header
+        | RecordKind::Pin
+        | RecordKind::Param
+        | RecordKind::Impl
+        | RecordKind::Arc
+        | RecordKind::Circle
+        | RecordKind::Stext
+        | RecordKind::Inst
+        | RecordKind::Label
+        | RecordKind::Port
+        | RecordKind::Noconn
+        | RecordKind::Text
+        | RecordKind::Constraint
+        | RecordKind::Waive
+        | RecordKind::Prose
+        | RecordKind::Var
+        | RecordKind::Body
+        | RecordKind::Corner
+        | RecordKind::Config
+        | RecordKind::Sweep
+        | RecordKind::Montecarlo
+        | RecordKind::Optimize
+        | RecordKind::Output
+        | RecordKind::Spec
+        | RecordKind::Code
+        | RecordKind::Lib
+        | RecordKind::Plugin
+        | RecordKind::Set
+        | RecordKind::Locked
+        | RecordKind::Key
+        | RecordKind::Sim
+        | RecordKind::PluginOrder
+        | RecordKind::Class
+        | RecordKind::Unknown => None,
     }
 }
 

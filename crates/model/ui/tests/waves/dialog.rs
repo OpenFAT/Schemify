@@ -167,7 +167,29 @@ fn properties_dialog_applies_edits_and_keeps_bad_ones_open() {
             which: Cursor::A,
             at,
         } => Some(*at),
-        _ => None,
+        Request::AddTrace { .. }
+        | Request::RemoveTrace { .. }
+        | Request::MoveTrace { .. }
+        | Request::SetStyle { .. }
+        | Request::SetColor { .. }
+        | Request::AddPane
+        | Request::RemovePane { .. }
+        | Request::SetPane { .. }
+        | Request::ZoomX { .. }
+        | Request::ZoomY { .. }
+        | Request::PanX { .. }
+        | Request::PanY { .. }
+        | Request::BoxX { .. }
+        | Request::BoxY { .. }
+        | Request::SetX { .. }
+        | Request::SetY { .. }
+        | Request::Autoscale
+        | Request::AutoscaleY { .. }
+        | Request::LogX { .. }
+        | Request::LogY { .. }
+        | Request::Cursor { .. }
+        | Request::HCursor { .. }
+        | Request::SwapCursors => None,
     });
     assert!(
         matches!(at, Some(Some(v)) if (v - 1.5e-6).abs() < 1e-20),

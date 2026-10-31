@@ -82,7 +82,41 @@ fn pick(rng: &mut Mix, doc: &schemify_doc::Document, kind: RecordKind) -> Option
         RecordKind::Label => &doc.labels().id,
         RecordKind::Port => &doc.ports().id,
         RecordKind::Noconn => &doc.noconns().id,
-        _ => &doc.instances().id,
+        RecordKind::Header
+        | RecordKind::Pin
+        | RecordKind::Param
+        | RecordKind::Impl
+        | RecordKind::Line
+        | RecordKind::Rect
+        | RecordKind::Arc
+        | RecordKind::Circle
+        | RecordKind::Poly
+        | RecordKind::Stext
+        | RecordKind::Inst
+        | RecordKind::Text
+        | RecordKind::Shape
+        | RecordKind::Constraint
+        | RecordKind::Waive
+        | RecordKind::Prose
+        | RecordKind::Var
+        | RecordKind::Body
+        | RecordKind::Corner
+        | RecordKind::Config
+        | RecordKind::Sweep
+        | RecordKind::Montecarlo
+        | RecordKind::Optimize
+        | RecordKind::Output
+        | RecordKind::Spec
+        | RecordKind::Code
+        | RecordKind::Lib
+        | RecordKind::Plugin
+        | RecordKind::Set
+        | RecordKind::Locked
+        | RecordKind::Key
+        | RecordKind::Sim
+        | RecordKind::PluginOrder
+        | RecordKind::Class
+        | RecordKind::Unknown => &doc.instances().id,
     };
     (!ids.is_empty()).then(|| ids[rng.below(ids.len() as u64) as usize].text(doc.strings()))
 }

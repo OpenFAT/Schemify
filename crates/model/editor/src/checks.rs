@@ -225,7 +225,26 @@ pub fn component_of(
             let best = u32::try_from(best).expect("pin indexes fit a u32");
             return Some((pins[best as usize].0, Some((row, best))));
         }
-        _ => None,
+        TableId::Pins
+        | TableId::Params
+        | TableId::Impls
+        | TableId::Graphics
+        | TableId::Instances
+        | TableId::Noconns
+        | TableId::Texts
+        | TableId::Shapes
+        | TableId::Constraints
+        | TableId::Waivers
+        | TableId::DocBlocks
+        | TableId::Bodies
+        | TableId::Corners
+        | TableId::Configs
+        | TableId::Sweeps
+        | TableId::Montecarlos
+        | TableId::Optimizes
+        | TableId::Outputs
+        | TableId::Specs
+        | TableId::Codes => None,
     };
     comp.filter(|&c| (c as usize) < n.net_name.len())
         .map(|c| (c, None))

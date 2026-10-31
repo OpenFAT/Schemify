@@ -211,7 +211,18 @@ impl Plugins {
                         "{name}: {kind}: out of fuel (budget {}), outputs discarded",
                         self.fuel[row]
                     ),
-                    _ => format!("{name}: {kind}: aborted ({code:?}), outputs discarded"),
+                    Code::Denied
+                    | Code::Gone
+                    | Code::Space
+                    | Code::Table
+                    | Code::Column
+                    | Code::Range
+                    | Code::Parse
+                    | Code::Version
+                    | Code::Trap
+                    | Code::Module => {
+                        format!("{name}: {kind}: aborted ({code:?}), outputs discarded")
+                    }
                 };
                 self.health.fault(id, code, detail);
                 self.strike(row, code);

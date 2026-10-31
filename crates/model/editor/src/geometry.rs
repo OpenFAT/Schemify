@@ -279,7 +279,31 @@ pub fn anchor(rec: &RecordBuf) -> Option<Pt> {
         | RecordKind::Poly
         | RecordKind::Stext => pair(0),
         RecordKind::Shape => pair(2),
-        _ => None,
+        RecordKind::Header
+        | RecordKind::Param
+        | RecordKind::Impl
+        | RecordKind::Constraint
+        | RecordKind::Waive
+        | RecordKind::Prose
+        | RecordKind::Var
+        | RecordKind::Body
+        | RecordKind::Corner
+        | RecordKind::Config
+        | RecordKind::Sweep
+        | RecordKind::Montecarlo
+        | RecordKind::Optimize
+        | RecordKind::Output
+        | RecordKind::Spec
+        | RecordKind::Code
+        | RecordKind::Lib
+        | RecordKind::Plugin
+        | RecordKind::Set
+        | RecordKind::Locked
+        | RecordKind::Key
+        | RecordKind::Sim
+        | RecordKind::PluginOrder
+        | RecordKind::Class
+        | RecordKind::Unknown => None,
     }
 }
 
@@ -349,7 +373,31 @@ fn map_record(rec: &mut RecordBuf, x: Xform) -> Option<()> {
             }
             _ => return None,
         },
-        _ => {}
+        RecordKind::Header
+        | RecordKind::Param
+        | RecordKind::Impl
+        | RecordKind::Constraint
+        | RecordKind::Waive
+        | RecordKind::Prose
+        | RecordKind::Var
+        | RecordKind::Body
+        | RecordKind::Corner
+        | RecordKind::Config
+        | RecordKind::Sweep
+        | RecordKind::Montecarlo
+        | RecordKind::Optimize
+        | RecordKind::Output
+        | RecordKind::Spec
+        | RecordKind::Code
+        | RecordKind::Lib
+        | RecordKind::Plugin
+        | RecordKind::Set
+        | RecordKind::Locked
+        | RecordKind::Key
+        | RecordKind::Sim
+        | RecordKind::PluginOrder
+        | RecordKind::Class
+        | RecordKind::Unknown => {}
     }
     Some(())
 }

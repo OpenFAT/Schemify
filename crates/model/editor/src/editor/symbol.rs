@@ -69,7 +69,7 @@ impl Editor {
             }
             let o = match pins.dir[i] {
                 PinDir::Out => Orient::R180,
-                _ => Orient::R0,
+                PinDir::In | PinDir::Inout => Orient::R0,
             };
             let rec = edit::placed(
                 RecordKind::Port,
@@ -150,7 +150,9 @@ pub(super) fn symbol_records(ports: &[(String, Orient, Pt)], width: i32) -> Vec<
         match ports[i].1 {
             Orient::R0 | Orient::MR180 => left.push(name),
             Orient::R180 | Orient::MR0 => right.push((name, "out")),
-            _ => right.push((name, "inout")),
+            Orient::R90 | Orient::R270 | Orient::MR90 | Orient::MR270 => {
+                right.push((name, "inout"))
+            }
         }
     }
     if left.is_empty() && right.is_empty() {

@@ -118,7 +118,11 @@ pub fn remove_through(
                     ops.push(Op::Insert { rec, at });
                 }
             }
-            other => ops.push(other),
+            other @ (Op::Delete(_)
+            | Op::SetField { .. }
+            | Op::SetAttr { .. }
+            | Op::RemoveAttr { .. }
+            | Op::Reorder { .. }) => ops.push(other),
         }
     }
     // Uncut wires that already run from pin to pin of one instance.
@@ -135,7 +139,10 @@ pub fn remove_through(
         ops.iter().all(|op| match op {
             Op::Delete(t) | Op::Put { target: t, .. } => t.kind == RecordKind::Wire,
             Op::Insert { rec, .. } => rec.kind == RecordKind::Wire,
-            _ => true,
+            Op::SetField { .. }
+            | Op::SetAttr { .. }
+            | Op::RemoveAttr { .. }
+            | Op::Reorder { .. } => true,
         }),
         "only wires are cut or removed"
     );

@@ -140,7 +140,7 @@ fn eval(text: &str) -> f64 {
     {
         Value::Num(x) => x,
         Value::Int(i) => i as f64,
-        v => panic!("{v:?}"),
+        v @ (Value::Bool(_) | Value::Cnum { .. } | Value::Str(_)) => panic!("{v:?}"),
     }
 }
 

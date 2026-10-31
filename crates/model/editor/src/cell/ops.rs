@@ -105,7 +105,11 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
             let allowed: &[&str] = match doc.kind() {
                 FileKind::Shprim | FileKind::Shcomp => &["doc", "category", "prefix", "default"],
                 FileKind::Shbench => &["doc", "category", "corner", "config"],
-                _ => &[],
+                FileKind::Project
+                | FileKind::Lock
+                | FileKind::Config
+                | FileKind::Journal
+                | FileKind::Techmap => &[],
             };
             one_of(key, allowed, "header attribute")?;
             if key == "default" && !v.is_empty() {

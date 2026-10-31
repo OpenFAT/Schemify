@@ -115,7 +115,9 @@ fn plugin_functions_fall_back_to_cached_values() {
     let mut funcs = |name: &str, args: &[Value<'_>]| -> Option<Result<Value<'static>, _>> {
         (name == "gmid.width").then(|| match args[0] {
             Value::Int(i) => Ok(Value::Num(i as f64 * 4.0)),
-            _ => Ok(Value::Num(0.0)),
+            Value::Num(_) | Value::Bool(_) | Value::Cnum { .. } | Value::Str(_) => {
+                Ok(Value::Num(0.0))
+            }
         })
     };
     let st = CellState::build(&p, hs[1], &mut funcs).unwrap();

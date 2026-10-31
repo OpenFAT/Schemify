@@ -63,7 +63,7 @@ impl Editor {
         // an extension's are the tail of its entry (the rest was queued with the commit).
         let applied = project.applied(r.doc, o).map(|ops| match &r.edit {
             Edit::Extend(_, ext) => &ops[ops.len() - ext.len()..],
-            _ => ops,
+            Edit::Tx(_) | Edit::Undo | Edit::Redo | Edit::Accept(_) | Edit::Reject(_) => ops,
         });
         let mut row: Option<Option<u32>> = None;
         let mut reads_edited = |state: &CellState| {

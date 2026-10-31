@@ -227,7 +227,25 @@ pub(super) fn other_objects(b: &mut Build<'_>, doc: &Document, rows: Range<usize
             TableId::Ports => doc.ports().id.len(),
             TableId::Noconns => doc.noconns().id.len(),
             TableId::Texts => doc.texts().id.len(),
-            _ => doc.shapes().id.len(),
+            TableId::Pins
+            | TableId::Params
+            | TableId::Impls
+            | TableId::Graphics
+            | TableId::Instances
+            | TableId::Wires
+            | TableId::Shapes
+            | TableId::Constraints
+            | TableId::Waivers
+            | TableId::DocBlocks
+            | TableId::Bodies
+            | TableId::Corners
+            | TableId::Configs
+            | TableId::Sweeps
+            | TableId::Montecarlos
+            | TableId::Optimizes
+            | TableId::Outputs
+            | TableId::Specs
+            | TableId::Codes => doc.shapes().id.len(),
         };
         for i in rows.start.min(len)..rows.end.min(len) {
             one_other(b, doc, table, i);
@@ -292,7 +310,24 @@ pub(super) fn one_other(b: &mut Build<'_>, doc: &Document, table: TableId, i: us
             b.sc.objs.geom[obj as usize] = bx;
         }
         TableId::Shapes => shape(b, doc, i),
-        _ => unreachable!("{table:?} has no canvas objects"),
+        TableId::Pins
+        | TableId::Params
+        | TableId::Impls
+        | TableId::Graphics
+        | TableId::Instances
+        | TableId::Wires
+        | TableId::Constraints
+        | TableId::Waivers
+        | TableId::DocBlocks
+        | TableId::Bodies
+        | TableId::Corners
+        | TableId::Configs
+        | TableId::Sweeps
+        | TableId::Montecarlos
+        | TableId::Optimizes
+        | TableId::Outputs
+        | TableId::Specs
+        | TableId::Codes => unreachable!("{table:?} has no canvas objects"),
     }
     // A malformed shape draws nothing; every other row draws one object.
     assert!(b.sc.objs.len() <= objects + 1, "one object per row");
@@ -340,7 +375,45 @@ pub(super) fn shape(b: &mut Build<'_>, doc: &Document, i: usize) {
                     .push(key, [pts[0].0, pts[0].1, pts[0].0, pts[0].1], Hit::Box);
             b.poly(&pts, closed, layer, st, obj);
         }
-        _ => {}
+        RecordKind::Header
+        | RecordKind::Pin
+        | RecordKind::Param
+        | RecordKind::Impl
+        | RecordKind::Line
+        | RecordKind::Rect
+        | RecordKind::Arc
+        | RecordKind::Circle
+        | RecordKind::Poly
+        | RecordKind::Stext
+        | RecordKind::Inst
+        | RecordKind::Wire
+        | RecordKind::Label
+        | RecordKind::Port
+        | RecordKind::Noconn
+        | RecordKind::Text
+        | RecordKind::Shape
+        | RecordKind::Constraint
+        | RecordKind::Waive
+        | RecordKind::Prose
+        | RecordKind::Var
+        | RecordKind::Body
+        | RecordKind::Corner
+        | RecordKind::Config
+        | RecordKind::Sweep
+        | RecordKind::Montecarlo
+        | RecordKind::Optimize
+        | RecordKind::Output
+        | RecordKind::Spec
+        | RecordKind::Code
+        | RecordKind::Lib
+        | RecordKind::Plugin
+        | RecordKind::Set
+        | RecordKind::Locked
+        | RecordKind::Key
+        | RecordKind::Sim
+        | RecordKind::PluginOrder
+        | RecordKind::Class
+        | RecordKind::Unknown => {}
     }
 }
 

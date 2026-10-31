@@ -255,7 +255,9 @@ pub fn eval_in<F: Funcs>(st: &CellState, expr: &str, funcs: &mut F) -> Result<St
     let mut out = String::new();
     match value {
         Value::Str(s) => out.push_str(&crate::docs::quote(s)),
-        other => Val::from(other).write_text(&mut out),
+        other @ (Value::Int(_) | Value::Num(_) | Value::Bool(_) | Value::Cnum { .. }) => {
+            Val::from(other).write_text(&mut out)
+        }
     }
     assert!(
         !out.is_empty() || matches!(value, Value::Str(_)),

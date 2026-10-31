@@ -123,7 +123,14 @@ impl Host {
             Event::SelectionChanged => (schemify_config::Event::SelectionChanged, Vec::new()),
             Event::Saved { doc } => (schemify_config::Event::Saved, vec![("doc", doc.into())]),
             Event::RunDone { job } => (schemify_config::Event::RunDone, vec![("job", job.into())]),
-            _ => return,
+            Event::Load
+            | Event::Unload
+            | Event::Command { .. }
+            | Event::NetlistRequest { .. }
+            | Event::RunJob { .. }
+            | Event::IoDone { .. }
+            | Event::Timer { .. }
+            | Event::Rejected { .. } => return,
         };
         assert!(fields.len() <= 2);
         let mut note = Note {

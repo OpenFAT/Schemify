@@ -301,7 +301,7 @@ impl Sim {
         let st_style = match st {
             State::Done => "results-cell",
             State::Failed => "results-fail",
-            _ => "results-dim",
+            State::Pending | State::Queued | State::Running | State::Cancelled => "results-dim",
         };
         cell(t, format!("{rid}.state"), st.word(), st_style);
         for o in 0..res.outputs().len() as u16 {

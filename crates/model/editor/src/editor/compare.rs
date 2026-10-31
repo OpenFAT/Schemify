@@ -164,7 +164,7 @@ impl Editor {
                         removed.push(RecordBuf::from_format(&fa, c.a));
                     }
                 }
-                _ => {
+                ChangeKind::Added | ChangeKind::Changed => {
                     let Some(id) = fb.field(c.b, 0) else { continue };
                     let Some(oid) = ObjId::find(id, b.strings()) else {
                         continue;

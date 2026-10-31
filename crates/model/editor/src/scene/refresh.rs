@@ -362,7 +362,27 @@ pub fn update(
                 b.sc.wiring.add(p);
                 wires.push(p);
             }
-            t => draw::one_other(&mut b, doc, t, i),
+            t @ (TableId::Pins
+            | TableId::Params
+            | TableId::Impls
+            | TableId::Graphics
+            | TableId::Labels
+            | TableId::Ports
+            | TableId::Noconns
+            | TableId::Texts
+            | TableId::Shapes
+            | TableId::Constraints
+            | TableId::Waivers
+            | TableId::DocBlocks
+            | TableId::Bodies
+            | TableId::Corners
+            | TableId::Configs
+            | TableId::Sweeps
+            | TableId::Montecarlos
+            | TableId::Optimizes
+            | TableId::Outputs
+            | TableId::Specs
+            | TableId::Codes) => draw::one_other(&mut b, doc, t, i),
         }
     }
     for &w in &wires {
