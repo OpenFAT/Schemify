@@ -353,10 +353,10 @@ impl Editor {
             let s = doc.strings();
             best.values
                 .iter()
-                .flat_map(|(name, value)| {
+                .flat_map(|a| {
                     let row = (0..b.kind.len())
-                        .find(|&r| b.kind[r] == RecordKind::Var && s.get(b.fields[r][0]) == name);
-                    row.map_or_else(Vec::new, |r| docs::var_ops(doc, r as u32, value))
+                        .find(|&r| b.kind[r] == RecordKind::Var && s.get(b.fields[r][0]) == a.name);
+                    row.map_or_else(Vec::new, |r| docs::var_ops(doc, r as u32, &a.value))
                 })
                 .collect()
         };
@@ -373,8 +373,8 @@ impl Editor {
         apply::push_req(reqs, best.bench, Edit::Tx(tx));
         self.apply(reqs);
         let mut msg = format!("{}: staged", best.label);
-        for (n, v) in &best.values {
-            let _ = write!(msg, " {n}={v}");
+        for a in &best.values {
+            let _ = write!(msg, " {}={}", a.name, a.value);
         }
         msg.push_str(" — review on the docs page, then Accept or Reject");
         self.session.say(msg);

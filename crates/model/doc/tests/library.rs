@@ -6,7 +6,7 @@ mod common;
 
 use common::{BENCH, LOCK, MANIFEST, NFET, OTA};
 use schemify_doc::{
-    Code, LibSource, Loc, LockStatus, Op, Outcome, Project, RecordBuf, TableId, Target,
+    Assignment, Code, LibSource, Loc, LockStatus, Op, Outcome, Project, RecordBuf, TableId, Target,
 };
 use schemify_format::{FileKind, RecordKind};
 
@@ -43,8 +43,11 @@ fn manifest_and_lockfile_parse_into_rows() {
     assert_eq!(libs.source[4], LibSource::Builtin);
     assert_eq!(p.plugins().len(), 1);
     assert_eq!(
-        p.settings()[0],
-        ("PDK_ROOT".to_owned(), "/opt/pdk".to_owned())
+        p.settings()[0].as_deref(),
+        Assignment {
+            name: "PDK_ROOT",
+            value: "/opt/pdk"
+        }
     );
     assert_eq!(p.lock().name, ["analog", "sky130", "gmid-lut"]);
     assert_eq!(

@@ -4,7 +4,7 @@
 
 mod common;
 
-use schemify_doc::Project;
+use schemify_doc::{Assignment, Project};
 use schemify_elab::{CellState, Code, Elab, Ignore, Name, Request, no_funcs};
 
 const RES: &str = "schemify 1 shprim\n\npin A inout 0 0\npin B inout 0 20\n\nparam R 1k\n\nimpl spice spice\n  format spice \"R{name} {A} {B} {R}\"\n";
@@ -82,7 +82,16 @@ fn dollar_names_expand_from_project_sets_then_env() {
         .open("", "tb.shbench", bench.as_bytes(), None)
         .unwrap()
         .handle;
-    let env = [("HOME", "/home/u"), ("PDK", "/env/loses")];
+    let env = [
+        Assignment {
+            name: "HOME",
+            value: "/home/u",
+        },
+        Assignment {
+            name: "PDK",
+            value: "/env/loses",
+        },
+    ];
     let req = Request {
         env: &env,
         ..common::ngspice()

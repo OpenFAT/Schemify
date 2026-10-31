@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use schemify_doc::Assignment;
 use schemify_editor::checks::SOURCE_OP;
 use schemify_editor::editor::{Editor, Options, Panel};
 use schemify_run::State;
@@ -283,7 +284,7 @@ fn two_benches_run_at_once_and_each_bench_queues_its_own() {
     let a = session.open_path(&dir.join("tb.shbench")).unwrap();
     let b = session.open_path(&dir.join("tb2.shbench")).unwrap();
     let mut sim = Sim::new(tools(&FAKE.replace("sleep 0.3", "sleep 0.5")));
-    let env: Vec<(&str, &str)> = Vec::new();
+    let env: Vec<Assignment<&str>> = Vec::new();
     let funcs = &mut schemify_elab::no_funcs;
     sim.start(&mut session, a, None, "", &env, funcs).unwrap();
     sim.start(&mut session, b, None, "", &env, funcs).unwrap();
@@ -392,7 +393,13 @@ fn results_table_sorts_filters_and_scrolls_any_number_of_jobs() {
     s.key("Enter");
     let (_, jobs, _) = s.ed.sim().tables().unwrap();
     let want: Vec<u32> = (0..200)
-        .filter(|&j| jobs.assignments(j).next() == Some(("R", "10000")))
+        .filter(|&j| {
+            let r = Assignment {
+                name: "R",
+                value: "10000",
+            };
+            jobs.assignments(j).next() == Some(r)
+        })
         .collect();
     assert_eq!(want.len(), 2);
     let mut got = s.ed.sim().table.rows.clone();

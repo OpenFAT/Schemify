@@ -10,7 +10,7 @@
 //! Contents:
 //! - `pub const BENCH: &str`
 //! - `pub struct Run { plan, jobs, results, runner, digest, next, finished, extra, dialect }`
-//! - `pub fn start_run<C: Cells, F: Funcs>(&mut C, DocHandle, Option<&Select>, &[(&str, &str)],
+//! - `pub fn start_run<C: Cells, F: Funcs>(&mut C, DocHandle, Option<&Select>, &[Assignment<&str>],
 //!   Dialect, &mut F, impl FnOnce(&Digest) -> RunnerConfig) -> Result<Run, String>`
 //! - `Run::submit_next`, `Run::poll`, `Run::idle`, `Run::cancel`, `Run::save`
 
@@ -18,7 +18,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::fs;
 use std::path::PathBuf;
 
-use schemify_doc::{Digest, DocHandle, Project};
+use schemify_doc::{Assignment, Digest, DocHandle, Project};
 use schemify_elab::{Dialect, Funcs, Request};
 use schemify_run::{Blocked, Jobs, Plan, Results, Runner, RunnerConfig, Select, State};
 
@@ -74,7 +74,7 @@ pub fn start_run<C: Cells, F: Funcs>(
     c: &mut C,
     top: DocHandle,
     select: Option<&Select<'_>>,
-    env: &[(&str, &str)],
+    env: &[Assignment<&str>],
     dialect: Dialect,
     funcs: &mut F,
     runner_config: impl FnOnce(&Digest) -> RunnerConfig,
@@ -144,7 +144,7 @@ impl Run {
         &mut self,
         project: &Project,
         top: DocHandle,
-        env: &[(&str, &str)],
+        env: &[Assignment<&str>],
         funcs: &mut F,
         max: u32,
     ) -> u32 {

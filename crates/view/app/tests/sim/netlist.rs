@@ -1,7 +1,7 @@
 //! The live checks overlay, net highlight (buses by every bit), netlisting against the CLI's
 //! bytes, and the netlist text tab.
 
-use schemify_doc::{ObjId, TableId};
+use schemify_doc::{Assignment, ObjId, TableId};
 use schemify_editor::checks::SOURCE_CHECKS;
 use schemify_editor::editor::{Editor, Options, Panel};
 use schemify_editor::scene::ObjKey;
@@ -136,7 +136,7 @@ fn netlist_command_writes_the_cli_bytes() {
     // schemify-cli since the D39 split, so its spine is called directly).
     let mut o = schemify_cli::spines::open_file(&s.dir.join("top.shcomp"), 1).unwrap();
     let env = schemify_cli::spines::env_pairs();
-    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let env: Vec<Assignment<&str>> = env.iter().map(Assignment::as_deref).collect();
     let req = schemify_elab::Request {
         config: None,
         corner: None,

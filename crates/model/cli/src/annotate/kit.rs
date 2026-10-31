@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use schemify_doc::DocHandle;
+use schemify_doc::{Assignment, DocHandle};
 use schemify_elab::{CornerLine, Elab, elaborate, no_funcs};
 
 use crate::platform;
@@ -34,7 +34,7 @@ pub(super) fn check_kit(
     o: &Opened,
     h: DocHandle,
     cfg: &str,
-    env: &[(&str, &str)],
+    env: &[Assignment<&str>],
     needs: &[String],
     dirs: (&Path, &Path),
     kits: &mut BTreeMap<Vec<(PathBuf, Option<String>)>, Kit>,

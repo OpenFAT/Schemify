@@ -78,7 +78,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use schemify_canvas::{CanvasPrims, Marks, Palette};
-use schemify_doc::{DocHandle, Document, EditRequest, Op, RecordBuf};
+use schemify_doc::{Assignment, DocHandle, Document, EditRequest, Op, RecordBuf};
 use schemify_elab::{Annotations, CellState, Dialect};
 use schemify_format::{FileKind, IdRng};
 use schemify_ui::{InputEvents, Routed, egui};
@@ -290,7 +290,7 @@ pub struct Editor {
     /// `(graph node id, plot expression)` of the docs page's filled plot slots.
     graphs: Vec<(String, String)>,
     /// The process environment (netlists, design hash).
-    env: Vec<(String, String)>,
+    env: Vec<Assignment>,
     /// The clock of the last update.
     now: u64,
     /// The visual diff of the staged edit under review and its key (document, stage id).

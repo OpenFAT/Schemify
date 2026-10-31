@@ -6,7 +6,7 @@
 mod common;
 
 use common::{CAP, FAKE, RC_BENCH, RES};
-use schemify_doc::{DocHandle, Project};
+use schemify_doc::{Assignment, DocHandle, Project};
 use schemify_elab::Dialect;
 use schemify_run::{Blocked, Jobs, NO_SAMPLE, Plan, Results, Runner, Select, SimCommand, State};
 use std::fs;
@@ -131,7 +131,12 @@ fn relative_corner_paths_become_absolute_in_the_job_netlist() {
     assert!(netlist.contains(&want), "{want}\n{netlist}");
 }
 
-fn digest(p: &Project, top: DocHandle, jobs: &Jobs, env: &[(&str, &str)]) -> schemify_doc::Digest {
+fn digest(
+    p: &Project,
+    top: DocHandle,
+    jobs: &Jobs,
+    env: &[Assignment<&str>],
+) -> schemify_doc::Digest {
     schemify_run::design(
         p,
         top,
@@ -192,11 +197,28 @@ fn design_hash_tracks_reached_cells_bench_jobs_and_env() {
     assert_ne!(base, changed, "the bench changed");
     assert_ne!(
         base,
-        digest(&p, top, &jobs, &[("PDK", "/x")]),
+        digest(
+            &p,
+            top,
+            &jobs,
+            &[Assignment {
+                name: "PDK",
+                value: "/x"
+            }]
+        ),
         "environment"
     );
     let mut more = Jobs::new();
-    more.push(None, None, NO_SAMPLE, &[("R", "1k")]).unwrap();
+    more.push(
+        None,
+        None,
+        NO_SAMPLE,
+        &[Assignment {
+            name: "R",
+            value: "1k",
+        }],
+    )
+    .unwrap();
     assert_ne!(base, digest(&p, top, &more, &[]), "job list");
     let plan = Plan::read(p.doc(top).unwrap()).unwrap();
     let results = Results::new(&plan, base);
@@ -397,7 +419,10 @@ fn project_variable_corner_paths_are_relative_to_the_project_root() {
     jobs.push(None, Some("tt"), NO_SAMPLE, &[]).unwrap();
     let dir = common::tmp("project-var-paths");
     // `HOME_LIB` comes from the environment, not the project: it stays bench-relative.
-    let env = [("HOME_LIB", "envlib")];
+    let env = [Assignment {
+        name: "HOME_LIB",
+        value: "envlib",
+    }];
     let (jobs, _, runner) = common::run_env(&p, top, &plan, jobs, &env, |d| {
         common::cfg(&dir, d, common::sh(FAKE), 1)
     });

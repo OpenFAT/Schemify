@@ -85,7 +85,7 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
                                 .strip_prefix("${")
                                 .and_then(|r| r.split_once('}'))
                                 .is_some_and(|(name, _)| {
-                                    self.project.settings().iter().any(|(k, _)| k == name)
+                                    self.project.settings().iter().any(|a| a.name == name)
                                 });
                             self.expand_vars(self.ifaces[0].cell, raw)
                         } else {
@@ -174,9 +174,9 @@ impl<'project, F: Funcs> Elaborator<'project, '_, F> {
         let sets = self.project.settings();
         let lookup = |n: &str| {
             sets.iter()
-                .find(|(k, _)| k == n)
-                .map(|(_, v)| v.as_str())
-                .or_else(|| self.req.env.iter().find(|(k, _)| *k == n).map(|(_, v)| *v))
+                .find(|a| a.name == n)
+                .map(|a| a.value.as_str())
+                .or_else(|| self.req.env.iter().find(|a| a.name == n).map(|a| a.value))
         };
         match expand_dollars(text, &lookup, 0) {
             Ok(out) => self.names.intern(&out),

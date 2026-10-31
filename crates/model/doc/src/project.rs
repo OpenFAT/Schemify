@@ -22,7 +22,7 @@ use crate::record::RecordBuf;
 use crate::sha256;
 use crate::strings::{Strings, Sym};
 use crate::techmap::{self, TechMap};
-use crate::{Code, Diag};
+use crate::{Assignment, Code, Diag};
 use schemify_format::{FileKind, IdRng, ParseError};
 
 /// Libraries, their index and interfaces, and the open documents.
@@ -164,7 +164,7 @@ impl Project {
 
     /// Manifest `set <key> <value>` entries, in file order (`${NAME}` expansion source).
     #[must_use]
-    pub fn settings(&self) -> &[(String, String)] {
+    pub fn settings(&self) -> &[Assignment] {
         &self.manifest.sets
     }
 

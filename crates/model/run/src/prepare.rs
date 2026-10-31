@@ -15,7 +15,7 @@
 
 use crate::jobs::Jobs;
 use crate::results::Results;
-use schemify_doc::{Digest, DocHandle, Project, Sha256};
+use schemify_doc::{Assignment, Digest, DocHandle, Project, Sha256};
 use schemify_elab::{CornerLine, Dialect, Elab, Funcs, Name, Request, Severity};
 use schemify_netlist as netlist;
 use std::ops::Range;
@@ -168,7 +168,7 @@ pub fn design<F: Funcs>(
     project: &Project,
     top: DocHandle,
     jobs: &Jobs,
-    env: &[(&str, &str)],
+    env: &[Assignment<&str>],
     dialect: Dialect,
     funcs: &mut F,
 ) -> Result<Digest, Blocked> {
@@ -205,13 +205,13 @@ pub fn design<F: Funcs>(
     };
     part(b"schemify design 1");
     part(project.write_lock().as_bytes());
-    for (k, v) in project.settings() {
-        part(k.as_bytes());
-        part(v.as_bytes());
+    for a in project.settings() {
+        part(a.name.as_bytes());
+        part(a.value.as_bytes());
     }
-    for (k, v) in env {
-        part(k.as_bytes());
-        part(v.as_bytes());
+    for a in env {
+        part(a.name.as_bytes());
+        part(a.value.as_bytes());
     }
     part(&schemify_doc::sha256(bench.canonical().as_bytes()));
     for (name, row) in &reached {
@@ -255,13 +255,13 @@ pub fn prepare<F: Funcs>(
     top: DocHandle,
     jobs: &mut Jobs,
     j: u32,
-    env: &[(&str, &str)],
+    env: &[Assignment<&str>],
     dialect: Dialect,
     funcs: &mut F,
     results: &mut Results,
 ) -> Option<Prepared> {
     assert!(j < jobs.len(), "job {j} of {}", jobs.len());
-    let overrides: Vec<(&str, &str)> = jobs.assignments(j).collect();
+    let overrides: Vec<Assignment<&str>> = jobs.assignments(j).collect();
     let request = Request {
         config: jobs.config(j),
         corner: jobs.corner(j),

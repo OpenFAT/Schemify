@@ -18,7 +18,7 @@
 //! - crate-only: `struct Bounds`, `plan_err`, `sort_by_name`, `var_bounds`, `const_value`,
 //!   `parse_count`
 
-use schemify_doc::{Document, RecordKind, Span};
+use schemify_doc::{Assignment, Document, RecordKind, Span};
 use schemify_expr::{Mode, Program, Scratch, Value};
 use std::error::Error;
 use std::fmt;
@@ -61,8 +61,8 @@ pub struct Var {
 pub struct Corner {
     /// Name.
     pub name: String,
-    /// `(var, expr)` per `set` line, file order.
-    pub sets: Vec<(String, String)>,
+    /// One assignment (value: an expression) per `set` line, file order.
+    pub sets: Vec<Assignment>,
 }
 
 /// One `sweep` record with its points already expanded to value texts (run spec §2):
@@ -277,10 +277,13 @@ impl Plan {
         // Corners and configs.
         let t = doc.corners();
         for r in 0..t.kind.len() {
-            let sets: Vec<(String, String)> = pool
+            let sets: Vec<Assignment> = pool
                 .attrs(t.attrs[r])
                 .filter(|(k, v)| s.get(*k) == "set" && v.len() == 2)
-                .map(|(_, v)| (s.get(v[0]).to_owned(), s.get(v[1]).to_owned()))
+                .map(|(_, v)| Assignment {
+                    name: s.get(v[0]).to_owned(),
+                    value: s.get(v[1]).to_owned(),
+                })
                 .collect();
             let name = s.get(t.fields[r][0]).to_owned();
             plan.corners.push(Corner { name, sets });

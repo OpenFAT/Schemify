@@ -41,7 +41,7 @@ use crate::netexpr;
 use crate::nets::{CellNets, Ignore};
 use crate::values::{Funcs, NONE, Val};
 use crate::violations::{Violation, Violations};
-use schemify_doc::{DocHandle, Document, ObjId, Project, Records};
+use schemify_doc::{Assignment, DocHandle, Document, ObjId, Project, Records};
 use schemify_format::FileKind;
 use std::collections::HashMap;
 use std::mem;
@@ -55,13 +55,13 @@ pub struct Request<'req> {
     pub config: Option<&'req str>,
     /// Corner; `None` takes the bench's `corner` header attribute, if any.
     pub corner: Option<&'req str>,
-    /// `(var, expression)` assignments applied after the corner's `set` lines, in
-    /// order (sweep/MC/optimizer values, then CLI overrides); later entries win.
-    pub overrides: &'req [(&'req str, &'req str)],
+    /// Var assignments (value: an expression) applied after the corner's `set` lines,
+    /// in order (sweep/MC/optimizer values, then CLI overrides); later entries win.
+    pub overrides: &'req [Assignment<&'req str>],
     /// Environment for `${NAME}` expansion after the project's `set` entries (spec
     /// §7.1). The app passes what it allows (the process environment natively, nothing
     /// on the web); elab itself reads no environment.
-    pub env: &'req [(&'req str, &'req str)],
+    pub env: &'req [Assignment<&'req str>],
     /// Target dialect.
     pub dialect: Dialect,
 }
@@ -273,7 +273,7 @@ pub fn elaborate<F: Funcs>(
     }
     let overrides = req.overrides.iter();
     e.subst
-        .extend(overrides.map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
+        .extend(overrides.map(|a| (a.name.to_owned(), a.value.to_owned())));
 
     // ---- top cell and the hierarchy
     let row = top_row.map_or(NONE, |r| r as u32);

@@ -16,7 +16,7 @@
 
 use std::fmt::Write as _;
 
-use schemify_doc::{Digest, DocHandle};
+use schemify_doc::{Assignment, Digest, DocHandle};
 use schemify_elab::Funcs;
 use schemify_netlist::NameMap;
 use schemify_plugin::RunRequest;
@@ -52,7 +52,7 @@ impl Sim {
         top: DocHandle,
         optimize: Option<&str>,
         probe: &str,
-        env: &[(&str, &str)],
+        env: &[Assignment<&str>],
         funcs: &mut F,
     ) -> Result<String, String> {
         assert!(self.queue.len() <= QUEUE_MAX);
@@ -84,7 +84,7 @@ impl Sim {
         top: DocHandle,
         optimize: Option<&str>,
         probe: &str,
-        env: &[(&str, &str)],
+        env: &[Assignment<&str>],
         funcs: &mut F,
     ) -> Result<String, String> {
         self.make_room(top)?;
@@ -273,7 +273,7 @@ impl Sim {
     pub fn serve_queue<F: Funcs>(
         &mut self,
         session: &mut Session,
-        env: &[(&str, &str)],
+        env: &[Assignment<&str>],
         funcs: &mut F,
     ) {
         let mut blocked: Vec<DocHandle> = Vec::new();
@@ -330,7 +330,7 @@ impl Sim {
         session: &mut Session,
         top: DocHandle,
         req: &RunRequest,
-        env: &[(&str, &str)],
+        env: &[Assignment<&str>],
         funcs: &mut F,
     ) {
         let stale = self.shown == Some(top) && self.stale;
@@ -366,10 +366,13 @@ impl Sim {
         let r = &mut self.runs[k];
         let opt = |s: &str| (!s.is_empty()).then(|| s.to_owned());
         let (config, corner) = (opt(&req.config), opt(&req.corner));
-        let vary: Vec<(&str, &str)> = req
+        let vary: Vec<Assignment<&str>> = req
             .vary
             .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .map(|(name, value)| Assignment {
+                name: name.as_str(),
+                value: value.as_str(),
+            })
             .collect();
         match r
             .run

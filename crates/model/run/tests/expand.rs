@@ -9,6 +9,7 @@
 mod common;
 
 use proptest::prelude::*;
+use schemify_doc::Assignment;
 use schemify_expr::{Mode, Program, Scratch, Value};
 use schemify_run::{Corner, Dist, DistKind, MonteCarlo, NO_SAMPLE, Plan, Select, Sweep, Var};
 
@@ -20,7 +21,10 @@ fn plan(configs: usize, corners: usize, sweeps: &[usize], samples: u32, dists: u
         corners: (0..corners)
             .map(|c| Corner {
                 name: format!("k{c}"),
-                sets: vec![("v0".into(), format!("{c}00"))],
+                sets: vec![Assignment {
+                    name: "v0".into(),
+                    value: format!("{c}00"),
+                }],
             })
             .collect(),
         sweeps: sweeps
@@ -76,7 +80,7 @@ proptest! {
         let p = plan(nc, nk, &sweeps, samples, dists);
         let (cfgs, ks, ss) = (names("cfg", nc), names("k", nk), names("s", sweeps.len()));
         let (cfgs, ks, ss) = (as_refs(&cfgs), as_refs(&ks), as_refs(&ss));
-        let over = [("cli", "42")];
+        let over = [Assignment { name: "cli", value: "42" }];
         let select = Select {
             configs: &cfgs, corners: &ks, sweeps: &ss,
             montecarlo: (samples > 0).then_some("mc"),
@@ -108,21 +112,21 @@ proptest! {
                         prop_assert_eq!(jobs.sample(j), if mc { s } else { NO_SAMPLE });
                         // The simulator seed of a sample (run spec §3), none otherwise.
                         prop_assert_eq!(jobs.seed(j), mc.then(|| schemify_run::sim_seed(5, s)));
-                        let a: Vec<(&str, &str)> = jobs.assignments(j).collect();
+                        let a: Vec<Assignment<&str>> = jobs.assignments(j).collect();
                         let ndist = if mc { dists } else { 0 };
                         prop_assert_eq!(a.len(), sweeps.len() + ndist + 1);
                         for (i, &pt) in point.iter().enumerate() {
                             let (var, val) = (ss[i].replace('s', "w"), pt.to_string());
-                            prop_assert_eq!(a[i], (var.as_str(), val.as_str()));
+                            prop_assert_eq!(a[i], Assignment { name: var.as_str(), value: val.as_str() });
                         }
                         for d in 0..ndist {
-                            let (var, text) = a[sweeps.len() + d];
+                            let Assignment { name: var, value: text } = a[sweeps.len() + d];
                             prop_assert_eq!(var, format!("v{d}"));
                             // Base: the corner's `set` for v0, else the var expression.
                             let base = if d == 0 && nk > 0 { format!("({k}00)") } else { "(1k)".into() };
                             prop_assert!(text.starts_with(&base), "{} {}", text, base);
                         }
-                        prop_assert_eq!(a[a.len() - 1], ("cli", "42"));
+                        prop_assert_eq!(a[a.len() - 1], over[0]);
                         j += 1;
                     }
                 }

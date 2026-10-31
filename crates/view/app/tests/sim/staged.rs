@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use schemify_doc::Assignment;
 use schemify_editor::checks::LAYER_ERROR;
 use schemify_ui::{InputEvents, Kind};
 
@@ -73,7 +74,7 @@ fn plugin_run_requests_join_the_queue_and_report_done() {
         corner: String::new(),
         vary: vec![("R".into(), "1k".into())],
     }]);
-    let env: Vec<(&str, &str)> = Vec::new();
+    let env: Vec<Assignment<&str>> = Vec::new();
     sim.serve_queue(&mut session, &env, &mut schemify_elab::no_funcs);
     let mut done = Vec::new();
     let t = Instant::now();

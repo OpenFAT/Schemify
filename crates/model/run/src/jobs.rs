@@ -20,6 +20,7 @@
 //! - `pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError>`
 
 use crate::plan::{self, Plan, PlanError, Sweep};
+use schemify_doc::Assignment;
 use std::ops::Range;
 
 /// Most jobs in one run (architecture.md capacity).
@@ -61,8 +62,8 @@ pub struct Select<'a> {
     pub sweeps: &'a [&'a str],
     /// Monte Carlo record (feature `mc`).
     pub montecarlo: Option<&'a str>,
-    /// CLI overrides `(var, expr)`, applied after every engine's assignments.
-    pub overrides: &'a [(&'a str, &'a str)],
+    /// CLI overrides (value: an expression), applied after every engine's assignments.
+    pub overrides: &'a [Assignment<&'a str>],
 }
 
 /// The jobs of one run. Rows are appended by [`expand`] and [`Jobs::push`] (plugin `run`
@@ -182,7 +183,13 @@ pub fn expand(plan: &Plan, select: &Select<'_>) -> Result<Jobs, PlanError> {
         };
         #[cfg(not(feature = "mc"))]
         let seed = 0;
-        let mut list: Vec<(&str, &str)> = assigns.iter().map(|(v, x)| (*v, x.as_str())).collect();
+        let mut list: Vec<Assignment<&str>> = assigns
+            .iter()
+            .map(|(name, value)| Assignment {
+                name: *name,
+                value: value.as_str(),
+            })
+            .collect();
         list.extend_from_slice(select.overrides);
         let sample = if mc.is_some() { s } else { NO_SAMPLE };
         jobs.push_row(config, corner, sample, seed, &list)?;
@@ -283,7 +290,7 @@ impl Jobs {
         config: Option<&str>,
         corner: Option<&str>,
         sample: u32,
-        assigns: &[(&str, &str)],
+        assigns: &[Assignment<&str>],
     ) -> Result<u32, PlanError> {
         self.push_row(config, corner, sample, 0, assigns)
     }
@@ -369,16 +376,16 @@ impl Jobs {
         pending
     }
 
-    /// Iterates job `j`'s `(var, value)` assignments in application order.
+    /// Iterates job `j`'s var assignments in application order.
     ///
     /// # Panics
     ///
     /// Panics if `j >= len()`.
-    pub fn assignments(&self, j: u32) -> impl Iterator<Item = (&str, &str)> + '_ {
+    pub fn assignments(&self, j: u32) -> impl Iterator<Item = Assignment<&str>> + '_ {
         assert!(j < self.len(), "job {j} of {}", self.len());
-        span(&self.assign_end, j as usize).map(move |a| {
-            let var = self.var_names[self.assign_var[a] as usize].as_str();
-            (var, &self.vals[span(&self.val_end, a)])
+        span(&self.assign_end, j as usize).map(move |a| Assignment {
+            name: self.var_names[self.assign_var[a] as usize].as_str(),
+            value: &self.vals[span(&self.val_end, a)],
         })
     }
 
@@ -390,9 +397,9 @@ impl Jobs {
     #[must_use]
     pub fn assigned(&self, j: u32, var: &str) -> Option<&str> {
         self.assignments(j)
-            .filter(|(v, _)| *v == var)
+            .filter(|a| a.name == var)
             .last()
-            .map(|(_, x)| x)
+            .map(|a| a.value)
     }
 
     /// Appends job `j`'s canonical key line, `config corner sample var=value…` with `-`
@@ -414,8 +421,8 @@ impl Jobs {
             NO_SAMPLE => out.push_str(" -"),
             s => write!(out, " {s}").expect("String write"),
         }
-        for (v, x) in self.assignments(j) {
-            write!(out, " {v}={x}").expect("String write");
+        for Assignment { name, value } in self.assignments(j) {
+            write!(out, " {name}={value}").expect("String write");
         }
         assert!(out.len() > len + 4, "at least `- - -`");
     }
@@ -428,7 +435,7 @@ impl Jobs {
         corner: Option<&str>,
         sample: u32,
         seed: u32,
-        assigns: &[(&str, &str)],
+        assigns: &[Assignment<&str>],
     ) -> Result<u32, PlanError> {
         if self.len() >= JOBS_MAX {
             return Err(plan::plan_err(
@@ -437,15 +444,18 @@ impl Jobs {
                 format!("more than {JOBS_MAX} jobs"),
             ));
         }
-        if let Some((v, _)) = assigns.iter().find(|(v, x)| v.is_empty() || x.is_empty()) {
-            return Err(plan::plan_err("select", v, "empty var name or value"));
+        if let Some(a) = assigns
+            .iter()
+            .find(|a| a.name.is_empty() || a.value.is_empty())
+        {
+            return Err(plan::plan_err("select", a.name, "empty var name or value"));
         }
         let config = config.map_or(DEFAULT, |c| intern(&mut self.configs, c));
         let corner = corner.map_or(DEFAULT, |c| intern(&mut self.corners, c));
-        for (var, val) in assigns {
-            let v = intern(&mut self.var_names, var);
+        for a in assigns {
+            let v = intern(&mut self.var_names, a.name);
             self.assign_var.push(v);
-            self.vals.push_str(val);
+            self.vals.push_str(a.value);
             assert!(
                 self.vals.len() < u32::MAX as usize,
                 "assignment text arena full"
@@ -534,21 +544,20 @@ mod tests {
 
     #[test]
     fn push_keeps_assignments_and_refuses_empty_text() {
+        let set = |name, value| Assignment { name, value };
         let mut jobs = Jobs::new();
         assert_eq!(jobs, Jobs::default(), "the default table is valid");
+        let first = [set("R", "1k"), set("C", "1p")];
+        assert_eq!(jobs.push(None, Some("ff"), NO_SAMPLE, &first), Ok(0));
         assert_eq!(
-            jobs.push(None, Some("ff"), NO_SAMPLE, &[("R", "1k"), ("C", "1p")]),
-            Ok(0)
-        );
-        assert_eq!(
-            jobs.push(Some("a"), None, 3, &[("R", "2k"), ("R", "3k")]),
+            jobs.push(Some("a"), None, 3, &[set("R", "2k"), set("R", "3k")]),
             Ok(1)
         );
-        assert!(jobs.push(None, None, NO_SAMPLE, &[("R", "")]).is_err());
-        assert!(jobs.push(None, None, NO_SAMPLE, &[("", "1")]).is_err());
+        assert!(jobs.push(None, None, NO_SAMPLE, &[set("R", "")]).is_err());
+        assert!(jobs.push(None, None, NO_SAMPLE, &[set("", "1")]).is_err());
         assert_eq!(jobs.len(), 2, "a refused push leaves the table unchanged");
         let a: Vec<_> = jobs.assignments(0).collect();
-        assert_eq!(a, [("R", "1k"), ("C", "1p")]);
+        assert_eq!(a, first);
         assert_eq!(
             jobs.assigned(1, "R"),
             Some("3k"),
