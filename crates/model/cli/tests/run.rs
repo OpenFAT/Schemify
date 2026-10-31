@@ -276,6 +276,12 @@ fn a_pdk_pins_its_simulator() {
         code == 0 && text.starts_with("* tb (schemify xyce)\n"),
         "{text}"
     );
+    // A program that exists nowhere, so the refusal holds where Xyce is on PATH (nix develop).
+    fs::write(
+        dir.join("init.lua"),
+        format!("{init}schemify.sim('xyce', {{ path = '/nonexistent/Xyce' }})\n"),
+    )
+    .unwrap();
     let (code, text) = cli(&["run", "tb.shbench"]);
     assert_eq!(code, 1, "{text}");
     assert!(text.contains("kit pins simulator xyce"), "{text}");
