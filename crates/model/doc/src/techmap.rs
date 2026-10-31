@@ -61,6 +61,10 @@ pub struct TechMap {
     /// (pdk spec §6), as written; it outranks the user config's simulator (run spec §5).
     /// A word, never a command (D7).
     pub simulator: Option<String>,
+    /// Header `host <ssh destination>`: the machine the kit's models stay on, where every
+    /// run goes (pdk spec §6, run spec §5), as written; the cli checks it. A destination,
+    /// never a command (D7): the command line there is the user config's.
+    pub host: Option<String>,
     /// Class of each row (`nmos`).
     pub class: Vec<String>,
     /// Flavor of each row (`core`).
@@ -100,6 +104,7 @@ impl TechMap {
         m.pdk = header_attr("pdk").unwrap_or("this technology").to_owned();
         m.vdd = header_attr("vdd").map(str::to_owned);
         m.simulator = header_attr("simulator").map(str::to_owned);
+        m.host = header_attr("host").map(str::to_owned);
         for r in 1..d.record_count() {
             let f: Vec<&str> = d.fields(r).collect();
             assert_eq!(f.len(), 2, "the reader checked the class shape");

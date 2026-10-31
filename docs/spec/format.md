@@ -172,7 +172,7 @@ Document order is preserved.
 
 ### Technology map (`tech.map`, kind `techmap`)
 
-Header attributes `pdk <family>` (the name messages use), `vdd <volts>` (nominal core supply) and `simulator <word>` (the simulator the PDK pins, [pdk.md](pdk.md) §6). Records, rank 1, file order:
+Header attributes `pdk <family>` (the name messages use), `vdd <volts>` (nominal core supply), `simulator <word>` (the simulator the PDK pins, [pdk.md](pdk.md) §6) and `host <[user@]host>` (the ssh destination its runs go to, [pdk.md](pdk.md) §6). Records, rank 1, file order:
 
 | Record | Attributes | Notes |
 |---|---|---|

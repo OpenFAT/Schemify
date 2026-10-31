@@ -126,7 +126,7 @@ impl Sim {
         };
         // The optimizer pushes its own candidates: no plan selection.
         let select = simulate.then_some(&select);
-        let cfg = self.config(session);
+        let cfg = self.config(session)?;
         let mut run = spines::start_run(session, top, select, env, self.dialect, funcs, cfg)?;
         run.extra = probe.to_owned();
         let kind = match &opt_name {
@@ -212,17 +212,28 @@ impl Sim {
     }
 
     /// The runner configuration for a run of `session`'s project: the run directory under
-    /// its root, every library's directory, the user config's programs.
-    pub(super) fn config(&self, session: &Session) -> impl FnOnce(&Digest) -> RunnerConfig + use<> {
+    /// its root, every library's directory, the user config's programs, and the host the
+    /// PDK names (`spines::run_host`).
+    ///
+    /// # Errors
+    ///
+    /// The PDK names a host that is no ssh destination or that the user config has no row
+    /// for.
+    pub(super) fn config(
+        &self,
+        session: &Session,
+    ) -> Result<impl FnOnce(&Digest) -> RunnerConfig + use<>, String> {
         let root = session.root.clone();
         let lib_dirs = session.lib_dirs();
-        let tools = self.tools.clone();
-        move |d| {
+        let mut tools = self.tools.clone();
+        let host = spines::run_host(self.dialect, &session.project, &mut tools)?;
+        Ok(move |d: &Digest| {
             let mut c = RunnerConfig::new(&root, d);
             c.lib_dirs = lib_dirs;
             c.tools = tools;
+            c.host = host;
             c
-        }
+        })
     }
 
     /// Cancels every run in flight (children are killed, unprepared jobs cancelled) and
@@ -336,7 +347,7 @@ impl Sim {
         let stale = self.shown == Some(top) && self.stale;
         if self.index_of(top).is_none() || stale {
             let fresh = self.make_room(top).and_then(|()| {
-                let cfg = self.config(session);
+                let cfg = self.config(session)?;
                 spines::start_run(session, top, None, env, self.dialect, funcs, cfg)
             });
             match fresh {

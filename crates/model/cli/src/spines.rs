@@ -20,7 +20,7 @@
 //! - `pub fn env_pairs() -> Vec<(String, String)>`
 //! - `pub fn open_file(&Path, u64) -> Result<Opened, OpenError>`
 //! - `pub fn bench_name(&Project, impl Fn(u8) -> Option<&Path>, &Path) -> Option<String>`
-//! - re-exported from `sim`: `SIMULATORS`, `sim_dialect`, `pin`, `run_dialect`, `tools`
+//! - re-exported from `sim`: `SIMULATORS`, `sim_dialect`, `pin`, `run_dialect`, `tools`, `run_host`
 //! - re-exported from `run` (native): `Run`, `start_run`, `BENCH`
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,9 +29,9 @@ mod sim;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use run::{BENCH, Run, start_run};
-#[cfg(not(target_arch = "wasm32"))]
-pub use sim::tools;
 pub use sim::{SIMULATORS, pin, run_dialect, sim_dialect};
+#[cfg(not(target_arch = "wasm32"))]
+pub use sim::{run_host, tools};
 
 use std::path::{Path, PathBuf};
 

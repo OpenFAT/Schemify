@@ -264,6 +264,7 @@ schemify 1 techmap
   pdk sky130
   vdd 1.8                                  # nominal supply of the core flavor, volts
   simulator spectre                        # optional: the simulator the kit's models need
+  host pdk@pdkserver                       # optional: the machine the kit's models stay on
 
 class nmos core
   cell sky130_fd_pr:nfet_01v8              # the PDK cell it becomes
@@ -293,6 +294,16 @@ class nmos core                            # in asap7's map: FinFET
   falls back to another one: a run in it that Schemify cannot start, or whose program is not
   installed, is refused naming the PDK. Another word is an error naming the PDK when the
   dialect is chosen.
+- **`host`** names the ssh destination a kit's models stay on (a foundry kit that may not
+  leave its server): every run of the project goes there ([run.md](run.md) §5, remote jobs),
+  in the simulator the run picks, through the user config's `sim` row for that simulator on
+  that host ([config.md](config.md) §3). A destination, never a command (D7): a PDK may name
+  a host, but only a host the user's own config lists can run, so a downloaded PDK never
+  makes Schemify ssh to a destination the user did not configure. A run is refused naming the PDK when the host is not an
+  ssh destination (the `valid_host` grammar of config.md §3: ``kit names host `…`, which is
+  not an ssh destination``) or the user config has no row for the run's simulator there
+  (``kit runs on `…`, where the user config names no `sim <simulator>` row``); ssh is never
+  started for either. With a `host`, a pinned simulator needs no program here.
 - A class/flavor a PDK lacks is an error at check time ("sky130 has no lvt pmos"), not a silent
   substitution.
 - The shipped maps (`PDK-Manager/maps/`): sky130 `W = w/1u`, `L = l/1u`, `mult = m`
