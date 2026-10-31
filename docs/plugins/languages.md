@@ -8,7 +8,7 @@ A plugin is a core wasm32 module ([plugin ABI](../spec/plugin-abi.md)), so any l
 
 Every library covers the whole ABI: the host imports, the table and column ids, event parsing, line-record values, the output records and the module's exports. The plugin writes only its event handler.
 
-Each template in [examples/plugins_new/](../../examples/plugins_new) is a complete plugin repository root, built with the language's own build system. Every template does the same thing:
+Each template in [examples/plugins/](../../examples/plugins) is a complete plugin repository root, built with the language's own build system. Every template does the same thing:
 
 - On `Load` it adds **Tools → Count nets**.
 - The command logs the nets that have a single connection, with their names (`2 single-connection nets: c, d`).
@@ -17,16 +17,16 @@ Each template in [examples/plugins_new/](../../examples/plugins_new) is a comple
 
 | Language | Template | Library | Build | Module |
 |---|---|---|---|---|
-| Rust | [rust/](../../examples/plugins_new/rust) | `schemify-abi` (feature `guest`) | Cargo | 38 KB |
-| C | [c/](../../examples/plugins_new/c) | [sdk/c/schemify.h](../../crates/protocol/abi/sdk/c/schemify.h) | Make | 9.0 KB |
-| C++ | [cpp/](../../examples/plugins_new/cpp) | sdk/c/schemify.h | CMake | 6.5 KB |
-| Zig | [zig/](../../examples/plugins_new/zig) | [sdk/zig/schemify.zig](../../crates/protocol/abi/sdk/zig/schemify.zig) | `build.zig` | 7.2 KB |
-| Odin | [odin/](../../examples/plugins_new/odin) | [sdk/odin/schemify/](../../crates/protocol/abi/sdk/odin/schemify) | `odin build` | 13 KB |
-| Go | [go/](../../examples/plugins_new/go) | [sdk/go/](../../crates/protocol/abi/sdk/go) (module) | `go.mod` + TinyGo | 11 KB |
-| TypeScript | [assemblyscript/](../../examples/plugins_new/assemblyscript) | [sdk/assemblyscript/](../../crates/protocol/abi/sdk/assemblyscript) | npm + `asconfig.json` | 7.0 KB |
-| Nim | [nim/](../../examples/plugins_new/nim) | sdk/c/schemify.h | `config.nims` | 6.9 KB |
-| D | [d/](../../examples/plugins_new/d) | sdk/c/schemify.h | dub | 6.5 KB |
-| Swift | [swift/](../../examples/plugins_new/swift) | sdk/c/schemify.h | SwiftPM | 9.7 KB |
+| Rust | [rust/](../../examples/plugins/rust) | `schemify-abi` (feature `guest`) | Cargo | 38 KB |
+| C | [c/](../../examples/plugins/c) | [sdk/c/schemify.h](../../crates/protocol/abi/sdk/c/schemify.h) | Make | 9.0 KB |
+| C++ | [cpp/](../../examples/plugins/cpp) | sdk/c/schemify.h | CMake | 6.5 KB |
+| Zig | [zig/](../../examples/plugins/zig) | [sdk/zig/schemify.zig](../../crates/protocol/abi/sdk/zig/schemify.zig) | `build.zig` | 7.2 KB |
+| Odin | [odin/](../../examples/plugins/odin) | [sdk/odin/schemify/](../../crates/protocol/abi/sdk/odin/schemify) | `odin build` | 13 KB |
+| Go | [go/](../../examples/plugins/go) | [sdk/go/](../../crates/protocol/abi/sdk/go) (module) | `go.mod` + TinyGo | 11 KB |
+| TypeScript | [assemblyscript/](../../examples/plugins/assemblyscript) | [sdk/assemblyscript/](../../crates/protocol/abi/sdk/assemblyscript) | npm + `asconfig.json` | 7.0 KB |
+| Nim | [nim/](../../examples/plugins/nim) | sdk/c/schemify.h | `config.nims` | 6.9 KB |
+| D | [d/](../../examples/plugins/d) | sdk/c/schemify.h | dub | 6.5 KB |
+| Swift | [swift/](../../examples/plugins/swift) | sdk/c/schemify.h | SwiftPM | 9.7 KB |
 
 After copying a template, follow [Repository layout](repository.md), [Testing](testing.md) and [Publishing](publishing.md).
 
@@ -49,11 +49,11 @@ The templates reach their library by a path inside this checkout. In your own re
 
 | Language | How |
 |---|---|
-| Rust | `schemify-abi = { git = "https://github.com/OmarSiwy/Schemify", rev = "<commit>", features = ["guest"] }` ([repository.md](repository.md)) |
+| Rust | `schemify-abi = { git = "https://github.com/OpenFAT/Schemify", rev = "<commit>", features = ["guest"] }` ([repository.md](repository.md)) |
 | C, C++, Nim, D, Swift | Vendor `crates/protocol/abi/sdk/c/schemify.h` from a pinned revision, or add Schemify as a git submodule, and point the include path at it |
-| Zig | `zig fetch --save=schemify git+https://github.com/OmarSiwy/Schemify#<commit>`. `build.zig` keeps `b.dependency("schemify", .{}).path("crates/protocol/abi/sdk/zig/schemify.zig")` |
+| Zig | `zig fetch --save=schemify git+https://github.com/OpenFAT/Schemify#<commit>`. `build.zig` keeps `b.dependency("schemify", .{}).path("crates/protocol/abi/sdk/zig/schemify.zig")` |
 | Odin | Vendor `crates/protocol/abi/sdk/odin` and point `-collection:schemify=` at it |
-| Go | Delete the `replace` line in `go.mod`, then `go get github.com/OmarSiwy/Schemify/crates/protocol/abi/sdk/go@<commit>` |
+| Go | Delete the `replace` line in `go.mod`, then `go get github.com/OpenFAT/Schemify/crates/protocol/abi/sdk/go@<commit>` |
 | TypeScript | npm can't install a git subdirectory: vendor `crates/protocol/abi/sdk/assemblyscript` or add a submodule, and point the `file:` dependency at it |
 
 ## Check a module

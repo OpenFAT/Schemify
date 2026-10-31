@@ -115,7 +115,7 @@ schemify publish my-project -o site         # site/projects/my-project/ and site
 cp -r crates/view/app/web/. site                 # the editor: site/index.html and site/pkg/
 ```
 
-Open `site/projects/` for the list, or link straight to `site/#/projects/my-project/tb.shbench`. On first visit the page copies the project into browser storage. Later visits reuse that copy, edits included, until the site publishes a changed project, which replaces it. The [web spec](../spec/web.md) §3.1 has the details. With Nix, `nix build github:OmarSiwy/Schemify#web` gives the editor bundle (`result/index.html`, `result/pkg/`) and `nix shell github:OmarSiwy/Schemify#schemify` the command line, the same in CI as on your machine.
+Open `site/projects/` for the list, or link straight to `site/#/projects/my-project/tb.shbench`. On first visit the page copies the project into browser storage. Later visits reuse that copy, edits included, until the site publishes a changed project, which replaces it. The [web spec](../spec/web.md) §3.1 has the details. With Nix, `nix build github:OpenFAT/Schemify#web` gives the editor bundle (`result/index.html`, `result/pkg/`) and `nix shell github:OpenFAT/Schemify#schemify` the command line, the same in CI as on your machine.
 
 ## What is missing compared with the desktop
 

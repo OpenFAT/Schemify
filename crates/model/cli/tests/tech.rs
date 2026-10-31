@@ -1,6 +1,6 @@
 //! Technology classes end to end (pdk spec §5, §6, §10): one `tech:` inverter netlisted
 //! under the sky130 and gf180mcu maps (`tests/fixtures/tech/maps/`, copied from the PDK
-//! manager plugin, github.com/OmarSiwy/Schemify-PDK-Manager) against tiny stand-in PDK
+//! manager plugin, github.com/OpenFAT/PDK-Manager) against tiny stand-in PDK
 //! libraries yields each PDK's device lines with the mapped params (golden netlists,
 //! re-blessed with `SCHEMIFY_BLESS=1`); without `lib tech`, with an unknown class or an
 //! unknown flavor it is refused with the reason.

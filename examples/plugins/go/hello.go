@@ -2,7 +2,7 @@
 // Build with TinyGo (standard Go's wasm imports WASI): see go.mod.
 package main
 
-import schemify "github.com/OmarSiwy/Schemify/crates/protocol/abi/sdk/go"
+import schemify "github.com/OpenFAT/Schemify/crates/protocol/abi/sdk/go"
 
 // Static buffers: TinyGo's wasm-unknown heap never frees, so don't allocate per event.
 var (

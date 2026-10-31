@@ -6,7 +6,7 @@
     .dependencies = .{
         // This template sits inside the Schemify repository. In your own repository, pin a
         // Schemify revision instead (this rewrites the entry with .url and .hash):
-        //     zig fetch --save=schemify git+https://github.com/OmarSiwy/Schemify#<full 40-char commit>
+        //     zig fetch --save=schemify git+https://github.com/OpenFAT/Schemify#<full 40-char commit>
         .schemify = .{ .path = "../../.." },
     },
     .paths = .{""},

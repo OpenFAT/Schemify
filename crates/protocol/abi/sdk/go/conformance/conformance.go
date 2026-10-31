@@ -3,7 +3,7 @@
 //	tinygo build -target=wasm-unknown -no-debug -o conformance/conformance.wasm ./conformance
 package main
 
-import schemify "github.com/OmarSiwy/Schemify/crates/protocol/abi/sdk/go"
+import schemify "github.com/OpenFAT/Schemify/crates/protocol/abi/sdk/go"
 
 // Static buffers: wasm-unknown's heap never frees.
 var (

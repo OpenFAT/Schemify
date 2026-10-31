@@ -79,7 +79,7 @@ UI and visual work has its own guides under [skills/](skills/), read as document
 | [schemify-theme](skills/schemify-theme/SKILL.md) | Colour and chrome tokens; `python3 docs/dev/skills/schemify-theme/check_theme.py` gates them. |
 | [schemify-ui-loop](skills/schemify-ui-loop/SKILL.md) | The edit, render, critique, bless loop for the default UI's look. |
 | [schemify-symbols](skills/schemify-symbols/SKILL.md) | Drawing rules for the device symbols in `crates/model/doc/devices/`. |
-| [schemify-plugin](skills/schemify-plugin/SKILL.md) | Starting a plugin in any language from a template in `examples/plugins_new/` (linked into `.claude/skills/`, so Claude Code loads it). |
+| [schemify-plugin](skills/schemify-plugin/SKILL.md) | Starting a plugin in any language from a template in `examples/plugins/` (linked into `.claude/skills/`, so Claude Code loads it). |
 
 ## Hard rules
 
@@ -150,11 +150,11 @@ The default UI and the host's test guests are wasm modules committed next to the
 nix develop -c ui/build.sh
 ```
 
-and commit every `.wasm` it changes. Without Nix, download the `guests` artifact of the PR's CI run (`gh run download <run> -n guests -D <tmp>`, then `cp -r <tmp>/. .`). The plugin repositories under `examples/plugins/` pin a Schemify revision and test against `main` nightly ([../plugins/testing.md](../plugins/testing.md)), so an ABI change reaches them when they bump.
+and commit every `.wasm` it changes. Without Nix, download the `guests` artifact of the PR's CI run (`gh run download <run> -n guests -D <tmp>`, then `cp -r <tmp>/. .`). The plugin repositories pin a Schemify revision and test against `main` nightly ([../plugins/testing.md](../plugins/testing.md)), so an ABI change reaches them when they bump.
 
 ## Branches and releases
 
-- `main` is the integration branch (`origin` = github.com/OmarSiwy/Schemify, public) and is always green: work lands through a PR whose merge result passed the merge tier. CI work may push `ci/*` branches. One branch per change; delete worktrees when done.
+- `main` is the integration branch (`origin` = github.com/OpenFAT/Schemify, public) and is always green: work lands through a PR whose merge result passed the merge tier. CI work may push `ci/*` branches. One branch per change; delete worktrees when done.
 - Generated files on `main` are the ones CI regenerates and compares (the wasm guests, goldens blessed with `SCHEMIFY_BLESS=1` and reviewed).
 - Release notes are written by hand, one line per change, and every number in them is measured by the release job, never typed ([testing.md](testing.md) § Release exit criteria).
 

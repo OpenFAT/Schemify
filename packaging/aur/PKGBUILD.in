@@ -9,7 +9,7 @@ pkgver=@VERSION@
 pkgrel=1
 pkgdesc='Schematic capture for analog/mixed-signal IC design (release binaries)'
 arch=('x86_64')
-url='https://github.com/OmarSiwy/Schemify'
+url='https://github.com/OpenFAT/Schemify'
 license=('MIT')
 depends=('glibc')
 optdepends=(
@@ -28,7 +28,7 @@ optdepends=(
 provides=('schemify')
 conflicts=('schemify')
 options=('!strip' '!debug')
-source=("https://github.com/OmarSiwy/Schemify/releases/download/v${pkgver}/schemify-v${pkgver}-linux-x86_64.tar.gz")
+source=("https://github.com/OpenFAT/Schemify/releases/download/v${pkgver}/schemify-v${pkgver}-linux-x86_64.tar.gz")
 sha256sums=('@SHA256@')
 
 package() {

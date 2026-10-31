@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regenerates sources.json, the release binaries the flake's versioned packages install
-(`nix run 'github:OmarSiwy/Schemify#latest'`, `nix build '.#"1.0.0"'`), from the GitHub
+(`nix run 'github:OpenFAT/Schemify#latest'`, `nix build '.#"1.0.0"'`), from the GitHub
 releases. After VerA's (and mitchellh/zig-overlay's) sources.json:
 
     { "<version>": { "date": "YYYY-MM-DD",
@@ -20,7 +20,7 @@ import re
 import sys
 import urllib.request
 
-REPO = "OmarSiwy/Schemify"
+REPO = "OpenFAT/Schemify"
 # Nix system -> the platform publish.yaml names the archive after. aarch64-linux has no
 # release archive: the flake builds it from source.
 SYSTEMS = {

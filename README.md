@@ -3,13 +3,13 @@
 **Schematic capture for analog and mixed-signal IC design: a fast, lightweight replacement for
 [xschem](https://xschem.sourceforge.io/), written in Rust.**
 
-[![ci](https://github.com/OmarSiwy/Schemify/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OmarSiwy/Schemify/actions/workflows/ci.yml)
-[![nightly](https://github.com/OmarSiwy/Schemify/actions/workflows/nightly.yml/badge.svg?branch=main)](https://github.com/OmarSiwy/Schemify/actions/workflows/nightly.yml)
+[![ci](https://github.com/OpenFAT/Schemify/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OpenFAT/Schemify/actions/workflows/ci.yml)
+[![nightly](https://github.com/OpenFAT/Schemify/actions/workflows/nightly.yml/badge.svg?branch=main)](https://github.com/OpenFAT/Schemify/actions/workflows/nightly.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.95%2B-orange)](Cargo.toml)
 
 Schemify draws schematics, writes netlists for ESPice, ngspice, Xyce, LTspice, HSPICE, CDL,
-Spectre and Verilog, runs simulations (with [ESPice](https://github.com/OmarSiwy/ESPice) by
+Spectre and Verilog, runs simulations (with [ESPice](https://github.com/OpenFAT/EGSpice) by
 default, or ngspice and others) and shows the waveforms. It imports xschem libraries and PDKs, so you can switch
 without redrawing anything. Every cell can carry a documentation page with LaTeX and live
 sizing math (gm/Id) that updates the schematic when a parameter changes. The same code runs on
@@ -44,9 +44,9 @@ Linux, macOS, Windows and in a browser.
 
 ## Install
 
-Each [release](https://github.com/OmarSiwy/Schemify/releases) ships `schemify` (the headless
+Each [release](https://github.com/OpenFAT/Schemify/releases) ships `schemify` (the headless
 core) and `schemify-gui` (the editor) for Linux, macOS and Windows. Simulation runs an external
-simulator: install [ESPice](https://github.com/OmarSiwy/ESPice) (the default) or ngspice.
+simulator: install [ESPice](https://github.com/OpenFAT/EGSpice) (the default) or ngspice.
 
 Linux packages (x86_64, glibc 2.28 or newer):
 
@@ -59,14 +59,14 @@ sudo pacman -U ./schemify-1.0.0-1-x86_64.pkg.tar.zst          # Arch; or the AUR
 Homebrew (macOS, and Linux x86_64):
 
 ```sh
-brew install OmarSiwy/schemify/schemify
+brew install OpenFAT/schemify/schemify
 ```
 
 Nix, prebuilt and cached, no compiling:
 
 ```sh
-nix run 'github:OmarSiwy/Schemify#latest' -- path/to/cell.shcomp
-nix profile install 'github:OmarSiwy/Schemify#latest'
+nix run 'github:OpenFAT/Schemify#latest' -- path/to/cell.shcomp
+nix profile install 'github:OpenFAT/Schemify#latest'
 ```
 
 macOS (Apple silicon and Intel) and Windows: download `schemify-v1.0.0-<platform>.tar.gz` (`.zip`
@@ -89,14 +89,14 @@ From a checkout, with Rust 1.95 or newer (`nix develop` provides the toolchain, 
 the Linux runtime libraries):
 
 ```sh
-git clone https://github.com/OmarSiwy/Schemify && cd Schemify
+git clone https://github.com/OpenFAT/Schemify && cd Schemify
 cargo run --release -p schemify-app -- crates/view/app/tests/fixtures/ota/ota.shcomp      # the editor
 cargo run --release -p schemify-cli -- netlist crates/view/app/tests/fixtures/rc/tb.shbench
 cargo run --release -p schemify-cli -- run crates/view/app/tests/fixtures/rc/tb.shbench   # needs a simulator
 ```
 
 To bring an xschem library across, use the `interop` plugin's command line (`schemify-interop`,
-from [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop)):
+from [Interoperate](https://github.com/OpenFAT/Interoperate)):
 
 ```sh
 schemify-interop xschem-import ~/xschem/my_lib -o my_lib
@@ -170,16 +170,15 @@ schemify.pack.add {
 git repository, or a URL with a sha256. See [docs/guide/config.md](docs/guide/config.md).
 
 Plugins are wasm modules ([plugin ABI](docs/spec/plugin-abi.md)). Each lives in its own
-repository; these four are checked out under [examples/plugins](examples/plugins) as submodules
-(`git submodule update --init --checkout`),
-and [docs/plugins](docs/plugins/README.md) shows how to write, test and publish your own:
+repository (these four below), [examples/plugins](examples/plugins) holds a template per
+language, and [docs/plugins](docs/plugins/README.md) shows how to write, test and publish your own:
 
 | Plugin | What it adds |
 |---|---|
-| [`interop`](https://github.com/OmarSiwy/Schemify-Interop) | xschem libraries and PDK device libraries into Schemify, and Virtuoso import and export (native CLI `schemify-interop`) |
-| [`pdk-manager`](https://github.com/OmarSiwy/Schemify-PDK-Manager) | installs an open PDK (sky130, GF180, IHP and others) into a project |
-| [`gmid-lut`](https://github.com/OmarSiwy/GmIDVisualizer) | gm/Id sizing functions for docs pages, from ngspice-characterized lookup tables |
-| [`cktimg`](https://github.com/OmarSiwy/cktImg) | SPICE netlist to placed and routed schematic (cktImg's layout engine) |
+| [`interop`](https://github.com/OpenFAT/Interoperate) | xschem libraries and PDK device libraries into Schemify, and Virtuoso import and export (native CLI `schemify-interop`) |
+| [`pdk-manager`](https://github.com/OpenFAT/PDK-Manager) | installs an open PDK (sky130, GF180, IHP and others) into a project |
+| [`gmid-lut`](https://github.com/OpenFAT/GmId-Visualizer) | gm/Id sizing functions for docs pages, from ngspice-characterized lookup tables |
+| [`cktimg`](https://github.com/OpenFAT/cktImg) | SPICE netlist to placed and routed schematic (cktImg's layout engine) |
 
 The default UI (menus, toolbar, dialogs and keys) is a plugin too, in
 [ui/default-plugin](ui/default-plugin), and is built into the editor.
@@ -201,7 +200,7 @@ and projects move in and out as zip files ([docs/guide/web.md](docs/guide/web.md
 Against xschem, the netlists of 255 of 301 corpus benches (sky130, GF180, IHP and xschem's
 examples) are equivalent to xschem's SPICE output, and 235 of 301 for CDL. Every remaining
 difference is triaged in the interop plugin's
-[RATCHET.md](https://github.com/OmarSiwy/Schemify-Interop/blob/main/tests/corpus/RATCHET.md), and
+[RATCHET.md](https://github.com/OpenFAT/Interoperate/blob/main/tests/corpus/RATCHET.md), and
 its nightly run fails if the count drops.
 
 ## Documentation

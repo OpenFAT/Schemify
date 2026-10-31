@@ -48,7 +48,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## Decisions pending (user)
 
-- **cktImg upstream PR** OmarSiwy/cktImg #5 (separations batched past 256 rounds only; fixes #4's slowdown on regular decks): merge, then bump the `examples/plugins/cktImg` submodule to the merged `main` commit.
+- **cktImg upstream PR** OpenFAT/cktImg #5 (separations batched past 256 rounds only; fixes #4's slowdown on regular decks): merge.
 
 
 ## command stream (rpc, D27)
@@ -70,7 +70,7 @@ Open items collected from workstream reports. Each item names its owner crate. R
 
 ## netlist
 
-- Remaining corpus differences are owned and annotated in `examples/plugins/interop/tests/corpus/RATCHET.md` (SPICE 246/301 + 23 golden-unevaluated, CDL code-stripped 227/301 + 32, 22 gate-blocked).
+- Remaining corpus differences are owned and annotated in `Interoperate/tests/corpus/RATCHET.md` (SPICE 246/301 + 23 golden-unevaluated, CDL code-stripped 227/301 + 32, 22 gate-blocked).
 - **import**: parametric bus widths: `ADD[dim-1:0]` (template parameters: needs widths resolved per instance, a variant cell per distinct value, and the cell's own labels resolved too; the only corpus bench, ram_tb, has an invalid-SPICE golden with literal `DIN[width-1:0]` ports) and `A[max:0]` (no parameter: the pin takes the attached net's width, an elab rule; test_ngspice also needs `~`). Per-instance `spice_sym_def` built by Tcl (`[abs_sym_path f]`, `[read_data_nonewline …]`) stays reviewed (inst_sch_select).
 - **elab** (asked by import): XSPICE inverted-net labels `~D[5..0]` import as the bundle `~D5,…,~D0`, but the net grammar (netlist §4 `ident`) has no `~`, so the bundle is one scalar name and the pin is `E011` (sar_adc, tb_sar_adc, test_ngspice): allow an optional leading `~` in `ident` (netexpr.rs), the bit name keeping it (ngspice inverts the node).
 - **elab**: xschem replicates a 1-pin instance on an N-bit bus (`.save v(count[k])` per bit) and sizes an unnamed net on an iterated instance by pin width × elements; both need a rule that keeps the sky130 adders' broadcast.

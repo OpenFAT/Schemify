@@ -1,6 +1,6 @@
 # Nightly tier (docs/dev/testing.md § Tiers): fuzzing, perf regression gate, coverage ratchet. The
 # xschem differential ratchet on the full corpus runs in the interop plugin's repository
-# (github.com/OmarSiwy/Schemify-Interop).
+# (github.com/OpenFAT/Interoperate).
 name: nightly
 
 on:

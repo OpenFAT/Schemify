@@ -6,7 +6,7 @@ Read [docs/dev/contributing.md](docs/dev/contributing.md) before any change: it 
 
 Load each with the Skill tool (other agents: read
 `~/.claude/skills/<name>/SKILL.md` and the companion files it names). Source:
-https://github.com/OmarSiwy/NixOSConfig/tree/main/skills
+https://github.com/OpenFAT/NixOSConfig/tree/main/skills
 
 | Skill                  | Use it for here                                                                                                                   |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------- |

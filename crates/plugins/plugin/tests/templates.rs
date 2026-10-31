@@ -1,11 +1,11 @@
-//! The language templates in `examples/plugins_new/` (docs/plugins/languages.md): every
+//! The language templates in `examples/plugins/` (docs/plugins/languages.md): every
 //! committed `hello.wasm` loads in the real host and behaves like the Rust one, so a
 //! template the docs hand out never stops loading unnoticed.
 
 use schemify_plugin::abi::{Event, FUEL_DEFAULT, Kind, Table, col};
 use schemify_plugin::{PluginEvents, Plugins, RequestQueues, Snapshots, deliver};
 
-const TEMPLATES: &str = concat!(env!("SCHEMIFY_ROOT"), "/examples/plugins_new");
+const TEMPLATES: &str = concat!(env!("SCHEMIFY_ROOT"), "/examples/plugins");
 
 /// Runs `wasm` through Load and `hello.count` against nets a, b, c, d with pin counts 5, 4,
 /// 1, 1;

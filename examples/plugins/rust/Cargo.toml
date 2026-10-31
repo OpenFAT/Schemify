@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Pin to the Schemify revision you build against (docs/plugins/repository.md).
-schemify-abi = { git = "https://github.com/OmarSiwy/Schemify", rev = "eb3c9df166fcaf0b2e7375e9c3bcfffd6772cd5c", features = ["guest"] }
+schemify-abi = { git = "https://github.com/OpenFAT/Schemify", rev = "25ad74d1d3a13d23166d1fd49bf8c1aa11c01c0d", features = ["guest"] }
 
 # Small modules: size over speed, no unwinding (a panic is a trap the host reports).
 [profile.release]

@@ -4,7 +4,7 @@
 #   tests/fuzz/seeds.sh <target> <corpus dir>
 #
 # Seeds are this repository's own files. The interop plugin's harnesses (xschem_read,
-# sfyx_import) and their seeds live in its repository (github.com/OmarSiwy/Schemify-Interop).
+# sfyx_import) and their seeds live in its repository (github.com/OpenFAT/Interoperate).
 set -eu
 
 target="$1"

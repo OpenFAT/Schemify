@@ -24,7 +24,7 @@ description: |
   `schemify-gui` is the editor, which `schemify edit` starts. Simulation runs an external
   simulator: ESPice by default, or ngspice, Xyce, LTspice or Spectre.
 vendor: Schemify
-homepage: https://github.com/OmarSiwy/Schemify
+homepage: https://github.com/OpenFAT/Schemify
 license: MIT
 
 contents:
@@ -95,7 +95,7 @@ overrides:
 
 deb:
   fields:
-    Bugs: https://github.com/OmarSiwy/Schemify/issues
+    Bugs: https://github.com/OpenFAT/Schemify/issues
 rpm:
   group: Applications/Engineering
   summary: Schematic capture for analog/mixed-signal IC design

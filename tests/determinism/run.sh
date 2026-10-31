@@ -11,7 +11,7 @@
 #                                 app/elab/netlist tests, in every dialect; `.status` = exit code
 #   fmt/<fixture>                 `schemify fmt` (canonical rewrite) of every design fixture
 # The xschem import's determinism is checked in the interop plugin's repository
-# (github.com/OmarSiwy/Schemify-Interop).
+# (github.com/OpenFAT/Interoperate).
 # `*.log` files hold stderr for debugging and are not compared (messages may spell paths
 # natively).
 set -euo pipefail

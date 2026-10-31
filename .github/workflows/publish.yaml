@@ -5,9 +5,9 @@
 # GitHub release whose notes are the release checklist (.github/release-notes.md): a maintainer
 # ticks it, then publishes. Publishing the release adds it to sources.json on main (the
 # `sources` job), which the flake's versioned packages install without compiling
-# (`nix run 'github:OmarSiwy/Schemify#latest'`), tests the Homebrew formula and the AUR
+# (`nix run 'github:OpenFAT/Schemify#latest'`), tests the Homebrew formula and the AUR
 # package and, given HOMEBREW_TAP_TOKEN and AUR_SSH_PRIVATE_KEY, pushes them to the
-# OmarSiwy/homebrew-schemify tap and to schemify-bin (the `homebrew` and `aur` jobs). A push
+# OpenFAT/homebrew-schemify tap and to schemify-bin (the `homebrew` and `aur` jobs). A push
 # to `ci/release*` runs the builds as a dry run and publishes nothing.
 name: publish
 
@@ -281,8 +281,8 @@ jobs:
 
   # The Homebrew formula the release attached, installed through a local tap on macOS from the
   # published archives and run by its own `test do`. With a HOMEBREW_TAP_TOKEN secret
-  # (contents: write on OmarSiwy/homebrew-schemify) the formula is pushed to that tap:
-  # `brew install OmarSiwy/schemify/schemify`. Runs when the release is published: a draft's
+  # (contents: write on OpenFAT/homebrew-schemify) the formula is pushed to that tap:
+  # `brew install OpenFAT/schemify/schemify`. Runs when the release is published: a draft's
   # archives are not downloadable by URL.
   homebrew:
     if: github.event_name == 'release'
@@ -301,11 +301,11 @@ jobs:
           brew install schemify/local/schemify
           brew test schemify/local/schemify
           schemify --version
-      - name: Push to OmarSiwy/homebrew-schemify
+      - name: Push to OpenFAT/homebrew-schemify
         if: env.TAP_TOKEN != ''
         run: |
           set -euo pipefail
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/OmarSiwy/homebrew-schemify.git" tap
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/OpenFAT/homebrew-schemify.git" tap
           mkdir -p tap/Formula && cp schemify.rb tap/Formula/schemify.rb
           cd tap
           git config user.name 'github-actions[bot]'

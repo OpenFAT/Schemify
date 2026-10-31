@@ -4,7 +4,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 
 ## Branches
 
-- `main`: integration branch, pushed to `origin` (git@github.com:OmarSiwy/Schemify.git, public); `m1` is its pre-remote history.
+- `main`: integration branch, pushed to `origin` (git@github.com:OpenFAT/Schemify.git, public); `m1` is its pre-remote history.
 - In-flight work happens on branches, merged into `main` by the integrator (no long-lived worktrees).
 
 ## Done on `main`
@@ -23,8 +23,8 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 | `abi` + `plugin` | wasmi host, capabilities, fuel, last-wins composition, guest SDK |
 | `ui` + `render` | UI-as-data tables drawn by egui (RaTeX for math), egui-wgpu window with the canvas's instanced pipelines as paint callbacks, offscreen raster for goldens and export, waves window; the web window on WebGPU, else WebGL2 (web spec §7; `tests/web/` still drives the removed CPU tier) |
 | `app` | GUI editor (`schemify edit`): xschem editing, default-UI plugin, docs pane, live checks + panel, net highlight, netlist (`n`), non-blocking simulate (`s`) with results table, waves dock + cross-probe, OP annotation, optimizer → staged edit; CLI: `netlist check run fmt diff merge-driver git-setup` (shared `spines` module) |
-| Plugins | `default-ui` (embedded); the rest are standalone repositories since 2026-10-18 (submodules in `examples/plugins/`, docs/plugins/): `interop` (2026-10-12: the clean-room xschem importer moved out of the core: xschem translation, PDK limits (model bins, `drc=`, tech grid, cdfDump); native CLI `schemify-interop xschem-import`; wasm guest builds, no commands yet), `gmid-lut` (gm/Id functions from ngspice-characterized LUTs), `cktimg` (SPICE → schematic laid out by cktImg's Zig engine; round trip spicecmp-equivalent on 79/80 fixtures and 296/301 goldens, + annotated xfails; wasm guest byte-identical to native, 69/80 fixtures within the default fuel), examples `hello`/`bad-actor`/`gmid-stub` |
-| Corpus | moved with the interop plugin (Schemify-Interop `tests/corpus/`): fetch + 602 xschem goldens (`.cache/`, gitignored), `tools/spicecmp`, ratchet in its `RATCHET.md` (SPICE 246/301, CDL code-stripped 227/301; +23/+32 golden-unevaluated tracked separately) |
+| Plugins | `default-ui` (embedded); the rest are standalone repositories since 2026-10-18 (docs/plugins/; `examples/plugins/` holds one template per language): `interop` (2026-10-12: the clean-room xschem importer moved out of the core: xschem translation, PDK limits (model bins, `drc=`, tech grid, cdfDump); native CLI `schemify-interop xschem-import`; wasm guest builds, no commands yet), `gmid-lut` (gm/Id functions from ngspice-characterized LUTs), `cktimg` (SPICE → schematic laid out by cktImg's Zig engine; round trip spicecmp-equivalent on 79/80 fixtures and 296/301 goldens, + annotated xfails; wasm guest byte-identical to native, 69/80 fixtures within the default fuel), examples `hello`/`bad-actor`/`gmid-stub` |
+| Corpus | moved with the interop plugin (Interoperate `tests/corpus/`): fetch + 602 xschem goldens (`.cache/`, gitignored), `tools/spicecmp`, ratchet in its `RATCHET.md` (SPICE 246/301, CDL code-stripped 227/301; +23/+32 golden-unevaluated tracked separately) |
 | `cli` + `config` | Headless core `schemify` (2.57 MB; D39 budget 2 MB) and editor `schemify-gui` (16.0 MB; budget 10 MB), split so the core links no GPU/window/text crate (`cli/tests/deps.rs`); Lua 5.4 user config (`init.lua`, sandboxed `schemify.*` API, Neovim `stdpath` dirs) and `schemify pack sync\|update\|restore\|clean\|status` (config spec). No Lua on the web yet |
 | xschem parity | Every default-UI command resolves (`app/tests/parity/`: 198 → 0; xschem-only items dropped with reasons in BACKLOG); `shape` records (line/rect/arc/circle/poly); PNG/SVG/PDF export; stretch moves; context menu; search/replace; system clipboard; crash-recovery prompt |
 | CI | `ci.yml` (fmt/clippy/tests on Linux/macOS/Windows, web bundle + headless-Chrome smoke, cross-OS + WASI determinism, core guests via Nix, flake, non-blocking size gate), `nightly.yml` (fuzz, perf gate), `mutants.yml` (weekly), `publish.yaml` (`v*` tags: archives with ESPice, .deb/.rpm/Arch packages, sources.json for Nix) |
@@ -73,7 +73,7 @@ Where the project stands. Update this file whenever a workstream lands or stops.
 ## Next
 
 0. Push `main` (blocked: ssh-agent down; see the session log) and watch the first full CI run; seed `tests/perf/baseline.txt` from two nightly runs.
-1. Upstream the cktImg patches in `docs/dev/upstream/` (user), bump the submodule; set `fuel` for cktimg in project manifests that import large decks.
+1. Upstream the cktImg patches in `docs/dev/upstream/` (user); set `fuel` for cktimg in project manifests that import large decks.
 2. Editor parity gaps (BACKLOG "app / editor"): stretch/kissing move, poly/arc/circle, context menu, search, Save As, scrolling lists, system clipboard, crash-recovery prompt, toolbar icons.
 3. Web build end to end: OPFS VFS (D31; the web build edits in memory today), runner plugin.
 4. Remaining BACKLOG items by crate.

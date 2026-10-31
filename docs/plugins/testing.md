@@ -39,7 +39,7 @@ fn loads_and_runs_a_command() {
 }
 ```
 
-When the plugin starts programs (`spawn:` grants), answer its I/O requests in the test with fake binaries first on `PATH`; [Schemify-PDK-Manager](https://github.com/OmarSiwy/Schemify-PDK-Manager)'s `tests/guest.rs` is a full example. Tests that need a real tool (a simulator, xschem) skip when it is missing, unless an environment variable such as `MY_PLUGIN_REQUIRE_NGSPICE=1` turns the skip into a failure; CI sets it.
+When the plugin starts programs (`spawn:` grants), answer its I/O requests in the test with fake binaries first on `PATH`; [PDK-Manager](https://github.com/OpenFAT/PDK-Manager)'s `tests/guest.rs` is a full example. Tests that need a real tool (a simulator, xschem) skip when it is missing, unless an environment variable such as `MY_PLUGIN_REQUIRE_NGSPICE=1` turns the skip into a failure; CI sets it.
 
 Fixtures from Schemify (device files, example projects) are copied into `tests/fixtures/schemify/`, with a README naming the source path and revision. A plugin's tests never read a path inside a Schemify checkout.
 
@@ -48,7 +48,7 @@ Fixtures from Schemify (device files, example projects) are copied into `tests/f
 To try a plugin against core changes you have not pushed, override the git source with a path in `.cargo/config.toml` (keep it out of git, or out of the commit):
 
 ```toml
-[patch."https://github.com/OmarSiwy/Schemify"]
+[patch."https://github.com/OpenFAT/Schemify"]
 schemify-abi = { path = "../Schemify/crates/protocol/abi" }
 schemify-format = { path = "../Schemify/crates/protocol/format" }
 schemify-plugin = { path = "../Schemify/crates/plugins/plugin" }
@@ -137,7 +137,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: point every Schemify dependency at main
         run: |
-          sed -i -E 's#(git = "https://github.com/OmarSiwy/Schemify"), rev = "[0-9a-f]+"#\1, branch = "main"#' Cargo.toml
+          sed -i -E 's#(git = "https://github.com/OpenFAT/Schemify"), rev = "[0-9a-f]+"#\1, branch = "main"#' Cargo.toml
           cargo update $(grep -o 'schemify-[a-z]*' Cargo.toml | sort -u | sed 's/^/-p /')
       - run: ./build.sh
       - run: cargo test --no-fail-fast
@@ -145,4 +145,4 @@ jobs:
 
 A red nightly means Schemify's `main` changed something the plugin uses. Fix the plugin, then bump the pinned revision ([publishing.md](publishing.md)).
 
-Add jobs for what your plugin needs beyond this: macOS and Windows runners for a native command line, a Nix job for tools that only Nix provides (Schemify-Interop runs xschem from Nix), fuzzing for readers of untrusted input.
+Add jobs for what your plugin needs beyond this: macOS and Windows runners for a native command line, a Nix job for tools that only Nix provides (Interoperate runs xschem from Nix), fuzzing for readers of untrusted input.

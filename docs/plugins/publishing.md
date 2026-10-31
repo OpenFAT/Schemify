@@ -11,7 +11,7 @@ Tag a release with a version (`git tag v0.3.0 && git push --tags`). Users pin it
 ```lua
 -- init.lua
 schemify.pack.add {
-  { src = "https://github.com/OmarSiwy/GmIDVisualizer", version = "v0.3.0",
+  { src = "https://github.com/OpenFAT/GmId-Visualizer", version = "v0.3.0",
     grant = { "read_project", "write_project", "spawn:ngspice" } },
 }
 ```
@@ -33,4 +33,4 @@ The module exports the ABI version it was built for (`schemify_abi`, [plugin-abi
 
 ## Listing a plugin in Schemify
 
-Schemify keeps a few plugins as examples under `examples/plugins/` (git submodules). Adding one is a pull request to Schemify that runs `git submodule add <url> examples/plugins/<name>`, sets `git config -f .gitmodules submodule.examples/plugins/<name>.update none` (cargo git dependencies on Schemify then skip it) and adds a row to [README.md](README.md). Schemify's CI does not build or test submodules; the plugin's own CI is what vouches for it.
+Schemify lists a few plugins in its [README.md](README.md); adding one is a pull request that adds its row. Schemify's CI does not build or test them; the plugin's own CI is what vouches for it.

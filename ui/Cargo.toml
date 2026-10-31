@@ -1,7 +1,7 @@
 # Guest modules of the core, built for wasm32-unknown-unknown only: the bundled default UI
 # (`default-plugin`) and the plugin host's test guests (`../crates/plugins/plugin/tests/guests`, which
 # point back here with `package.workspace`). The optional plugins live in their own
-# repositories (docs/plugins/; examples in `examples/plugins/`).
+# repositories (docs/plugins/; templates in `examples/plugins/`).
 #
 # A workspace of its own, not a member of the root one: the root globs only `crates/*`
 # and `tools/*`, so `cargo test --workspace` never builds these cdylibs (their `schemify`

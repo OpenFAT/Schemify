@@ -22,7 +22,7 @@
       # One version for the packages, the workspace's (Cargo.toml).
       version = (lib.importTOML ./Cargo.toml).workspace.package.version;
       # Release binaries by version, written by tools/update-sources.py after each published
-      # release (publish.yaml): `nix run 'github:OmarSiwy/Schemify#latest'` installs the
+      # release (publish.yaml): `nix run 'github:OpenFAT/Schemify#latest'` installs the
       # newest without compiling.
       sources = lib.importJSON ./sources.json;
       latest = if sources == { } then null else lib.last (lib.sort lib.versionOlder (lib.attrNames sources));
@@ -228,7 +228,7 @@
           '';
           meta = {
             description = "Schematic capture with simulation, docs pages and WASM plugins (release binaries)";
-            homepage = "https://github.com/OmarSiwy/Schemify";
+            homepage = "https://github.com/OpenFAT/Schemify";
             license = lib.licenses.mit;
             sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
             mainProgram = "schemify-gui";

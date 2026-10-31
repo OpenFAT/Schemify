@@ -7,19 +7,19 @@ Schemify ships as two programs:
 | `schemify` | The headless core: `netlist`, `check`, `run`, `fmt`, `diff`, `pack` and the other commands of [cli.md](cli.md). No window, no GPU. |
 | `schemify-gui` | The editor. `schemify edit` starts it for you. |
 
-Simulation runs an external simulator. [ESPice](https://github.com/OmarSiwy/ESPice) is the default when it is installed, else the first one found (ngspice, Xyce, LTspice, Spectre); install it from its own repository (see [External programs](#external-programs)).
+Simulation runs an external simulator. [ESPice](https://github.com/OpenFAT/EGSpice) is the default when it is installed, else the first one found (ngspice, Xyce, LTspice, Spectre); install it from its own repository (see [External programs](#external-programs)).
 
 `schemify edit` looks for `schemify-gui` in the same directory as the `schemify` binary first, then on your `PATH`. Keep the two side by side and both ways of starting the editor work. You can also run `schemify-gui` directly: it takes the same arguments (`schemify-gui path/to/cell.shcomp`).
 
-A third program, `schemify-interop`, imports xschem libraries and PDKs. It belongs to the `interop` plugin, not the core, and lives in its own repository, [Schemify-Interop](https://github.com/OmarSiwy/Schemify-Interop):
+A third program, `schemify-interop`, imports xschem libraries and PDKs. It belongs to the `interop` plugin, not the core, and lives in its own repository, [Interoperate](https://github.com/OpenFAT/Interoperate):
 
 ```sh
-cargo install --git https://github.com/OmarSiwy/Schemify-Interop --features cli --bin schemify-interop
+cargo install --git https://github.com/OpenFAT/Interoperate --features cli --bin schemify-interop
 ```
 
 ## Linux packages
 
-Each release attaches packages built from its Linux binaries (x86_64, glibc 2.28 or newer). Download the one for your distribution from the [releases page](https://github.com/OmarSiwy/Schemify/releases) and install it:
+Each release attaches packages built from its Linux binaries (x86_64, glibc 2.28 or newer). Download the one for your distribution from the [releases page](https://github.com/OpenFAT/Schemify/releases) and install it:
 
 | Distribution | Package | Install |
 |---|---|---|
@@ -36,12 +36,12 @@ On Arch the same binaries are also the AUR package `schemify-bin` (`yay -S schem
 On macOS (Apple silicon and Intel) and on Linux x86_64:
 
 ```sh
-brew install OmarSiwy/schemify/schemify
+brew install OpenFAT/schemify/schemify
 ```
 
 The formula installs the release's `schemify` and `schemify-gui`; `schemify --version` checks it.
 
-The packages do not include a simulator: install ESPice from [its repository](https://github.com/OmarSiwy/ESPice), or your distribution's ngspice (suggested by the packages).
+The packages do not include a simulator: install ESPice from [its repository](https://github.com/OpenFAT/EGSpice), or your distribution's ngspice (suggested by the packages).
 
 ## With Nix
 
@@ -50,9 +50,9 @@ The repository is a Nix flake. You need Nix with flakes enabled; no checkout is 
 The released binaries, without compiling anything:
 
 ```sh
-nix run 'github:OmarSiwy/Schemify#latest' -- path/to/cell.shcomp         # the newest release
-nix run 'github:OmarSiwy/Schemify#"1.0.0"' -- path/to/cell.shcomp        # one version
-nix profile install 'github:OmarSiwy/Schemify#latest'
+nix run 'github:OpenFAT/Schemify#latest' -- path/to/cell.shcomp         # the newest release
+nix run 'github:OpenFAT/Schemify#"1.0.0"' -- path/to/cell.shcomp        # one version
+nix profile install 'github:OpenFAT/Schemify#latest'
 ```
 
 These come from `sources.json` in the repository, which lists every published release's archives with their checksums (updated automatically after a release is published), for x86_64 Linux and both macOS architectures.
@@ -60,8 +60,8 @@ These come from `sources.json` in the repository, which lists every published re
 Built from source, at the commit you name:
 
 ```sh
-nix run github:OmarSiwy/Schemify -- path/to/cell.shcomp                      # the editor
-nix run github:OmarSiwy/Schemify#schemify -- netlist path/to/tb.shbench      # the core
+nix run github:OpenFAT/Schemify -- path/to/cell.shcomp                      # the editor
+nix run github:OpenFAT/Schemify#schemify -- netlist path/to/tb.shbench      # the core
 ```
 
 Plain `nix run` starts `schemify-gui`; `#schemify` runs the core. Inside a checkout the same apps are `nix run .` and `nix run .#schemify`.
@@ -71,7 +71,7 @@ The Nix packages wrap both programs so they work without further setup:
 - `schemify-gui` gets the Linux graphics, input and font libraries on `LD_LIBRARY_PATH`.
 - `schemify` also gets `git` and `curl`, which `schemify pack` uses to fetch plugins.
 
-To keep the programs installed, use `nix profile install github:OmarSiwy/Schemify` (from source) or the `#latest` line above.
+To keep the programs installed, use `nix profile install github:OpenFAT/Schemify` (from source) or the `#latest` line above.
 
 ### Development shell
 
@@ -82,7 +82,7 @@ To keep the programs installed, use `nix profile install github:OmarSiwy/Schemif
 You need Rust 1.95 or newer (`rustup update stable`). No system libraries are needed at build time: the editor opens the windowing and graphics libraries when it starts.
 
 ```sh
-git clone https://github.com/OmarSiwy/Schemify
+git clone https://github.com/OpenFAT/Schemify
 cd Schemify
 cargo build --release -p schemify-cli -p schemify-app
 ```
@@ -106,10 +106,10 @@ cargo run --release -p schemify-cli -- run crates/view/app/tests/fixtures/rc/tb.
 
 `cargo run -p schemify-cli -- edit ...` only works after `schemify-gui` has been built into the same `target/` directory (or is on your `PATH`); otherwise it stops with `cannot run schemify-gui`.
 
-The interop command line builds from its submodule (`git submodule update --init --checkout examples/plugins/interop`):
+The interop command line builds from its repository (`git clone https://github.com/OpenFAT/Interoperate`):
 
 ```sh
-cargo run --release --manifest-path examples/plugins/interop/Cargo.toml --features cli -- \
+cargo run --release --manifest-path Interoperate/Cargo.toml --features cli -- \
     xschem-import ~/xschem/my_lib -o my_lib
 ```
 
@@ -153,7 +153,7 @@ Schemify writes netlists by itself. It starts other programs only to simulate or
 
 | Program | Needed for | Default name |
 |---|---|---|
-| ESPice | Simulate (`s`) and `schemify run`; the default simulator when installed (not packaged with Schemify; install it from [its repository](https://github.com/OmarSiwy/ESPice)). It compiles Verilog-A itself with Zig 0.17, found through the `ZIG` environment variable or `zig` on `PATH`. | `espice` |
+| ESPice | Simulate (`s`) and `schemify run`; the default simulator when installed (not packaged with Schemify; install it from [its repository](https://github.com/OpenFAT/EGSpice)). It compiles Verilog-A itself with Zig 0.17, found through the `ZIG` environment variable or `zig` on `PATH`. | `espice` |
 | ngspice | Simulate and `schemify run` when you choose ngspice (`--dialect ngspice`, the *Netlist dialect* menu, or `schemify.opt.simulator = "ngspice"`), or when it is installed and ESPice is not | `ngspice` |
 | OpenVAF | Verilog-A devices simulated with ngspice: each source is compiled to an OSDI file before the run. OpenVAF-Reloaded installs as `openvaf-r`; name it in your config. | `openvaf` |
 | Icarus Verilog | Verilog devices simulated with ngspice (co-simulation through ngspice's `d_cosim`) | `iverilog` |
