@@ -24,7 +24,7 @@
 //! Contents:
 //! - `pub struct Look`
 //! - `pub const PAPER`
-//! - `pub struct Page`, `Page::parse`, `Page::points`, `Page::name`
+//! - `pub struct Page`, `FromStr`, `Page::points`, `Display`
 //! - `pub fn subset`
 //! - `pub fn bounds`
 //! - `pub fn padded`
@@ -34,7 +34,11 @@ mod ops;
 mod pdf;
 mod svg;
 
+use std::fmt;
+use std::str::FromStr;
+
 use schemify_canvas::{CanvasPrims, LAYER_DEAD, LAYERS, Palette};
+use schemify_format::ParseWordError;
 
 use crate::scene::Scene;
 
@@ -236,43 +240,55 @@ pub fn padded(b: [i32; 4], pad: i32) -> [i32; 4] {
     ]
 }
 
-impl Page {
+impl FromStr for Page {
+    type Err = ParseWordError;
+
     /// Parses `<paper> [portrait|landscape]` (`a3`, `letter portrait`, `A4-portrait`;
-    /// case-insensitive, landscape by default). `None` for an unknown paper or word.
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Page> {
+    /// case-insensitive, landscape by default). An error for an unknown paper or word.
+    fn from_str(s: &str) -> Result<Page, ParseWordError> {
         let lower = s.trim().to_ascii_lowercase();
         let mut words = lower.split([' ', '-', '_']).filter(|w| !w.is_empty());
-        let name = words.next()?;
-        let paper = u8::try_from(PAPER.iter().position(|p| p.0 == name)?).ok()?;
+        let name = words.next().ok_or(ParseWordError)?;
+        let paper = PAPER
+            .iter()
+            .position(|p| p.0 == name)
+            .ok_or(ParseWordError)?;
+        let paper = u8::try_from(paper).map_err(|_| ParseWordError)?;
         let portrait = match words.next() {
             None | Some("landscape") => false,
             Some("portrait") => true,
-            Some(_) => return None,
+            Some(_) => return Err(ParseWordError),
         };
-        words.next().is_none().then_some(Page { paper, portrait })
+        if words.next().is_some() {
+            return Err(ParseWordError);
+        }
+        Ok(Page { paper, portrait })
     }
+}
 
-    /// Width and height in points.
-    #[must_use]
-    pub fn points(self) -> (f64, f64) {
-        debug_assert!(
-            usize::from(self.paper) < PAPER.len(),
-            "a page from `parse` or `default`"
-        );
-        let (_, w, h) = PAPER[usize::from(self.paper) % PAPER.len()];
-        if self.portrait { (w, h) } else { (h, w) }
-    }
-
-    /// The spelling [`Page::parse`] reads back (`a4 landscape`).
-    #[must_use]
-    pub fn name(self) -> String {
+impl fmt::Display for Page {
+    /// The spelling [`Page::from_str`] reads back (`a4 landscape`).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let o = if self.portrait {
             "portrait"
         } else {
             "landscape"
         };
-        format!("{} {o}", PAPER[usize::from(self.paper) % PAPER.len()].0)
+        let paper = PAPER[usize::from(self.paper) % PAPER.len()].0;
+        write!(f, "{paper} {o}")
+    }
+}
+
+impl Page {
+    /// Width and height in points.
+    #[must_use]
+    pub fn points(self) -> (f64, f64) {
+        debug_assert!(
+            usize::from(self.paper) < PAPER.len(),
+            "a page from `from_str` or `default`"
+        );
+        let (_, w, h) = PAPER[usize::from(self.paper) % PAPER.len()];
+        if self.portrait { (w, h) } else { (h, w) }
     }
 }
 
@@ -626,7 +642,7 @@ mod tests {
         assert!(e.contains("lineto") && e.contains("stroke"));
         assert!(!e.contains("FontType 42"), "no texts, no font");
         p.text(0, 0, 500, 3, "Ω1");
-        let page = Page::parse("letter portrait").unwrap();
+        let page: Page = "letter portrait".parse().unwrap();
         let e = eps(&p, [0, 0, 1_000, 1_000], &look(), page);
         assert!(e.contains("%%BoundingBox: 0 0 612 792\n"));
         // Only Noto Sans prints: one Type 42 font whose sfnts strings are its bytes.
@@ -689,7 +705,7 @@ mod tests {
         for paper in 0..PAPER.len() as u8 {
             for portrait in [false, true] {
                 let p = Page { paper, portrait };
-                assert_eq!(Page::parse(&p.name()), Some(p));
+                assert_eq!(p.to_string().parse(), Ok(p));
                 let (w, h) = p.points();
                 assert_eq!(w < h, portrait);
             }
@@ -698,18 +714,18 @@ mod tests {
             paper: 1,
             portrait: false,
         };
-        assert_eq!(Page::parse("A3"), Some(a3));
+        assert_eq!("A3".parse(), Ok(a3));
         let a4p = Page {
             paper: 0,
             portrait: true,
         };
-        assert_eq!(Page::parse("a4-portrait"), Some(a4p));
+        assert_eq!("a4-portrait".parse(), Ok(a4p));
         for bad in ["", "a7", "a4 sideways", "a4 portrait x", "portrait"] {
-            assert_eq!(Page::parse(bad), None, "{bad:?}");
+            assert_eq!(bad.parse::<Page>(), Err(ParseWordError), "{bad:?}");
         }
         let mut p = CanvasPrims::default();
         p.line(0, 0, 1_000, 0, 1);
-        let page = Page::parse("a3 portrait").unwrap();
+        let page: Page = "a3 portrait".parse().unwrap();
         let doc = String::from_utf8(pdf(&[(&p, [0, 0, 1_000, 1_000])], &look(), page)).unwrap();
         assert!(doc.contains("/MediaBox [0 0 842 1191]"));
     }

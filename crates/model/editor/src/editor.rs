@@ -584,7 +584,7 @@ impl Editor {
         changed |= self.dispatch_all(&routed.commands, &mut reqs);
         if platform::clipboard_ready() {
             // Web: the browser answered a paste's clipboard read; that paste runs again now.
-            self.command(Cmd::Paste.name(), "");
+            self.command(Cmd::Paste.as_str(), "");
         }
         changed |= self.dispatch_queued(&mut reqs);
         for &ev in &routed.canvas {

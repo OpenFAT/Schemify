@@ -233,7 +233,7 @@ pub fn set_ops(doc: &Document, field: Field<'_>, value: &str) -> Result<Vec<Op>,
         }
         Field::Bench(b, row, a) => {
             let rec = super::record(doc, b.table(), row)
-                .ok_or_else(|| format!("no such {}", b.word()))?;
+                .ok_or_else(|| format!("no such {}", b.as_str()))?;
             return bench::bench_ops(b, &rec, a, v);
         }
     };

@@ -275,7 +275,7 @@ impl Editor {
         let focus = self.shell.ui.focus();
         let id = docs::editor_id(row);
         // Typing reaches the page before the focus test: one batch may type and click away.
-        let typed = Cmd::FieldTyped.name();
+        let typed = Cmd::FieldTyped.as_str();
         assert_eq!(
             cmds.node.len(),
             cmds.command.len(),
@@ -295,7 +295,7 @@ impl Editor {
             return false;
         }
         let submitted = (0..cmds.len())
-            .any(|i| self.shell.strings.get(cmds.command[i]) == Cmd::DocsProseOk.name());
+            .any(|i| self.shell.strings.get(cmds.command[i]) == Cmd::DocsProseOk.as_str());
         if !self.page.focused || submitted {
             return false;
         }

@@ -60,7 +60,7 @@ pub(super) fn bench_ops(b: Bench, rec: &RecordBuf, a: &str, v: &str) -> Result<V
         (Bench::Optimize, "vary") => lines_ops(&target, rec, "vary", words(v)),
         (Bench::Optimize, "corners") => lines_ops(&target, rec, "corner", words(v)),
         (Bench::Optimize, "configs") => lines_ops(&target, rec, "config", words(v)),
-        _ => return Err(format!("{} has no field {a}", b.word())),
+        _ => return Err(format!("{} has no field {a}", b.as_str())),
     };
     Ok(ops)
 }

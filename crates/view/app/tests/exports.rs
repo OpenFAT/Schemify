@@ -99,7 +99,7 @@ fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     assert!(t.contains("/FontFile2 ") && t.contains("/ToUnicode "));
     assert!(!t.contains("Helvetica"));
     s.run("options.export_page_size", "letter portrait");
-    assert_eq!(s.ed.opts().export_page.name(), "letter portrait");
+    assert_eq!(s.ed.opts().export_page.to_string(), "letter portrait");
     s.run(
         "file.image_export.pdf_ps_export_full",
         pdf.to_str().unwrap(),
@@ -117,7 +117,7 @@ fn pdf_and_eps_fit_the_export_page_and_embed_the_ui_font() {
     // Negative space: an unknown page is refused and the page stays.
     s.run("options.export_page_size", "a9");
     assert!(s.status().contains("not a page"));
-    assert_eq!(s.ed.opts().export_page.name(), "letter portrait");
+    assert_eq!(s.ed.opts().export_page.to_string(), "letter portrait");
 }
 
 /// Tools → Package status shows what `schemify pack status` prints for the same config.

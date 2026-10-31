@@ -157,7 +157,7 @@ impl Editor {
                 Cmd::GridDialog => ("Grid spacing (units)", units(self.opts.grid)),
                 Cmd::ExportPage => (
                     "Export page (a4, a3, a5, letter, legal, tabloid; portrait)",
-                    self.opts.export_page.name(),
+                    self.opts.export_page.to_string(),
                 ),
                 Cmd::PngScale => (
                     "PNG export scale (1 = screen resolution, 96 dpi)",
@@ -200,12 +200,12 @@ impl Editor {
                 }
                 None => self.session.say(bad()),
             },
-            Cmd::ExportPage => match export::Page::parse(arg) {
-                Some(p) => {
+            Cmd::ExportPage => match arg.parse::<export::Page>() {
+                Ok(p) => {
                     self.opts.export_page = p;
-                    self.session.say(format!("export page: {}", p.name()));
+                    self.session.say(format!("export page: {p}"));
                 }
-                None => {
+                Err(_) => {
                     self.session.say(format!(
                         "{arg:?}: not a page (a4, a3, a5, letter, legal, tabloid; portrait)"
                     ));
