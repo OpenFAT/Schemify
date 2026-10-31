@@ -126,7 +126,8 @@ pub(crate) fn keys(v: &mut View, ctx: &egui::Context, typing: bool) {
 
 /// The chords one egui event presses: a named key, or any key with Ctrl, Alt or Command, from
 /// its key event; printable characters from the text they type (so `%`, `*` and `Shift+R`
-/// arrive as the layout produced them).
+/// arrive as the layout produced them); `Ctrl+C`, `Ctrl+X` and `Ctrl+V` from the copy, cut and
+/// paste events egui-winit makes of those keys (and of Command+C on macOS) in their place.
 pub(crate) fn chords_of(e: &Event, held: Modifiers) -> Vec<Chord> {
     match e {
         Event::Key {
@@ -158,6 +159,10 @@ pub(crate) fn chords_of(e: &Event, held: Modifiers) -> Vec<Chord> {
             .filter(|c| *c != ' ')
             .map(|c| Chord::new(mods(&held), Key(c as u32)))
             .collect(),
+        // The editor reads and writes the system clipboard itself (`platform`).
+        Event::Copy => vec![Chord::new(Mods(Mods::CTRL), Key('c' as u32))],
+        Event::Cut => vec![Chord::new(Mods(Mods::CTRL), Key('x' as u32))],
+        Event::Paste(_) => vec![Chord::new(Mods(Mods::CTRL), Key('v' as u32))],
         _ => Vec::new(),
     }
 }
@@ -224,5 +229,19 @@ fn button_of(b: PointerButton) -> Option<Button> {
         PointerButton::Middle => Some(Button::Middle),
         PointerButton::Secondary => Some(Button::Right),
         PointerButton::Extra1 | PointerButton::Extra2 => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_events_press_the_clipboard_chords() {
+        let ctrl = |c: char| vec![Chord::new(Mods(Mods::CTRL), Key(c as u32))];
+        let none = Modifiers::NONE;
+        assert_eq!(chords_of(&Event::Copy, none), ctrl('c'));
+        assert_eq!(chords_of(&Event::Cut, none), ctrl('x'));
+        assert_eq!(chords_of(&Event::Paste("w".into()), none), ctrl('v'));
     }
 }

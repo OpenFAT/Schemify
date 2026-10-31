@@ -422,6 +422,16 @@ fn finish(
         Some(max_side),
     );
     ctx.set_pixels_per_point(window.scale_factor() as f32);
+    // Web: egui-winit has no clipboard there and would swallow Ctrl+V; the keys reach the
+    // keymap and the editor uses the browser's clipboard itself (web spec §4).
+    #[cfg(target_arch = "wasm32")]
+    let state = {
+        let mut state = state;
+        state.set_clipboard_shortcuts(false);
+        let tier = format!("schemify: drawing with {:?} on {}", info.backend, info.name);
+        web_sys::console::log_1(&tier.into());
+        state
+    };
     Ok(Open {
         window,
         surface,
@@ -438,6 +448,14 @@ impl Open {
     /// One frame: the app's egui pass over the queued input, its platform output handed to
     /// the window, its shapes tessellated and drawn with the canvas stages, presented.
     fn frame<A: App>(&mut self, app: &mut A) {
+        // The window's size as it is now: a resize may come before the surface exists (the web
+        // opens its GPU asynchronously, and winit sizes the canvas meanwhile).
+        let size = self.window.inner_size();
+        let (w, h) = (size.width.max(1), size.height.max(1));
+        if (w, h) != (self.config.width, self.config.height) {
+            (self.config.width, self.config.height) = (w, h);
+            self.surface.configure(&self.device, &self.config);
+        }
         let input = self.state.take_egui_input(&self.window);
         let canvas = self
             .renderer
