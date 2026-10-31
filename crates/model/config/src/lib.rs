@@ -64,8 +64,8 @@ mod table;
 pub use cli::{GUI_USAGE, Launch, Startup};
 pub use table::{
     Event, FnId, HOOKS_MAX, HOST_SIMS_MAX, Hook, KEYMAPS_MAX, Keymaps, Level, Options, PACKS_MAX,
-    PackSpec, REQUESTS_MAX, Request, SIM_ENV_MAX, Sim, SimKind, Source, Table, Target, USER_LAYERS,
-    fn_of_command, valid_host,
+    PackSpec, ParseWordError, REQUESTS_MAX, Request, SIM_ENV_MAX, Sim, SimKind, Source, Table,
+    Target, USER_LAYERS, fn_of_command, valid_host,
 };
 
 /// Lua VM instructions per call (spec §4).

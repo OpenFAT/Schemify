@@ -55,7 +55,7 @@ pub fn sim_dialect(
     let chosen = match user.opts.simulator {
         Some(k) => SIMULATORS
             .into_iter()
-            .find(|d| d.as_str() == k.word())
+            .find(|d| d.as_str() == k.as_str())
             .unwrap_or(Dialect::Espice),
         None => detect(user).unwrap_or(Dialect::Espice),
     };
@@ -172,8 +172,8 @@ pub fn tools(user: &Table) -> Tools {
     for (k, host, s) in &user.hosts {
         let d = SIMULATORS
             .into_iter()
-            .find(|d| d.as_str() == k.word())
-            .unwrap_or_else(|| panic!("{} on {host} is not a simulator", k.word()));
+            .find(|d| d.as_str() == k.as_str())
+            .unwrap_or_else(|| panic!("{} on {host} is not a simulator", k.as_str()));
         let default = SimCommand::default_for(d);
         let cmd = SimCommand {
             path: if s.path.is_empty() {
@@ -292,7 +292,7 @@ fn kind(d: Dialect) -> SimKind {
     assert!(SIMULATORS.contains(&d), "{} is not a simulator", d.as_str());
     SimKind::SIMULATORS
         .into_iter()
-        .find(|k| k.word() == d.as_str())
+        .find(|k| k.as_str() == d.as_str())
         .unwrap_or_else(|| panic!("the config has no row for {}", d.as_str()))
 }
 
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(SIMULATORS[0], Dialect::Espice, "espice is detected first");
         for d in SIMULATORS {
             assert_eq!(
-                kind(d).word(),
+                kind(d).as_str(),
                 d.as_str(),
                 "{} maps to its own row",
                 d.as_str()

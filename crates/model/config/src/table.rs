@@ -15,16 +15,20 @@
 //! - `pub struct Options` (`impl Default`), `Options::assert_in_domain(&self)`
 //! - `pub struct Hook`, `pub struct FnId`, `pub enum Target`
 //! - `pub struct Keymaps`, `Keymaps::records(&self) -> String`
-//! - `pub enum SimKind`, `SimKind::ALL`, `SimKind::SIMULATORS`, `SimKind::word(self)`
+//! - `pub enum SimKind`, `SimKind::ALL`, `SimKind::SIMULATORS`, `SimKind::as_str(self)`,
+//!   `FromStr`, `Display`
 //! - `pub struct Sim`
 //! - `pub enum Source`, `Source::word(&self)`
 //! - `pub struct PackSpec`, `PackSpec::is_lazy(&self) -> bool`
-//! - `pub enum Event`, `Event::ALL`, `Event::word(self)`, `Event::from_word(word: &str)`
+//! - `pub enum Event`, `Event::ALL`, `Event::as_str(self)`, `FromStr`, `Display`
+//! - `pub struct ParseWordError`: the `FromStr` error of `SimKind` and `Event`
 //! - `pub enum Level`, `pub enum Request`
 //! - `pub fn fn_of_command(name: &str) -> Option<FnId>`
 //! - `pub fn valid_host(dest: &str) -> bool`
 
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 /// Most keymaps in one config.
 pub const KEYMAPS_MAX: usize = 4096;
@@ -220,6 +224,10 @@ pub enum Event {
     RunDone,
 }
 
+/// Why a `FromStr` of a [`SimKind`] or an [`Event`] failed: the text names no variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseWordError;
+
 /// How loud a notification is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -400,7 +408,7 @@ impl Options {
             assert!(
                 SimKind::SIMULATORS.contains(&kind),
                 "`{}` is a compiler, never the default simulator",
-                kind.word()
+                kind.as_str()
             );
         }
     }
@@ -461,7 +469,7 @@ impl SimKind {
 
     /// The `schemify.sim` name.
     #[must_use]
-    pub fn word(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             SimKind::Ngspice => "ngspice",
             SimKind::Openvaf => "openvaf",
@@ -508,7 +516,7 @@ impl Event {
 
     /// The wire word.
     #[must_use]
-    pub fn word(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Event::Load => "load",
             Event::DocOpened => "doc_opened",
@@ -519,13 +527,47 @@ impl Event {
             Event::RunDone => "run_done",
         }
     }
+}
 
-    /// The event a wire word names; `None` for any other word.
-    #[must_use]
-    pub fn from_word(word: &str) -> Option<Event> {
-        Event::ALL.into_iter().find(|e| e.word() == word)
+impl FromStr for SimKind {
+    type Err = ParseWordError;
+
+    /// Parses the `schemify.sim` name.
+    fn from_str(word: &str) -> Result<SimKind, ParseWordError> {
+        let kind = SimKind::ALL.into_iter().find(|k| k.as_str() == word);
+        kind.ok_or(ParseWordError)
     }
 }
+
+impl fmt::Display for SimKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl FromStr for Event {
+    type Err = ParseWordError;
+
+    /// Parses the wire word.
+    fn from_str(word: &str) -> Result<Event, ParseWordError> {
+        let event = Event::ALL.into_iter().find(|e| e.as_str() == word);
+        event.ok_or(ParseWordError)
+    }
+}
+
+impl fmt::Display for Event {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl fmt::Display for ParseWordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown word")
+    }
+}
+
+impl std::error::Error for ParseWordError {}
 
 #[cfg(test)]
 mod tests {
@@ -537,13 +579,16 @@ mod tests {
         let events = Event::ALL.into_iter().enumerate();
         for (i, e) in events {
             assert_eq!(e as usize, i);
-            assert_eq!(Event::from_word(e.word()), Some(e));
+            assert_eq!(e.as_str().parse(), Ok(e));
+            assert_eq!(e.to_string(), e.as_str());
         }
-        assert_eq!(Event::from_word("Load"), None);
+        assert_eq!("Load".parse::<Event>(), Err(ParseWordError));
         let kinds = SimKind::ALL.into_iter().enumerate();
         for (i, k) in kinds {
             assert_eq!(k as usize, i);
+            assert_eq!(k.as_str().parse(), Ok(k));
         }
+        assert_eq!("Ngspice".parse::<SimKind>(), Err(ParseWordError));
         let keys = Keymaps {
             chord: vec!["F5".into(), "w".into()],
             target: vec![Target::Function(FnId(42)), Target::Command("x.y".into())],

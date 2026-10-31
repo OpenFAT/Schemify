@@ -324,7 +324,7 @@ fn event(note: &Note) -> String {
         .iter()
         .map(|value| Json::Str(value.to_string()))
         .collect();
-    let kind = note.event.word();
+    let kind = note.event.as_str();
     assert!(!kind.is_empty(), "an event kind is a word of the rpc spec");
     let params = Json::obj(vec![
         ("kind", Json::Str(kind.to_owned())),

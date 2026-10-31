@@ -60,7 +60,7 @@ fn get_opt(lua: &Lua, state: &Shared, key: Value) -> omnilua::Result<(Value, Opt
         "dim" => Value::Number(f64::from(options.dim) / 100.0),
         "line_width" => Value::Number(f64::from(options.line_width_tenths) / 10.0),
         "simulator" => match options.simulator {
-            Some(k) => Value::String(lua.create_string(k.word())?),
+            Some(k) => Value::String(lua.create_string(k.as_str())?),
             None => Value::Nil,
         },
         // A copy: assigning to one of its entries changes nothing (spec §3).
@@ -113,7 +113,7 @@ fn set_opt(_: &Lua, state: &Shared, (key, v): (Value, Value)) -> Raised {
     let simulator = |v: &Value| match v {
         Value::String(_) => {
             let word = lua::string(v);
-            (SimKind::SIMULATORS.into_iter()).find(|k| word.as_deref() == Some(k.word()))
+            (SimKind::SIMULATORS.into_iter()).find(|k| word.as_deref() == Some(k.as_str()))
         }
         _ => None,
     };
@@ -267,7 +267,7 @@ fn on(_: &Lua, state: &Shared, (event, f): (Value, Value)) -> Raised {
     let Value::Function(f) = f else {
         return Ok(Some(lua::bad_arg(2, "on", "function", &f)));
     };
-    let Some(event) = Event::from_word(&event) else {
+    let Ok(event) = event.parse::<Event>() else {
         return Ok(Some(format!("unknown event `{event}`")));
     };
     if state.borrow().table.hooks.len() >= HOOKS_MAX {
@@ -294,7 +294,7 @@ fn sim(_: &Lua, state: &Shared, (name, spec): (Value, Value)) -> Raised {
     let Some(name) = lua::string(&name) else {
         return Ok(Some(lua::bad_arg(1, "sim", "string", &name)));
     };
-    let Some(kind) = SimKind::ALL.into_iter().find(|k| k.word() == name) else {
+    let Ok(kind) = name.parse::<SimKind>() else {
         return Ok(Some(format!(
             "unknown program `{name}` (ngspice, espice, xyce, ltspice, spectre, openvaf, iverilog)"
         )));
@@ -366,7 +366,7 @@ fn host_row(state: &Shared, kind: SimKind, host: String, row: Sim) -> Option<Str
         .chain(&row.args)
         .chain(row.env.iter().flat_map(|(k, v)| [k, v]));
     if words.flat_map(|w| w.chars()).any(char::is_control) {
-        let name = kind.word();
+        let name = kind.as_str();
         return Some(format!(
             "sim `{name}` on {host}: no control characters in `path`, `args` or `env`"
         ));

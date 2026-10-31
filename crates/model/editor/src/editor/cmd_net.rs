@@ -7,8 +7,8 @@ use schemify_doc::{Edit, EditRequest, RecordBuf};
 use schemify_format::{Orient, RecordKind};
 
 use crate::commands::Cmd;
-use crate::geometry::Xform;
 use crate::edit;
+use crate::geometry::Xform;
 
 use super::Editor;
 use super::apply;
