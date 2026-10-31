@@ -1,4 +1,5 @@
-//! `canvas`: a [`CanvasPicture`] → the GPU's canvas rows and the canvas slot's egui shape
+//! `canvas`: a [`CanvasPicture`] → the GPU's canvas rows and label meshes, and the canvas
+//! slot's egui shape
 //! (architecture.md, frame spine step 12; D39, `docs/dev/perf.md`): the background stage, the
 //! four canvas tables (scene as shown, decor, violation markers, parity extra) each packed by
 //! its change since the last frame and drawn as one stage followed by its labels (egui text);
@@ -7,8 +8,10 @@
 //! A table's change comes from its producer when it reports one (the scene's and the
 //! markers' killed rows, O(change)), else from [`CanvasDiff`]'s edit script of the hashed
 //! table. The rows bake the palette and grid (the style), so a style change repacks all.
-//! Labels are looked up near the view through a [`PrimIndex`] per large table and skipped
-//! whole when even the table's largest is under [`draw::TEXT_MIN_PX`].
+//! Labels are laid out per table and zoom octave over a cover around the view (a
+//! [`labels::Group`], its rows looked up through a [`PrimIndex`] for a large table) and drawn
+//! by the GPU through the camera as one mesh per table; a table is skipped whole when even
+//! its largest label is under [`TEXT_MIN_PX`].
 //!
 //! Contents:
 //! - `pub(crate) struct CanvasCache`, `CanvasCache::paint(&mut self, ctx, picture, rows) ->
@@ -22,7 +25,7 @@ use schemify_editor::editor::CanvasPicture;
 use schemify_render::egui;
 use schemify_render::gpu::{Change, Frame, InstanceRows, MARKS, OVERLAY, Stage, TEXT_MIN_PX};
 
-use crate::labels;
+use crate::labels::{self, Group};
 
 /// What paint keeps of the canvas between frames; rebuilt from the tables if dropped.
 #[derive(Default)]
@@ -33,6 +36,8 @@ pub(crate) struct CanvasCache {
     tables: [TableCache; TABLES],
     /// The rows near the view of the table whose texts are being drawn.
     near: Rows,
+    /// The glyph atlas's fill after the last paint: lower now means egui cleared it.
+    atlas_fill: f32,
 }
 
 /// Canvas tables in drawing order: scene as shown, decor, violation markers, parity extra.
@@ -94,16 +99,16 @@ struct TableCache {
     label_gen: u64,
     /// The table's largest label size (milli-units).
     label_max: i32,
+    /// The table's labels laid out for the current zoom octave.
+    labels: Group,
 }
 
 impl CanvasCache {
-    /// Paints `picture` between `Painter::canvas_begin` and `canvas_end`. Returns whether
-    /// the diff took the scene's and the markers' reported edits (`Editor::painted`): true
-    /// when the generations or the style moved, also for a painter that shows no canvas.
     /// Packs `picture`'s tables into `rows` (each by its change since the last frame) and
-    /// returns the canvas slot's shape: the stages in drawing order with each table's labels
-    /// after its rows, clipped by the slot to the canvas. Returns whether the diff took the
-    /// scene's and the markers' reported edits ([`schemify_editor::editor::Editor::painted`]).
+    /// its label meshes, and returns the canvas slot's shape: the stages in drawing order,
+    /// each table's labels after its rows. Returns whether the diff took the scene's and the markers'
+    /// reported edits ([`schemify_editor::editor::Editor::painted`]): true when the
+    /// generations or the style moved.
     pub(crate) fn paint(
         &mut self,
         ctx: &egui::Context,
@@ -135,15 +140,27 @@ impl CanvasCache {
         });
         let screen = ctx.content_rect();
         let mut shapes = vec![Stage::Background.shape(screen)];
+        rows.labels = Default::default();
         let (view, cam, palette) = (picture.view, &picture.cam, &picture.palette);
         let near = world_box(view, cam);
+        // A cleared glyph atlas (egui clears it when it fills) leaves the groups' layouts
+        // pointing into the old one.
+        let fill = ctx.fonts(|f| f.font_atlas_fill_ratio());
+        if fill < self.atlas_fill {
+            self.tables
+                .iter_mut()
+                .for_each(|c| c.labels = Group::default());
+        }
+        let octave = labels::octave(cam.scale);
+        let ppp = ctx.pixels_per_point().to_bits();
         let tables = [shown, picture.decor, picture.markers, picture.extra];
         let tables_changes = tables.into_iter().zip(changes).enumerate();
         for (k, (table, change)) in tables_changes {
             rows.pack(k, table, palette, change);
             shapes.push(Stage::Rows(k).shape(screen));
             // A table whose largest label is under the text cut at this zoom draws none (the
-            // far zoom's frames look at no label); else only the rows near the view.
+            // far zoom's frames look at no label); else its group, rebuilt over the rows near
+            // a cover around the view when the inputs moved or the view left the cover.
             let cache = &mut self.tables[k];
             let generation = picture.gens[TABLE_GEN[k]];
             if cache.label_gen != generation + 1 {
@@ -153,25 +170,31 @@ impl CanvasCache {
             if f64::from(cache.label_max) * cam.scale < TEXT_MIN_PX {
                 continue;
             }
-            let listed = cache.rows_near(table, generation, near, &mut self.near);
-            let listed = listed.then_some(&self.near.texts[..]);
-            labels::draw(ctx, view, cam, &table.texts, listed, palette, &mut shapes);
+            let key = (generation + 1, octave.to_bits(), style, ppp);
+            if cache.labels.stale(key, near) {
+                let cover = widen(near);
+                let listed = cache.rows_near(table, generation, cover, &mut self.near);
+                let listed = listed.then_some(&self.near.texts[..]);
+                let t = &table.texts;
+                cache
+                    .labels
+                    .build(ctx, key, cover, octave, t, listed, palette);
+            }
+            rows.labels[k] = Some(cache.labels.draw(ctx, view, cam));
+            shapes.push(Stage::Labels(k).shape(screen));
         }
         rows.pack_marks(picture.scene, picture.marks, marks_changed);
         shapes.push(Stage::Rows(MARKS).shape(screen));
         if !picture.overlay.is_empty() {
             rows.pack(OVERLAY, picture.overlay, palette, Change::All);
             shapes.push(Stage::Rows(OVERLAY).shape(screen));
-            labels::draw(
-                ctx,
-                view,
-                cam,
-                &picture.overlay.texts,
-                None,
-                palette,
-                &mut shapes,
-            );
+            let mut group = Group::default();
+            let t = &picture.overlay.texts;
+            group.build(ctx, (0, 0, 0, 0), near, octave, t, None, palette);
+            rows.labels[OVERLAY] = Some(group.draw(ctx, view, cam));
+            shapes.push(Stage::Labels(OVERLAY).shape(screen));
         }
+        self.atlas_fill = ctx.fonts(|f| f.font_atlas_fill_ratio());
         assert_eq!(self.diff.gens, picture.gens, "the diff is current");
         assert_eq!(self.diff.style, style, "the diff is current");
         (egui::Shape::Vec(shapes), diffed)
@@ -216,6 +239,22 @@ fn world_box(view: KRect, cam: &Camera) -> [i32; 4] {
     assert!(bounds[0] <= bounds[2], "a box is ordered: {bounds:?}");
     assert!(bounds[1] <= bounds[3], "a box is ordered: {bounds:?}");
     bounds
+}
+
+/// World box `b` grown by half its width and height on each side: the cover a label group
+/// is built for, so a pan of up to half the view reuses it.
+fn widen(b: [i32; 4]) -> [i32; 4] {
+    let (hw, hh) = (
+        (i64::from(b[2]) - i64::from(b[0])) / 2,
+        (i64::from(b[3]) - i64::from(b[1])) / 2,
+    );
+    let to_i32 = |v: i64| v.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    [
+        to_i32(i64::from(b[0]) - hw),
+        to_i32(i64::from(b[1]) - hh),
+        to_i32(i64::from(b[2]) + hw),
+        to_i32(i64::from(b[3]) + hh),
+    ]
 }
 
 impl Diffed {

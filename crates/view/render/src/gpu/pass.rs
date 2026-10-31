@@ -79,7 +79,7 @@ impl Pipelines {
 
     /// Draws `stage` into `pass` (its viewport the whole `size`-px target, as the camera
     /// uniform assumes; its scissor already the canvas clip): the background and grid, or a
-    /// row source layer by layer, fills before strokes.
+    /// row source layer by layer, fills before strokes. A labels stage draws nothing here.
     ///
     /// # Panics
     ///
@@ -100,6 +100,7 @@ impl Pipelines {
                 pass.draw(0..6, 0..1);
             }
             Stage::Rows(src) => self.draw_rows(pass, rows, src),
+            Stage::Labels(_) => {} // `CanvasGpu` draws labels with their own pipeline
         }
     }
 }

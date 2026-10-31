@@ -8,8 +8,10 @@
 //! nothing, colour and stroke width from the palette, fills, the marks' recolouring, the
 //! drawing order). Culling to the view and the far-zoom cut (a row at most 2 px across is the
 //! whole pixels it touches) are pure functions of (row, camera), evaluated per row by the
-//! vertex shader. Texts are not rows: they are egui text shapes the app puts after each
-//! table's stage ([`Stage`]), so egui-wgpu draws rows and labels in one pass, in order.
+//! vertex shader. Texts are not rows: each source's labels are an egui text mesh the app
+//! tessellates when they change ([`LabelMesh`], `text`), drawn after the source's rows as a
+//! stage of their own ([`Stage::Labels`]), so egui-wgpu draws rows and labels in one pass,
+//! in order.
 //!
 //! Six questions:
 //! 1. In: the four canvas tables of a frame ([`schemify_canvas::CanvasPrims`]: the scene as shown, decor,
@@ -42,7 +44,8 @@
 //! - `pub const KINDS`, `TRI`, `RECT`, `ARC`, `LINE`, `EDGE`, `STRIDE`, `SOURCES`, `MARKS`,
 //!   `OVERLAY`; style flags `FILL`, `PARITY`, `FIRST`, `CLOSED`
 //! - `pub struct Frame`, `pub enum Change`
-//! - `pub use rows::InstanceRows`, `pub use pipelines::Pipelines`, `pub use callback::{CanvasGpu, Stage}`
+//! - `pub use rows::InstanceRows`, `pub use pipelines::Pipelines`, `pub use callback::{CanvasGpu, Stage}`,
+//!   `pub use text::LabelMesh`
 //! - `pub struct GridDots`, `pub fn grid_dots`, `pub const TEXT_MIN_PX`
 //! - `pub(crate) fn push_dirty(d: &mut Vec<Range<usize>>, r: Range<usize>)`
 
@@ -53,6 +56,7 @@ mod pass;
 mod pens;
 mod pipelines;
 mod rows;
+mod text;
 
 use std::ops::Range;
 
@@ -63,6 +67,7 @@ use schemify_canvas::Camera;
 pub use callback::{CanvasGpu, Stage};
 pub use pipelines::Pipelines;
 pub use rows::InstanceRows;
+pub use text::LabelMesh;
 
 /// Instance kinds, in drawing order within a layer (fills under strokes).
 pub const KINDS: usize = 5;

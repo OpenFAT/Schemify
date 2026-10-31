@@ -106,12 +106,7 @@ impl Raster {
                     .update_texture(&self.device, &self.queue, *id, delta);
             }
         }
-        let gpu = self
-            .renderer
-            .callback_resources
-            .get_mut::<CanvasGpu>()
-            .expect("the canvas is a resource");
-        gpu.prepare(&self.device, &self.queue, &screen);
+        CanvasGpu::prepare(&mut self.renderer, &self.device, &self.queue, &screen);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("raster"),
             size: wgpu::Extent3d {

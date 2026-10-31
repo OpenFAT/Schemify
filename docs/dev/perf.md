@@ -1107,3 +1107,28 @@ with owners:
 
 Even all of them leave the editor near 12 M: the 10 M budget needs a feature-level decision
 (e.g. the D-Bus accessibility client or the LaTeX widget as plugins) or an amended D39.
+
+## egui canvas labels (2026-10-31)
+
+`frame_times_100k` and `interactions_100k`, release, Intel RPL-S iGPU, machine under load from a
+parallel build; CPU frame (egui pass + tessellate), p50 / p95 ms, before (1dc20444: labels
+laid out and scaled per frame as egui text) and after (label meshes per table and zoom octave
+on their own pipeline, `render::gpu::text`; a changed frame's view drawn by the next frame):
+
+| Frame | before | after |
+|---|---|---|
+| pan | 0.48 / 0.87 (p99) | 0.35–0.47 / 0.45–0.54 |
+| hover (1k labels) | 5.7 / — | 0.42–0.58 / 0.75–0.87 |
+| drag | 6–7 | 0.42–0.59 / 0.54–0.64 |
+| type | 6–7 | 0.53–0.71 / 0.73–0.88 |
+| select (click) | 6–7 | 0.71–1.03 / 0.79–1.09 |
+| menu | — | 0.71–1.08 |
+| unselect (select-all box) | — | 1.34–1.44 |
+
+Over D39's 1 ms: click select (p50 at the budget), menu on some runs, and unselect. Those
+frames are editor work, not drawing: `selected_prims` is 18% of the run's samples, and the
+unselect box alone measured 0.81 ms before egui (§ above). Steps taken, each measured: layouts
+cached per zoom octave (hover 5.7 → 1.6 ms: egui still tessellated them every frame), the
+mesh cached and drawn as an egui mesh (→ 0.97 ms: egui copies, transforms and uploads it every
+frame), the mesh on its own pipeline (→ 0.56 ms), the second egui pass deferred to the next
+frame (the view of a changed frame, 0.2–0.4 ms).

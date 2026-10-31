@@ -218,8 +218,7 @@ impl Gpu {
                     g.renderer.update_texture(&g.device, &g.queue, *id, d);
                 }
             }
-            let (device, queue) = (g.device.clone(), g.queue.clone());
-            g.canvas().prepare(&device, &queue, &screen);
+            CanvasGpu::prepare(&mut g.renderer, &g.device, &g.queue, &screen);
             let mut e = g.device.create_command_encoder(&Default::default());
             let mut cmds = g
                 .renderer
@@ -319,6 +318,9 @@ struct Bench {
     /// egui texture and mesh bytes each measured frame uploaded (KiB).
     textures: Vec<f64>,
     meshes: Vec<f64>,
+    /// The last frame changed a table, so the window draws the view again at once
+    /// (`Editor::update` asks egui for a repaint).
+    repaint: bool,
 }
 
 impl Bench {
@@ -331,6 +333,7 @@ impl Bench {
             caches: Default::default(),
             rows: InstanceRows::default(),
             now: 0,
+            repaint: false,
             gpu,
             cpu: Vec::new(),
             render: Vec::new(),
@@ -357,6 +360,7 @@ impl Bench {
             self.now,
             rows,
         );
+        self.repaint = f.changed;
         let ctx = self.ed.shell().ctx().clone();
         let ppp = f.output.pixels_per_point;
         let prims = ctx.tessellate(std::mem::take(&mut f.output.shapes), ppp);
@@ -460,6 +464,10 @@ impl Bench {
 
     /// A click on UI node `id` (its center) as one frame.
     fn click_node(&mut self, id: &str, dt_ms: u64, measure: Measure) {
+        // The node is where the window's repaint after a change drew it.
+        if self.repaint {
+            self.frame(&InputEvents::default(), 1, Measure::Skip);
+        }
         let s = self.ed.shell();
         let sym = s
             .strings()

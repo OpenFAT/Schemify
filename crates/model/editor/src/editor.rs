@@ -354,15 +354,6 @@ pub struct Frame {
     pub changed: bool,
 }
 
-/// What one egui pass of [`Editor::update`] does besides the view.
-#[derive(Clone, Copy, Debug)]
-struct Step {
-    /// Run the spine on what the view routed (the input's pass, once).
-    spine: bool,
-    /// Fill the canvas and graph slots even when the spine changed a table (the shown frame).
-    paint: bool,
-}
-
 /// Texture updates no painter took yet; dropped unapplied when the editor goes (egui asserts
 /// that a delta is applied or cleared).
 #[derive(Default)]
@@ -421,20 +412,50 @@ impl Editor {
     /// ([`Editor::wake_ms`]): it polls the run and plugin completions.
     ///
     /// The input's egui frame: the view (`ui::show`) routes the input over what is shown and
-    /// the spine runs on its commands and canvas events; when a table changed, a second egui
-    /// frame with no input shows the result (its output replaces the first's shapes). `canvas` paints the canvas
-    /// slot in the final pass from the canvas tables: it returns the slot's shape and whether it
-    /// took the scene's reported edits ([`Editor::painted`]). The caller applies the output's
-    /// texture deltas (a headless caller clears them).
+    /// the spine runs on its commands and canvas events; `canvas` then paints the canvas slot
+    /// from the tables as they are now: it returns the slot's shape and whether it took the
+    /// scene's reported edits ([`Editor::painted`]). When a table changed, the output asks for
+    /// a repaint, and the next frame's view shows the change (the canvas shows it in this one;
+    /// measured 2026-10-31, a second egui pass in the same frame cost 0.2–0.4 ms of every
+    /// changed frame at 100k). The caller applies the output's texture deltas.
     ///
     /// # Panics
     ///
     /// If the input's screen rectangle has a negative size.
     pub fn update(
         &mut self,
+        input: egui::RawInput,
+        now_ms: u64,
+        canvas: &mut impl FnMut(&egui::Context, &CanvasPicture<'_>) -> (egui::Shape, bool),
+    ) -> Frame {
+        self.frame(input, now_ms, canvas, false)
+    }
+
+    /// One frame from scripted input with no window (`schemify cmd`, the RPC server's ticks,
+    /// tests): `events` in a `viewport`-sized window, the canvas left unpainted and egui's
+    /// texture updates kept for the next [`Editor::update`]. Returns whether a table changed.
+    pub fn step(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
+        let mut f = self.frame(
+            events.raw(viewport),
+            now_ms,
+            &mut |_, _| (egui::Shape::Noop, false),
+            true,
+        );
+        // No painter here: keep egui's texture updates for the next `update`'s painter.
+        self.textures
+            .0
+            .append(std::mem::take(&mut f.output.textures_delta));
+        f.changed
+    }
+
+    /// [`Editor::update`], and with `settle` a second egui pass in the same frame when a table
+    /// changed (headless callers read the layout it made).
+    fn frame(
+        &mut self,
         mut input: egui::RawInput,
         now_ms: u64,
         canvas: &mut impl FnMut(&egui::Context, &CanvasPicture<'_>) -> (egui::Shape, bool),
+        settle: bool,
     ) -> Frame {
         let viewport = input
             .screen_rect
@@ -455,43 +476,24 @@ impl Editor {
         };
         let (mut changed, mut spined) = (false, false);
         let mut output = ctx.run_ui(input, |ui| {
-            let step = Step {
-                spine: !std::mem::replace(&mut spined, true),
-                paint: false,
-            };
-            changed |= self.pass(ui, viewport, now_ms, step, canvas);
+            let spine = !std::mem::replace(&mut spined, true);
+            changed |= self.pass(ui, viewport, now_ms, spine, canvas);
         });
-        // A table changed: the view shows the result in a frame of its own (no input), whose
-        // output replaces the first's shapes and joins its texture and platform output.
-        if changed {
-            let step = Step {
-                spine: false,
-                paint: true,
-            };
+        // A table changed: headless, the view shows the result in a pass of its own (no
+        // input), so a caller reads the layout it made; a window draws it next frame.
+        if changed && settle {
             let second = ctx.run_ui(rest, |ui| {
-                self.pass(ui, viewport, now_ms, step, canvas);
+                self.pass(ui, viewport, now_ms, false, canvas);
             });
             output.append(second);
+        } else if changed {
+            ctx.request_repaint();
         }
         // Texture updates of headless frames go first, so this painter has every texture.
         let mut textures = std::mem::take(&mut self.textures.0);
         textures.append(std::mem::take(&mut output.textures_delta));
         output.textures_delta = textures;
         Frame { output, changed }
-    }
-
-    /// One frame from scripted input with no window (`schemify cmd`, the RPC server's ticks,
-    /// tests): `events` in a `viewport`-sized window, the canvas left unpainted and egui's
-    /// texture updates kept for the next [`Editor::update`]. Returns whether a table changed.
-    pub fn step(&mut self, events: &InputEvents, viewport: (f32, f32), now_ms: u64) -> bool {
-        let mut f = self.update(events.raw(viewport), now_ms, &mut |_, _| {
-            (egui::Shape::Noop, false)
-        });
-        // No painter here: keep egui's texture updates for the next `update`'s painter.
-        self.textures
-            .0
-            .append(std::mem::take(&mut f.output.textures_delta));
-        f.changed
     }
 
     /// One egui pass of the frame: the dock and the window's view, the spine on the first pass,
@@ -501,11 +503,10 @@ impl Editor {
         ui: &mut egui::Ui,
         viewport: (f32, f32),
         now_ms: u64,
-        step: Step,
+        first: bool,
         canvas: &mut impl FnMut(&egui::Context, &CanvasPicture<'_>) -> (egui::Shape, bool),
     ) -> bool {
         let ctx = ui.ctx().clone();
-        let first = step.spine;
         let mut changed = false;
         if first {
             // UI inputs (plugin sets, docs page, images) → compose when something changed since
@@ -558,10 +559,8 @@ impl Editor {
             }
             changed |= self.spine(&ctx, &routed, now_ms);
         }
-        // Every pass paints the slots, so the canvas labels' text layouts stay in egui's
-        // cache (it drops a layout the previous pass did not use); the second paint of a
-        // frame finds the rows current and only repeats the labels.
-        let _ = step.paint;
+        // Every pass paints the slots (egui reruns a pass a sizing asked to discard); a repeat
+        // paint finds the rows and label meshes current and repacks nothing.
         if !ctx.will_discard() {
             self.paint_graphs(&ctx);
             self.paint_canvas(&ctx, canvas);

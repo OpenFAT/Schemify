@@ -48,6 +48,8 @@ pub struct InstanceRows {
     keys: Vec<u8>,
     /// The frame to draw, set by the painter's canvas call and taken by the window.
     pub frame: Option<Frame>,
+    /// Per source: the labels the frame draws after its rows (none for the marks).
+    pub labels: [Option<super::LabelMesh>; SOURCES],
 }
 
 /// One row array: rows grouped by palette layer, each layer a slot range with free slots at

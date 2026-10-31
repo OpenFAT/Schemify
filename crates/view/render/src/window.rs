@@ -371,12 +371,7 @@ impl Open {
                     .update_texture(&self.device, &self.queue, *id, delta);
             }
         }
-        let canvas = self
-            .renderer
-            .callback_resources
-            .get_mut::<CanvasGpu>()
-            .expect("the canvas is a resource");
-        canvas.prepare(&self.device, &self.queue, &screen);
+        CanvasGpu::prepare(&mut self.renderer, &self.device, &self.queue, &screen);
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
