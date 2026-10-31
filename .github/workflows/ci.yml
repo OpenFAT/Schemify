@@ -42,9 +42,12 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Second oracle for the Verilog dialect (xschem has no Verilog golden):
       # Icarus Verilog parses and elaborates our netlists (crates/model/netlist/tests/iverilog.rs).
+      # The app's goldens and exports draw through egui-wgpu (render::Raster), which needs a GPU:
+      # Mesa's lavapipe on Linux; macOS runners have Metal and Windows falls back to WARP.
       - if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends iverilog
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends iverilog mesa-vulkan-drivers
           echo "SCHEMIFY_IVERILOG=iverilog" >> "$GITHUB_ENV"
       - run: cargo test --workspace --no-fail-fast
       # Golden images and snapshots a test rejected (`<name>.actual.*` in CARGO_TARGET_TMPDIR):
