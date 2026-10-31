@@ -1,0 +1,3 @@
+schemify 1 project
+
+set PDK_MODELS kit/sky130.lib.spice

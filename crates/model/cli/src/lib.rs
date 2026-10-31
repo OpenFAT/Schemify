@@ -13,14 +13,17 @@
 //! - [`zip`] — project archives in and out (web spec §3).
 //! - [`hosted`] — projects published on a static site beside the web editor (`schemify
 //!   publish`, web spec §3.1).
+//! - [`annotate`] — `schemify annotate`: an extracted netlist as a leaf impl of its cell,
+//!   selected by a bench config (netlist spec §2).
 //! - [`tree`] — `schemify tree`: the hierarchy, each node's selected impl and `count_va`.
 //!
 //! The `schemify` binary itself is `src/cmd/` (one file per command group).
 //!
-//! Contents: `pub mod hosted, libs, mcp, pack, platform, rpc, spines, tree, zip`.
+//! Contents: `pub mod annotate, hosted, libs, mcp, pack, platform, rpc, spines, tree, zip`.
 
 #![forbid(unsafe_code)]
 
+pub mod annotate;
 pub mod hosted;
 pub mod libs;
 pub mod mcp;

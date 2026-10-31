@@ -1,0 +1,33 @@
+schemify 1 shcomp
+  doc "sky130 differential pair (annotate fixture)"
+  prefix X
+
+pin inp in -40 -20
+pin inn in -40 20
+pin outp out 40 -20
+pin outn out 40 20
+pin tail inout 0 40
+pin vss inout 0 -40
+
+impl sch schematic
+
+rect -30 -30 30 30
+
+inst m00001 ./nfet
+  at 0 0 R0
+  name M1
+  W 2
+inst m00002 ./nfet
+  at 200 0 R0
+  name M2
+  W 2
+
+label n00001 220 30 R0 tail
+label n00002 220 0 R0 vss
+
+port p00001 -20 0 R0 inp
+port p00002 20 -30 R0 outp
+port p00003 20 30 R0 tail
+port p00004 20 0 R0 vss
+port p00005 180 0 R0 inn
+port p00006 220 -30 R0 outn

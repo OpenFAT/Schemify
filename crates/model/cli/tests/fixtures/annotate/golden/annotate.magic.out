@@ -1,0 +1,3 @@
+dp.shcomp: impl pex added from dp.magic.spice (.subckt dp, ports reordered by the wrapper dp__pex)
+tb.shbench: config post: cell ./dp pex
+top_tb.shbench: config post: cell ./dp pex

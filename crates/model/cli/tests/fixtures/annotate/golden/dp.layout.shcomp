@@ -1,0 +1,58 @@
+schemify 1 shcomp
+  doc "sky130 differential pair (annotate fixture)"
+  prefix X
+  default sch
+
+pin inp in -40 -20
+pin inn in -40 20
+pin outp out 40 -20
+pin outn out 40 20
+pin tail inout 0 40
+pin vss inout 0 -40
+
+impl sch schematic
+impl pex spice
+
+rect -30 -30 30 30
+
+inst m00001 ./nfet
+  at 0 0 R0
+  name M1
+  W 2
+inst m00002 ./nfet
+  at 200 0 R0
+  name M2
+  W 2
+
+label n00001 220 30 R0 tail
+label n00002 220 0 R0 vss
+
+port p00001 -20 0 R0 inp
+port p00002 20 -30 R0 outp
+port p00003 20 30 R0 tail
+port p00004 20 0 R0 vss
+port p00005 180 0 R0 inn
+port p00006 220 -30 R0 outn
+
+body pex
+  | * schemify annotate: dp's pins in pin order, onto .subckt dp_layout
+  | .subckt dp inp inn outp outn tail vss
+  | X1 inp inn outp outn tail vss dp_layout
+  | .ends dp
+  | * GPurify 2.0 pex: dp.gds, deck sky130, reference dp.spice, corner nominal
+  | .subckt dp_layout inp inn outp outn tail vss
+  | XM1 outp#1 inp#1 tail#1 vss sky130_fd_pr__nfet_01v8 w=2 l=0.15 nf=1 ad=0.58 as=0.58 pd=4.58 ps=4.58
+  | XM2 outn#1 inn#1 tail#2 vss sky130_fd_pr__nfet_01v8 w=2 l=0.15 nf=1 ad=0.58 as=0.58 pd=4.58 ps=4.58
+  | R1 outp outp#1 18.2
+  | R2 outn outn#1 17.9
+  | R3 inp inp#1 31.4
+  | R4 inn inn#1 30.8
+  | R5 tail tail#1 4.7
+  | R6 tail tail#2 4.9
+  | C1 outp#1 0 1.24f
+  | C2 outn#1 0 1.19f
+  | C3 tail 0 2.07f
+  | C4 outp#1 outn#1 0.21f
+  | C5 inp#1 outp#1 0.35f
+  | C6 inn#1 outn#1 0.35f
+  | .ends dp_layout

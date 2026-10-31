@@ -1,0 +1,13 @@
+schemify 1 shbench
+  doc "reaches dp one level down (annotate fixture)"
+
+inst 0x0001 ./top
+  at 0 0 R0
+  name X1
+
+label 0n0001 -40 -20 R0 inp
+label 0n0002 -40 20 R0 inn
+label 0n0003 40 -20 R0 outp
+label 0n0004 40 20 R0 outn
+label 0n0005 0 40 R0 tail
+label 0n0006 0 -40 R0 0

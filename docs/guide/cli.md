@@ -42,6 +42,7 @@ Every command follows one rule:
 | [`netlist`](#netlist) | Write a cell's netlist. |
 | [`check`](#check) | Report violations. |
 | [`tree`](#tree) | Print the hierarchy, each node's impl and the Verilog-A count. |
+| [`annotate`](#annotate) | Add an extracted netlist as an impl of its cell, selected by a bench config. |
 | [`run`](#run) | Simulate a bench and print its outputs and specs. |
 | [`fmt`](#fmt) | Rewrite files in canonical form. |
 | [`diff`](#diff) | Record-level diff of two files. |
@@ -140,6 +141,28 @@ Elaboration is `check`'s, with ngspice's rules (every core lang has a default te
 schemify tree opamp2.shcomp                                      # the design as it stands
 schemify tree opamp2_ac.shbench --config children --config golden
 schemify tree opamp2.shcomp --json | jq .count_va
+```
+
+### annotate
+
+```
+schemify annotate <cell> <extracted.spice> [--impl I] [--subckt S] [--config C] [--dry-run]
+```
+
+Adds a layout extractor's SPICE output (Magic `ext2spice`, GPurify `--format spice`) to the cell as impl `I` (default `pex`), and to every bench of the project that reaches the cell a config `C` (default `post`) with `cell <ref> I`, so `run <bench> --config post` simulates the extracted netlist and every other config is unchanged.
+
+- The `.subckt` used is the one named after the cell, or `S`. Its ports must be the cell's port bits by name (case-insensitive, as SPICE compares them): bus bits as `d[0]`, inherited pins under their pin names. A missing or extra port is refused, naming each.
+- The impl's body is the extracted text, unedited and carried into the netlist byte for byte (`$` that `${NAME}` expansion would read is doubled). When the ports come in another order than the cell's pins, a wrapper `.subckt` in pin order calls the extracted one: named after the cell, or `<cell>__<I>` with a `format spice` line when the text defines the cell's name itself.
+- The header's `default` keeps the impl the cell had. Running again replaces impl `I` (only a `spice` one) and keeps the configs; a config that already has a `cell` rule for the cell is left as it is and reported `kept`.
+- Benches of `git` and `url` libraries are never written. A bench that reaches the cell but cannot name it (`lib:cell` or `./cell`) is skipped with a warning.
+- The devices the text calls (`X` subcircuits, `M` models) that neither it nor a bench corner's model files define are reported per corner as warnings; annotate still writes.
+- `--dry-run` writes nothing and prints, per file, `== <path>` and the op text annotate would apply ([edits.md](../spec/edits.md) §1), which `schemify rpc`'s `edit` method takes as it is.
+
+Exit 0 when annotated (warnings included), 1 when refused (nothing is written: text outside every `.subckt`, `.end`, ports that do not match, an impl `I` of another language), 2 for usage or I/O errors and for a bench given as the cell.
+
+```sh
+schemify annotate dp.shcomp dp.magic.spice                 # impl pex, config post
+schemify annotate dp.shcomp dp_layout.spice --subckt dp_layout --dry-run
 ```
 
 ### run

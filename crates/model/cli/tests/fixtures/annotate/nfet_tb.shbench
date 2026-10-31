@@ -1,0 +1,11 @@
+schemify 1 shbench
+  doc "reaches no dp: annotate leaves it alone (annotate fixture)"
+
+inst 0x0001 ./nfet
+  at 0 0 R0
+  name M1
+
+label 0n0001 20 -30 R0 d
+label 0n0002 -20 0 R0 g
+label 0n0003 20 30 R0 0
+label 0n0004 20 0 R0 0

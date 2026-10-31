@@ -39,6 +39,10 @@ commands:
   tree <cell|bench> [--config C]... [--json]
                                        the hierarchy, each node's selected impl, and count_va:
                                        the Verilog-A nodes still selected (a view per config)
+  annotate <cell> <extracted.spice> [--impl I] [--subckt S] [--config C] [--dry-run]
+                                       add an extracted netlist as impl I (pex) of the cell,
+                                       pins checked by name, and config C (post) selecting it
+                                       to every bench that reaches the cell
   run <bench> [--config C]... [--corner K]... [--sweep S]... [--mc M] [--set VAR=EXPR]...
           [--jobs N] [--dialect D]     simulate a .shbench and print outputs and specs
                                        (D: ngspice espice xyce ltspice spectre; default: the
@@ -111,6 +115,7 @@ fn main() -> ExitCode {
         "netlist" => design::netlist(&config, rest),
         "check" => design::check(rest),
         "tree" => design::tree(rest),
+        "annotate" => Ok(schemify_cli::annotate::main(rest)),
         "run" => design::run(&config, rest),
         "publish" => publish::publish(rest),
         "pack" => Ok(schemify_cli::pack::main(&config, rest)),

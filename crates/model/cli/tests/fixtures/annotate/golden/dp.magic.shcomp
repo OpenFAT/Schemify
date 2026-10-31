@@ -1,0 +1,55 @@
+schemify 1 shcomp
+  doc "sky130 differential pair (annotate fixture)"
+  prefix X
+  default sch
+
+pin inp in -40 -20
+pin inn in -40 20
+pin outp out 40 -20
+pin outn out 40 20
+pin tail inout 0 40
+pin vss inout 0 -40
+
+impl sch schematic
+impl pex spice
+  format spice "X{name} {pins} dp__pex"
+
+rect -30 -30 30 30
+
+inst m00001 ./nfet
+  at 0 0 R0
+  name M1
+  W 2
+inst m00002 ./nfet
+  at 200 0 R0
+  name M2
+  W 2
+
+label n00001 220 30 R0 tail
+label n00002 220 0 R0 vss
+
+port p00001 -20 0 R0 inp
+port p00002 20 -30 R0 outp
+port p00003 20 30 R0 tail
+port p00004 20 0 R0 vss
+port p00005 180 0 R0 inn
+port p00006 220 -30 R0 outn
+
+body pex
+  | * schemify annotate: dp's pins in pin order, onto .subckt dp
+  | .subckt dp__pex inp inn outp outn tail vss
+  | X1 outn outp inp inn tail vss dp
+  | .ends dp__pex
+  | * NGSPICE file created from dp.ext - technology: sky130A
+  |
+  | .subckt dp outn outp inp inn tail VSS
+  | X0 tail inp a_n140_n60# VSS sky130_fd_pr__nfet_01v8 ad=0.58 pd=4.58 as=0.58 ps=4.58 w=2 l=0.15
+  | X1 outn inn tail VSS sky130_fd_pr__nfet_01v8 ad=0.58 pd=4.58 as=0.58 ps=4.58 w=2 l=0.15
+  | R0 a_n140_n60# outp 18.2
+  | C0 outp outn 0.21f
+  | C1 inp a_n140_n60# 0.35f
+  | C2 inn outn 0.35f
+  | C3 outp VSS 1.24f $ **FLOATING
+  | C4 outn VSS 1.19f $ **FLOATING
+  | C5 tail VSS 2.07f $ **FLOATING
+  | .ends

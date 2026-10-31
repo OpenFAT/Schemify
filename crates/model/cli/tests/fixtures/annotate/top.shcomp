@@ -1,0 +1,25 @@
+schemify 1 shcomp
+  doc "a block around the pair: its bench reaches dp through this schematic (annotate fixture)"
+  prefix X
+
+pin inp in -40 -20
+pin inn in -40 20
+pin outp out 40 -20
+pin outn out 40 20
+pin tail inout 0 40
+pin vss inout 0 -40
+
+impl sch schematic
+
+rect -30 -30 30 30
+
+inst 0d0001 ./dp
+  at 0 0 R0
+  name X1
+
+port 0p0001 -40 -20 R0 inp
+port 0p0002 -40 20 R0 inn
+port 0p0003 40 -20 R0 outp
+port 0p0004 40 20 R0 outn
+port 0p0005 0 40 R0 tail
+port 0p0006 0 -40 R0 vss

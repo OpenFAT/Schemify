@@ -1,0 +1,5 @@
+* Stand-in for the sky130 model library (the device names and the section layout only):
+* the annotate tests that simulate point PDK_MODELS at the real one.
+.lib tt
+.include "nfet.spice"
+.endl tt
