@@ -1,8 +1,8 @@
-# Schemify's public crates: the file format, the plugin ABI and the plugin sandbox host.
+# Schemify's public crates: the file format and the plugin ABI.
 # The editor and the core live in a separate, private repository.
 [workspace]
 resolver = "3"
-members = ["crates/protocol/format", "crates/protocol/abi", "crates/plugins/plugin"]
+members = ["crates/protocol/format", "crates/protocol/abi"]
 
 [workspace.package]
 version = "1.0.1"
@@ -31,6 +31,4 @@ must_use_candidate = "warn"
 [workspace.dependencies]
 schemify-format = { path = "crates/protocol/format" }
 schemify-abi = { path = "crates/protocol/abi" }
-schemify-plugin = { path = "crates/plugins/plugin" }
 proptest = { version = "1", default-features = false, features = ["std"] }
-wasmi = { version = "2", default-features = false, features = ["std", "validate", "auto-dispatch", "deterministic"] }

@@ -56,13 +56,10 @@ resolver = "3"
 [workspace.dependencies]
 schemify-abi = { git = "https://github.com/OpenFAT/Schemify", rev = "<full commit sha>", features = ["guest"] }
 schemify-format = { git = "https://github.com/OpenFAT/Schemify", rev = "<full commit sha>" }
-schemify-plugin = { git = "https://github.com/OpenFAT/Schemify", rev = "<full commit sha>" }
 
 [dependencies]
 schemify-abi.workspace = true
 
-[dev-dependencies]
-schemify-plugin.workspace = true  # the real host, for the guest test
 
 # Small modules: size over speed, no unwinding (a panic is a trap the host reports).
 [profile.release]

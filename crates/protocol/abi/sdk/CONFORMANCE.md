@@ -1,6 +1,6 @@
 # SDK conformance guest
 
-Every language library in this directory has a `conformance/` guest that behaves exactly as below. `cargo test -p schemify-plugin --test sdk` loads each committed `conformance/conformance.wasm` in the real host and checks it, so every library parses events and writes records the way the Rust SDK does. A new library adds its guest here and its directory to that test.
+Every language library in this directory has a `conformance/` guest that behaves exactly as below. Schemify's own CI loads each committed `conformance/conformance.wasm` in the real host on every release and checks it, so every library parses events and writes records the way the Rust SDK does. A new library adds its guest here.
 
 ## On every event
 

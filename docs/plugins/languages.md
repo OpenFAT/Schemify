@@ -13,7 +13,7 @@ Each template in [examples/plugins/](../../examples/plugins) is a complete plugi
 - On `Load` it adds **Tools → Count nets**.
 - The command logs the nets that have a single connection, with their names (`2 single-connection nets: c, d`).
 
-`cargo test -p schemify-plugin --test templates` loads every committed `hello.wasm` in the real host and checks that behaviour. In Claude Code, the schemify-plugin skill copies a template and builds your plugin from it.
+Schemify's CI loads every committed `hello.wasm` in the real host and checks that behaviour.
 
 | Language | Template | Library | Build | Module |
 |---|---|---|---|---|
@@ -41,7 +41,7 @@ The names follow each language's conventions (`sch_contribute`, `out.contribute`
 - **Outputs.** The builder writes `contribute` (with a scope, for annotations), `edit` (stage or commit), `run` with `vary`, `timer` and `log`. Contributions are immediate-mode: send the whole set again every time it changes.
 - **Buffers.** Input and output are static, 1 MiB each, and nothing is allocated per event. An event over the input size is refused, which the host reports as `E_SPACE`. Output past the cap is replaced by one error log. C and Zig let you change the sizes; the per-language notes say how.
 
-The ids in each library are generated from `schemify-abi`. `cargo test -p schemify-abi --test sdk` fails when a library falls behind, and `SCHEMIFY_BLESS=1` rewrites its generated region. Each library also has a conformance guest ([sdk/CONFORMANCE.md](../../crates/protocol/abi/sdk/CONFORMANCE.md)). `cargo test -p schemify-plugin --test sdk` runs those guests in the host and checks that events, values, records, table reads and function calls behave as in the Rust SDK.
+The ids in each library are generated from `schemify-abi`. `cargo test -p schemify-abi --test sdk` fails when a library falls behind, and `SCHEMIFY_BLESS=1` rewrites its generated region. Each library also has a conformance guest ([sdk/CONFORMANCE.md](../../crates/protocol/abi/sdk/CONFORMANCE.md)). Schemify's CI runs those guests in the host and checks that events, values, records, table reads and function calls behave as in the Rust SDK.
 
 ## Using a library from your own repository
 
@@ -58,11 +58,7 @@ The templates reach their library by a path inside this checkout. In your own re
 
 ## Check a module
 
-```sh
-cargo run -p schemify-plugin --example check -- path/to/my_plugin.wasm my.command
-```
-
-`check` loads the module in the real host and delivers `Load` plus each command you name, against four sample nets. It prints the contributions, logs and faults, and exits 1 on any fault. A load failure names its cause. The most common is an import outside module `schemify`, which means a runtime, libc or WASI slipped in.
+Load it in the app from its folder ([testing.md](testing.md), In the app) and run your command. A load failure is shown with its cause. The most common is an import outside module `schemify`, which means a runtime, libc or WASI slipped in.
 
 ## Per-language notes
 

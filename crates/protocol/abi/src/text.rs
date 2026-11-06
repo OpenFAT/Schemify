@@ -22,7 +22,7 @@
 
 // ponytail: a subset of the format codec kept here so `abi` stays a dependency-free leaf for
 // guests (every plugin links it). The host validates contribution sets and spawn argv with
-// `schemify-format` itself (`schemify_plugin::intake`); this lexer only encodes and decodes
+// `schemify-format` itself (in the host); this lexer only encodes and decodes
 // events and output records. Re-export the format's once it has a public value lexer.
 
 use std::borrow::Cow;

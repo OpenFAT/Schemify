@@ -1,4 +1,4 @@
-//! Plugin ABI v1, shared by the Schemify host (`schemify-plugin`) and every guest: the
+//! Plugin ABI v1, shared by the Schemify host and every guest: the
 //! numbers and names both sides agree on, and the line-record codec both directions speak.
 //!
 //! Cites: `docs/spec/plugin-abi.md` (normative) §2 (exports, limits), §3 (imports), §4
