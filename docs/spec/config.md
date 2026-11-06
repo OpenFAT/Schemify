@@ -46,6 +46,7 @@ Files:
 |---|---|
 | `<config>/init.lua` | The user config (§2). |
 | `<config>/lua/` | Root of `require` (§2). |
+| `<config>/lua/settings.lua` | The user's settings file, written by the settings editor (§3.4). |
 | `<config>/schemify-pack.lock` | The package lockfile (§5), next to `init.lua`. |
 | `<data>/pack/<name>/` | An installed `git` or `url` package (§5). |
 
@@ -54,7 +55,7 @@ Files:
 Both binaries (`schemify`, the core, and `schemify-gui`, the editor) read the user config the same way before doing anything else:
 
 1. Resolve the directories (§1).
-2. Unless `--clean`, run the init file: `-u <file>` if given, else `<config>/init.lua` when it exists. Its directory is the **config root** (normally `<config>`): `require` and the package lockfile resolve against it.
+2. Unless `--clean`, apply the user's settings file `<root>/lua/settings.lua` (§3.4), then run the init file: `-u <file>` if given, else `<config>/init.lua` when it exists. Its directory is the **config root** `<root>` (normally `<config>`): `require`, the settings file and the package lockfile resolve against it.
 3. Report every error as `<file>:<line>: <message>` (stderr for the core, the status line for the editor) and continue with what the script set before the error, like Neovim. A config can never stop the tool from starting.
 
 `--clean` skips the init file **and** every user package; the project's init file and its packages (below) still load, because they belong to the design, not to the user.
@@ -65,7 +66,9 @@ A project names its own Lua file in its manifest header: `schemify 1 project` wi
 
 The file runs after the user's init file, in the same Lua state, with the whole API: its options, keymaps, hooks and sims win over the user's (a later `set` replaces an earlier one). `require` and relative package paths resolve against the project directory (`<project>/lua/`), and its packages install under `<project>/.schemify/pack/<name>` with the lockfile `<project>/schemify-pack.lock` (§5), committed with the project.
 
-A design file is inert (D7), so the file runs and its packages load only once the user **trusts** them. The editor computes a digest over the file, every `.lua` file under `<project>/lua/`, and each project package's name, source, grants, fuel and installed module (its sha256, or "absent"), and keeps the digests the user trusted in `<state>/trusted-projects` (§1; at most 1024, oldest dropped). Opening or reloading (`project.reload`) a project whose digest is not trusted, or one of whose packages is not installed, loads none of them and opens the **trust dialog**: the file, each package with its source and grants, and whether it downloads. Before that the file runs only into a throwaway config, to list its packages; nothing it sets is applied. *Trust & download* installs the missing packages as `schemify pack sync` does (§5; `url` hashes checked, `git` at the locked commit), records the digest of what is then on disk, and reopens the project; *Skip* leaves its plugins off, and values they compute keep their cached results (D20). Any change to the file, a module, a grant or a package is a new digest and asks again. The dialog is the core-layer `core.trust` (plugin-abi §1): no plugin or theme can relabel, restyle or cover it, and its *Trust* and *Skip* commands (`core.trust.ok`, `core.trust.skip`) answer only a click on their buttons, never a key, `schemify.cmd` or the JSON-RPC stream. Headless, `schemify-gui cmd --trust …` trusts as the dialog would; without `--trust` the project's plugins stay off.
+The project's settings file `<project>/lua/settings.lua` (§3.4) is applied just before the file runs. A project with a settings file and no `init` is trusted the same way, with the settings file in the dialog in place of the init file.
+
+A design file is inert (D7), so the file runs, its settings apply and its packages load only once the user **trusts** them. The editor computes a digest over the file, every `.lua` file under `<project>/lua/` (the settings file among them), and each project package's name, source, grants, fuel and installed module (its sha256, or "absent"), and keeps the digests the user trusted in `<state>/trusted-projects` (§1; at most 1024, oldest dropped). Opening or reloading (`project.reload`) a project whose digest is not trusted, or one of whose packages is not installed, loads none of them and opens the **trust dialog**: the file, each package with its source and grants, and whether it downloads. Before that the file runs only into a throwaway config, to list its packages; nothing it sets is applied. *Trust & download* installs the missing packages as `schemify pack sync` does (§5; `url` hashes checked, `git` at the locked commit), records the digest of what is then on disk, and reopens the project; *Skip* leaves its plugins off, and values they compute keep their cached results (D20). Any change to the file, a module, a grant or a package is a new digest and asks again. The dialog is the core-layer `core.trust` (plugin-abi §1): no plugin or theme can relabel, restyle or cover it, and its *Trust* and *Skip* commands (`core.trust.ok`, `core.trust.skip`) answer only a click on their buttons, never a key, `schemify.cmd` or the JSON-RPC stream. Headless, `schemify-gui cmd --trust …` trusts as the dialog would; without `--trust` the project's plugins stay off.
 
 Flags go before the command: `schemify --clean netlist top.shcomp`, `schemify -u test.lua pack status`. `schemify edit [flags] [path]` starts `schemify-gui` (§7) with the same flags.
 
@@ -135,7 +138,9 @@ Options, one row of `OPTIONS` in `crates/model/config/src/options.rs` each (that
 | `check_app_updates` | boolean | `false` | Ask for a new Schemify release once a day at startup (update.md §3). Off, the app asks only from Help → Check for updates; it never contacts anything at startup. Only the user's own `init.lua` sets it. |
 <!-- /options -->
 
-Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width in the editor lasts for the session (put it in `init.lua` to keep it). The view state is the exception: `theme`, `theme_mode`, `light` and `ui_zoom` as last picked in the editor are kept in `<state>/view` (§1; one `<key> <value>` line each, values as Lua would write them) and applied at the next start to each of them the init files did not assign.
+Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width from a menu lasts for the session (the settings editor, §3.4, keeps it). The view state is the exception: `theme`, `theme_mode`, `light` and `ui_zoom` as last picked in the editor are kept in `<state>/view` (§1; one `<key> <value>` line each, values as Lua would write them) and applied at the next start to each of them neither Lua nor the project's settings file assigned (it wins over the user's settings file, which the settings editor writes together with it).
+
+A key of two or more dot-separated segments of `A–Z a–z 0–9 _ -` (never `core.`) is a **plugin option**, `schemify.opt["gmid.points"] = 120`: a boolean, a number or a string (at most 4096 bytes, no control character but tab) kept for the plugin that declares it (§3.4); reading one returns the value the layers give, or `nil` when nobody assigned it.
 
 Functions (keymap targets, hooks, user commands) run under the same sandbox and limits as the init file (§4), one budget per call. A function's error is reported as `<file>:<line>: <message>` and the editor carries on.
 
@@ -195,6 +200,23 @@ schemify.api.create_autocmd({ "saved", "doc_opened" }, {
 - **Patterns** match the whole cell name of the event's document (its `doc` field; for `selection_changed`, `run_done` and `load`, the active document): `*` any run, `?` one character, everything else itself. A hook with a pattern does not run when there is no document or no cell name. `ev.match` is that cell name.
 - **`once`** deletes the autocommand (all its events) just before its first run.
 - A hook another hook of the same event deleted does not run. Ids are never reused within a session.
+
+### 3.4 Settings files and the settings editor
+
+The editor's settings overlay (`view.settings`: Options → Settings…, the gear at the foot of the icon bar, Ctrl+,) shows every row of the option table above and every option a plugin declares (`contribute options`, [plugin-abi.md](plugin-abi.md) §7), by section (the table's group column, then one section per plugin), with a control per type: a checkbox, a number field that clamps into the row's range, a row of word buttons, a text field, a colour field with a swatch, one colour field per canvas layer for `layer_colors`. A search box filters by key, title, doc text and section; the theme picker on top lists the installed themes (§5 Themes): a click previews one, *Done* keeps it (written as `theme` to the shown scope), *Cancel* or Escape goes back to the theme the overlay opened with.
+
+Lua stays the source of truth. The overlay never writes an init file; it writes one tool-owned file per scope, rewritten whole on every change:
+
+| Scope | File | Applied |
+|---|---|---|
+| User | `<root>/lua/settings.lua` (`<root>` the config root, §2) | before the user's init file runs |
+| Project | `<project>/lua/settings.lua` | before the project's init file runs, once the project is trusted (§2) |
+
+A settings file is a strict subset of Lua that the config crate reads without running it: a header comment, then one assignment per line in key order, `schemify.opt.<key> = <literal>` for a core option and `schemify.opt["<plugin>.<key>"] = <literal>` for a plugin's; a literal is `true`, `false`, `nil`, a decimal number, a double-quoted string (escapes `\"`, `\\`, `\t` only) or the colour table `{ [3] = "ff0000" }`. Lua running the same file gives the same values. A line outside this grammar, an unknown key or a value outside its row's domain is skipped with a warning naming its line; the other lines still apply. Do not `require "settings"` from `init.lua`: it is already applied, and a value the init file sets counts as the init file's.
+
+Precedence, lowest first: the default (or the plugin's `option` record) < the user's settings file < the user's Lua (`init.lua`, its modules, the functions it keeps) < the project's settings file < the project's init file. The overlay shows each scope's own file: a row the scope's file holds is marked *Modified* and has *Reset* (drops the row; the option falls back to the next layer down); a value an init file of that scope sets is locked (*set in init.lua*, *set in the project's init file*), and a row a higher scope sets says so. Every change applies at once.
+
+Security (D7): the project's file is project content, covered by the project's trust digest (§2), so it applies only once the user trusts the project; the overlay edits it only while the project is trusted or has nothing to trust yet, and trusts the digest of what it just wrote (the user's click made it). It never holds a user-only option: such a row is locked in the Project tab, and a project file that names one has that line skipped with a warning. Writing a settings file (`settings.set`, `settings.toggle`, `settings.pick`, `settings.color`, `settings.reset`, `settings.done`) runs from the window and the dev command stream, never from a plugin's `command` record or `schemify.cmd`; a user-only option changes only from the window. No overlay command is a consent command (`Cmd::needs_user`).
 
 ## 4. Sandbox
 
@@ -296,7 +318,8 @@ The user-config table (owner: `crates/model/config`; readers: both binaries):
 
 | Table | Rows | Capacity |
 |---|---|---|
-| options | the nine keys of §3 | fixed |
+| options | one per row of §3, with the layer that assigned it (§3.4) | fixed |
+| plugin options | key, layer, literal (§3.4) | 256 keys |
 | keymaps | chord, target (command name or function id), description | 4096 |
 | sims | `ngspice`, `openvaf`, `iverilog`, `espice`: path, args, env (≤ 64 each) | 4 |
 | hosts | simulator, ssh destination, path, args, env (`sim` rows with a `host`) | 64 |

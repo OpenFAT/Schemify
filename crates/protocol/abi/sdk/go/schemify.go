@@ -192,6 +192,7 @@ const (
 	KindRunners Kind = "runners"
 	KindChecks Kind = "checks"
 	KindConstraintTypes Kind = "constraint_types"
+	KindOptions Kind = "options"
 )
 // END GENERATED
 

@@ -286,4 +286,5 @@ key Ctrl+! tools.remove_wires_running_through_selected_in
 # panel. Ctrl+B and Ctrl+J are xschem's, so the VS Code keys move to Ctrl+Shift.
 key Ctrl+Shift+B view.toggle_left
 key Ctrl+Shift+L view.toggle_right
+key Ctrl+, view.settings
 key Ctrl+Shift+J view.toggle_bottom

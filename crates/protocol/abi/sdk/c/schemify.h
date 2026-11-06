@@ -195,6 +195,7 @@ enum sch_level {
 #define SCH_KIND_RUNNERS "runners"
 #define SCH_KIND_CHECKS "checks"
 #define SCH_KIND_CONSTRAINT_TYPES "constraint_types"
+#define SCH_KIND_OPTIONS "options"
 /* END GENERATED */
 
 /* ---- Strings: a borrowed byte range, never NUL-terminated ---- */

@@ -230,6 +230,7 @@ pub const Kind = enum {
     runners,
     checks,
     constraint_types,
+    options,
 };
 // END GENERATED
 

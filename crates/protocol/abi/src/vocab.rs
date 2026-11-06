@@ -136,6 +136,9 @@ named_enum! {
         Checks = "checks",
         /// Constraint types (`constraint <name>`).
         ConstraintTypes = "constraint_types",
+        /// Options the settings editor shows (`option <key> <type> <default>`, config spec
+        /// §3.4); a later plugin's record for a key replaces the earlier default.
+        Options = "options",
     }
 }
 
@@ -169,7 +172,7 @@ const _: () = assert!(Code::Module as usize == Code::ALL.len());
 // `from_raw` indexes `ALL` with `code - 1` and `neg` promises a negative value: both need the
 // first code to be 1.
 const _: () = assert!(Code::ALL[0] as u8 == 1);
-const _: () = assert!(Kind::COUNT == 9);
+const _: () = assert!(Kind::COUNT == 10);
 // A kind without record words would reject every non-empty contribution of itself.
 const _: () = {
     let mut index = 0;
@@ -278,6 +281,7 @@ impl Kind {
             Kind::Runners => &["runner"],
             Kind::Checks => &["check"],
             Kind::ConstraintTypes => &["constraint"],
+            Kind::Options => &["option"],
         }
     }
 
@@ -367,7 +371,7 @@ mod tests {
             assert_eq!(level as usize, i);
             assert_eq!(level.as_str().parse(), Ok(level));
         }
-        assert_eq!(Kind::COUNT, 9);
+        assert_eq!(Kind::COUNT, 10);
         assert_eq!("nope".parse::<Kind>(), Err(Code::Parse));
         assert_eq!("UI".parse::<Kind>(), Err(Code::Parse));
         assert_eq!("stage".parse(), Ok(EditMode::Stage));
