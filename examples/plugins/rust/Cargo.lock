@@ -11,5 +11,5 @@ dependencies = [
 
 [[package]]
 name = "schemify-abi"
-version = "0.1.0"
-source = "git+https://github.com/OpenFAT/Schemify?rev=25ad74d1d3a13d23166d1fd49bf8c1aa11c01c0d#25ad74d1d3a13d23166d1fd49bf8c1aa11c01c0d"
+version = "1.0.1"
+source = "git+https://github.com/OpenFAT/Schemify?rev=5df66f29afc869e86bd96cfe72e482108a7310f6#5df66f29afc869e86bd96cfe72e482108a7310f6"
