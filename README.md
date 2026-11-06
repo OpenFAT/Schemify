@@ -2,6 +2,15 @@
 
 Everything you need to build plugins and themes for [Schemify](https://github.com/OpenFAT), the schematic editor for analog and mixed-signal IC design. The editor itself is a separate product; this repository holds the open parts it is built on.
 
+## What changed (November 2026)
+
+Schemify's editor and core are now developed privately. This repository, which used to hold all of Schemify, now holds only the parts plugin and theme authors build on.
+
+- **Your designs are safe.** The file format stays open and documented (`docs/spec/format.md`, `crates/protocol/format`), so `.shcomp`, `.shbench` and project files never depend on a closed tool to be read.
+- **Plugins keep working.** The plugin ABI, its SDKs and the default UI pack are here, and `docs/plugins/versioning.md` says what a release may change.
+- **The app stays free to use.** The editor, simulation, docs pages, the stores and themes cost nothing; the AI assistant is the paid part.
+- **Code already published stays MIT.** Everything released under MIT before this change keeps that licence.
+
 ## What is here
 
 | Path | What it is |
