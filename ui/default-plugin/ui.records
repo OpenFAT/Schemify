@@ -816,6 +816,13 @@ node edit.pop item
 node menu.options menu
   parent menubar
   label Options
+node options.settings item
+  parent menu.options
+  label "Settings..."
+  command view.settings
+  accel Ctrl+,
+node options.sep_settings separator
+  parent menu.options
 node options.color_postscript_svg item
   parent menu.options
   label "Color Postscript/SVG"
@@ -1859,6 +1866,16 @@ node activity.agent button
   tooltip "Agent (Ctrl+Shift+L)"
   icon "M8 1.5 C8.5 5.5 10.5 7.5 14.5 8 C10.5 8.5 8.5 10.5 8 14.5 C7.5 10.5 5.5 8.5 1.5 8 C5.5 7.5 7.5 5.5 8 1.5 Z"
   style activity-button
+node activity.spacer panel
+  parent activity
+  style spacer
+node activity.settings button
+  parent activity
+  label Settings
+  command view.settings
+  tooltip "Settings (Ctrl+,)"
+  icon "M8 5.5 C9.4 5.5 10.5 6.6 10.5 8 C10.5 9.4 9.4 10.5 8 10.5 C6.6 10.5 5.5 9.4 5.5 8 C5.5 6.6 6.6 5.5 8 5.5 Z M7 1.5 L9 1.5 L9.4 3.4 L11 4.1 L12.6 3 L14 4.4 L12.9 6 L13.6 7.6 L15.5 8 L15.5 9 L13.6 9.4 L12.9 11 L14 12.6 L12.6 14 L11 12.9 L9.4 13.6 L9 15.5 L7 15.5 L6.6 13.6 L5 12.9 L3.4 14 L2 12.6 L3.1 11 L2.4 9.4 L0.5 9 L0.5 8 L2.4 7.6 L3.1 6 L2 4.4 L3.4 3 L5 4.1 L6.6 3.4 Z"
+  style activity-button
 node dock.left.split split
   parent body
   style dock-hsplit
@@ -2211,6 +2228,82 @@ node dialog.recover.discard button
   command dialog.recover.discard
   style dialog-button
 
+# --- settings overlay (`view.settings`, Ctrl+,; config spec §3.4). This UI declares the frame; the
+# app adds the section items under `dialog.settings.nav`, the theme picker and one row per option
+# under `dialog.settings.list` (classes settings-*), and sets the scope tabs, search and path. ----
+
+node dialog.settings dialog
+  label Settings
+  style settings
+node dialog.settings.head panel
+  parent dialog.settings
+  style settings-head
+node dialog.settings.title label
+  parent dialog.settings.head
+  label Settings
+  style settings-title
+node dialog.settings.scope tabs
+  parent dialog.settings.head
+  style settings-scopes
+node dialog.settings.scope.user tab
+  parent dialog.settings.scope
+  label User
+  command settings.scope.user
+  tooltip "Your settings: lua/settings.lua in the config directory"
+  style settings-scope
+node dialog.settings.scope.project tab
+  parent dialog.settings.scope
+  label Project
+  command settings.scope.project
+  tooltip "This project's settings: lua/settings.lua in the project"
+  style settings-scope
+node dialog.settings.head.spacer panel
+  parent dialog.settings.head
+  style spacer
+node dialog.settings.x button
+  parent dialog.settings.head
+  label Close
+  command settings.cancel
+  tooltip "Close (Escape): the theme goes back"
+  icon "M4 4 L12 12 M12 4 L4 12"
+  style settings-x
+node dialog.settings.search text_input
+  parent dialog.settings
+  input settings.search
+  tooltip "Search settings by name, description or section"
+  style settings-search
+node dialog.settings.body panel
+  parent dialog.settings
+  style settings-body
+node dialog.settings.nav panel
+  parent dialog.settings.body
+  style settings-nav
+node dialog.settings.box panel
+  parent dialog.settings.body
+  style settings-box
+node dialog.settings.list scroll
+  parent dialog.settings.box
+  style settings-list
+node dialog.settings.foot panel
+  parent dialog.settings
+  style settings-foot
+node dialog.settings.path label
+  parent dialog.settings.foot
+  style settings-hint
+node dialog.settings.foot.spacer panel
+  parent dialog.settings.foot
+  style spacer
+node dialog.settings.cancel button
+  parent dialog.settings.foot
+  label Cancel
+  command settings.cancel
+  style dialog-button
+node dialog.settings.done button
+  parent dialog.settings.foot
+  label Done
+  command settings.done
+  style dialog-button
+
 # --- project trust: drawn by the core layer (`core.trust`), never by a plugin (shell `CORE_LAYER`). --
 
 style dialog-list
@@ -2245,6 +2338,195 @@ style dialog-row
 
 style dialog-key
   width 160
+
+# Settings overlay: a wide modal, sections on the left, rows scrolling on the right.
+style settings
+  bg ececec
+  dir column
+  pad 0
+  pad-y 0
+  gap 0
+  border 1
+  border-color 404040
+  min-width 920
+
+style settings-head
+  bg d9d9d9
+  dir row
+  height 36
+  pad 10
+  gap 12
+
+style settings-title
+  font 15
+
+style settings-scopes
+  bg d9d9d9
+  dir row
+  gap 2
+
+style settings-scope
+  pad 10
+  height 22
+  border 0
+  active-bg ffffff
+
+style settings-x
+  pad 5
+  height 24
+  width 28
+  hover-bg cfcfcf
+  radius 3
+
+style settings-search
+  width 896
+  pad 8
+  pad-y 5
+  border 1
+
+style settings-body
+  dir row
+  stretch 1
+  height 520
+  gap 0
+
+style settings-nav
+  bg e0e0e0
+  dir column
+  width 170
+  pad 6
+  pad-y 6
+  gap 1
+
+style settings-nav-item
+  pad 8
+  height 22
+
+style settings-nav-on
+  active-bg c3c3c3
+  pad 8
+  height 22
+  bg c3c3c3
+
+style settings-box
+  dir column
+  grow 1
+
+style settings-list
+  dir column
+  grow 1
+  pad 14
+  pad-y 8
+  gap 2
+
+style settings-section
+  font 16
+  pad-y 8
+  fg 1a3a8a
+
+style settings-row
+  dir column
+  pad 8
+  pad-y 6
+  gap 3
+
+style settings-row-modified
+  dir column
+  pad 8
+  pad-y 6
+  gap 3
+  bg e4ebf7
+
+style settings-row-head
+  dir row
+  gap 8
+
+style settings-key
+  font 13
+
+style settings-mark
+  font 11
+  fg 1a5fb4
+
+style settings-lock
+  font 11
+  fg 7a5200
+
+style settings-reset
+  pad 6
+  height 18
+  font 11
+  border 1
+  radius 2
+
+style settings-doc
+  font 12
+  fg 404040
+
+style settings-hint
+  font 11
+  fg 606060
+
+style settings-line
+  dir row
+  gap 8
+
+style settings-layer
+  width 200
+  font 12
+
+style settings-input
+  width 160
+
+style settings-text
+  width 420
+
+style settings-check
+  font 12
+
+style settings-choices
+  dir row
+  gap 2
+
+style settings-choice
+  pad 8
+  height 20
+  border 1
+  bg f4f4f4
+
+style settings-choice-on
+  active-bg 90ee90
+  pad 8
+  height 20
+  border 1
+  bg 90ee90
+
+style settings-themes
+  dir row
+  gap 6
+  pad-y 4
+
+style settings-theme
+  pad 12
+  height 26
+  border 1
+  bg f4f4f4
+  radius 3
+
+style settings-theme-on
+  active-bg 90ee90
+  pad 12
+  height 26
+  border 2
+  bg 90ee90
+  radius 3
+
+style settings-foot
+  bg d9d9d9
+  dir row
+  height 40
+  pad 10
+  gap 8
 
 # --- canvas palette (D5): one selector per schematic layer and theme; layer 0 is the background.
 # The app reads `fg` of `canvas.<theme>.<layer>`, `.grid` and `.sel`. Dark = xschem's dark scheme

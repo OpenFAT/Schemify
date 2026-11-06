@@ -232,6 +232,7 @@ Kind :: enum {
 	Runners,
 	Checks,
 	Constraint_Types,
+	Options,
 }
 // Wire names of `Kind`.
 KIND_NAMES :: [Kind]string {
@@ -244,6 +245,7 @@ KIND_NAMES :: [Kind]string {
 	.Runners = "runners",
 	.Checks = "checks",
 	.Constraint_Types = "constraint_types",
+	.Options = "options",
 }
 // END GENERATED
 

@@ -173,6 +173,7 @@ export const KIND_DIALECTS = "dialects";
 export const KIND_RUNNERS = "runners";
 export const KIND_CHECKS = "checks";
 export const KIND_CONSTRAINT_TYPES = "constraint_types";
+export const KIND_OPTIONS = "options";
 // END GENERATED
 
 /** Bytes of an event over this are refused; the host reports E_SPACE. */

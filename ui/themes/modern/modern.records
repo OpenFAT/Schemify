@@ -369,3 +369,116 @@ style cell-input
 style cell-body
   bg @bg
   border-color @line
+
+# --- settings overlay (the marketplace overlay's look: raised panel, accent marks) ---------------
+
+style settings
+  bg @surface
+  border-color @line
+  radius 8
+
+style settings-head
+  bg @surface
+
+style settings-title
+  fg @bright
+
+style settings-scopes
+  bg @surface
+
+style settings-scope
+  bg @surface
+  fg @muted
+  active-bg @surface
+  active-fg @bright
+
+style settings-x
+  hover-bg @hover
+
+style settings-search
+  bg @bg
+  border-color @line
+  radius 4
+
+style settings-nav
+  bg @surface
+
+style settings-nav-item
+  fg @text-2
+  hover-bg @hover
+
+style settings-nav-on
+  active-bg @active
+  active-fg @bright
+  bg @active
+  fg @bright
+
+style settings-list
+  bg @bg
+
+style settings-section
+  fg @muted
+
+style settings-row
+  bg @bg
+  hover-bg @surface
+
+style settings-row-modified
+  bg @raised
+
+style settings-key
+  fg @bright
+
+style settings-mark
+  fg @accent-fg
+
+style settings-lock
+  fg @muted
+
+style settings-reset
+  bg @active
+  border-color @line
+  radius 3
+
+style settings-doc
+  fg @text-2
+
+style settings-hint
+  fg @muted
+
+style settings-input
+  bg @surface
+  border-color @line
+
+style settings-text
+  bg @surface
+  border-color @line
+
+style settings-choice
+  bg @raised
+  border-color @line
+  radius 3
+
+style settings-choice-on
+  active-bg @accent-bg
+  active-fg @bright
+  bg @accent-bg
+  fg @bright
+  border-color @accent-fg
+  radius 3
+
+style settings-theme
+  bg @raised
+  border-color @line
+  radius 4
+
+style settings-theme-on
+  active-bg @accent-bg
+  active-fg @bright
+  bg @accent-bg
+  fg @bright
+  border-color @accent-fg
+  radius 4
+
+style settings-foot
+  bg @surface
