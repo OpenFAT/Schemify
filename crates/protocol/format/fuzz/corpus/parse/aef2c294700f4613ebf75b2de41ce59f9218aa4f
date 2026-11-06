@@ -1,0 +1,8 @@
+schemify 1 shbench
+  doc "0
+inst 0m0101 ./dbschemram308./inv
+  at 6 
+  at 0 2 MMMMM 
+  n1f
+  at name 
+  at 0 2 MMMMMMMMMMMM

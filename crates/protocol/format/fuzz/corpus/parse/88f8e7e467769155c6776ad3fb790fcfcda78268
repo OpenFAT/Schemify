@@ -1,0 +1,133 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u`Linout%20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param(W 2
+param L 0.15
+param model pch
+  si ntdk D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+ "kind string
+
+impl spice spice
+ Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+pazam model pch
+  si ntdkring
+
+impl spice spicspice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param(W 2
+param L 0.15
+param model pch
+  si ntdk D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+ "kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntirkdng
+
+impl spice spice
+  format spice "M{nric PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inmat sp The middl} w={W}u le80 0
+pin IBIAS in -80 40
+pin VDD 

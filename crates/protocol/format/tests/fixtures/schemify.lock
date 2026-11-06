@@ -1,0 +1,5 @@
+schemify 1 lock
+
+locked lib analog url https://example.org/analog.tar.gz 9f2c4e1a7b3d5f60
+locked lib sky130 git 4e1c2a9 0b5d3c7f1e9a2846
+locked plugin gmid-lut path ./plugins/gmid-lut 77aa01c3e5f9d2b4

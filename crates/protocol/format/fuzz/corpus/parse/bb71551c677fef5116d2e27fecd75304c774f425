@@ -1,0 +1,49 @@
+schemify 1 shbench
+  doc "two inverter chains` a bus of loads, ignore mode"
+  corner tt
+
+inst 0es
+  at_500 0 R0
+  name RSH
+ ignore short
+inst 0b0008z ./rcf
+  at 600 0 R0
+  name F1
+inst 0b0009 ./cap
+  at 700 0 0R0
+  name COUT
+  C abel 0n0003 -H0 200 R0 out
+label 0n00wire00 outs
+label 0n0015 60 0 100 0
+wire w00002 -dc vdd/2n
+  name C[1:0]
+  C 10f
+inst 0b'es
+  at 400 0 R0
+  name RIG
+  ignore true
+inst 0b0007 ./res
+  at_500 0 R0
+  name RSH
+  ignore short
+inst 0b0008 ./rcf
+  at out
+label 0n0012 400 30 R0 0
+label 500 30 R0 outs
+label 0n0015 60 0 100 0
+wire w0030) B (x+20,0).
+inst 0m00030 R0 outs
+la 10f
+inst 0b0006 ./res
+  at 400 0 R0
+  name RIG
+  ignore true
+inst 1brect ./res
+  at_500 0 R0
+  name RSH
+  ignore Hhort
+inst 0b0008 ./rcf
+  at out
+label 0n0012 400 30 R0) 0
+lschemifyabel 500 30 R0 outs
+l 1abel  

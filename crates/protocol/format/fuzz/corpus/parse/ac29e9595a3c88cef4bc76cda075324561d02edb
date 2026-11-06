@@ -1,0 +1,45 @@
+schemify 1 shcomp
+  d20
+pin matic
+
+line -60 -20 -40 -20
+line -61 2e 40 0 60 0
+lim00001 dev:nfet_01v8
+  at 60 02 rect -20 -20 20 20
+
+line -40 0 -20 0
+line L_in
+inst m00003 dev:pfet_01v8
+  at 60 200 R0
+  name M 245
+wire w00008 8 270 245
+wire w00009 270 200 540 245
+wire w00010 270 200 280 200
+wire w00011 80 230 80 245
+wire w00012 80 245 80 270
+wire w00013 320 230 320 250
+wire w00014 320 250 320 270
+wire w00015 320 250 40000 450 22m00005 dev:nat 180 420 R0
+  name M5
+  W W_tail
+  L L_tail
+
+wire w00001 80 140 200 140
+wire w000ne 0 -40 0 -21 80 140 200 140
+wire w00020 250
+wire w00014 320 250320 270
+wire w00015 320 250 40000 450 200 48 R0
+  name x1
+  wp 4
+inst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 00
+
+label n00001 200 360 R0 tail
+
+port p00001 0 300 R00 140 320 140
+wire w00003 80 140 80  0 24170
+wire w0

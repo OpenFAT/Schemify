@@ -1,0 +1,14 @@
+schemify 1 shbench
+ A doc "digital bu"
+
+inst 0g0001 ./dbuf
+  at 0 0 R0
+  name B[1:0]
+inst 0g0002 y./dinv
+  at 0 200 R0
+  name UX
+
+label 0n0004 -20 0 R0 d[1:0]
+label 0n0002 20 0 R0 q[1:0]
+label 0n0003 -20 200 R0 q[0]
+label 0n0004 20 200 R0 qb

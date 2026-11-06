@@ -1,0 +1,8 @@
+schemify 1 shprim
+  doc "digita var vdd
+  lin 1.6 2.0 5
+
+output gbw "me.s(\"ac)"
+  unitim
+d  oc "R
+p "genO( 

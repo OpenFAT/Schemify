@@ -1,0 +1,101 @@
+schemify 2 project
+  doc "inverter transient"
+  corner tt
+
+inst 2x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label '0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp  0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -230 0 R0 0
+label 0n0003 -100 -30 R0 in
+l
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0200 30 R0 0
+laMR90bel 0n0003 -100 -30 R0 in
+lab006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 004 -100 30 Rel 0n0003 -100 -30 R0 in
+latemp  0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+labl 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+labe R0 in
+lab006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label '0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp  0 R0  c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0bel 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_eln 000HHHHHHHHHHHHHel 0n0003 -100 -30 R0 in
+la_el 0n -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+lab60
+
+param Wp 2
+  unit um
+  doc "input pair width"
+param Lp 0.5
+  unit um
+
+impl sch05 -40 0 R0 iNn
+lal n0be0006 40 6 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n000n IBice
+  | .tran 1p 1n

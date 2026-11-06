@@ -1,0 +1,197 @@
+//! Diagnostics: reader findings → codes with positions (spec §7).
+//!
+//! Contents:
+//! - `pub enum Code`, `Code::as_str`, `Code::meaning`, `Code::is_warning`, `Display`
+//! - `pub const NO_RECORD: u32`
+//! - `pub struct Diagnostic`
+//! - `pub struct ParseError`, `ParseError::has`
+//! - `pub struct ParseWordError`: the `FromStr` error of this crate's word enums
+
+use std::fmt;
+
+/// Format-level codes this crate produces. `E020` (two kinds for one cell stem) and
+/// `E030` (override of a computed param) need more than one file and are reported by
+/// the `doc` and checker layers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[allow(missing_docs, reason = "meanings are in `Code::meaning` and spec §7")]
+pub enum Code {
+    E021,
+    E022,
+    E023,
+    E024,
+    E025,
+    E026,
+    E027,
+    E028,
+    E029,
+    W001,
+}
+
+/// Sentinel for [`Diagnostic::record`] when no record is involved (lexical errors).
+pub const NO_RECORD: u32 = u32::MAX;
+
+/// One error or warning with its position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// What went wrong.
+    pub code: Code,
+    /// 1-based line.
+    pub line: u32,
+    /// 1-based byte column within the line; 0 when the position is the whole line
+    /// (a value that was unescaped from a quoted string has no single column).
+    pub col: u32,
+    /// Index of the record involved, or [`NO_RECORD`]. For `W001` this is the later
+    /// duplicate, the one the `doc` layer re-ids.
+    pub record: u32,
+    /// Which rule was broken, beyond the code's meaning.
+    pub detail: &'static str,
+}
+
+/// Why a file failed to parse: every error found, in line order (capped at 64).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseError {
+    /// Errors only; warnings of a failed parse are dropped.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Why a `FromStr` of a word enum ([`FileKind`](crate::FileKind), [`Orient`](crate::Orient))
+/// failed: the text names no variant. Carries nothing, so it is free to return.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseWordError;
+
+/// Code text and spec §7 meaning, in `Code` declaration order.
+const CODES: [(&str, &str); 10] = [
+    ("E021", "file too large"),
+    ("E022", "coordinate not representable"),
+    ("E023", "record out of rank order"),
+    ("E024", "duplicate name within a kind"),
+    ("E025", "kind rule violated"),
+    ("E026", "zero-length wire"),
+    ("E027", "unknown record"),
+    ("E028", "malformed line"),
+    ("E029", "wrong arity or value form"),
+    ("W001", "duplicate id"),
+];
+
+// `Code as usize` indexes `CODES`, and every code is a letter and three digits.
+const _: () = {
+    assert!(
+        Code::W001 as usize == CODES.len() - 1,
+        "CODES has one row per Code"
+    );
+    let mut i = 0;
+    while i < CODES.len() {
+        assert!(CODES[i].0.len() == 4, "a code is a letter and three digits");
+        i += 1;
+    }
+};
+
+impl Code {
+    /// Returns the code as written in diagnostics and the spec (`"E022"`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        CODES[self as usize].0
+    }
+
+    /// Returns the spec §7 meaning.
+    #[must_use]
+    pub fn meaning(self) -> &'static str {
+        let meaning = CODES[self as usize].1;
+        debug_assert!(!meaning.is_empty(), "every code has a spec meaning");
+        meaning
+    }
+
+    /// Returns whether the code is a warning; warnings never fail a parse.
+    ///
+    /// # Panics
+    ///
+    /// Never: asserts that the variant agrees with its text's `W` prefix.
+    #[must_use]
+    pub fn is_warning(self) -> bool {
+        let warning = self == Code::W001;
+        assert_eq!(warning, self.as_str().starts_with('W'));
+        if !warning {
+            assert!(
+                self.as_str().starts_with('E'),
+                "a code is an error or a warning"
+            );
+        }
+        warning
+    }
+}
+
+impl ParseError {
+    /// Returns whether any diagnostic has `code`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `diagnostics` is empty: a parse error carries at least one error.
+    #[must_use]
+    pub fn has(&self, code: Code) -> bool {
+        assert!(
+            !self.diagnostics.is_empty(),
+            "a ParseError carries at least one error"
+        );
+        self.diagnostics.iter().any(|d| d.code == code)
+    }
+}
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (code, meaning) = (self.code.as_str(), self.code.meaning());
+        write!(
+            f,
+            "{}:{}: {code} {meaning}: {}",
+            self.line, self.col, self.detail
+        )
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, d) in self.diagnostics.iter().enumerate() {
+            if i > 0 {
+                f.write_str("\n")?;
+            }
+            write!(f, "{d}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+impl fmt::Display for ParseWordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown word")
+    }
+}
+
+impl std::error::Error for ParseWordError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Oracle: spec §7's table, typed independently of `CODES`.
+    #[test]
+    fn codes_match_the_spec_table() {
+        let all = [
+            (Code::E021, "E021", "file too large"),
+            (Code::E022, "E022", "coordinate not representable"),
+            (Code::E026, "E026", "zero-length wire"),
+            (Code::E029, "E029", "wrong arity or value form"),
+            (Code::W001, "W001", "duplicate id"),
+        ];
+        for (code, text, meaning) in all {
+            assert_eq!((code.as_str(), code.meaning()), (text, meaning));
+            assert_eq!(code.is_warning(), code == Code::W001);
+        }
+    }
+}

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "scripts": { "build": "asc conformance.ts --config asconfig.json" },
+  "devDependencies": { "assemblyscript": "0.28.20" }
+}

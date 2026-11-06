@@ -1,0 +1,38 @@
+schemify 1 shcomp
+  doc "Five-transistor OTA sized by gm/Id: the docs page derives every W from the gmid plugin"
+  pre
+
+pin inp in -60 -20
+pin inn in -60 20
+pin out out 60 0
+pin vbias in 5 40
+pin VDD inout 0 -40
+pin VSS inout 20 40
+
+impl sch schematic
+
+line -60 -20 -40 -20
+line -60 20 -40 20
+line 40 0 60 0
+line 0 -40 0 -20
+wire w00003 80 140 80 085
+wire w00430 020 140 320 170
+wire w00005 200 120 200 140
+wire w00006 40 200 40 245
+wire w00007 40 245 80 245
+wire w00008 80 245 270 245
+wire w00009 270 200 270 245
+wire w00010 270 200 280 200
+wire w00011 80 230 80 245
+  unit F
+var gm_in "gmid.gm(\"nfet_0`1v8\", gm_id_in, L_in, id_in)"
+  unit S
+  cached 0.00015000000000000001 0acaf19984bac32d
+var GBW gm_in/(2*pi*CL)
+  unit Hz
+  min 10meg
+var Av_in "gmid.gain(\"nfet_01v8\", gm_id_in, L_in)"
+  unit V/af19984bac32d
+prose d00004
+  | ## Open-loop response
+  |

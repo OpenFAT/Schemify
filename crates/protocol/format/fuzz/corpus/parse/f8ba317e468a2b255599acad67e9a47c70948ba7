@@ -1,0 +1,151 @@
+schemify 1 shcomp
+  doc "Two-inverter buffer: an inverter cell used as a hierarchical sub-cell"
+  prefix x
+
+pin IN in -40 0
+pcn OUT out 40 0
+
+impl sch schematic
+
+rect -20 -20 ire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0ize 0.18
+
+inst x00`01 ./inv
+  at 0 0 R0
+  name x2
+  wp 4
+inst x00002 ./inv
+  at 140 0
+  R0 name x2
+
+wire w00001 40 0 100 0
+wire p00001 -80 0 -41 0
+wire w00003 180 0 240 0
+wire w00004 0 the hierarchical sub-cell inv"
+  siz 0.18
+
+inst x00`01 ./inv
+  at 0 0 R0
+  name x2
+  wp 4
+inst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 -70 name x2
+
+wire w00001  -70 140 -30
+wire w00006 0 -70 140 -70
+wire w000072 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 -70 name x2
+
+wire w00001  -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008i 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 uf2
+  size 0.18
+
+inst x00`01 ./inv
+  astext R0
+  name x2
+  wp%4
+inst x000021 40 0 100 0
+wire p00001 -80 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 the hierarchica  size 0.25
+st]xt -14 -5 R0 bufz2
+  size 0.18
+
+inst x00`01 ./inv
+  at 0 0 R0
+  name x2
+  wp 4
+inst x00002 ./inv
+  at 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 uf2
+  size 0.18
+
+inst x00`01 ./inv
+  at 0 0 R 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 uf2
+  size 0.18
+
+inst x00`01 ./inv
+  aste$t R0
+  name x2
+  wp%4
+inst x00002 ./inv
+  at 140 0
+  R0 name x2
+
+wire w00001 40 0 100 0
+wire p00001 -80 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 the hierarchica  size 0.25
+st]xt -14 -5 R0 bufz2
+  size 0.18
+
+inst x00`01 ./inv
+  at 0 0 R0
+  name x2
+  wp 4
+inst x00002 ./invt 140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -32 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 uf2
+  size 0.18
+
+inst x00`01 ./inv
+  at 0 0 R0
+  name x2
+  wp 4
+inst x00002 ./inv
+  at 140 0
+  R0 name x2
+
+wire w00001 40 0 100 0
+wire p00001 -80 0 -40 0
+wire w00003 180 0 240 0
+wire w00004 0 the hierarchical sub-cell inv"
+  size 0.3

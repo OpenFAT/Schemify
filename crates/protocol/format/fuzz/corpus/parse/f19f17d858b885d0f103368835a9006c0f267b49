@@ -1,0 +1,18 @@
+schemify 2 shcomp
+n O 0
+
+param size 1
+
+impl sch schematic
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  n0 0 R0
+  name X2
+  wn size*2
+  wp size*4
+
+# X1: A (-40,0) Y (40,0); X1
+# X0,0)2: A (160,e*4
+
+# X1: A 5) Y (40,0); X6 R0 OUT

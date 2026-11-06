@@ -1,0 +1,70 @@
+schemify 1 shbench
+  doc "Verilog-A amplifier driving a Veriel 0n0004 -20 190 R0 a
+lemify 1 shbench
+  doc "Verilog-A amplifier driving a Veriel 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+labeers on a bust -20 n00001 70 0 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+leabl n/inv
+  at 0 0 R0
+  name x1
+  wp 4
+inst x00002 ./invat at 140 0 R0
+  name x2
+
+wire w00*01 40 0 100 0
+wire  0
+wire w0180 ON
+port 01 40 0 100 00 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn c00000 260 40
+
+text t00001 -80 -130 R0 "Two-inverter buffe
+wire w00006 label n00001 70 0 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+label n00000 70 70 R0 210 R0 0
+labeers on a bust -20 n00001 70 0 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+label n00003 70 70 R0 VSSname}
+  size 0.25
+stext -14 -5 R0 buf2
+  size 0.18
+
+inst 800001 ./inv
+  at 0 0 R0
+  name x1
+  wp 4
+inst x00002 ./invat at 140 0 R0
+  name x2
+
+wire w00*01 40 0 100 0
+wire  0
+wire w0180 ON
+port 01 40 0 100 00 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+poters in serIms, the ssub-IN
+port 01 40 0 100 00 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+lR00006 label n00001 70 0 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+labe80 OUT
+
+noconn c00001 260 40
+
+text t00001 -80 -130 R0 "Two-inverter buffe
+wire w00006 label n00001 70 0 R0 mid
+label n00002 55555555555555555555555555555555555555570 -70 R0 VDD
+label n00003 70 70 R0 VfiSS
+
+port p00001 -80 re w00005 140 -70 14g
+0 -30
+wire w0000t
+  | dens Lity $J_D = I_D/W$, he

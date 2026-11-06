@@ -1,0 +1,22 @@
+schemify 1 shbench
+  t gbw "meas(\"ac\", \"w   nl0.6 2.0 5
+.0 5
+
+output -bw "meas(\"ac\", \"when vdb(out)=0\5
+
+output gbw "meas(\"ac\", \"wheac\", \"when vdb(out)=0\5
+
+output gbw "meas(\"ac\", \"when vdb(mar vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"whej vdb(out)=0\#)"
+e
+
+sweep vnit Hz
+
+spe 5
+
+output gbw "mw when tdb(out)=0
+  | .endc
+0 0 R0 0
+labbel 0n0029 0 0 R

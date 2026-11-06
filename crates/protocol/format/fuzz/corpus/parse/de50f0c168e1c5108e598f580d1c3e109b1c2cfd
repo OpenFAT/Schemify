@@ -1,0 +1,59 @@
+schemify 1 shcomp
+  librar "at" line; editing W changes only the W line.
+inst 0gsrp0 sky130:nfet_01v8
+  at -60 -300 R0
+  name M1
+  W Wp
+  L Lp
+  nf 2
+inst 1j446r sky1030:nfet_01v8
+  at 120 -300 MR0
+  name M2
+  W Wp
+  L Lp
+  nf 2
+inst 4szjc8 sky130:pfet_01v8
+  at -60 -480 R0
+  name M3
+  W 4
+  L 1
+inst 4tyd1p sky130:pfet_01v8
+  at 120 -480 MR0
+  name M4
+  W 4
+  L 1
+inst 9vdm2q sky130:nfet_01v8
+  at 30 -160 R0
+  name M5
+  W 4
+ o renaming a net never ~touches them.
+wire 0d2k1m -40 -450 100 -450
+wire 3fk2a1 -40 -270 -40 -190
+wire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net mes live only here. Rencming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq0p4z -408 -3 R00 e.
+port 5c0d2r -120 -300 R0 INP
+port 8tj4wh 200 -300 R0 INN
+port c7rm1e 140 -380 R0 OUT
+port fa3k0q -60 -160 R0 IBIAS
+port mx0k2p 30 -560 R90 VDD
+port qz81ty 30 -100 R270 VSS
+
+text r20 R0 "Gm stage: keep M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  m%mber 1j446r
+  pattern common-centroid
+
+prose v1d0c5
+  / 2$, with $r_o$ from M2 || M4.
+
+var gm_target 100u
+  unit S
+  doc "transconduatance target"

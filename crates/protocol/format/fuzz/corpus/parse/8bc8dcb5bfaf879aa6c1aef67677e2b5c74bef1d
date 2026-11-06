@@ -1,0 +1,5 @@
+schemify 1 shprim
+  doc "
+stexset	f 2-0 -5
+line 4 15 (0 _
+stex	tW={es250.18*

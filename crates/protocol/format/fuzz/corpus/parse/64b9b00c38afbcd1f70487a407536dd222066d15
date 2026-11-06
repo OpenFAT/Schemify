@@ -1,0 +1,7 @@
+schemify 1 shcomp
+  doc "Five-transistor amCLgm(\"nfEt_01v8\", %gm_id_in, L_in, idai)"
+nst m00W_in
+{ds}$ of 
+var gm_in "gmid.gm\"nfet_00v8\", gm_id_in, L_in, iA_i)"pair when d1615r4
+ esponse
+  |

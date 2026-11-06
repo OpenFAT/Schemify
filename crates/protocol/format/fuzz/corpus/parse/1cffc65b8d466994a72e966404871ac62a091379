@@ -1,0 +1,11 @@
+schemify 1 shbench
+shape vwp poly 2.hapbench
+shape v poly 2.hspice
+
+shape v poly 2.hape R
+
+pinpi ntohape v poly 2.hspice
+
+sn c sweep vngbw
+pieep vsweep
+ 

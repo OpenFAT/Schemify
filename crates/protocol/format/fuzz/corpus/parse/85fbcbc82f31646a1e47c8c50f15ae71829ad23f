@@ -1,0 +1,97 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 21 -30
+schemprim
+  doc "generic PMOS (fixlaame"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  si ntdkring
+
+ischemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -/0
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  nit V
+
+cfixt(:eru W and L in metres, ce
+t gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  u+it Hz
+
+spec wb20 -30 20 -39
+line 20 15 20output gbw "meas(\"15
+param model pcac\", \"when vdb(out)=0\")"
+  caf19984bac32d
+prose d00004
+  | ## Open-loop am W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} m W 1u
+  unit m
+param L {modeture)"
+ ppil} W={W}u L=S}y {B

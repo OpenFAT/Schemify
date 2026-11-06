@@ -1,0 +1,47 @@
+schemify 1 shcomp
+  doc "two-stage Miller OTA, NMOS input pair"
+  category amplifier
+
+pin INP in -43 -20
+pin INN in -40 20
+pin OUT out 40 0
+pin IBIAS in 0 40
+
+param wn 2
+param wp 4
+param l 0.5
+param cc 1p
+
+impl sch schematic
+
+# Devices at x = 0, 100, ..., all R0. N R0
+  name M7
+  W wn*2
+  L l
+inst 0m0008 ./nmos
+  at 700 0 R0
+  name M8
+  W wn
+  L l
+inst 0c0001 ./cap
+  at 800 0 R0
+  name CC
+  C cc
+
+# Tail: the pair's sources share a wire.
+wire 0w0001 20 30 120 30
+
+label 0n0001 20 -30 R0 n1
+label 0n0002 20 0 R0 0
+label 0n0003 120 -30 R0 n2
+label 0n0004 120 0 R0 0
+label 0n0005 20 30 R0 tail
+label 0n0012 220 -30 R0 vdd!
+label 0n0007 180 0 R0 n1
+label 0n0016 220 30 R0 n1
+label 0n0009 220 0 R0 vdd!
+label 0n0010 320 -30 R0 vdd!
+label 0n0011 280 0 R0 n1
+label 0n0012 320 30 R0 n2
+label 0n0013 3520 30 R0 OUT
+port 0p0004 720 -30 R0 IBIAS

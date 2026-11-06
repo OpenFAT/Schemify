@@ -1,0 +1,11 @@
+schemify 2 shbench
+  doc "inverter transient"
+  co04 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be[006 40 0 R0 outel 0n000 0
+label 0n0003 -00 -30 R0 in
+latem507 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+rectlatemp 25
+
+code tp 1n

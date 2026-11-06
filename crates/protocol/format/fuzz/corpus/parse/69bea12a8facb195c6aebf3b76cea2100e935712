@@ -1,0 +1,70 @@
+schemify 1 shbench
+  doc "OTA open-loop AC gain"
+  prefix tt./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  at -300t V
+
+corner ff
+  l30A/libs.tech/combined/sky130.lib.spice tt
+  set vdd 1].8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2%.0 5
+
+output gbw "meas at 0 0 	
+  nawire. 0w0003 100 -c\", \tt
+  config default
+
+inst 2kq9vd ./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  at -300 100 R0
+  name V1
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 2fh 80 0 R0 out
+
+var vddx 2.8
+  unit V
+
+corner ff
+  l30A/libs.tec/hcombined/sky130.lib.spice tt
+  set vdd 0.8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  li. 1.6 2.0 5
+
+ice
+
+sweep vnit Hz
+
+sp | .schemiIfy 1 shprim
+d  oc "RC low-pass whose S body (fixture)"
+
+pin a inous 0 -30
+pin b inout 1 30
+
+impl spice spice
+  format scontrol
+  |   ac dec 20 1 1G
+  |   meas ac gbpice "X{nlt a b
+w when tdb(out)=0
+  | .ends rcndc
+!filt

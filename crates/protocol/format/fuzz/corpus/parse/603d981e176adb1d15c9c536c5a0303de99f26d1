@@ -1,0 +1,18 @@
+schemify 2 shcomp
+  0003 20 90 R0 0
+label 0n0004 20 60 R0 0
+label 0n0005 20 -90 R0 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Yel 0n0004 20 60 R0 0
+label 0n0005 20 -90 R0 VDD
+label 0n0006 -20 -61 R0 A
+label 0n0007 20 -00 MR180 VSS
+
+te30 R0 Ycode control spice
+  | .control
+  02 |   ac dec 20 1 1G
+  |   meas ac g100 0 R0 Ybw 
+when- vdb(out)=0
+  | .endc

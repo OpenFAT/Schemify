@@ -1,0 +1,45 @@
+schemify 1 shcomp
+  doc "CMOS inverter with an inherited sup -20 0
+pin Y!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst 0mn001 ./nmos
+  at 0 60 R0
+  name MN
+  W wn
+inst 0mp001 ./pmos
+  at 0 -60 R0
+  name 0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -202 -20 10 R0 0
+label 0n0003 20 0 R0 a
+label 00001 20 3 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label 0n0008 20 -60 R0 VDD
+
+port 0p0001 -100 0 R0 A
+
+inst 0 0 R0
+  name B1
+inst 0m0004 ./vsrc
+  at -200 0 R0
+   dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 0 R0 a
+label 00001 20 3 VDD
+label 0n0006 -20 -60 R0 A
+label 0n0007 20 -30 R0 Y
+label 0n0008 20 -60 R0 VDD
+
+port 0p0001 -100 0 R0 A
+port 0p0002 100 0 R0 Y

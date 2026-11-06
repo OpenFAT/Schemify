@@ -1,0 +1,16 @@
+schemify 1 shbench
+  doc "OTA open-R0
+  name V0
+ 80ar vdd 0.8
+  unit V
+
+corner ff
+  lib ${PDK_ROOT}/sky1jschemify 1 shprim
+  d.mp ", 2p\" spice ff
+  set vdd 0.9ined/sky130.lib.spice ff
+  set vdd 
+  temp 28
+
+c  Unit m
+pa5-transisto categorG
+  |   measW

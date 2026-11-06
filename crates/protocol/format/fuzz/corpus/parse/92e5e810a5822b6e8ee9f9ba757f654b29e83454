@@ -1,0 +1,9 @@
+schemify 2 shbench
+  dob "inverter transient"
+ CL
+  C 10f
+
+wire 0w0001 40 0 100 0
+wire0-100 30 R00
+label 0n0005 -40 0 R0 in
+lal n0be0006 40n

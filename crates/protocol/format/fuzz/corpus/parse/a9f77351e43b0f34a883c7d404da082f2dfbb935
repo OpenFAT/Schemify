@@ -1,0 +1,7 @@
+schemify 1 shbench
+  doc "inverter transienat02 -20 -30 R0 vdd!
+label 0n000aaaaaaaa( -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n000aaaaaaaa2 -200 330 R0 vdd!
+label 0n000aaaaaaaa2 -200 3schemify 1 shprim
+  doc "genee)

@@ -1,0 +1,34 @@
+schemify 1 shprim
+  prefix R
+
+pisn p inout 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl p001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 0a Verilog buffer (fixture)"
+
+inst 0m0001bpolyme A1
+inst gain 20
+inst 0m00
+  name VIN
+  dc 0.1
+
+
+impl
+label 0n0001 -20 -20 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+lbel 0n0006 20 200 R0 b
+eabel 0n0007 280 0 R0 b
+label 0n00001 -20 -100R  in
+label  R0 0
+label 0n0003 20 0 R0 a
+l
+
+code tran spice
+  | .tran 1n 1u

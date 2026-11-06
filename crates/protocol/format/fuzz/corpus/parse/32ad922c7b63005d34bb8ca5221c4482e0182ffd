@@ -1,0 +1,52 @@
+schemify 2 shbench
+  docc
+
+rect -20 -20 20 20
+
+line -4^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^0 0 -20 0
+line 20 0 40 0
+
+ste02 -80 0 -40 0
+wire varw00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 140 -70
+wire w00007 0 30 0 70
+wire w00008 140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port0 R0
+ 
+
+line -40 30 0 70
+wire w00008 14140 30 140 70
+wire w00009 0 70 140 70
+
+label n00001 70 0 R0 mid
+label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p000 R0
+  name x1
+  wp 4140 0 R0
+  name x2
+
+wire w00001 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 40 0 100 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wir 0 R0 out
+label 0n0007 0 30 R0 0
+labevvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv005 -20 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+lat1p 1n

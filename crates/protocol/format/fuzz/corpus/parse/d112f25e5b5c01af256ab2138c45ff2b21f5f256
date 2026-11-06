@@ -1,0 +1,43 @@
+schemify 1 shcomp
+  doc "Two-inverter buffer: anabe 70 70 R0 VSS
+
+port p0N
+port p00002 240 0 R180 OUT
+
+no/Id_l sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c0070 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn(c00001 260 40
+"Two-inverter buffer: x1 and x2 are the hierarchical sub-IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260 40
+
+teR0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn(c00001 260 40
+
+text t00001 -80 -cal sub-IN
+port p00002 240 0 R180 OUT
+
+noconn label n00002 70 -70 R0 VDD
+label n00003 70 70 R0 VSS
+
+port p00001 -80 0 R0 IN
+port p00002 240 0 R180 OUT
+
+noconn c00001 260r buffer: x2 and x4 are the hierarchica
+ sub-IN
+port p00002 240 0 R180 OUT
+
+noconnb-cell inv"
+  size 0.3

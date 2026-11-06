@@ -1,0 +1,16 @@
+schemify 1 shbench
+  doc "two inverter chains, a bus of loads, ignor1 modes, a re)"
+  corner0R0
+  name VIN
+  dc vdFFFFFFFFFFFFFFFFFFFFFFFFFFFFF-40
+corner tt
+  lib models.lib tt
+  include extra.inc
+  temp 27
+
+code ctlgn spice
+  | .control
+  | run
+  | .endc
+code tran spice
+  | .tran 1p 2n

@@ -1,0 +1,41 @@
+schemify	1   shcomp
+  doc     "5-transistor OTA, NMOS inpudoc     "5-transistor OTA, NMOS input pair"
+	pdk "sky130"
+  category "amplifier"
+
+    # --- rank 1: symbol interface. A																														phics, draw order ---
+poly -60 -50 60 0																																																																															 -60 50 -60 -50
+  closed trueset
+line -80 -20																											t um
+impl sch schematic
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0																																																								0
+  closed trueset
+line -80 -20 -60ever touches them.
+wire 0d2k181.trty 3draw order ---
+poly -60 -50 60 0																																																																															 -60 50 -60 -50
+  closed trueset
+l-- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0																																																																															 -40 50 -60 -25
+  closed trueset
+line
+stext -55 12 R0 -der ---
+poly -60 -50 60 0																																																																																												 -60 50 -60 -50
+  closed trueset
+l-- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0																			 -60 50 -60 -25
+  closed trueset
+line
+stext -55 12 R0 -der ---
+poly -60 -50 60 0																																																																															 -600 -  065-50
+  closed trueset
+line -80 -20 -60ever touches them.
+wire 0d2k181.trty 3draw order ---
+poly -60 -50 60 0																																			30 50 -60 -25
+  closed trueset
+z M1/M2 common-centroid"
+  size 0.4
+# Wires are geschemify 1 shprim
+ d 1 shcoschemify 1 shprim
+  doc "digital inverter, V vdod 0.8me
+  utry only: no net nn

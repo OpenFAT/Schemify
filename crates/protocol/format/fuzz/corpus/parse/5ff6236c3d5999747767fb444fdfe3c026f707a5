@@ -1,0 +1,45 @@
+schemify 1 shprim
+  doc "digital inverter, it V
+
+ce)"
+
+p:n0
+  domain digital
+pin Y out 20 0
+  domain digital
+
+impl verilog verilog
+  model dinv
+  file hdl/dinv.v
+
+body verilogdinv(schemify 1 shcomp
+  doc "two-stage Miller "
+  category amplifier
+
+pin INP in -40 -20
+pin INN in -td 20
+pin OUT out 40 0
+pin IBIAS in 0 40
+
+param wn 2
+param wp 4
+param l 0.5
+param cc 1p
+
+impl sch schematic
+
+# Devices atamplifier
+
+pin INP in -80 -20
+pin INN in -40 20
+pin OUT out 40 0
+pin IBIAS in 0 40
+
+param wn 2
+param wp 4
+param l 0.5
+param cc 1p
+
+impl sch schematic
+
+# Devices at x IBIAS

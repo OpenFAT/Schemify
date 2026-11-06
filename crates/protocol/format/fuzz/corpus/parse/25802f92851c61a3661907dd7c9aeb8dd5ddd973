@@ -1,0 +1,87 @@
+schemify 2 shbench
+in   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle touout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05sc0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+ 
+
+line -40 30 0 7 40 0 100schemify 1 "twschemify 1schemify 1 shbench
+n p/intouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 06ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param iZ 05
+
+sh 0
+wi	e w00002 -80 70 140 70
+
+label ape v circle 05schemdddim
+
+param i[ 05
+
+shn00001 70 0 R0 miape v circld
+elabe

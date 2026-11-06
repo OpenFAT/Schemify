@@ -1,0 +1,167 @@
+schemify 2 project
+ pdkc "inverter transient"
+  corner tt
+HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHme X1
+  wn 
+label 0n0002 -20 -30 R0 v in
+label 0n0004 -100 30pice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code cmntrol spi20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+labbHHHHHHHHH shbench
+  doc "inverter tvansilatempent"
+ HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHel 0n0ut gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spi20 -30 R0 vdd!
+label 0n0002 -200 30l0
+ R 0aHHHHH shbench
+  doc "inverter tvansilatempent"
+H HHHHHHHHGHHHHHHHHHHHHHHHHHHHHHHHel 0N0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code cmntrol spi20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003
+label 0n0003 -nch
+  doc "inverter tvansilatempent"
+ HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHel 0n0ut gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10megin
+lal n0be0006 40 0 R0 out
+labbHHHHHHHHH shbench
+  doc "inverter tvansilatempent"
+ HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHel 0n0ut gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spi20 -30 R0 vdd!
+label 0n0002 -200 30l0
+ R 0aHHHHH shbench
+  doc "inverter tvansilatempent"
+ HHHHHHHHHGHHHHHHHHHHHHHHHHHHHHHHHel 0N0003 - wn 
+label 0n00utpc gbw
+matic spice
+
+swe  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vd******b(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code cmntrol spi20 -30 R0 vdd!
+ice
+sweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 100005 -40Ri N 00 n
+lal n0be0006 4n0003 -100 -30 R0 in
+late-p 250 0n000-  202-30 R0 vdd0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0005 -40 0 Rabel 0n0004 -100 30 R0 0
+lleba 0n0005 -40Ri N 00 n
+lal n0be0006 4n0003 -100 -30 Ri 0n
+latemp 250 0n000-  202-30 R0_ 25
+
+code tran spice
+  | .tran 1p 1b

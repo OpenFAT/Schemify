@@ -1,0 +1,94 @@
+schemify 2 shbench
+  do1 ./invnch5 name X1
+S inout 200n0005 1
+S i do1 ./inv
+  at 0 0 1
+S i do1 ./inv
+  at 0 0 R0
+  name X1
+S inout 200n0005 1
+S inout 20 30R0
+  name X5
+S  2 shbench
+  do1 ./invnch5 name X1
+S inout 200n0005 1
+S i do1 ./inv
+  at 0 0 1
+S i do1 ./inv
+  at 0 0 R0
+  name X1
+S inout 200n0005 1
+S inout 20 30R0
+  name X5
+S 1 30
+pin B iR0
+ nout 20 30R0
+  name X1
+S 1
+  at 0 0 R0
+  name X1
+S inout 364n0005 name X1
+S inout 200n0005 1
+S i do1 ./inv
+  at 0 0 1
+S i do1 ./inv
+  at 0 0 R0
+  name X1
+S inoutn B iR0
+ nout 20 30R0
+  name X1
+S 1
+  at 0 0 R0
+  name X1
+S inout 364n0005 name X1
+S inout 200n00schemify 2 shbench
+  do1 ./invnch5 name X1
+S inout 200n0005 1
+S i do1 ./inv
+  at 0 0 1
+S i do1 ./inv
+  at 0 0 R0
+  name X1
+S inout 200n0005 1
+S inout 20 30R0
+  name X5
+S 1 30
+pin B iR0
+ nout 20 30R0
+  name X1
+S 1
+  at 0 0 R0
+  name X1
+S inout 364n0005 name X1
+S inout 200n0005 1
+S i do1 ./inv
+  at 0 0 1
+S i do1 ./inv
+  at 0 0 R0
+  name X1
+S inout 200n0005 1
+S inout 20 30R0
+  name X5
+S 1 30
+pin B iR0
+ nout 20 30R0
+  name X5
+S 1 30
+pin B iR0
+  name ;1
+S 105 1
+S i do1 ./inv
+  at 0 0 1
+S i do1 ./inv
+  at 0 0 R0
+  name X1
+S inoutnout 20 30R0
+  name X5
+S 1 30
+pin B iR0
+ nout 20 30R0
+  name X5
+S 1 30
+pin B iR0
+  name ;1
+S 1n

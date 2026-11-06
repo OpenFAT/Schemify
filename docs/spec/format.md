@@ -1,0 +1,242 @@
+# File format v1 (normative)
+
+Implements D9, D10, D11, D13, D17, D19, D20, D29, D30, D33, D35, D40.
+
+## 1. Files
+
+| File | Header kind | Purpose |
+|---|---|---|
+| `<cell>.shprim` | `shprim` | symbol + ≥1 leaf impl (device binding, Verilog-A, Verilog, SPICE text) |
+| `<cell>.shcomp` | `shcomp` | symbol + exactly one schematic impl + 0..N leaf impls + docs + netlist `code` (D17 as amended 2026-10-11) |
+| `<cell>.shbench` | `shbench` | schematic + docs + bench tables; no symbol |
+| `schemify.project` | `project` | project manifest: libraries, settings, the project's Lua file (`init`, which adds its plugins); in a package directory, the package's module and requested grants |
+| `schemify.lock` | `lock` | resolved sources + content hashes (written by the tool only) |
+| `schemify-pack.lock` (next to the user's `init.lua`, or in a project) | `lock` | user or project packages pinned ([config.md](config.md) §2, §5); same rows as `schemify.lock` |
+| — | `config` | reserved: the user config is Lua since the 2026-10-11 D9 amendment ([config.md](config.md)) |
+| `tech.map` (a PDK's, pdk.md §6) | `techmap` | technology-class map: the PDK cell each (class, flavor) becomes and its param expressions |
+| `.schemify/journal/<cell path>.journal` | `journal` | edit journal and op text ([edits.md](edits.md) §1, §3); tool-written; no known record words: every record is kept as written, like a §5 unknown record, at any version |
+
+A library is a directory; one cell per file; the cell name is the file stem. Two files with the same stem and different kinds in one library is an error (`E020`).
+
+`ponytail:` v1 allows exactly one schematic impl per `.shcomp`. Multiple schematic variants would need impl-scoped rank-3 records; add when a user needs it.
+
+## 2. Lexical layer
+
+```abnf
+file      = header *line
+header    = "schemify" WS version WS kind EOL          ; line 1, always
+version   = 1*DIGIT                                     ; this spec: 1
+kind      = "shprim" / "shcomp" / "shbench" / "project" / "lock" / "config" / "journal" / "techmap"
+line      = blank / comment / record / attr / verbatim
+blank     = *WSP EOL
+comment   = *WSP "#" *CHAR EOL                          ; whole-line only; attaches to the next record
+record    = word *(WS value) *WSP EOL                   ; starts in column 0
+attr      = 1*WSP word *(WS value) *WSP EOL             ; indented: belongs to the previous record
+verbatim  = 1*WSP "|" [SP *CHAR] EOL                    ; raw text line, content after "| " (or after "|" if line is exactly "|")
+word      = ALPHA *(ALPHA / DIGIT / "_" / "-" / "." / ":")
+value     = bare / quoted
+bare      = bstart *bchar                                ; bchar: any char except WSP, CR, LF, DQUOTE, "\", C0 controls, DEL
+bstart    = bchar - ("#" / "|")
+quoted    = DQUOTE *(qchar / escape) DQUOTE              ; qchar: any char except DQUOTE, "\", CR, LF
+escape    = "\" (DQUOTE / "\" / "n" / "t" / "u{" 1*6HEXDIG "}")
+WS        = 1*WSP
+EOL       = LF / CRLF
+```
+
+- Encoding UTF-8. A BOM or invalid UTF-8 is an error (`E028`). The reader accepts CRLF and a missing final newline.
+- Header: `version` is a positive integer below 65536 (written without leading zeros); a larger version than the reader's enables §5 forward compatibility. Anything malformed on line 1 is `E028`.
+- **Writer canonical form:** LF only, final newline, single space separators, attributes indented by exactly two spaces, verbatim lines as `  | text` (or `  |` for an empty line), no trailing spaces outside verbatim text (verbatim text is kept exactly), one blank line between consecutive records with different words and before end-of-file comments, coordinates as the shortest decimal (§3), quoting only when a value is not a legal `bare`. Inside quotes the writer escapes `"` `\` LF TAB as `\" \\ \n \t`, and CR, other C0 controls and DEL as `\u{hex}` (lowercase, no leading zeros); everything else is written raw. Attributes are written in model order, known attributes of the record kind before unknown ones (§5). The same model always produces the same bytes.
+- Comments attach to the next record and are written back immediately before it (indentation and trailing whitespace dropped). A comment between attribute lines also attaches to the next record. Comments at end of file attach to EOF. The header never carries comments.
+- Line length is unbounded; a file is capped at 2^30 bytes (`E021`).
+- Diagnostics carry a 1-based line and a 1-based byte column (0 when the position is the whole line or an unescaped value).
+
+## 3. Numbers, coordinates, orientation
+
+- **Number literal (file level):** `-?digits(.digits)?` with no exponent and no SI suffix. Anything else in a numeric position is an error. (SI suffixes belong to expressions, §6.)
+- **Coordinates** are written in xschem units, y pointing down, with at most 3 fractional digits. In memory they are `i32` milli-units (`value × 1000`, exact). A coordinate needing more digits or outside `[-2^31, 2^31-1]` milli-units is an error (`E022`); further fractional digits that are all zero are exact and accepted (`1.5000`). Writer: shortest decimal (`-60`, `12.5`, `0.156`); the reader already rewrites coordinates to that form, so `-80.000` and `-80` are the same model (and never a merge change). A non-coordinate in a coordinate slot is `E029`.
+- **Orientation:** `R0 R90 R180 R270 MR0 MR90 MR180 MR270`. Transform of a symbol-local point `(x, y)` placed at `(X, Y)`:
+  1. if `M`: `(x, y) ← (−x, y)`
+  2. rotate clockwise on screen (y down) by k·90°: `R90: (x, y) → (−y, x)`, `R180: (−x, −y)`, `R270: (y, −x)`
+  3. translate: `(x + X, y + Y)`
+
+## 4. Sections and records
+
+Records appear in rank order; a record of lower rank after a higher rank is an error (`E023`). Within rank 3 the writer emits kinds in the order listed and each kind sorted by id (bytewise); the reader accepts any order within rank 3. Ranks 1, 2, 4, 5 keep file order (it is semantic). Rank 6 is written with kinds in the order listed, each sorted bytewise by name. Project and config records are rank 1 in file order; lockfile records are rank 1 sorted by (type, name).
+
+Shapes: a record line or attribute line with the wrong number of values, or a value of the wrong form in a typed slot (id, coordinate, number, orientation, `true|false`, or one of the listed words such as pin `dir`), is `E029`; so are a missing required attribute and `|` verbatim lines under a record kind that takes none (only `prose`, `body`, `code` and unknown records do). Flag attributes (`hcenter`, `vcenter`) take no value. A second line of a non-repeatable known attribute is `E024`; repeatable ones are `format` (impl), `inherit` (inst), `member` (constraint), `lib`/`include`/`set` (corner), `cell`/`inst` (config), `goal`/`vary`/`config`/`corner` (optimize), `grant` (plugin) and `param`/`limits` (class).
+
+Ids: 1–13 chars of lowercase Crockford base32 (`0-9 a-h j k m n p-t v-z`); the writer generates 6 (random, caller-seeded; importers seed from FNV-1a of (source path, record ordinal) and redraw on collision). A malformed id is `E029`. Unique per file across all id-bearing kinds; a duplicate on load is reported as warning `W001` on the later occurrence and re-id'd by the `doc` layer. Names (pins, params, impls, vars, bodies, every rank-6 kind, project/config entries; `locked` by (type, name)) are unique within their kind (`E024`). The reader also normalizes wires so `(x1, y1) < (x2, y2)`.
+
+### Rank 0 — header
+
+`schemify 1 <kind>` with attributes:
+
+| Attr | Kinds | Meaning |
+|---|---|---|
+| `doc <text>` | cells | one-line description |
+| `default <impl>` | shprim, shcomp | default impl name (required when >1 impl) |
+| `prefix <letter>` | shprim, shcomp | default instance-name prefix in the editor (`M`, `R`, `X`) |
+| `category <word>` | cells | library browser grouping |
+| `provenance <text>` | cells | importer source note |
+| `vinputs <name>…` | shprim | the params a `vderived` param's value depends on, in digest order (interop §8.3) |
+| `corner <name>` | shbench | default corner |
+| `config <name>` | shbench | default config |
+
+The writer treats the union of these as the known header attributes for every kind; anything else (e.g. `pdk`, `library`) is kept and written after them.
+
+### Rank 1 — symbol interface (shprim, shcomp only)
+
+| Record | Attributes | Notes |
+|---|---|---|
+| `pin <name> <dir> <x> <y>` | `domain analog\|digital\|real` (default `analog`), `inherit <net>`, `number <n>`, `alias <pin>` | `dir` ∈ `in out inout`. File order = port order. `name` may be a bus `D[3:0]`. `inherit` makes the pin an inherited connection (D29): it is not drawn-connected; its net is resolved by name (§5 of netlist spec). `alias` makes the pin a second position of an earlier ordinary pin (one port, both positions one net; netlist spec §3); it is how xschem's same-named pins import. |
+| `param <name> <default>` | `kind number\|int\|bool\|string\|choice` (default `number`), `unit <u>`, `min <expr>`, `max <expr>`, `step <expr>`, `grid <expr>`, `choices <v>…`, `computed <expr>`, `show <expr>`, `valid <expr>`, `doc <text>`, `cached <value> <hash>` | `default` and `computed` are expressions for number/int/bool, template strings for string/choice. A `computed` param cannot be overridden (`E030`). `valid` is a bool expression in the cell's scope that each instance's value must satisfy (a legality rule a range cannot express, e.g. the lengths a PDK allows; `E038`, D13). `cached` holds the last value of an expression that calls a plugin function (D20). `vderived true` marks a param whose value only Virtuoso's callbacks compute; instances carry it as `cached` lines (interop §8.3). |
+| `impl <name> <lang>` | `format <dialect> <template>` (repeatable, one per dialect), `model <name>`, `file <relpath>`, `ignore true\|open\|short` | `lang` ∈ `schematic spice veriloga verilog` or any plugin tag. `dialect` ∈ `spice espice xyce cdl spectre verilog` (`spice` is the fallback for `espice`, `xyce` and `cdl`). `file` is relative to the cell file. |
+
+Kind rules (`E025`): `shprim` has ≥1 pin and ≥1 impl, none with lang `schematic`. `shcomp` has exactly one impl with lang `schematic`. A cell with more than one impl has a `default` header attribute. Every impl of a cell matches the cell's pins (D11): enforced on save (`E002`). A `.shbench` has no impls, so no `body` records and no `port` records. Of the rank-6 records only `code` is allowed outside a `.shbench`, and only in a `.shcomp` (D17 as amended 2026-10-11); any other rank-6 word in a `.shcomp`, and `code` in a `.shprim`, is an unknown record (`E027`).
+
+### Rank 2 — symbol graphics (shprim, shcomp only)
+
+| Record | Attributes |
+|---|---|
+| `line <x1> <y1> <x2> <y2>` | `layer <n>`, `dash <n>`, `width <n>` |
+| `rect <x1> <y1> <x2> <y2>` | `layer`, `fill true\|false`, `dash`, `width` |
+| `arc <cx> <cy> <r> <start_deg> <sweep_deg>` | `layer`, `fill`, `dash`, `width` |
+| `circle <cx> <cy> <r>` | `layer`, `fill`, `dash`, `width` |
+| `poly <x> <y> <x> <y> …` (≥ 2 points) | `layer`, `fill`, `closed true\|false`, `dash`, `width` |
+| `stext <x> <y> <orient> <template>` | `size <s>`, `hcenter`, `vcenter`, `layer` |
+
+**Stroke and fill attributes** (every rank-2 graphic and every rank-3 `shape`; render-only, never connectivity or netlist):
+
+- `width <n>`: stroke weight in multiples of the layer's base stroke (the wire stroke on the symbol and wire layers). Integer `1`–`4`; absent means `1`. A renderer rounds a fractional value and clamps it into `1`–`4`; the file keeps what was written.
+- `dash <n>`: `0` or absent is solid; `n` in `1`–`15` draws dashes and gaps of `2n` logical pixels each. Out-of-range values clamp like `width`.
+- Both are **screen-space**: a weight-`w` stroke is `w` × the layer width in logical pixels at every zoom, never thinner than the layer width (1 logical px by default) however far out, and a dash pattern keeps its pixel length. So a weight-2 body is twice its wires at every zoom, and a zoomed-out sheet never loses a stroke. Geometry scales with zoom; stroke weight does not, unless the viewer's variable-line-width option (`_`) scales the layer widths themselves, which carries every weight along.
+- `fill true` fills a closed shape (rect, full circle, closed poly) in its layer's colour on any layer; absent or `false` leaves filling to the layer (the pin layer fills). An open shape never fills.
+- Strokes with `width` > 1 or a `dash` use round caps and joins (a thick zigzag mitres into spikes otherwise); plain strokes keep butt caps and mitre joins.
+
+`stext` templates may reference `name`, params and `cell` (render-time only). Its `<orient>` turns the text about its anchor like a `text` record's (quarter turns clockwise, and never upside down: a half turn draws the text upright and a three-quarter turn like a quarter turn, right- and bottom-aligned at the anchor so it covers the box the turn gives it; a mirror keeps the text readable and right-aligns it, so a text that started at its anchor now ends there and a label column right of the body lands left of the mirrored body; `hcenter` text stays centred); in an instance the text turns by the instance's orientation composed with its own, and the rule above applies to the composed turn (an `R90` text in an `R90` instance is a half turn, drawn upright).
+
+### Rank 3 — schematic (shcomp, shbench)
+
+Kinds in writer order:
+
+| Record | Attributes | Notes |
+|---|---|---|
+| `inst <id> <cellref>` | `at <x> <y> <orient>` (required, first), `name <instname>` (required), `ignore true\|short\|open`, `<param> <value>` overrides, `inherit <pin> <net>`, `cached <param> <value> <digest>` (repeatable) | `cellref` = `lib:cell` or `./cell` (same directory). Only overrides are stored (D40). `name` may be iterated `X1[3:0]`. `cached` holds the value of a `vderived` param of the cell (one only Virtuoso's callbacks compute, D20 as amended 2026-10-15) with the digest of the instance's `vinputs` values it came from; it stands in as the param's value when the instance does not override it, and is `E039` when the digest no longer matches (interop §8.3). |
+| `wire <id> <x1> <y1> <x2> <y2>` | `bus true` | Writer normalizes so `(x1, y1) < (x2, y2)` lexicographically. Zero-length wires are an error (`E026`). |
+| `label <id> <x> <y> <orient> <netexpr>` | `global true` | Net names live only on labels and ports. |
+| `port <id> <x> <y> <orient> <pin>` | | Binds a schematic net to interface pin `<pin>` (shcomp only). |
+| `noconn <id> <x> <y>` | | Marks an intentionally unconnected pin. |
+| `text <id> <x> <y> <orient> <text>` | `size <s>` | Annotation only. |
+| `shape <id> <form> <values…>` | `layer <n>`, `fill true\|false`, `dash <n>`, `width <n>`, `closed true\|false` | Schematic graphics, annotation only (no connectivity). `form` and its coordinate values: `line x1 y1 x2 y2`, `rect x1 y1 x2 y2`, `arc cx cy r start_deg sweep_deg`, `circle cx cy r`, `poly x y x y …` (≥ 2 points; `closed` for a polygon). Any other count is `E029`. The rank-2 graphic forms with an id, so they merge and diff per record like every rank-3 kind. |
+| `constraint <id> <type>` | `member <id>` (repeatable), any `<key> <value>` | D30. `type` is a plugin-defined word; core stores, diffs, revalidates members. |
+| `waive <id> <inst_id> <param>` | `reason <text>` (required) | D13 waiver for one instance param. |
+
+### Rank 4 — docs (cells)
+
+Document order is preserved.
+
+| Record | Attributes | Notes |
+|---|---|---|
+| `prose <id>` | verbatim lines | Markdown + `$…$` / `$$…$$` LaTeX math (D21); the subset and its rendering are [docs-page.md](docs-page.md) §2. A ```` ```plot ```` fence inside is an embedded graph (§5 there), not a record. |
+| `var <name> <expr>` | `unit <u>`, `min <expr>`, `max <expr>`, `doc <text>`, `cached <value> <hash>`, `dist gauss\|uniform <spread> [rel]` | The cell's variables table (D19). Bench vars are the sweep/optimizer variables. `dist` makes a bench var vary in Monte Carlo runs: normal with standard deviation `spread`, or uniform over `±spread`; `rel` scales the spread by the value (run.md §3). `cached` (D20) is written by the tool: `<value>` in canonical text (expr §7; a string quoted), `<hash>` 16 lowercase hex digits identifying the plugin(s) that computed it ([docs-page.md](docs-page.md) §6). |
+
+### Rank 5 — impl bodies
+
+| Record | Attributes |
+|---|---|
+| `body <impl>` | verbatim lines: the definition text emitted once per netlist (SPICE subckt text, Verilog-A source, Verilog source) |
+
+### Rank 6 — bench (shbench; `code` also in shcomp)
+
+| Record | Attributes | Notes |
+|---|---|---|
+| `corner <name>` | `lib <path> <section>` (repeatable), `include <path>` (repeatable), `set <var> <expr>` (repeatable), `temp <expr>` | Model sections and var overrides. Paths may contain `${NAME}` expanded from project `set` entries, then the environment; nothing executes. |
+| `config <name>` | `order <impl>…`, `cell <cellref> <impl>` (repeatable), `inst <path> <impl>` (repeatable) | D11a impl selection. |
+| `sweep <name>` | `var <v>`, and one of `values <expr>…` / `lin <from> <to> <n>` / `log <from> <to> <n>` | `lin`/`log` bounds are constants, `n` in `1..=65536` (run.md §2). |
+| `montecarlo <name>` | `samples <n>` (required), `seed <n>` (default 0) | Varies every var with `dist` (run.md §3). |
+| `optimize <name>` | `algo random\|nelder-mead` (default `nelder-mead`), `goal <output> min\|max\|target <expr> [weight <w>]` (repeatable; weight default 1), `vary <var>` (repeatable; bounds come from the var), `config <name>` and `corner <name>` (repeatable; every candidate runs at each pair, default the bench's), `budget <n>` (default 100), `seed <n>` (default 1) | run.md §6. |
+| `output <name> <expr>` | `unit <u>`, `analysis tran\|ac\|dc\|op`, `vs <output>` | Calculator-mode expression over each job's raw file, reduced to one number (run.md §4). `analysis` names the dataset the output reads and `vs` asks for a plot of this output against another across the run's jobs; both are read by tools — the Virtuoso export maps them to ADE signal letters and OCEAN `waveVsWave` (interop.md §9.1, §9.6) — while the core run keeps run.md §4's dataset rule and draws no plot for them. |
+| `spec <output>` | `min <expr>`, `max <expr>` | |
+| `code <name> <lang>` | verbatim lines | `lang` `spice` = all SPICE dialects; `ngspice`/`xyce`/`spectre` = that dialect only; anything else goes to a runner plugin. In a `.shcomp` the text is the component's own (`.model` cards, `.param` lines, XSPICE `A` devices, an extracted netlist): it is emitted inside each of its definitions (netlist.md §7.6.15), never at the top of a bench that instantiates it. |
+
+### Project manifest (`schemify.project`)
+
+| Record | Attributes |
+|---|---|
+| `lib <name> path <relpath>` / `lib <name> git <url> <rev>` / `lib <name> url <url> <sha256>` | `subdir <relpath>` |
+| `lib tech map <relpath>` | — |
+| `plugin <name> path <file>.wasm` (a package's own manifest only, [config.md](config.md) §5 Layout) | `grant <capability>` (repeatable: what the package requests), `fuel <n>` (its suggested per-event budget, plugin ABI §2; whole number in [10^6, 10^11]) |
+| `set <key> <value>` | |
+
+Header attribute `init <relpath>`: the project's Lua file, a path inside the project directory. Its `schemify.pack.add` specs are the project's plugins, loaded once the user trusts the file ([config.md](config.md) §2); a project declares no `plugin` records of its own (the editor names any it finds and loads none).
+
+Header attribute `root <relpath>` (added 2026-11-04): the directory the project's cells live in, relative to the manifest's directory; `..` segments may leave it (`root ../..` keeps the manifest in `<blk>/build/schematic/` and the cells in `<blk>/`), an absolute path, an empty or `.` segment, `\` or `:` is `E028`. The project library (row 0), `lib … path` and `lib tech map` paths, plugin file paths other than those below (plugin-abi §5) and `place` directories resolve from the root; the manifest, `schemify.lock`, the `init` file and `.schemify/` stay beside the manifest, so a manifest path whose first segment is `.schemify` (`lib vkit path .schemify/pdk-manager/remote/vkit`, `lib tech map .schemify/…`, a project `set` path such as `${PDK_MODELS}` = `.schemify/pdks/F/V/models/corners.lib`) resolves beside the manifest, as a plugin's `.schemify/` paths do (`schemify_doc::beside_manifest`). Without `root` the root is the manifest's directory. `schemify publish` lays such a project out flat at its root (web spec §3.1). A file belongs to the project of the nearest ancestor directory holding `schemify.project`, unless the command line names one with `--project <dir>`, which a cell under a moved root needs.
+
+Header attribute `place <glob> <dir>` (repeatable, added 2026-11-04) routes a new cell file by its name: the first `place`, in file order, whose glob matches the whole file name gives its directory under the root (`.` is the root itself); with none matching it goes at the root. A glob is literal but for `*` (any run of characters, the empty one too) and `?` (one character), and holds no `/`; `<dir>` is root-relative without `..`, `.` or empty segments (`E028` otherwise). It applies to a name without a directory: the editor's new cells (`untitled<n>.<ext>`), a relative Save As name, and a plugin's `fs_read`/`fs_write` of a bare `*.shcomp`/`*.shprim`/`*.shbench` path; a path with a directory keeps it. It is an attribute rather than a record so that a reader older than it keeps it in order (§5) instead of refusing the manifest (`E027`).
+
+`lib core builtin` is implicit (the bundled core library). `tech` is a reserved library name: it takes only the `map` source, whose `<relpath>` is a `tech.map` file (pdk.md §5), and no other library takes `map` (both `E028` on load). The app indexes it as a one-file listing, so the lockfile pins it like any library (`locked lib tech map <relpath> <sha256>`).
+
+### Technology map (`tech.map`, kind `techmap`)
+
+Header attributes `pdk <family>` (the name messages use), `vdd <volts>` (nominal core supply), `simulator <word>` (the simulator the PDK pins, pdk.md §6) and `host <[user@]host>` (the ssh destination its runs go to, pdk.md §6). Records, rank 1, file order:
+
+| Record | Attributes | Notes |
+|---|---|---|
+| `class <class> <flavor>` | `cell <lib:cell>` (required), `param <name> <expr>` (repeatable), `vdd <volts>`, `limits <param> min\|max <expr>` (repeatable) | Identified by (class, flavor), unique (`E024`). `flavor` ∈ `core io lvt hvt`. `param` assigns a PDK param of `cell` an expression over the class params, written as an instance override of that param would be (an expression for number params). `limits` is parsed and kept; enforcement is not implemented yet (pdk.md §6). |
+
+### Lockfile (`schemify.lock`)
+
+`locked <lib|plugin> <name> <kind> <resolved> <sha256>`, sorted by (type, name). Tool-written only.
+
+A library's content hash is the lowercase hex sha256 over its files sorted bytewise by library-relative path, each contributing its path bytes, one `0x00` byte, and the 32-byte sha256 of its contents. `<resolved>` is the commit a git rev resolved to, the url, or the path. `lib core builtin` is never locked (it ships with the tool); an explicit `lib core …` in the manifest replaces the builtin.
+
+### User config
+
+The user config is `init.lua` (D9 as amended 2026-10-11), specified in [config.md](config.md): options, keymaps, simulator command lines, event hooks and user packages through a sandboxed `schemify.*` Lua API. Its package lockfile uses the lockfile rows above.
+
+## 5. Unknowns and forward compatibility
+
+- Unknown attributes are preserved verbatim, in order, after known ones.
+- An unknown record word is an error (`E027`) unless the header version is newer than the reader's or the file is a `journal`, in which case the record (with its attributes and verbatim lines) is preserved verbatim at its position. A known word that the file kind does not allow (`pin` in a `.shbench`) is unknown for that kind.
+- An unknown record has the rank of the closest known record before it (0 right after the header). In a sorted rank (3, 6) it is written after the rank's known kinds, keeping file order; elsewhere it keeps its position. For merge and diff it is identified by its word and first field.
+
+## 6. Values inside records
+
+The file layer only splits values. Their meaning:
+
+- **Expression positions** (`param` default for number/int/bool kinds, `computed`, `min`, `max`, `step`, `grid`, `show`, `var`, `output`, `corner set`, `sweep` bounds, instance overrides of number/int/bool params): parsed by [expr.md](expr.md).
+- **Template positions** (`format`, `stext`, string/choice param defaults and overrides): template strings ([expr.md §6](expr.md)).
+- Everything else: literal text.
+
+## 7. Error and warning codes
+
+`E0xx` codes are shared with the checker (netlist spec §8). Format-level codes:
+
+| Code | Meaning |
+|---|---|
+| E020 | same cell stem with two kinds in one library |
+| E021 | file too large |
+| E022 | coordinate not representable |
+| E023 | record out of rank order |
+| E024 | duplicate name within a kind |
+| E025 | kind rule violated (§4 rank 1: pins, impl count and langs, `default`) |
+| E026 | zero-length wire |
+| E027 | unknown record |
+| E028 | malformed line (lexical; also BOM, invalid UTF-8, bad header) |
+| E029 | wrong arity or value form (number, coordinate, id, orientation, listed word), missing required attribute, verbatim lines where none are allowed |
+| E030 | override of a computed param |
+| W001 | duplicate id (later occurrence re-assigned by the `doc` layer) |
+
+## 8. Merge and diff
+
+The merge driver (D34) and the in-app reload merge (D28) are record-level, need no semantics beyond §4, and are implemented by `schemify-format` (`merge3`, `diff`).
+
+- **Identity.** The header is one record. Id-keyed kinds are identified by (kind, id), named kinds by (kind, name), `locked` by (kind, type, name), unknown records by (word, first field); a further occurrence number separates duplicates (`W001` files). Rank-2 graphics have no identity.
+- **Three-way pick** for any unit given base O, ours A, theirs B: the side that changed wins; an identical change on both sides is taken once; different changes on both sides conflict.
+- **Records** present on all sides: the pick applies to the whole record; if both changed it differently, it applies per component: the record line, each attribute line (identified by key, plus the first value for repeatable attributes, plus occurrence), the verbatim lines and the comment block. Attribute adds and deletes merge like records. Verbatim lines merge line by line (diff3): each side is aligned to the base by a longest common subsequence of lines; base lines both sides keep at matching positions are stable, and every run between stable lines takes the side that changed it (identical changes once; both changing it differently conflicts). A block whose changed middle (after the common prefix and suffix) would need more than 2^22 alignment cells merges as a unit. Any conflicting component makes the record a conflict.
+- **Kind rules.** A clean result that breaks the §4 kind rules (`E025`) while both sides keep them (both add a schematic impl to a `.shcomp`; each deletes the other's last pin) is not clean: rank 1 is written as one conflict block of ours' and theirs' rank-1 records.
+- **Adds and deletes.** A record added on one side is kept; deleted on one side and unchanged on the other is dropped; deleted against modified is a conflict. Added on both sides: identical is kept once; different with the same name is a conflict; different with the same id re-ids theirs: the new id is drawn deterministically (splitmix64 seeded with FNV-1a of the old id, redrawn while taken in any input) and every id field or id reference (`waive` target, constraint `member`) in theirs is rewritten.
+- **Rank 2** (symbol graphics) merges as one block by the pick rule.
+- **Order** in file-order ranks: records common to all sides keep theirs' order if ours kept the base order, else ours' order (both reordering differently conflicts over the whole rank). Every other kept record follows the nearest common record before it on its own side; records added at the same place by both sides are ordered by identity, so clean merges are symmetric in A and B. Sorted ranks need no order merge (the writer sorts).
+- **Output** is the canonical form (§2). A conflict is written as ours' records, then theirs', between `<<<<<<< ours`, `=======` and `>>>>>>> theirs` lines (an empty side has no records); the driver reports the number of such blocks and fails when it is not 0. End-of-file comments conflict the same way.
+- **Diff** lists records added, removed and changed between two files, in identity order, with which components changed and which attribute keys were added, removed or changed. Graphics are matched by occurrence within their kind. Order-only changes are not reported.

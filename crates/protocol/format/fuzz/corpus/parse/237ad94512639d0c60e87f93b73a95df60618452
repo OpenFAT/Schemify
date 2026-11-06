@@ -1,0 +1,114 @@
+schemify 1 shprim
+  d1c{D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin Ginout 0 -30
+pin N inout 0 30
+
+param dc 0
+  unit V
+0
+pin G in -20 0
+pinD inout 20 30
+pin param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl sbodypice spice
+  format spice "e} {D} {G} {Spin G in -out 0 -30
+pin n inout 0 30
+
+param R 1k
+
+impl s~icspceie 
+  pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2(param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+param model pch
+  l spice spice
+  format spice 0.15
+papice "M{name} {D} {G} {S} {B} {Lodel} W={W}u L={L}u "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin Din otu 20 30
+pin B inout 20 0
+
+param ram L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spict spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"
+  S} {B}) {monout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u "genemplifier, Verilog-A model (fixture)"
+
+pin inp in -20 -10
+pin inn in -20 10
+pin out010 -200 30 R0 0
+
+codiving a Verilog buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+ at  inn in  R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n00si ntdkring
+
+impl spice spice
+  format spice;"M{name} {D} {G} {S} {B} {model} W={W}u pice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+papice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n0007poly 0 R0 b
+label 0n0008 320 0 R0 y
+label schel={L}u 

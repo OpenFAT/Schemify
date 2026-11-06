@@ -1,0 +1,4 @@
+schemify 1 shprim
+  doc l
+pin Y out 20 0
+  domain digi

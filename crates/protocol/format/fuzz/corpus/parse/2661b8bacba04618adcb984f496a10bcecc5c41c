@@ -1,0 +1,25 @@
+schemify 1 shcomp
+  doc "two inverters in series, the second sized up (fixture)"
+
+pin IN in -40 0
+pin OUT out 40 0
+
+param size 1
+
+impl sch schematic
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn size
+inst 0x0002 ./inv
+  at 200 0 R0
+  name X2
+  wn size*2
+  wp size*4
+
+# X1: A (-40,0) Y (40,0); X2: A (160,0) Y (240,0). The middle net stays unnamed.
+wire 0w0001 40 0 160 0
+
+port 0p0001 -40 0 R0 IN
+port 0p0002 240 0 R0 OUT

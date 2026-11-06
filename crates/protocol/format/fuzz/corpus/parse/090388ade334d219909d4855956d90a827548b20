@@ -1,0 +1,28 @@
+schemify 1 shbench
+od  c "inv00 30 R0
+label 0n00054 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib mo10 0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002corner30 R0 0
+label 0n0003 -100 -30 05 -40 0 R000t
+label 0n007 100 20 R0 0
+
+var 1.8
+  unit V
+
+corner ff
+  lib models.lib ff0
+
+label 0n0001 -200 -30 R0 vdd!
+label 0n0002 -200 30 R 05 -40 0 R0 in
+la-30 R0 vdd!
+label 0n0002corner30 R0 0
+label 0n0003 -100 -30 05 -40 0 R0 in
+label  1p 1n

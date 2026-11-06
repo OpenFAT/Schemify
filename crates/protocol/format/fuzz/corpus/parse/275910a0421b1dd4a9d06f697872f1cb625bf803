@@ -1,0 +1,10 @@
+schemify 2 shbench
+  doc   corne
+
+inst045x00  ./in./cap
+  at 100 * R0
+  name CL
+  C 1at -400 0 R0
+  nDD
+ scZhemip
+  at 10r pin r

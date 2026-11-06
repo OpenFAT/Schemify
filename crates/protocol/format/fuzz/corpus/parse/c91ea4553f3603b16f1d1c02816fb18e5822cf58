@@ -1,0 +1,176 @@
+schemify 2 project
+  doc "inverter transient"
+  corner tt
+
+inst 2x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label '0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp  0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+l
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+labbHHHHHHHHH shbench
+  doc "inverter tvansilatempent"
+ HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHel 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 in
+l R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+l
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0200 30 R0 0
+label 0n0003 -100 -30 R0abel 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be000  corner tt
+
+inst 0x0001 ./
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -a00 30 R0 0
+label 3 -100 -30 R0 in
+l
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0200 30 R0 0
+label 0n0003 -100 -30 R0 qn
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+labbHHHHHHHHH shbench
+  doc "inverter tvansilatempent"
+ HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHel 0n0003 -100 -30 R0 in
+la_el 0n000n0005 -40 0 R0 in
+lal n0be0006 40  out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -20004 -100 30 R0 0
+la R0200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0(label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 c "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn00 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+labbHHHHHHHHH shbench
+  doc "inverter tvansilatempent"
+ HHHH 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+labbHHHHHHHHH shbench
+  doc "inverter tvaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAnsilatempent"
+ HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHel 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+lab60
+
+param Wp 2
+  unit um
+  doc "input pair width"
+param Lp 0.5
+  unit um
+
+impl sch schmetaic
+
+# --- ranp100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0005 -40 0 R0 in
+VSS n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n000-  202-30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+lleba 0n0005 -40 0 R0 iNn
+lal n0be0006 40 6 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 2507 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp_______________________________________________ 25
+
+code tran spice
+  | .tran 1p 1n

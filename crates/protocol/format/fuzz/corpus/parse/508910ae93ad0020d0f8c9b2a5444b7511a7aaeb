@@ -1,0 +1,9 @@
+schemify 1 shbench
+  doc "t0 R0 in
+label 0n0007 -40 400 Rcc0 in
+l,bel 0n040 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label$Rcc0 in
+l,bel 0n040 20n
+label 0n0007 -40 40 Rcc0 in
+l27

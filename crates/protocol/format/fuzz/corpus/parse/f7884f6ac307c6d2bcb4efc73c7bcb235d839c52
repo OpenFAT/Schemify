@@ -1,0 +1,159 @@
+schemify 1 shcomp
+  doc "5-transistor OTA, NMOS input pair"
+  cn VDD inout 0 -60
+pin VSS inout 0 60
+
+param Wp 2
+  unit um
+  doc "input pair width"
+param Lp 0.5
+  unit um
+
+impl sch schematic
+
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0 -60 50 -60 -50
+  closed true
+
+line -80 -20 -60 -20
+line -80 20 -60 20
+line 60 0 80 0
+
+stext -55 -28 R0 +
+stext -55 12 R0 -
+
+# --- rank 3: scematic. Each ki70 -40 -190
+wire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 1000 -330
+
+#  100 -270 100 -190
+wire b8nq0t -40 -190 1000 -330
+
+# Net names live only here.M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446ra 
+ ptwire 7q3vxa 100 -270 100 -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a sc(hematic net the size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern common-c100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names l0 -190 1000 -330
+
+# Net names live only here.M1/M2 comNet names live only here.M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446ra 
+ ptwire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a sc(hematic net the size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern common-c1gm_in90
+wire h2w9cs 100 -430 100 -330
+
+# Net names l0 -190 1000 -330
+
+# Net names live onstraint s4m3tr match
+  member 0gsrp0
+  member 1j446ra 
+ ptwire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a sc(hematic net the size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern common-c1gm_in90
+wire h2w9cs 100 -430 100 -330
+
+# Net names l0 -190 1000 -330
+
+# Net names live only here.M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  patwire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a sc(hematic net the zi0es 4.
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern common-c100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here.ember 0gsrp0
+  member ive only here.ember 0gsrp0
+  member 1j446r
+  pattern common-c100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names lly here.M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  patwire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Renaming "tail" is a 1-line diff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects a sc(hematic net the zi0es 4.
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern common-c100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here.ember 0gsrp0
+  member ive only here.ember 0gsrp0
+  member 1j446r
+  pattern common-c100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Rena-190 R0 tail
+label kp1p4z -40 -380 R0 mirror
+
+# A port connects ansconductance targht"

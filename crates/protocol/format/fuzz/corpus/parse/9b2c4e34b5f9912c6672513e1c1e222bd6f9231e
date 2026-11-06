@@ -1,0 +1,74 @@
+schemify 1 shbench
+  doc "Verilog-A amp,30)
+# B (x+20,0); PMOS: S (x+20,-30) G (x-20,0) D (x+10,30) B (x+20,0).
+inst 0 140 -70 140 -300
+wire w00004 0 -7 0
+wire w00004 180  0240 0
+wire0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w0000t
+  | density $J_D = I_D/W$,40 0
+wire :00003 180  024-40 0
+wire w00003 180  0240 0;wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30ire w00003 180  0240 0
+wire w000040 -70 140 -300
+wire w00004 0 -70 0 -30
+wire w00005 1400-7  140 -30
+wire w0000t
+  | density $J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire0
+wire w00004 0; -70 0 -0 0 -30
+wire w00005 140 -70 140 -30ire w00003 180  0240 0
+wire w00004 0 -70 0 -30
+wire w00005 e x1
+  wp 4
+inst x00002 ./invat at 140 0 a0
+  0 -30
+wire w00005 140 -70 140 -30
+wire w0000t
+  |name x2
+$J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w0000t
+  | density $J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire w00004 0 -70 0  $J_D = I_00005 140 -7D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire v0000t
+  | density $J_D = I_D/W$,39 0
+wire w00003 180  024-40 0
+wire w00003 180  0240 0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30ire w00003 180  0240 0
+wire w00004 0 -70,0 -30
+wire w0 $J_D = I_D/W ,40 0
+wire w00003 180  0240 0
+wire0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 t
+  | density $J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire w00004 0 -70 0 -3R0
+  0 -30
+wire w00005 140 -70 140 -30
+wire w0000t
+  |name x2
+$J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00003 180  0240 0
+wi
+wire w00005 140 -70 140 -30ire w00003 180  0240 0
+wire w00004 0 -70,0 -30
+n c000ure)"
+

@@ -1,0 +1,15 @@
+schemify 1 shcomp
+  doc "d Verilog inverters (f"
+
+pin A in -20 0
+pin Y ocmatic
+
+inst 0d0001 ./din0 R0
+  name U1d0002 ./dinv
+  at 100 0 R0
+  name U3
+
+wire 0w0001 20 0 80 0
+
+port 0p0001 -20 0 R0 A
+port 0p0002 120 0 R0 Y

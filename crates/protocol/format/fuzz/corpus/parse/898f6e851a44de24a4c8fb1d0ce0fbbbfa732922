@@ -1,0 +1,48 @@
+schemify 1 shcomp
+  doc "5-transistor OTA, NMOS input pair"
+  categorier
+  pdk sky130
+
+# --- rank 1: symbol interface. A library browser or netlister stops reading order
+pin INP in -80 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -70
+pin VSS inout 0 60
+  unit um
+
+impl sch schematic
+
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 0 -60 50 -60 -50
+  closed true
+
+line -80 -20 -60 -20
+line -80 20 -60 20
+line 60 0 80 0
+
+stext -52 -28 R0 +
+stext -55 12 R0 -
+
+# --- rank 3: schematic. Each ki70 -40 -190
+wire 7q3vxa 100 -270 100 -190
+wire b8nq0t -40 -190 100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net names live only here. Rena-190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects 
+
+# A port connects a schematic net to the size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+ pattern common-c100 -190
+wire h2w9cs 100 -430 100 -330
+
+# Net namesly here. Rena-190 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A port connects ansconductance targht"

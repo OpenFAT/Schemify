@@ -1,0 +1,36 @@
+# Publishing a plugin
+
+## What users install
+
+`schemify pack` installs a git repository by cloning it and loading the module at its root ([config.md](../spec/config.md) §5). There are no build hooks: the committed `.wasm` is what runs. So a release is a commit whose module is up to date, and CI's reproducibility check ([testing.md](testing.md)) guarantees that every commit on `main` is one.
+
+## Releases
+
+Tag a release with a version (`git tag v0.3.0 && git push --tags`). Users pin it with `version`, or follow a branch with `rev`:
+
+```lua
+-- init.lua
+schemify.pack.add {
+  { src = "https://github.com/OpenFAT/GmId-Visualizer", version = "v0.3.0",
+    grant = { "read_project", "write_project", "spawn:ngspice" } },
+}
+```
+
+`schemify pack sync` clones it and records the commit and the module's sha256 in `schemify-pack.lock`. `schemify pack update` moves to the newest commit of `rev`/`version`. The user grants capabilities; the plugin gets the intersection of those and what its `schemify.project` requests.
+
+A project that needs the plugin (a docs page that calls its functions, a PDK flow) adds the same spec in its own Lua file, the one its `schemify.project` names with `init <file>` (config spec §2). Anyone who opens the project is asked to trust that file, and the plugin is then downloaded into the project and pinned in its `schemify-pack.lock`.
+
+Users who cannot use git can install a single module with `url` and `sha256`. Attach the `.wasm` to a GitHub release for that.
+
+## Moving to a newer Schemify
+
+1. Pick the Schemify commit (usually `main` when the nightly is green).
+2. Replace the `rev` of every Schemify dependency in `Cargo.toml` with its full sha, all to the same commit.
+3. `cargo update -p schemify-abi` (and every other Schemify crate you use), then `./build.sh` and `cargo test`.
+4. Commit `Cargo.toml`, `Cargo.lock` and the rebuilt `.wasm` together.
+
+The module exports the ABI version it was built for (`schemify_abi`, [plugin-abi.md](../spec/plugin-abi.md) §2). An editor with another ABI version refuses to load it (`E_VERSION`) instead of running it with the wrong layout.
+
+## Listing a plugin in Schemify
+
+Schemify lists a few plugins in its [README.md](README.md); adding one is a pull request that adds its row. Schemify's CI does not build or test them; the plugin's own CI is what vouches for it.

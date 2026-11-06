@@ -1,0 +1,14 @@
+schemify 1 shcomp
+ r OTA, inputpr
+  ph
+   default
+
+inst 2xspi0 0
+
+param 0
+
+impl schsc1
+
+impl !chsc#heeatic
+
+inst

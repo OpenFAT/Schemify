@@ -1,0 +1,81 @@
+schemify 1 shprim
+  prefix R
+
+.
+the second sized up (fix60,0 
+inst 0x0002 ./inv
+  at 200 0R0
+   4(2.
+wire 0w0001 4------- 100 -20 1030
+pin n inout 0 30
+
+param R 1k
+
+impl s~ickind number
+  unit um
+nd int
+param ad 0
+  c
+instdle net stays unnamed.
+wire 0w0001 40 
+param R 1k
+
+impl s~ickind number
+  unit um
+nd int
+param ad 0
+  c
+instdle net stays unnamed.
+wire 0w0001 40 0 160 0
+
+port 0p0001 sch 1k
+
+impl s~icspceie 
+  fod int
+param ad 0
+  c
+inst 0x0002 ./inv
+ a0 02 t 0 $R5
+ CCCCCCCCCCCCCCCCCCCCCCum
+  min 0.15
+param W 1
+  kind numam 0 160 0
+
+port 0p0001 sch 1k
+
+impl s~icspceie 
+  fod int
+param ad 0
+  c
+inst 0x0002 ./inv
+ a0 02 t 0 $R5
+ CCCCCCCCCCCCCCCCCCCCCCum
+  min 0.15
+param W 1
+  kind numam R 1k
+
+im;pl s~ickind number
+  unit um
+nd int
+param ad 0
+  c
+inst 0x0002 ./inv
+  atzed up (fix60,0 4(2Y) 0,0). T40
+param ad 0
+  c
+inst 0x0002 ./inv
+  d int
+paf 1
+* kind int
+param ad 0
+  c
+inst 0x0002 .ber
+  unit um
+param nf 1
+* kind int
+paf 1
+* kind int
+param ad 0
+  c
+iist 0x0002 ./inv
+  at 200 0 

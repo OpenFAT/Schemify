@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6105fdca3be07f8bf7134176ec28512a463e0745ee033a6691cec0550194ca96 # shrinks to sets = [[(0, 0)], [(0, 0)], [(0, 0)]], order = [PluginId(1), PluginId(2), PluginId(3)]
+cc dbc238a9cd5472b2e5588d78ac4d579997b4f819a5759959abf65cc401fa0d10 # shrinks to steps = [Output { plugin: 0, recs: [Contribute { kind: Commands, scope: 0, recs: [(0, 0), (0, 1)] }] }]

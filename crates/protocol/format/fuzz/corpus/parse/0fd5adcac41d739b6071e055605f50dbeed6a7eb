@@ -1,0 +1,22 @@
+schemify 1 shprim
+  doc "ge
+impl spice spice
+  format odel pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={W}u L={L}uwire"
+  format spectre "{name} S} {B}) {model} w={e)"
+  prefice
+  format spice "M{name} {D} {G} {={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={e)"
+  prefice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={W}u L={L}uwire"
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}uwire"
+  format spectre "{name} ({D} {G} 20 -30
+pin G in -20 0
+pin D inmat sp The middl}name} (W}u l={=L}u{L}u"
+"

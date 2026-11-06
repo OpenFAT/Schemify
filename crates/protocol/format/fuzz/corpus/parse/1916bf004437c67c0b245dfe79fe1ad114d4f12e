@@ -1,0 +1,7 @@
+schemify 1 shcomp
+' 
+
+pin A in -se
+ [ format spi15
+line 0 -1pif b$icespice
+ [0 R R0 Yj

@@ -1,0 +1,42 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+schemifS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0m-0odel pc160, {D} {G} {Spin G in -20 0
+pin D inout 28 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}28 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {mod 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.el pch
+  si ntdkriung
+
+impl spice spice
+  f sub-cell"
+  prefix x
+
+pin IN in -40 0
+pin OUT out 40 0
+
+impl sch schematic
+
+rect -20 -20 20 20235196511line88211) Y={L}u"40,°) Y 0,0).  format sp The middl} w={W^u lectre "{name} (W}u l={=L}u{L}u"
+"

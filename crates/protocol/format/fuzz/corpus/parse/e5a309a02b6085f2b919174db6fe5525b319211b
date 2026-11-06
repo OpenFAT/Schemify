@@ -1,0 +1,27 @@
+schemify 1 shbench
+
+inst 5b0001 ./buffer
+  at 0 0200 R0
+  name B2
+  size 2
+inst 1b0003 ./buerff
+  at 0 400 R0
+  name B3
+  size 0
+inst 0v0001 ./vsource
+  at -300 0 R0
+  name 1.8
+inst 0v0002 ./vsource
+  at -200 0 R0
+  name VIN
+  dc 0.9
+
+label 0n0001 -300 -30 R0 vdd!
+label 0n00n0009 40 200 R0 o2
+label 0n0010 40 400 R0 o3
+label 0n0011 0 40 R0 ib
+label 0n8012 0 240 R0 ib
+label 0n0013 0 440 R0 ib
+
+corner tt
+  temp 27

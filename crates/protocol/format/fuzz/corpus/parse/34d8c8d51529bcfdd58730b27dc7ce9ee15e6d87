@@ -1,0 +1,84 @@
+schemify 1 shbench
+  doc "OTA open-l0 0 R0
+  n&me VIN
+  d:control
+  |200 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n000)6 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0g 40`0 Rl 0n000 4 05-0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 05 -40 0 R0 in
+label 0n0006 40`0 Rl 0n0005 -40 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label 040 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0 0
+  ac dec 20 1 1G
+  |   meas lib modelabel 0n0005 -40 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0n0008 40 0 imeas ac gbw when0 -30 R0 in
+label 0n0004 -100 30 R0 -100 -30 R0 in
+latem507 5 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0
+label 0n0007 -40 400 Rcc0 in
+label 0n0008 40 0 R0 o1
+label 0n0000049 013 0 440 R0 ib
+
+corner ls.ntroln
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0 0
+   ac dec 20 1 1G 0n0005 -40 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+R0 in
+latem507 5 30 R0 0
+label 0n0003 -100 - 8n0006 40`0 R5 out
+label 0n0007 100 20 R0 0
+
+var vdd 1R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0
+label 0n0007 -40 400 Rcc0 in
+label 0n0008 40 0 R0 o1
+label 440 R0 ib
+
+corner ls.ntroln
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0 0
+   ac dec 20 1 1G
+  |   meas lib modelan
+bel 0 0
+
+var vdd 1R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0
+label 0n0007 -40 400 Rcc0 in
+label 0n0008 40 0 R0 o1
+label 440 R0 ib
+
+corner ls.ntroln
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0 0
+   0:30 R0 0
+label 0n00R0 0
+label 0n0003 -100 -30 R0 in
+latem507 5 in
+label 0n0007 -40 400 Rcc0 in
+label 0n000830 R0
+label 0n0007 -40 400 Rcc0 in
+label 0n0008 40 0 R0 o1
+label 0n0000049 013 0 440 R0 
+label 0n0003 -100 -30 R0 in
+latem507 5 30 R0 0
+label 0n0003 -100 - 0n0006 40`0 R5 out-40 0 R0 in
+label 0n0006 -40 200 R0 in
+label 0n0007 -40 401 Rcc0 in
+la

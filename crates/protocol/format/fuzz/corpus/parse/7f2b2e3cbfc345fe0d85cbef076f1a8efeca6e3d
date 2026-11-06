@@ -1,0 +1,7 @@
+schemify 1 shprim
+  d
+
+var vdd 0.8
+   -11 0
+pin D inout 40 ""
+  unt t mx

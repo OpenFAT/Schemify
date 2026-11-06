@@ -1,0 +1,9 @@
+schemify 1 shprim
+  catgor W={W}"
+
+line 11 -3. 20 -15
+line 20 -3. 20 -15
+line 20 -3. 20 -15
+line L={L} W={W}"
+
+line 20 -4. 20e 0.2

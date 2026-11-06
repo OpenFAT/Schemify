@@ -1,0 +1,17 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  kind string
+
+impl spice spice
+  format spice "M{name{S} {B} {model} W={W}u L={L}u"
+  format spectre "{}) {model} "

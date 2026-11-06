@@ -1,0 +1,34 @@
+schemify 1 shprim
+  doc "0n0003 -100R0 in
+label 0n0004 c "inverter transient"
+  corner tt
+
+idst 1x0001 ./inv
+  at  R00 0
+  name X1 100 0
+wir0 -30 R0 vdd!
+label 0n00(2 -200 30 R0 0
+l -100 -30 R0 in
+label 40 n000-100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corschemify 2 shbench
+dc  o "oinverter transient"
+  corner tt
+
+schem R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  un.lib se SPICE text ixture)"
+
+pin a inout 1 -30
+pin b,inout 0 30
+
+impl spice spice
+  | .ends rcfilt

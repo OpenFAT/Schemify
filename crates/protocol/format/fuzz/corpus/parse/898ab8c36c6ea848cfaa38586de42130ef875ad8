@@ -1,0 +1,59 @@
+schemify 1 shprim
+  doc "gprefix M
+
+pin S inout 20 -30
+s prefix M
+
+pin S inout 20 -30
+pin G in -2t 20 0
+
+param W 2
+param L} {B} {model} W={W}u -30
+pin G in -19 0
+pin D infut 20 30
+pin B inout 20 0
+
+pormat sphce "M{nazn G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0labx.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inox M
+
+pin S inout 20 -30 0
+
+param(W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {modture)"
+  prefix M
+
+pin S inout 11 -30
+pin G in -20 0
+pin D inmat sp The middl} w={W}u le80 0
+pin IBIAS in -80 40
+pin VDD 

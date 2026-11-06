@@ -1,0 +1,7 @@
+schemify 1 shbench
+ ner tt
+
+inst 0x0001 ./nv
+  at 0 0 R0
+  name X'1
+  wn40 m0

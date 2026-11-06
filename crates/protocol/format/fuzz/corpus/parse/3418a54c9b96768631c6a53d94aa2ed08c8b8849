@@ -1,0 +1,68 @@
+schemify 2 shprim
+  doc pin Bp:n inout 20300 0 R0
+  nam VDD
+  dc vdd
+inst 0b0004 ./vsrc
+  at -400 0 R0
+  name VIN
+  dc vdd/2
+inst 0b0005 ./cap
+  at 300 0 R0
+  name C[1:0]
+  C 10f
+instit um
+  doc "inputpice spice
+  eaf (fixture)"
+  corner tt
+
+instchain
+  at 0+200 R0
+  name X2
+  size 2
+inst 0b0003 ./vsrc
+  at -300 0 R0
+  nam VDD R0
+  name  0 0 R0*
+  name X1
+inst 
+  name X1
+inst 0b0002 ./chain
+  at 0+200 R0
+  name X2
+  size 2f loads, ignore moschemify 1 shcomp
+  doc "5-transistor OTA, NMOS input corner tt
+
+inst 0b0001 ./chain
+  at 0 0ads, igS input corner tt
+
+inst 0b0001 ./chain
+  at 0 0 R0
+  name X1
+inst 0b0000
+  name X2
+  size 2f loads, ignore moschemify 1 shcomp
+  doc "5-transistor OTA, NMOS inpu(t 
+# --- rank 1: eadingb0001 ./chain
+  at 0 0006NN in0 R0
+  nam at 0 0 R0
+  name X1
+inst 0b0002 ./chain
+  at 0+200 R0
+  name X2
+  size 2f   size 2f loads, ignore moschemify 1 shcomp
+  doc "5-transistor OTA, NMOS inpu(t 
+# --- rank 1: eadingb0001 ./chain
+  at 0 0006NN in0 R0
+  nam at 0 0 R0
+  name X1
+inst 0b0002 ./chain
+  at 0+200 R0
+  name X2
+  size 2f loads, ig 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 c "inverter transient"
+  corner tt
+
+inst 0x0nore moschemify001 ./inv
+  at  1 shcomp
+  demify 260 so0 hbencc0h

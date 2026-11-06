@@ -1,0 +1,12 @@
+schemify	1   shcomp
+  doc he 0 INP
+port c7r0 R0 OUT
+wire 3fk2a1 -40 -270 -400-190
+inst 4szjc8 sky130:pfet_R0
+  na
+  doc he 0 INP
+port c7r0 R0 OUT
+wire 3fk2a1 -40 -270 -400-190
+inst 4szjc8 sky130:pfet_3
+ ducme M3
+ ductance ta

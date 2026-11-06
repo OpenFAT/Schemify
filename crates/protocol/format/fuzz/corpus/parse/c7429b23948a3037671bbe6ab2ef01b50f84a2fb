@@ -1,0 +1,18 @@
+schemify 1 shbench
+  doc "re)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  na0 R0
+  name B1
+inst 0e0004 ./vsrc
+  at -200 0 R0
+  name VIN
+  dc 0.1
+
+label 5n0001 -20 -10 R0 in
+label 0n0002 -20  -30 R0 in
+label 0n0010 -200 30 R0 0
+
+code tran sce
+  an 1n 1u

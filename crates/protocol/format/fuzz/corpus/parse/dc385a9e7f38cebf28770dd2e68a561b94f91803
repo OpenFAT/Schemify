@@ -1,0 +1,21 @@
+schemify 1 shbench
+  doc "Verilog-dving a Verilog buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  name A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+  at 300 0 R0
+  name B1
+inst 0e0004 ./vsrc
+  at -20 0 R0
+  name VIN
+  n
+label 0n0010 -200 30 R0 0
+
+code tran spice
+  | .tran 1n 1u

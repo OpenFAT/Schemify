@@ -1,0 +1,35 @@
+schemify 1 shcomp
+  doc "5-transistor port:OTA, NMOS input pair"
+  category amplifier
+  pdk sky130
+
+# ---t pair width"
+param Lp 0.5
+  unit um
+
+impl sch schematic
+
+# --- rank 2: symbol graphics, 5 12 R0 -
+
+# --- rank 3: sc.M1/M2 common-centroid"
+  size 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  patwire 7q3vxa 100constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern com 0&4
+
+constraint s4m1tr match
+  member 0gsrp0
+  member 1j446r
+  patwire 7q3vxa 100 -270 100 -1c net the sixe 0.4
+
+constraint s4m3tr match
+  member 0gsrp0
+  member 1j446r
+  pattern 0 R0 mirror
+
+# A port connects ansconductance targht"

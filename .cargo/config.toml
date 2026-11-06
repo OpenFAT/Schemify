@@ -1,0 +1,8 @@
+[env]
+# The repository root, absolute (`<root>/.`). Code names a file outside its own crate from
+# here, `concat!(env!("SCHEMIFY_ROOT"), "/crates/protocol/format/tests/fixtures/x")`, and a
+# file of its own crate from `CARGO_MANIFEST_DIR`; never by a `../` chain. A git dependency
+# does not read this file, so only code no external package compiles uses it: tests, and the
+# `ui`, `editor` and `app` crates (the plugin repositories build protocol/, plugins/ and the
+# model's domain crates).
+SCHEMIFY_ROOT = { value = ".", relative = true }

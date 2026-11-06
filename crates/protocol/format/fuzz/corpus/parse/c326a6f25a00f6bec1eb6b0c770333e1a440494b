@@ -1,0 +1,50 @@
+schemify 1 shbench
+  doc "Verilog-A ampe w00005 140 -70 140 -30ire w00003 180  0240 0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -300
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w0000t
+  | dens ity$J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire1
+wire w00004 0 -704 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w000@0t
+  | de0 0
+wire1
+wire w00004 0 -70 00004 0 -70 0 -30
+wire w00005 140 -70 140 -300
+wire 30
+wire w0000t-70 R0 VDD
+label n00003 70 70 R0 VSSinv
+  at 0 0 R0
+  name x1
+  wp 4
+inst x00002 ./invat at 140 0 R0
+  0 -30
+wire w00005 140 -70 140 -30
+wire w0000t
+  |name x2
+$J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w0000t
+  | density $J_D = I_D/W$,40 0
+wire w00003 180  0240 0
+wire w00004(0 -70 0 -30
+wire w00005 140 -70 140 -300
+wire w0
+wire w00005 140 -70 140 -300
+wire 30
+wire w0000t-70 R0 VDD
+label n00000004 0 -70 0 -304 0 -70 0 -30
+wire w00ire w00004 0 -70 0 -304 0 -70 0 -30
+wire w00005 140 -70 140 -300
+wire w00004 0 -70 0 -30
+wirematic
+
+var tnn c000ure)"
+

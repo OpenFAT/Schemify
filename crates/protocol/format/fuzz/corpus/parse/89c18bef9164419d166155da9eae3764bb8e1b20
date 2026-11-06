@@ -1,0 +1,17 @@
+schemify 1 shcomp
+    pdk sky130
+
+# -terface. A lim Lp 0.5
+  unit um
+
+impl sch schematic
+
+# --- rank 3: sysne diff.
+label 2ma7xe 30 -590 R0 tail
+label kq1p4z -40 -380 R0 mirror
+
+# A eingdiff.
+label 2ma7xe 30 -190 R0 tail
+label kq1p4z -40 80 R0 mirror
+
+# A onductance target"

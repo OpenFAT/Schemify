@@ -1,0 +1,7 @@
+schemify 1 shbench
+  }0
+shape v line 1.0 OPK_uout 0ol sce
+
+shape v line 3.0 OR_K 0* 30
+
+st-x

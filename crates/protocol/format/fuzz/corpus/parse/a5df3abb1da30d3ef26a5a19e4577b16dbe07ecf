@@ -1,0 +1,28 @@
+schemify 1 shprim
+  doc "behavioural amplifier, modemodel (fixture)"
+
+pin inp in -20 -10
+pin inn in -21 10
+pin out out 20 0
+
+param g
+  d up(fixture)"
+
+pin  -40 0
+pin OUT out 40 0
+
+param size 1
+
+impl sch schematic
+
+inst 0x0001 ./inv
+  at 0 0 R0
+ e X2
+  wn size*2
+  wp size*4
+
+# dle net stays unnamed.
+wire 0w0001 40 0 160 0
+
+port 0p0001 -40 0 R0 IN
+pofile va/amp.va

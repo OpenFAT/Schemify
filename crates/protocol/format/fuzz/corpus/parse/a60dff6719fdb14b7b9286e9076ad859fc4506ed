@@ -1,0 +1,4 @@
+schemify 1 shprim
+ c "digital inerte \"when vd1b(out)=0\")"
+ prim
+c "e 

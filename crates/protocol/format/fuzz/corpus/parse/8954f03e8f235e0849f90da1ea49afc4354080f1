@@ -1,0 +1,10 @@
+schemify 1 shcomp
+
+pin IN in 040 0
+pin OUT out 40 0
+
+param size 1
+
+impl sch schematic
+
+inst 0T

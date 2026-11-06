@@ -1,0 +1,12 @@
+schemify 1 shbench
+  do@ "Vermlogif  d-10 R00 Ra
+0 abul c
+
+inst 0d8 320 0 R0 y
+label 0n0I009 
+inst -200 -3
+inst -200 -30 R
+inst 0d7 320 00 R
+inst 0d7 320 0 R0 y
+00at 0 0 R0
+  na ? 0 R0 Y

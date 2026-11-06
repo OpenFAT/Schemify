@@ -1,0 +1,20 @@
+schemify 1 shprim
+  doc "skys+"
+  
+li@ne 6 0 20 0
+
+circle -4 0 3
+
+potext 12 2
+rectstex	t1_fd_pr{}"
+ 
+
+
+impl spice spice
+  formatise 0.2
+stex	at1_f.2
+stex	t1_fd_pr__pfet_02v8 W={W/1u} L={L/5u} nf={nf}"
+
+inst 20 -30 20 -15
+linname}  s2
+stex	t 25 1 R0 W={eng(W)}2  size 0 0.18

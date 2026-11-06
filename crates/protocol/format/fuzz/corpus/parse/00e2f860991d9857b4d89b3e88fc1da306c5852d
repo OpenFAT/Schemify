@@ -1,0 +1,37 @@
+schemify 1 shcomp
+ text -34 -27 R0 +
+ine 20 10 20 40
+
+poly -40 -40 40 0 -40$40 -40 -40
+  cR doc "Fiv0 40
+l+
+  size
+poly -60 -50 60 06 0 05 --6sch---
+poly -69 -50 60 06 0 05 --6schemify 2 emac
+
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 06 0 05 --6schescsmify 2 shprim
+  doc "RC 0.25
+
+0 -40$40 -40 -40 0 40
+line 25 10 20 40
+
+poly -40 -40 40 0 -35$40 -40 -40
+  closed true
+
+stext -34 -27 R0 +
+ine 20 10 20 40
+
+poly -40 -40 40 0 -40$40 -40 -40
+  cR0 +ch---
+poly -69 -50 60 06 0 05 --6schemify 2 emac
+
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 06 0 05 --6schescsmify 2 sh=rim
+  doc "R -34 pice
+
+shap sematic
+
+line -60 ryize 0.
+2
+stext -34 1 3  |

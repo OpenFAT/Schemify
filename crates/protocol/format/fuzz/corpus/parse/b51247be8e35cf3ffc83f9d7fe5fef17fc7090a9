@@ -1,0 +1,9 @@
+schemify 1 shprim
+  dut 20 30
+pin B inout 20 0
+
+param W 2
+param L 8.
+
+impl spice spice
+  rmsp

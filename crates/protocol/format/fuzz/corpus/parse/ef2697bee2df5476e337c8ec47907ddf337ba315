@@ -1,0 +1,229 @@
+schemify 2 project
+ pdkc "inverter transient"
+  corner tt
+
+inst 2x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -2200 30 R0 0
+lab-100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 i
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 v in
+labeloutput gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vni
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+ gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 0.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+swpec gbw
+  min 10meg
+
+code c 0n0002 -250 0n000-  202-30 R0 vdd!
+label 0n0002 -200 30 R0 0n
+label 0n0004 -1 lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spe1.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spi20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -102 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0005 -40 0 R0 in
+lal n0be0006 t Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spi20 -30 R1 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003
+label 0n0003 -100 -30 R0 in
+laYel 05n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0 R0 0
+label 0n0003 -1 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+ gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 0.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+swpec gbw
+  min 10meg
+
+code control se0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n000-  202-30 R0 vdd!
+label 0n0002 -250 0n000-  202-30 R0 vdd!
+label 0n0002 -200 30 R0 0n
+label 0n0004 -1 lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spi20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label p 250 0n000-var vdd
+  lin 0.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+swpec gbw
+  min 10meg
+
+code control se0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n000-  202-30 R0 vdd!
+label 0n0002 -250 0n000-  202-30 R0 vdd!***************************************
+label 0n0002 -200 30 R0 0n
+label 0n0004 -1 lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+sp gcbew
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spi20 -3  202-30 R0 vdd!
+label 0nR0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+label 0n0 -100 30 R0 0
+lleba 0n0005 -40Ri N 00 n
+lt
+label 0n0007 0 35  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -2200 30 R0 0
+lab-100 30 R0 0
+l30 R0 0
+label 0n0003 -100 -30 R0 i
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 v____________________________ 24
+
+code tran spice
+  | .tran 1p 1n

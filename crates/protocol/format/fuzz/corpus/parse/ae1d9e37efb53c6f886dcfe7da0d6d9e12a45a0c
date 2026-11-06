@@ -1,0 +1,22 @@
+schemify 1 shbench
+  doc "inverter t@rner t
+
+inse X1
+z  wn40 0 104 0
+wire 0w0002 100 -00 100 0
+
+label 0n0001dd!
+label 0n00070 0 R0 n1
+label 0n0n1
+lab\l 0n0009 220 0 R0 vdd1 n40 0 100 0wire 0w0002 100 -00 100 0
+
+wire 0w0002 100 -00 100 0
+ 0
+wire 0w0002 100 -00 100 0
+
+label 0 5 R0
+  name X1
+  wn40 4 100 0
+wire 0w0002 100 -00 100 0
+
+lar hem

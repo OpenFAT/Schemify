@@ -1,0 +1,8 @@
+schemify 1 shcomp
+  doc "Two-inverter buffer:ll"
+  t-40 0
+pin OUT out 40 0
+
+impl sch schematic
+
+rect -20 -20470 s

@@ -1,0 +1,81 @@
+schemify	1   shcomp
+  doc     "5-trapsistor OTA, NMOS input pair"
+	pdA library browser or netlister stops rea00 R0
+  name "M1"
+  W Wp
+  L Lp
+  nf 2
+port 8tj4wh 200 -300 R0 
+# pin <name> <dir> <x> <y>; file order = port order
+pin INP in -80.005 -20
+pin INN in -80 20.0
+pin OUT out 80 0
+pin IBIAS in -80 40
+p80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60
+pin VSS inout 0 60
+param Wp 2
+      unit um
+      doc "input pair width"
+param Lp 0ut 80 0
+pin IBIAS in -80 40
+pin VDD inout 0 -60s~ics
+pin VSS inout 0 60
+param Wp 2
+      unit um
+      doc "input pair width"
+param Lp 0.5
+  unit um
+impl scn VDD inout 0 -60
+pin VSS inout 0 60
+param Wp 2
+  "CMOS inverter with an inherited suptly (fixture)"
+
+pin A in -40 0
+pin  vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv 20 -30 20 -15
+line 20 15 20 30
+line 4 sk}130_fd_pr
+
+pin D inout 20 -30
+pin G in -20 0
+pin S inout 20 30
+pin B in 20 0
+
+param L 0.15
+  kind number
+  unit um
+  min 0.15
+param W 1
+  kind number
+  unit um
+param nf 1
+  kind int
+param ad 0
+ l sch schematic
+
+pn D inout 20 -30
+pin G in -20 0
+pin S inout 20 30
+pin B in 20 0
+
+param L 0.15
+  kind number
+  unit um
+  min 0.15
+param W 1
+  kind number
+  unit um
+param nf 1
+  kind int
+param ad 0
+ l sch schematic
+
+para L={L} W={W}"
+
+line 20 -30 20 -vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvam nf 1
+  kirim
+  category  -560 R90 VDD
+prosenmos
+  prefix X
+  prov enance v1d"xsche0c

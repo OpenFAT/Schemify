@@ -1,0 +1,258 @@
+schemify 2 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30schemify 2 shbench
+  doc "inverter transient"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 0.5
+iost 0x0002 ./vsource
+  at -200 0 R0
+  name OUTVDD
+  dc vbel 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05sc0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+ 
+
+line -40 30 0 7 40 0 100schemify 1 shcomp
+  doc "twschemify 1schp/intouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+sh 0
+wire w00002 -80 0 -40 0
+wire w00003 180 ource
+  at -200 0 R0
+  name OUTVDD
+  dc vbel 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05sc0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+ 
+
+line -40 30 0 7 40 0 100schemify 1 shcomp
+  doc "twschemify 1schemify 1 shbench
+n p/intouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;30
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05schemd
+
+param i[ 05
+
+shape v circle 05schemidd
+shape v circle 05schemidddddim
+
+param i[ 05
+
+shape v circle 05ntouout 0;78
+
+p  -in 05mR
+
+pin   3;0
+
+param i[ 05
+
+shape v circle 05schemidddddim
+
+param i[ 05
+
+sh 0
+wire w00002 -80 0 -40 0
+wire w00003 180 0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 1ire w00009 0 70 140 70
+
+labe0 24  0
+wire w00004 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -70 1ire w00009 0 70 140 70
+
+label ape v circle 05schemdddim
+
+param i[ 05
+
+shn00001 70 0 R0 miape v circld
+elabe200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 6 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 2507 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp__________________________________a_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+lal n0be0006 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -30 R0 vdd!
+label 0n06 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 250 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 iNn
+lal n0be0006 40 0 R 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0002 -20 -30 R0 vdd!
+label 0n0002 -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+la_el 0n0004 -100 30 R0 0
+la R0 in
+label 0n0004 -100 30 R0 0
+l30 R0 0
+l-40 0 R0 iNn
+lal n0be0006 40 6 40 0 R0 out
+label 0n0007 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp 2507 0 30 R0 0
+label 0n0003 -100 -30 R0 in
+latemp_______________________________________________ 25
+
+code tran spice
+  | .tran 1p 1n

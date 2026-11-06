@@ -1,0 +1,6 @@
+schemify	1   shcomp
+  doc     "5-tra																																																																						 pair+ width"
+param Lp 0.5
+  unit um
+impl sch schematic
+# --- rambol grank 

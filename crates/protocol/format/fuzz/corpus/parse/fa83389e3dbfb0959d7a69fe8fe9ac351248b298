@@ -1,0 +1,17 @@
+schemify 1 shbench
+ 1.8
+  unit	v
+
+oc?00 R0 out
+
+var vdd 1/8
+  unit	
+
+tpu
+vac0 treutR180
+
+var vdd 1.8
+  unit	V
+
+coreC  lult
+u

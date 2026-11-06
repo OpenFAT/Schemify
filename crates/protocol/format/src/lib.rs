@@ -1,0 +1,75 @@
+//! Line-record codec for every Schemify text file (D9): documents, project manifest,
+//! lockfile, user config and the edit journal.
+//!
+//! Owns no tables. Parses bytes into a flat record model ([`Document`]), writes the
+//! canonical form ([`write()`]), and merges/diffs at the record level ([`merge3`],
+//! [`diff`]) keyed by kind + id or kind + name. [`parse_prefix`] reads only a symbol
+//! interface without touching the schematic. Normative spec: `docs/spec/format.md`.
+//!
+//! The schema is data: [`FileKind::records`] lists the allowed [`RecordKind`]s and each
+//! kind's [`RecordSchema`] gives its rank, identity rule, positional shape and known
+//! attributes. Semantics beyond that (expressions, templates, cell references) belong
+//! to later layers.
+//!
+//! # Examples
+//!
+//! Parse, read, edit through the builder, and write canonically:
+//!
+//! ```
+//! use schemify_format as format;
+//! use schemify_format::{Document, Orient, RecordKind};
+//!
+//! let text = "schemify 1 shbench\n  doc \"OTA bench\"\n\ninst 2kq9vd ./ota5t\n  at 0 -12.5 R0\n  name X1\n";
+//! let doc = format::parse(text.as_bytes())?;
+//! assert_eq!(format::write(&doc), text); // canonical input is a fixed point
+//!
+//! let inst = 1;
+//! assert_eq!(doc.record_kind(inst), RecordKind::Inst);
+//! let at = doc.find_attr(inst, "at").expect("an inst has an `at` line");
+//! assert_eq!(doc.attr_value(at, 1).map(format::parse_coord), Some(Ok(-12_500)));
+//!
+//! // Build a document from scratch, e.g. from the `doc` crate's tables.
+//! let mut out = Document::new(doc.kind());
+//! out.begin_record(RecordKind::Wire);
+//! out.push_field("0d2k1m");
+//! for milli in [10_000, 0, 0, 0] {
+//!     out.push_field_coord(milli);
+//! }
+//! out.begin_record(RecordKind::Label);
+//! out.push_field("2ma7xe");
+//! out.push_field_coord(0);
+//! out.push_field_coord(0);
+//! out.push_field(Orient::R0.as_str());
+//! out.push_field("tail");
+//! // Endpoints are normalized; kinds are separated by a blank line.
+//! assert_eq!(format::write(&out), "schemify 1 shbench\n\nwire 0d2k1m 0 0 10 0\n\nlabel 2ma7xe 0 0 R0 tail\n");
+//! # Ok::<(), schemify_format::ParseError>(())
+//! ```
+
+mod builder;
+mod diag;
+mod diff;
+mod document;
+mod id;
+mod identity;
+mod lex;
+mod lines;
+mod merge;
+mod reader;
+mod records;
+mod scalar;
+mod schema;
+mod writer;
+
+pub use diag::{Code, Diagnostic, NO_RECORD, ParseError, ParseWordError};
+pub use diff::{Change, ChangeKind, Diff, Parts, diff};
+pub use document::{Document, NONE, Texts, VERSION, is_word};
+pub use id::{ID_ALPHABET, ID_LEN_NEW, IdRng, NewId, fresh_id, is_id};
+pub use merge::{Merged, merge3};
+pub use reader::{parse, parse_prefix};
+pub use scalar::{CoordError, Orient, format_coord, is_number, parse_coord};
+pub use schema::{
+    AttrSchema, FileKind, KeyRule, RANK_INHERIT, RANK_POSITIONAL, RecordKind, RecordSchema, Rest,
+    SHAPE_FORMS, Shape, Ty, shape_arity,
+};
+pub use writer::{write, write_into};

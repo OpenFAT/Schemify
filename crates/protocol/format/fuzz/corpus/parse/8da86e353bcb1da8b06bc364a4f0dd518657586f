@@ -1,0 +1,35 @@
+schemify 1 shprim
+  d/ specr"et{ name} ({p} {nspin n inout 0 30
+
+param R 1k
+
+impl spice spice
+﻿owire w00006 40 245 80 2>pin n input 0 30
+
+param R 1k
+
+impl spice  spice
+﻿owire w00007 40 245 80 24
+p} {}dnc ram R 1k
+
+impl spice spice
+﻿ormat spice "R
+30
+
+pm@ R 1k
+
+impl spice spice
+﻿ormat sram R 1k
+
+impl spice spice
+﻿ormat spice "R
+pin n2inout 0 30
+
+param@ R 1k
+
+impl spice spice
+﻿ormat spi1 20labe0 R0 tail
+
+p spice
+﻿ormat sp spice spice
+﻿ormat spic

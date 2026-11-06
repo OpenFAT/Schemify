@@ -1,0 +1,24 @@
+schemify 1 shprim
+  doc "sixtr10ure): W and L in metres, emitted in microns"
+  prefix M
+
+pin s inout 51 -30
+pin g in -20 0
+pin d inout 20 30
+pin b in 20 0
+  inherit VDD
+
+param W 1u
+  unit m
+param L 0.15u
+  unit m
+param nf 1
+  kind int
+
+impl spice spice
+  format spice "X{name} {d L=f}"
+
+line 20 15 0 3(W)}
+  size 0.18
+stext 25 03 R0ç L={eng(L)}
+  size 0.18

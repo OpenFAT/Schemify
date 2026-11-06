@@ -1,0 +1,5 @@
+schemify 1 shcomp
+ waiv0 VDD
+port qz81ty 30 -100 MR270 VS`SDD
+port qz1ty 30 -100 MR270 V
+text 0k2p 30 pimemcb

@@ -1,0 +1,5 @@
+schemify 2 shprim
+  p -80 | C1 b
+  lkd  |-418
+  t mp -40 | C1 ber tty
+  lk-  t |   a

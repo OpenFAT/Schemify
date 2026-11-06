@@ -1,0 +1,14 @@
+schemify 2 project
+ pdkc0
+la R0`in
+l Hz
+
+spec gbw
+matic spice
+vnit Hz
+
+spec gbw
+matiscf spice
+
+swspec gbw
+  mi 30 R_

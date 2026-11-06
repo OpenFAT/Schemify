@@ -1,0 +1,19 @@
+schemify 2 shbench
+  docst 0x00at 0 0 R0
+  DD
+lab VSS
+ R0 INsch1
+p rtop00002 240 0 R180 OU0 0 R0 o/inv
+  at 0 0 R0
+  name X1
+  wn 0.5
+iost 0x0002 ./vsource
+  at -200 0 R0
+  name VDD
+  dc R389 OU0 0 R0 o/inv
+  at 0 0 R0
+  name Xst 0x0002 ./vsource
+  at -2p0 0 R0
+  name V30 R00 o7 0 1-30 R0 in
+latemb
+  | .tran 1p 1n

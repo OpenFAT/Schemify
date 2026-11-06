@@ -1,0 +1,34 @@
+schemify 1 shprim
+  doc "R:C low-pass whoses a body (fixture)"
+
+pin a inout 1 -30
+pi kind string
+
+impl spice spice
+  format spice "M{name} {D} {G} {Spin G in -10 0
+pin D inout 20 30
+pin B inout 00 0
+
+param W 2
+param L} sB} {model} W={W}u Linout%20 -30
+pin G in -10 0
+pin D inout 20 30
+pin B inout 00 0
+
+param W 2
+param L} {B} {model} W={W}u Linout%20 -30
+pin G
+pin D inout 40 310 0
+pin D inout 20 30
+pin B20 0
+
+param W 2
+param L}  G in -0 0
+
+param W 20 0
+pin D inout 40 30
+pin B 0 0
+
+param W 2
+parfm L 0.15
+nds rcfilt

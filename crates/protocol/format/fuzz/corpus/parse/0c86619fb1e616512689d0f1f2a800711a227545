@@ -1,0 +1,6 @@
+schemify 2 shbench
+  doc "inverter transient"
+  corneel 03 -R0 in
+la...................................ab 1X 
+ wn R0 v 0n0003 -10sche shbspic+
+  f

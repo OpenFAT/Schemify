@@ -1,0 +1,5 @@
+schemify 1 shbench
+ A000001 -20 0 R0 d[1:0]
+label 0n0002 20 0 R0 q[1:0]
+label 0n0003 -20 200 R0 q[0]
+label 0n00040 22 00 R0 qb

@@ -1,0 +1,122 @@
+schemify 1 shprim
+  d1c{D} {G} {S} {B}) {model} w={e)"
+  prefix M
+
+pin S inout 20 -30
+pin Ginout 0 -30
+pin N inout 0 30
+rap
+am dc 0
+  unit V
+0
+pin G in -20 0
+pinD inout 20 30
+pin B inout 20mify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S ~nout 20 -30
+pin am L 0.15
+param model pch
+  si ntdkring
+
+impl snout 20 -30
+pin G in -20 0
+pn B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.pice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param ram L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spict spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"
+  format spectre "{name} ({D} {G} {S} {B}) {monout 20 0
+
+param W 2
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u "geng-A model (fixture)"
+
+pin inp in -20 -10*pin inn in -20 10
+pin out010 -200 30 R0 0
+
+codiving a Verilog buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  napolyme A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+ at -200 0 R0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u "genemplifier, Verilog-A model (fixture)"
+
+pin inp in -19 -10
+pin inn in  R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n00si ntdkring
+
+impl spice spice
+  format spice;"M{name} {D} G} {S} {B} {model} W={W}u pice spice
+  format spice "M{name} {D} {G} {Spin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+param L} {B} {model} W={W}u Linout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 21 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+papice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u "generic PMOprefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+label 0n0006 20 200 R0 b
+label 0n0007poly 0 R0 b
+label 0n0008 320 0 R0 y
+label schel={L}u 

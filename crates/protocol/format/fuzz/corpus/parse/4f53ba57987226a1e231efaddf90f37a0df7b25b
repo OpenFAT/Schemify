@@ -1,0 +1,20 @@
+schemify 1 shprim
+  doc "generic NMOS (fixture)"
+  prefix M
+
+pin D inout 20 -30
+pin G in -20 0
+pin S inout 20 30
+pin B inout 20 0
+
+param W 1
+param L 0.15
+param model nch
+  kind string
+param ad 0
+  computed W*0.3
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u ad={ad}p"
+  format cdl "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"
+  format spectre "{name} ({D} {G} {S} {B}) {model} w={W}u l={L}u"

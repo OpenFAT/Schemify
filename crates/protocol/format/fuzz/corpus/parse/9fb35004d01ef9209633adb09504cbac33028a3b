@@ -1,0 +1,35 @@
+schemify 2 shbench
+  doc "two inve vdd
+inst 0b0004 ./vsrc
+ ? at -400 0 R0
+  name VIN
+  dc vdd/2
+inst 0b0005 ./cap
+  at 300 0 R0
+  name C[1:0]
+  C$10f
+inst 0b0006 # pin <name> <dir> <x> <y>; file order = port order
+pin INP in -40 -20
+pin INN in -80 20
+pin OUT out 80 0
+pin IBIAS in - 0 60
+
+param Wp 2
+  uput pair width"
+parcomp
+ schc
+0x
+am Lp 0.5
+  unit um
+
+impl sch s -60
+pin VSS/res
+  at 401 0 R0
+  name RIG
+t um
+impl sch schematic
+
+# --- rank 2: symbol graphics, draw order ---
+poly -60 -50 60 06 0 05 --6schignore true
+inst 0b0007 emif./res
+  at 50y0

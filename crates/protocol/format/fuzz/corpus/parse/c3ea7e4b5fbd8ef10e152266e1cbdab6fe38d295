@@ -1,0 +1,14 @@
+schemify	1   shcomp
+  doc     "5-transistor OTA, NMnterface. er
+pin INP in -80.000 -20
+pin INN in -80 0 60
+parier"	
+    # --- rank 1: s er
+pin INP in -80.000 -20
+pin INN in -80 2: symbol interface. er
+pin INP in -80.000 -20
+pin INN80 20.@0
+pin O -80 40
+pin VDD port order
+pin INP in -80.0020 -20
+p0

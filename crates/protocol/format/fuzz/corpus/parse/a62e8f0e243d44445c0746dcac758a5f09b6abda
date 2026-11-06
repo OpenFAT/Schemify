@@ -1,0 +1,63 @@
+schemify 1 shcomp
+  doc "Five-transistor OTA sized by gm/Id: the docs page derives every W from the gmid plugin"
+  prefix x
+
+pin inp in -60 -20
+pin inn in -60 20
+pin out out 60 0
+pin vbias in 0 40
+pin VDD inout 0 -40
+pin VSS inout 20 40
+
+impl sch schematic
+
+line -60 -20 -40 -20
+line -60 20 -40 20
+line 40 0 60 0
+line 0 -40 0 -20
+line 0 20 0 40
+line 20 10 20 40
+
+poly -40 -40 40 0 -40 40 -40 -40
+  closed true
+
+stext -34 -27 R0 +
+  size 0.2
+stext -34 13 R0 -
+  size 0.2
+stext -40 -56 R0 {name}
+  size 0.25
+
+inst m00001 dev:nfet_01v8
+  at 60 300 R0
+  name M1
+  W W_in
+  L L_in
+inst m00002 dev:nfet_01v8
+  at 300 300 R0
+  name M2
+  W W_in
+  L L_in
+inst m00003 dev:pfet_01v8
+  at 60 200 R0
+  name M3
+  W W_load
+  L L_load
+inst m00004 dev:pfet_01v8
+  at 300 200 R0
+  name M4
+  W W_load
+  L L_load
+inst m00005 dev:nfet_01v8
+  at 180 420 R0
+  name M5
+  W W_tail
+  L Lnit 1/V
+var L_tail 1u
+  unit m
+var W_tail "gmid.w(\"nfet_01v8\", gm_id_tail, L_Id_tail)"
+  unit m
+  cached 3.023519651188211e-6 0acaf19984bac32d
+prose d00004
+  | ## Open-loop response
+  |

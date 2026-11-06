@@ -1,0 +1,13 @@
+schemify 1 shprim
+  ice
+   | .su
+
+pin icebcktce
+   | .su
+
+pin ice
+ | .tre R
+
+pin ice
+  | .wuo
+inst 8

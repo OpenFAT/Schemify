@@ -1,0 +1,21 @@
+// Builds hello.wasm: freestanding wasm32, -betterC (no druntime, no GC), no libc, no WASI
+// (docs/plugins/languages.md). Needs LDC, clang with the WebAssembly target and wasm-ld:
+//   nix shell nixpkgs#ldc nixpkgs#dub nixpkgs#lld nixpkgs#llvmPackages.clang-unwrapped -c dub build
+// (on Nix the wrapped clang adds host flags; use clang-unwrapped).
+//
+// The path below is Schemify's C library (crates/protocol/abi/sdk/c), used twice. In your
+// own repository, vendor that directory or a pinned Schemify checkout and change both.
+name "hello"
+targetType "executable"
+targetPath "."
+sourcePaths
+importPaths "."
+sourceFiles "hello.d" "build/schemify.o"
+// schemify.c holds the exports, so clang compiles it: ImportC would drop its wasm attributes.
+preBuildCommands "mkdir -p build" "clang --target=wasm32 -Os -nostdlib -I../../../crates/protocol/abi/sdk/c -c schemify.c -o build/schemify.o"
+// ImportC preprocesses schemify.c with $CC; it must target wasm32 too (int64_t, long).
+buildEnvironments "CC" "clang"
+dflags "-betterC" "-checkaction=halt" "-Os" \
+    "-P=--target=wasm32" "-P=-I../../../crates/protocol/abi/sdk/c"
+// LDC exports every global symbol by default; keep only memory and schemify.h's exports.
+lflags "--no-entry" "--no-export-dynamic" "--strip-all"

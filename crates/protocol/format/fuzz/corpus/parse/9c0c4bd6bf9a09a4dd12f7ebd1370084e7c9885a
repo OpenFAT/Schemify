@@ -1,0 +1,6 @@
+schemify 1 shbench
+o tt
+
+inst 001&v
+  at 0 R0
+  name in

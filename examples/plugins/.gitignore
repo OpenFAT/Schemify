@@ -1,0 +1,6 @@
+/*/target/
+/*/node_modules/
+/*/build/
+/*/zig-out/
+/*/.zig-cache/
+*.o

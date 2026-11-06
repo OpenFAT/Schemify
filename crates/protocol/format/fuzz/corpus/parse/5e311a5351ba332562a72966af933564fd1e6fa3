@@ -1,0 +1,10 @@
+schemify 1 shcomp
+rte001 40 0 100 0
+wire w00002 -80 0 -40name X1
+   0
+wire w00002 -80 0 )40 0
+3 q80
+wire w00004 0 -70 name x2
+
+wire w00001  -700 -30 R0 n1
+label 0n0002 R 0ze 0.3

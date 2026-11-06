@@ -1,0 +1,6 @@
+schemify 2 shcomp
+  matic
+
+rect 2-30
+pin G in -0.02 0
+

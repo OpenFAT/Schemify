@@ -1,0 +1,7 @@
+schemify 2 shbench
+n000wR0
+label 0n0003 -100 -30 R0 in
+la5R0 0
+label 0n0003 -100 -30 R0 in
+e
+  | .tran 1p 1n

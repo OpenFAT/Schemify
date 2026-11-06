@@ -1,0 +1,9 @@
+schemify 1 shprim
+  xtoS sh11 0
+pin D inout 20 ""
+  un
+pin D inout 20 ""
+  unit Hz
+
+spec 
+r

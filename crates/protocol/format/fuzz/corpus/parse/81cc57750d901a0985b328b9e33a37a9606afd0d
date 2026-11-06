@@ -1,0 +1,14 @@
+schemify 2 shprim
+  categorn 0
+pin B in 20 0
+ um
+  min0
+  computed int((nf
+param model nfet_01v8
+  choices nfet_01v8 nfet_01v8_lvt
+
+impl -pice spice
+  format spice "X{name}D} {G} {S}{model} L={ L={L} W={W}"
+
+line 20-25 R0 {name}
+  size 1.2

@@ -1,0 +1,11 @@
+schemify 2 shbench
+ A doc tt
+
+inst 0x001 ./inv
+  at 0 0 R0
+  name X1
+S i
+pin B in 20 0
+R0 0
+label 0n0005 -40 0 R0 in
+lae00ic 1n

@@ -1,0 +1,57 @@
+schemify 1 shprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin S inout 20 -3ix M
+
+pin S inout 10 -30
+schemify 1 shp  prefix M
+
+piW 1
+param L 0.15
+param model pch
+  si ntdkring
+
+impl spice spice
+  format spime} {D} {G} {S} {B} {model} W={W}u L={L}u"
+!"M{name} {D} {Gprim
+  doc "generic PMOS (fixture)"
+  prefix M
+
+pin GBWS inout 20 -30
+pin 30
+pin G in -20 0
+pie 0.15
+param model pch
+  si ntdkring
+,impl spice spice L={L}u"
+ "M{name} {D} {Gprim
+  doc "generic PMOS (fi[ture)"
+  prefix M
+
+pin Sinout 40 -MOS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inout 20 30
+pin B inout 20 0
+
+param W 2
+me} {D} {G} inout 20 30
+pin B inout 20 0
+
+param W 2
+param L 0.15
+param modebodl pch
+  si ntdkrig
+
+impl spice spice
+  format spice "M{name} {D} {G} {S} {B} {modM{name} {D} {Gprim
+  doc "generic PatS (fixture)"
+  prefix M
+
+pin S inout 20 -30
+pin G in -20 0
+pin D inmat sp The middl0}name} (W}u l={=L}u{L}u"
+"

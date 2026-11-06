@@ -1,0 +1,13 @@
+schemify 1 shbench
+  doc "ient"
+  corner tt
+
+inst 1x0001 ./inv
+  at 0 0 R0
+  name X'1
+
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X'1
+  w0 1 m

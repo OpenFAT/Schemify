@@ -1,0 +1,3 @@
+# Google Rust style guide: panics in tests are assertions.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

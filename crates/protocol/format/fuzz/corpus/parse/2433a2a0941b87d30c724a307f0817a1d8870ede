@@ -1,0 +1,20 @@
+schemify 1 shbench
+ontlinro
+  |   ac 0A/libsT}ilog-A ampliflog buffer (xture)"
+
+inst 0m0001 ./sky130.lib.spice ff
+  set vdtemp -40
+corner control
+  |   ac dec 20 1 1G
+  |   meas ac/amp
+  at 3 og buffer (fixture)"
+
+inst 0m0001 ./sky130.lib.spice ff
+  set vdd 1.9label 0n0003 -100 -30 R0 in
+label 0n0004 -100
+inst 0m0003 ./dbu0 0 R0
+  name B1
+inst 0m0004 ./vsrel0tst0 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n000= -200 -30 R0 in
+label 0n0010tran spicetran 1n 1u

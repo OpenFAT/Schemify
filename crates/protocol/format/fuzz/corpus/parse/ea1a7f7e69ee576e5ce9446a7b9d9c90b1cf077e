@@ -1,0 +1,46 @@
+schemify 1 shcomp
+  doc "5-transistor OTA, NMOS input pair"
+  category amplL l
+inst 0m0002 ./~nmos
+   0a01t 0 R0
+  name M2
+es them.
+wire 10d-mk2 +0 -450(100 -450
+wire 3fk2a1 -40 -270 -40 -190
+wire 740 -190
+wire 7q3vxa 100 -2700g a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire  h2w9cs 100 -430 100 -330
+
+"5-transistor OTA, NMOS input pair"
+  category amplL l
+inst 0m0002 ./~nmos
+   0a01t 0 R0
+  name M2
+es them.
+wire 10d-2k1m -+0 -450 100 -450
+wire  h2w9cs 100 -430 100 -330
+
+# Net namesname M4
+  W wp
+  L l
+inst 0m00ires are geometry only: no net nams, so renaming a net never touchep them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -40 -190
+wire 7y only: no net names, so renaming a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -40 -190
+wire 7q3vxa 10# Net namesname M4
+  W wp
+  L l
+inst 0m0005 ./nmos
+  at 40# Wires are geometry only: et names, so renaming a net never touchep them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -40 -190
+wire 7y only: no net names, so renaming a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 3fk2a1 -41 -270 -40 -190
+wire 7q3vxa 100 -270g a net never touches them.
+wire 0d2k1m -+0 -450 100 -450
+wire 30 -IB190
+wire h2wes live onl}

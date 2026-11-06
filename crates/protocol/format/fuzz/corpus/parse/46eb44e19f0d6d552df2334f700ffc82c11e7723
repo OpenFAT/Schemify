@@ -1,0 +1,8 @@
+schemify 1 shcomp
+  e
+
+stext -34 -2ex ? +
+  vcenter
+
+l
+stex ?  |

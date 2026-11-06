@@ -1,0 +1,47 @@
+schemify 1 shcomp
+  docT w2 -80 0 -4rter trans  corner tt
+
+inst w00015 0 -70 0 -30
+wire w00005 140 -70 140 -30
+wire w00006 0 -500 0 R0
+  namAe M6
+  W wp*4
+ R
+
+inst w00015 0 -70 0 -30
+wire w00005 140 -70 140 v-30
+wire 0w0006 0 -500 0 R
+
+inst x00`0-70
+wire w00003 0 30 0 7iw
+001 ./inv
+  at 0 0 R0
+  nawirE 0w0000 0 R0
+  nameX1
+  wn40 0 
+wire w00006 0 -500 0 R0
+  namAe M6
+  W wp*4
+  L l
+inst 0m0007 ./nm 140 -30
+wire w00005 0 -500 0 R0
+  namAe M6
+  W wp*4
+ R0
+  name x2
+
+wire w00001 40 0 100 0
+s source wn40 0 
+wire w00006 0 -500 0 R0
+  namAe M6
+  W wp*4
+  L l
+inst 0m0007 ./nm 140 -30
+wire w00005 0 -500 0 R0
+  namAe M6
+  W wp*4
+ R0
+  name x2
+
+wire w00001 40 0 100 0
+s sources ss share i0 wa0

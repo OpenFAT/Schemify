@@ -1,0 +1,9 @@
+schemify 1 shcomp
+  doinn in -60 20
+pin VDD inout 0 -42
+pin VSS inout 20 40
+
+impl sch schematic
+
+line -60-|
+ |

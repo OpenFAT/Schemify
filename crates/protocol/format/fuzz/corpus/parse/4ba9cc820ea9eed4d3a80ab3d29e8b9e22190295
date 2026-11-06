@@ -1,0 +1,289 @@
+schemify 1 shbench
+  doc "Verilog-A amplifier driving a Verilog buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  name A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 ./dbuf
+2 at 300 0 R0
+  name B1
+inst 0m0004 ./vsrc
+  at -200 0 R0
+  name VIN
+  dc 0.1
+
+label 0n0001 -20 -10 R0 in
+label 0n0002 -20 10 R0 0
+label 0n0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+labeers on a bus (fixture)"
+
+inst 0g0001 ./dbuf
+  at 0 0 R0
+  name B[1:0]
+inst 0g0002 ./dinv
+  at 0 200 R0
+  name UX
+
+label 0n0001 -20 0 R0 d[1:0]l 0n0006 20 200 R0 b
+label 0n0007 280 0 R0 b
+label 0n0008 320 0schemify 1 shcomp
+  doc "two-stage Miller OTA, NMOS input pair"
+  category amplifier
+
+pin INP in -40 -20
+pin INN in -40 20
+pin OUT out 40 0
+pin IBIAS in 0 40
+
+param wz
+
+spec gbw
+matic spice
+
+swn 2
+param wp 4
+param l 0.5
+param cc 1p  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  uopen-loop AC gain"
+  prefix tt
+  config default
+
+inst 2kq9vd ./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  at -300 100 R0
+  name V1
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 0zx2fh 80 0 R0 out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  l30A/libs.tech/combined/sky130.lib.spice tt
+  set vdd 1.8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(o}u L={L}u"
+  format spectre "{name  format spice "M{name} {D} {G} {S} {B} {model} W={W}u L={L}u"
+? fut)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  l30A/libs.tech/combined/sky130.lib.spice tt
+  set vdd 1.8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  uopen-loop AC gain"
+  prefix tt
+  config default
+
+inst 2kq9vd ./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  at  R0 out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  l30A/libs.tech/combined/sky130.lib.spice tt
+  set vdd 1.8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spice
+  | .control
+  |   ac dec 20 1 1G
+  |   meas ac gbw when tdb(out)=0
+  | .endc
+0 0 R0 0
+label 0n0028 800 -20 R0 n2
+label 0n0029 800 20 R0 OUT
+
+port 0pt)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  l30A/libs.tech/combined/sky130.lib.spice tt
+  set vdd 1.8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  uopen-loop AC gain"
+  prefix tt
+  config default
+
+inst 2kq9vd ./ota5t
+  at 0 0 R0
+  name X1
+  Wp 4
+inst 6pz0rt core:vsource
+  at -300 100 R0
+  name V1
+  dc vdd
+
+wire 5mhv0q -300 -60 -300 60
+
+label 0zx2fh 80 0 R0 out
+
+var vdd 1.8
+  unit V
+
+corner ff
+  l30A/libs.tech/combined/sky130.lib.spice tt
+  set vdd 1.8
+  temp 27
+
+config default
+  order schematic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+matic spice
+
+sweep vnit Hz
+
+spec gbw
+matic spice
+
+sweep vsweep
+  var vdd
+  lin 1.6 2.0 5
+
+output gbw "meas(\"ac\", \"when vdb(out)=0\")"
+  unit Hz
+
+spec gbw
+  min 10meg
+
+code control spice
+  | .control
+  |   ac dec 20 1 1G
+  |   meas ac gbw when tdb(out)=0
+  | .endc
+00001 -20 0 R0 INP
+port 0p0002 80 0 R0 INN
+port 0p0003 520 30 R0 OUT
+port 0p0004 7 spice
+  | .tran 120 -30(nR0 IBIAS 1
+u

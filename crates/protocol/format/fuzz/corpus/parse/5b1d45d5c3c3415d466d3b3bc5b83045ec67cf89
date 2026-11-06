@@ -1,0 +1,10 @@
+schemify 1 shbench
+  1
+shape v poly 3.0 ORK_OTout 0* 30
+
+st-xtpa
+
+shape v poly 2.0 ORK_OT,}/ut 0* 30
+ce
+
+shape v poly 2.0 ORK_OT}/sky1ut t-xtode c

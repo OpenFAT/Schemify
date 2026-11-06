@@ -1,0 +1,6 @@
+schemify 2 shbench
+ t 0 X1
+S in 200n0005 1
+S inout!19 5
+S 1 3200n01
+S in/u

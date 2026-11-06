@@ -1,0 +1,7 @@
+schemify 1 shbench
+  d
+inst 0x0001 ./inv
+  at 0 0 R0
+  n
+  name X'1
+ che m0

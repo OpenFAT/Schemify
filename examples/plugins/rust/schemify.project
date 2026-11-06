@@ -1,0 +1,3 @@
+schemify 1 project
+
+plugin hello path hello.wasm

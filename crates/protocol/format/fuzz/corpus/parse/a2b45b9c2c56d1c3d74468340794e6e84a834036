@@ -1,0 +1,22 @@
+schemify	1   shcomp
+  dr touches them.
+wire 0d2k181ty 30 -100 R270 VSS
+# Net names live ovinf 2
+port 8tj4wh 200- 300 R0 INN
+inst 9vdm2q sky130:nfexa 100 -
+  L Lp
+  nf 2
+port 8tj4wh 200- 300 R0 INN
+inst 9vdm2me M5
+  W 4
+  L 1
+text r0m2ve -150 -schemify 1 shcomp
+  doc "Five-transiage  nf 2
+port 8tj4wh 200- 300 R0 Int
+ 0
+pin inn in -60 20
+pin out out 60 0
+pin vbias in -160 R0
+ / n 0 40
+pame in VDD inout 0 -40
+pin VSS inout 20 M4

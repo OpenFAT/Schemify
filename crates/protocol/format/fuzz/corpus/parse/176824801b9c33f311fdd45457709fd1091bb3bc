@@ -1,0 +1,15 @@
+schemify 1 shbench
+  doc "Verilog-A amplifier driving a Verilog buffer (fixture)"
+
+inst 0m0001 ./amp
+  at 0 0 R0
+  name A1
+inst 0m0002 ./amp
+  at 0 200 R0
+  name A2
+  gain 20
+inst 0m0003 20 0 R0 a
+label 0n0004 -20 190 R0 a
+label 0n0005 -20 210 R0 0
+labeers on Í 01 ./dbuf
+  at 0 0 R  | .tran 1n 1u

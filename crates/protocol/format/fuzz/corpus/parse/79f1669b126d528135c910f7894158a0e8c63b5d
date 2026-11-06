@@ -1,0 +1,37 @@
+schemify 1 shprim
+  doc "generic P0
+
+param W 2
+param L} {B} {mokel} W={W}u Linout%20 -30
+pin G in -20 0
+pin  20 3
+param model pch
+ rmat spice "M{name} {D} {G  format srice 0.15
+param model pch
+  si ntdkri={W}u Linout%20 -30
+pin G in`-2-20 0
+pin D inout 20 30
+pin B i0nout 20 0
+
+param W 2
+param L 0.15
+para
+  kind sformat srice 0.15
+param W}u Linout%20 -30
+pin G in`-20 0
+pin -30
+pin G in -20 0
+pin D inout 20 30
+pin B i0nout 20 0
+
+param W 2
+param L 0.15
+param-0odel pch
+  kind strisweepnngame} ram W 2
+param L 0.15
+pel pch
+  kind string
+
+impl spice spice
+  format spice 0.15
+par"

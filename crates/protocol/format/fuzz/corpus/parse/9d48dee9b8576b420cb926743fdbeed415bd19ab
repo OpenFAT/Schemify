@@ -1,0 +1,8 @@
+schemify 1 shprim
+  doc "d Jeri (fture)"
+
+pin A in -20 0
+  domomain digital
+
+impl verilog verig
+  e

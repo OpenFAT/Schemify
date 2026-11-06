@@ -1,0 +1,5 @@
+schemify 2 shbench
+  do
+  n06 #ninit um
+
+dc 0b0006 # pIn <na sc -|

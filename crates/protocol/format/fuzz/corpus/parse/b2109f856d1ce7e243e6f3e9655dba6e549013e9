@@ -1,0 +1,14 @@
+schemify 2 shbench
+  doc "inverter trent"
+  corner tt
+
+inst 0x0001 ./inv
+  at 0 0 R0
+  name X1
+  wn 0.5
+insf  name
+  dc vdd
+inst x00003 ./vsource
+  at -100 0 R0
+  name VIN
+  dc vdd/2intran 1p 1n

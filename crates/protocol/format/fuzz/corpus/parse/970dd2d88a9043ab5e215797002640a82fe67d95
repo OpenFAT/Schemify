@@ -1,0 +1,13 @@
+schemify 1 shcomp
+  doc "two-stage MillerTA, NMOS input pair"
+ ram cc 1p
+
+impl sch schematic
+
+# 
+  L l
+inst 0m0004 ./pmos
+  at 300 000000000000000000000000 R0
+  name M8
+  W wn
+  

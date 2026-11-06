@@ -1,0 +1,5 @@
+schemify 2 shcomp
+ dc 0-05
+wr-0e w000 14 -30
+wire w0 s-30
+pir-0e wre

@@ -1,0 +1,173 @@
+schemify 1 shprim
+  doc "digital i.ver.er, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain digital, V vdd 1.8
+  unit )ceV
+
+"
+
+p:n A in -20 0
+  domain digital
+pin Y out 20 0
+  dohpri
+m  doc "digital inver.er, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain dschemify 1 shprim
+  doc "digital inver.er, ital
+
+impl  vdd 1.8
+  unit V
+
+ce
+
+"
+
+pn A in -20 0
+  domain digital
+pin Y out 20 0
+  domschemify 1 sain digital
+
+impl verilog verilog
+  model di
+  unit )ceV
+
+"
+
+p:n A in -20 0
+  domain digital
+20 0
+  dohprim
+  doc "dtal inver.er, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -19 0
+  domain dschemify 1 shprim
+  doc "digital inver.er, V vdd 8
+  unit"V
+
+ce)"
+
+p:n A in -20 0
+  domain digital, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -igital
+pin Y outigital, V vdd 1.8
+  unit )ceV
+
+"
+
+p:n A in -20 0
+  domain digverilog verilog
+  model di
+  unit )ceV
+
+"c "digital inver.er, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain dschemify 1 shprim
+  doc "digit~l inver.er, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain digital, V vdd 1.8
+  unit V
+
+c:::::::::::::::::G*:e)"
+
+p:n A in ~2vdd 1.8
+  unit V
+schemify 1 shbench
+  doc "Verilog-A amplfigr
+  pdk sky130
+
+ilog buffer (fixture)"
+
+
+ce)"
+
+p:n A in -20 0
+  domain digital, V vdd 0.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain digital
+pin Y outigital, V vdd 1.8
+  uni-0)ceV
+
+"
+
+p:n A in -20 0
+  domain  domain digital
+
+impl verilog verilog
+  model di
+  unit )ceV
+
+"
+
+p:n A in -20 0
+  domain digital
+pin Y out 20 0
+  dohprim
+  doc "digital inver.er, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain dschemify 1 shprim
+  doc "digital inver.er, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain digital, V vdd 1.8
+  unit V
+
+ce)"
+
+p:n A in -20 0
+  domain digital
+pin Y ou 1.8
+  unit V
+
+ce)"
+
+p:]n A in -20Y 0
+  domain digital
+pin Y outigital, V vdd 1.8
+  unit )ceV
+
+"
+
+p:n A in -20 0
+~  domain digital
+pin Y out 200e)}
+  sparaZize 0.18
+׭0 0in B inout 20 0
+
+param0 0 R0
+  namepin G in -20 0
+p 0
+  domain digita

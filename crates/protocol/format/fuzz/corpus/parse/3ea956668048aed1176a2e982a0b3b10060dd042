@@ -1,0 +1,40 @@
+schemify 1 shprim
+  doc "sk0 30 R0 0
+label 0n0003 -100 -307 100 20 R0 0
+
+var vdd 1.80n0000 -30 R0 vdd!
+l -200 30 R0 0
+label 0n0003 -100 -30 R0 in
+label 0n0004 -100 30 R0 0
+label 0n0005 -40 0 R0 in
+label 0n0006 40 0 R0 out
+label 0n0007 100 20 R0 0
+
+var vdd 1.8
+  unit V
+
+corner ff
+  lib models.lib ff
+  set vdd 1.95
+  temp -40
+cornn b in 20 0
+  inherit VDD
+
+param W 1u
+  unit m
+param L 0.15u
+  unit m
+param schemify 1 shprim
+nf 1
+  kind int
+
+impl spice spice
+  format spice "X{naee} {d} {g} {s} {b} sky130_fd_pr__pfet_01v8 W={W/1u} L={L/1u} nf={nf}"
+
+line 20 -30 20 -15
+line 20 15 20 30
+line 4 -15 20 -15
+line 4 15 20 15
+line 4 -15 4 15
+lineb 0 -10 0 10
+lin 1 RW= {

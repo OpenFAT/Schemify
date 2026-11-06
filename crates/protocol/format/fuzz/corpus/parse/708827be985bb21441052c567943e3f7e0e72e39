@@ -1,0 +1,6 @@
+schemify	1   shcomp
+rv order
+02 busdocr-521
+line 0
+lder = port order
+pin INP in -80.0020 -20

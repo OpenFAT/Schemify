@@ -1,0 +1,73 @@
+schemify 1 shcomp
+  doc "Five-transistor OTA sized by gm/Id: the docs page derives every W from the gmid plugin"
+  prefix x
+
+pin inp in -60 -20
+pin inn in -60 20
+pin out out 60 0
+pin vbias in 0 40
+pin VDD inout 0 -40
+pin VSS inout 20 40
+
+impl sch schematic
+
+line -60 -20 -40 -20
+line -60 20 -40 20
+line 40 0 60 0
+line 0 -40 0 -20
+line 0 20 0 40
+line 20 10 20 40
+
+poly -40 -40 40 0 -40 40 -40 -40
+  closed true
+
+stext -34 -27 R0 +
+  size 0.2
+stext -34 13 R0 -
+  size 0.2
+stext -40 -56 R0 {name}
+  size 0.25
+
+inst m00001 dev:nfet_01v8
+  at 60 300 R0
+  name M1
+  W W_in
+  L L_in
+inst m00002 dev:nfet_01v8
+  at 300 300 R0
+  name M2
+  W W_in
+  L L_in
+inst m00003 dev:pfet_01v8
+  at 60 200 R0
+  name M3
+  W W_load
+  L Lched 112.20605997990423 0acaf19984bac32d
+var ft_in "gmid.ft(\"nfet_01v8\", gm_id_in, L_in)"
+  unit Hz
+  cached 2414582200.15373 0acaf19984bac32d
+prose d00003
+  | ## Mirror load and tail
+  |
+  | | devices | role | sized by |
+  | |---|---|---|
+  | | M1, M2 | input pair | `gm_id_in`, `L_in` |
+  | | M3, M4 | PMOS mirror load | `gm_id_load`, `L_load` |
+  | | M5 |small.
+var gm_id_load 10
+  unit 1/V
+var L_load 1u
+  unit m
+var W_load "gmid.w(\"pfet_01v8\", gm_id_load, L_load, id_in)"
+  unit m
+  cached 8.84865072531957e-6 0acaf19984bac32d
+var gm_id_tail 8
+  unit 1/V
+var L_tail 1u
+  unit m
+var W_tail "gmid.w(\"nfet_01v8\", gm_id_tail, L_tail, Id_tail)"
+  unit m
+  cached 3.023519651188211e-6 0acaf19984bac32d
+prose d00004
+  | ## Open-loop response
+  |

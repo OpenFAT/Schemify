@@ -1,0 +1,6 @@
+schemify 1 shbench
+ 
+inst 4kq9vd ./ota,t
+  at 0 0 R0
+  name 8
+ sc

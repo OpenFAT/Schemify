@@ -1,0 +1,15 @@
+schemify 1 shcomp
+  doc "Tw-inverter buffer: an inverter l"
+  prefix 0
+pin OUT out 40 0
+
+impl sch schematic
+
+rect -20 -20 20 20
+
+line -40 0 -20 0
+line 20 0 40 0
+
+stext -20 -28 R0 {name}
+  sport0p000e 0.32 120 0
+ R0 Y

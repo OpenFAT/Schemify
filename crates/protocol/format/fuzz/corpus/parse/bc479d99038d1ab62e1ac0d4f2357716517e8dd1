@@ -1,0 +1,26 @@
+schemify	1   shcomp
+  doccategory "amplifier"
+
+    # --- ran5
+  unit um
+impl sch schematic
+# ---50 -60 80 0
+stext -55 -28 R0 "+"
+stext -55 12 R0 -
+
+port qz81ty 30 -100 R270 VSS
+# Net nam -60 -480 R0
+  name M3
+  W 4
+  L 1
+port fa3k0q -60 -160 R0 IBIAS
+wire b8nq0t -40 -190 100 -190
+label kq1p4z -40 -380 R0 mirror
+port mx1k2p 30 -560 R90 VDD
+prose v1d0c5
+	| #A
+	|
+	| Gain is $g_m r_o   un5T OTA
+	|
+	| G$g_m r_o   unit "S"
+  doc "transconductance target"

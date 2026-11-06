@@ -1,0 +1,18 @@
+schemify 1 shcomp
+  doc "CMOSinherited supply (fixture)"
+
+pin A in -40 0
+pin Y out 40 0
+pin VDDA inout 0 -40
+  inherit vdd!
+
+param wn 1
+param wp 2
+
+impl sch schematic
+
+inst 0mn0poly01 ./nmos
+  at 0 60
+# Pins by20,90) B (20,60);
+# MP S (2R0 0
+label 0n0005 
