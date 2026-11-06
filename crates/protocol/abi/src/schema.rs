@@ -218,6 +218,43 @@ tables! {
     UiNodes = "ui_nodes", ui_nodes {
         ID "id" Str, KIND "kind" U8, PARENT "parent" Str, OWNER "owner" U16,
     }
+    /// Editor tabs in tab order (session state): `doc` is the `Docs.handle` of the shown
+    /// document (`u32::MAX` for a text tab), `title` its bare name, `symbol` 1 while a
+    /// descended symbol level shows, `text` 1 for a read-only text tab (a netlist).
+    Tabs = "tabs", tabs {
+        DOC "doc" U32, TITLE "title" Str, ACTIVE "active" U8, DIRTY "dirty" U8,
+        SYMBOL "symbol" U8, TEXT "text" U8,
+    }
+    /// The canvas tool in progress: one row. `owner` is the plugin id of a plugin tool,
+    /// `u32::MAX` for a core tool.
+    Tool = "tool", tool {
+        NAME "name" Str, OWNER "owner" U32,
+    }
+    /// The status line's data: one row. `x`, `y` are the snapped pointer in world
+    /// milli-units; `message` is the core's last status message.
+    Status = "status", status {
+        X "x" I32, Y "y" I32, SELECTED "selected" U32, PATH "path" Str, MESSAGE "message" Str,
+    }
+    /// Editor options, one row per option: `value` is canonical text (integers in decimal,
+    /// lengths in milli-units, booleans `0`/`1`).
+    Options = "options", options {
+        NAME "name" Str, VALUE "value" Str,
+    }
+    /// The canvas camera: one row. `x`, `y` are the world point (milli-units) at the view
+    /// centre; `scale` is the zoom in logical pixels per 10^6 milli-units.
+    Camera = "camera", camera {
+        X "x" I32, Y "y" I32, SCALE "scale" U32,
+    }
+    /// The open core dialog: no row while none is open, else one.
+    Dialog = "dialog", dialog {
+        KIND "kind" Str, PURPOSE "purpose" Str, TITLE "title" Str, TEXT "text" Str,
+        NOTE "note" Str,
+    }
+    /// The open dialog's rows: chooser rows (`label`) or property fields (`label`, `value`,
+    /// `editable`).
+    DialogRows = "dialog_rows", dialog_rows {
+        LABEL "label" Str, VALUE "value" Str, EDITABLE "editable" U8,
+    }
 }
 
 // `Table::ALL[i] as usize == i` is what `from_raw` and every import's `table` argument rely
@@ -250,7 +287,7 @@ mod tests {
 
     #[test]
     fn ids_index_the_schema_and_names_are_unique() {
-        assert_eq!(Table::COUNT, 15);
+        assert_eq!(Table::COUNT, 22);
         for (i, &table) in Table::ALL.iter().enumerate() {
             assert_eq!(table as usize, i);
             assert_eq!(Table::from_raw(i as u32), Some(table));

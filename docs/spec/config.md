@@ -65,7 +65,7 @@ A project names its own Lua file in its manifest header: `schemify 1 project` wi
 
 The file runs after the user's init file, in the same Lua state, with the whole API: its options, keymaps, hooks and sims win over the user's (a later `set` replaces an earlier one). `require` and relative package paths resolve against the project directory (`<project>/lua/`), and its packages install under `<project>/.schemify/pack/<name>` with the lockfile `<project>/schemify-pack.lock` (§5), committed with the project.
 
-A design file is inert (D7), so the file runs and its packages load only once the user **trusts** them. The editor computes a digest over the file, every `.lua` file under `<project>/lua/`, and each project package's name, source, grants, fuel and installed module (its sha256, or "absent"), and keeps the digests the user trusted in `<state>/trusted-projects` (§1; at most 1024, oldest dropped). Opening or reloading (`project.reload`) a project whose digest is not trusted, or one of whose packages is not installed, loads none of them and opens the **trust dialog**: the file, each package with its source and grants, and whether it downloads. Before that the file runs only into a throwaway config, to list its packages; nothing it sets is applied. *Trust & download* installs the missing packages as `schemify pack sync` does (§5; `url` hashes checked, `git` at the locked commit), records the digest of what is then on disk, and reopens the project; *Skip* leaves its plugins off, and values they compute keep their cached results (D20). Any change to the file, a module, a grant or a package is a new digest and asks again. Headless, `schemify-gui cmd --trust …` trusts as the dialog would; without `--trust` the project's plugins stay off.
+A design file is inert (D7), so the file runs and its packages load only once the user **trusts** them. The editor computes a digest over the file, every `.lua` file under `<project>/lua/`, and each project package's name, source, grants, fuel and installed module (its sha256, or "absent"), and keeps the digests the user trusted in `<state>/trusted-projects` (§1; at most 1024, oldest dropped). Opening or reloading (`project.reload`) a project whose digest is not trusted, or one of whose packages is not installed, loads none of them and opens the **trust dialog**: the file, each package with its source and grants, and whether it downloads. Before that the file runs only into a throwaway config, to list its packages; nothing it sets is applied. *Trust & download* installs the missing packages as `schemify pack sync` does (§5; `url` hashes checked, `git` at the locked commit), records the digest of what is then on disk, and reopens the project; *Skip* leaves its plugins off, and values they compute keep their cached results (D20). Any change to the file, a module, a grant or a package is a new digest and asks again. The dialog is the core-layer `core.trust` (plugin-abi §1): no plugin or theme can relabel, restyle or cover it, and its *Trust* and *Skip* commands (`core.trust.ok`, `core.trust.skip`) answer only a click on their buttons, never a key, `schemify.cmd` or the JSON-RPC stream. Headless, `schemify-gui cmd --trust …` trusts as the dialog would; without `--trust` the project's plugins stay off.
 
 Flags go before the command: `schemify --clean netlist top.shcomp`, `schemify -u test.lua pack status`. `schemify edit [flags] [path]` starts `schemify-gui` (§7) with the same flags.
 
@@ -80,27 +80,121 @@ The init file and every function it registers run in one Lua 5.4 state that only
 | `schemify.opt.<key> = value` | Sets an option; reading `schemify.opt.<key>` returns its value. Keys and types below; an unknown key or a wrong type is an error. |
 | `schemify.keymap.set(chord, target, opts?)` | Binds `chord` (the keymap record syntax, `Ctrl+Shift+N`, `F5`, `w`) to `target`: a command name ([plugin-abi.md](plugin-abi.md) §7, the D27 command table) or a Lua function. `opts.desc` is a description string. A later `set` of the same chord replaces the earlier one. |
 | `schemify.cmd(name, args?)` | Queues command `name` with the argument string `args` (default empty). The editor runs queued commands in order at its next delivery; the core has no command table yet and ignores them. |
-| `schemify.on(event, fn)` | Calls `fn(ev)` after each `event` the editor delivers to plugins. Events (plugin-abi §6 wire words): `load` (the editor is ready), `doc_opened`, `doc_closed`, `doc_changed`, `selection_changed`, `saved`, `run_done`. `ev` holds the event's fields (`ev.doc`, `ev.epoch`, `ev.job`). Hooks run in registration order. |
-| `schemify.sim(name, { path = , args = , env = })` | The external programs of run.md §5: `ngspice`, `espice`, `xyce`, `ltspice` and `spectre` (simulator command lines; `{netlist}` and `{raw}` are replaced by the job's files; without `args` the defaults of run.md §5), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required (a local `path` with a directory part that names no file when a run starts is a warning, `sim_notes`, and the simulator's default program on `PATH` runs instead); `args` is a list of strings; `env` maps variable names (non-empty, no `=`) to strings, at most 64, set for the program on top of the inherited environment and stored sorted by name (ESPice's `ZIG`, the Zig 0.17 it compiles Verilog-A with). Another name, or a bad `args`/`env`, is an error that leaves the row unset. The core's runner and the editor's Simulate both use all seven; a PDK-pinned or detected simulator runs through the same row. With `host = "[user@]host"` (a simulator only; a compiler with a `host` is an error) the row is that simulator's command line on that ssh destination (run.md §5, remote jobs), kept beside the local row and keyed by (simulator, destination), a later row replacing an earlier one; there `path` is optional (absent: the simulator's default program on the host's `PATH`). The destination is `user` `[a-z_][a-z0-9._-]{0,31}` and `@`, then a host name or `~/.ssh/config` alias `[A-Za-z0-9][A-Za-z0-9.-]{0,252}`: no port, IPv6 literal or option (they live in `~/.ssh/config`), so it never passes for an ssh option (`valid_host`). A control character in its `path`, `args` or `env` is an error (the words reach the host's login shell on one line). At most 64 rows name a host. |
+| `schemify.on(event, fn)` | Calls `fn(ev)` after each `event` the editor delivers to plugins; returns the autocommand id. Shorthand for `schemify.api.create_autocmd(event, { callback = fn })` (§3.3). Events (plugin-abi §6 wire words): `load` (the editor is ready), `doc_opened`, `doc_closed`, `doc_changed`, `selection_changed`, `saved`, `run_done`. `ev` holds the event's fields (`ev.doc`, `ev.epoch`, `ev.job`) plus `ev.event`, `ev.id` and `ev.match`. Hooks run in registration order. |
+| `schemify.api.*` | Neovim's API under Neovim's names: editor reads (§3.1), user commands (§3.2), autocommands (§3.3). There is no `vim` global; `local vim = schemify` is the user's choice. |
+| `schemify.sim(name, { path = , args = , env = })` | Only at the top level of the user's own `init.lua`: a project file (trusted or not) and any function either file keeps get an error and set no row, so a cloned project cannot choose which programs run. The external programs of run.md §5: `ngspice`, `espice`, `xyce`, `ltspice` and `spectre` (simulator command lines; `{netlist}` and `{raw}` are replaced by the job's files; without `args` the defaults of run.md §5), `openvaf`, `iverilog` (compilers; `args` unused). `path` is required (a local `path` with a directory part that names no file when a run starts is a warning, `sim_notes`, and the simulator's default program on `PATH` runs instead); `args` is a list of strings; `env` maps variable names (non-empty, no `=`) to strings, at most 64, set for the program on top of the inherited environment and stored sorted by name (ESPice's `ZIG`, the Zig 0.17 it compiles Verilog-A with). Another name, or a bad `args`/`env`, is an error that leaves the row unset. The core's runner and the editor's Simulate both use all seven; a PDK-pinned or detected simulator runs through the same row. With `host = "[user@]host"` (a simulator only; a compiler with a `host` is an error) the row is that simulator's command line on that ssh destination (run.md §5, remote jobs), kept beside the local row and keyed by (simulator, destination), a later row replacing an earlier one; there `path` is optional (absent: the simulator's default program on the host's `PATH`). The destination is `user` `[a-z_][a-z0-9._-]{0,31}` and `@`, then a host name or `~/.ssh/config` alias `[A-Za-z0-9][A-Za-z0-9.-]{0,252}`: no port, IPv6 literal or option (they live in `~/.ssh/config`), so it never passes for an ssh option (`valid_host`). A control character in its `path`, `args` or `env` is an error (the words reach the host's login shell on one line). At most 64 rows name a host. |
 | `schemify.notify(msg, level?)` | Shows `msg`: `level` is `"error"`, `"warn"` or `"info"` (default). |
 | `schemify.pack.add { spec, … }` | Declares user packages (§5). Each call appends; a later spec with the same name replaces the earlier one. |
 
-Options:
+Options, one row of `OPTIONS` in `crates/model/config/src/options.rs` each (that table also drives `schemify.opt` and the editor's options, so the three cannot drift; a test checks this table against it):
 
+<!-- options: generated from OPTIONS (crates/model/config/src/options.rs) -->
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `snap` | number > 0 | 10 | Snap step, schematic units (xschem `cadsnap`). |
-| `grid` | number > 0 | 20 | Grid step, schematic units. |
-| `show_grid` | boolean | true | Draw the grid. |
-| `light` | boolean | false | Light canvas colours. |
+| `snap` | number in [0.001, 1000000] | `10` | Snap step, schematic units (xschem `cadsnap`). |
+| `grid` | number in [0.001, 1000000] | `20` | Grid step, schematic units. |
+| `show_grid` | boolean | `true` | Draw the grid. |
+| `grid_axes` | boolean | `false` | Draw the x = 0 and y = 0 axes. |
+| `light` | boolean | `false` | Light canvas colours (View → Light); also on with `theme_mode = "light"`. |
+| `theme` | name | `"default"` | The theme: `default`, `modern` (bundled) or the id of an installed theme package (§5). Kept across restarts when picked in the View menu. |
+| `theme_mode` | `"dark"`, `"light"`, `"system"` | `"dark"` | Dark or light chrome and canvas, or follow the system's choice. Kept across restarts. |
+| `ui_zoom` | number in [0.5, 3] | `1` | Scale of the whole UI over the system's (View → Zoom UI in, out, reset), stored in percent. Kept across restarts. |
 | `layer_colors` | table `{ [layer] = "rrggbb" }` | `{}` | Canvas colour per layer `0`–`21` over the theme's (View → Change current layer color); `"#rrggbb"` is accepted. Assign the whole table: reading returns a copy, so changing one of its entries sets nothing. |
-| `dim` | number in [0, 1] | 0 | Dims the canvas toward its background (View → Dim colors), stored in percent. |
-| `line_width` | number in [0.1, 10] | 1 | Canvas line width in pixels (View → Set line width), stored in tenths of a pixel. |
-| `simulator` | `"ngspice"`, `"espice"`, `"xyce"`, `"ltspice"` or `"spectre"` | unset (`nil`) | The simulator Simulate and `schemify run` start, and the dialect `schemify netlist` and the editor's netlist dialect default to (run.md §5). `--dialect`, the Netlist dialect menu and a PDK's pinned simulator override it; unset, the first installed simulator is used (espice first), else espice. |
+| `dim` | number in [0, 1] | `0` | Dims the canvas toward its background (View → Dim colors), stored in percent. |
+| `line_width` | number in [0.1, 10] | `1` | Canvas line width in pixels (View → Set line width), stored in tenths of a pixel. |
+| `variable_width` | boolean | `false` | Line width follows the zoom. |
+| `layer` | number in [0, 21] | `4` | Current drawing layer of lines, rectangles, polygons and arcs. |
+| `hidden` | number in [0, 4194303] | `0` | Hidden canvas layers, bit `l` for layer `l`. |
+| `fill` | boolean | `true` | Filled layers are drawn filled. |
+| `symbol_text` | boolean | `true` | Texts inside symbol instances are drawn. |
+| `show_symbols` | `"graphics"`, `"cell_boxes"`, `"boxes"` | `"graphics"` | Instances as their symbol graphics, boxes for schematic cells, or boxes for all. |
+| `crosshair` | boolean | `false` | Crosshair at the snapped pointer. |
+| `crosshair_px` | number in [0, 10000] | `0` | Crosshair half-size in pixels; 0 spans the canvas. |
+| `snap_cursor` | boolean | `false` | Diamond on the connection point nearest the pointer. |
+| `manhattan` | `"straight"`, `"horizontal"`, `"vertical"` | `"straight"` | Manhattan mode while drawing and moving: straight, horizontal first or vertical first (Space cycles). |
+| `constrain` | `"none"`, `"horizontal"`, `"vertical"` | `"none"` | Axis constraint while drawing and moving (`h`, `v`). |
+| `orthogonal` | boolean | `false` | Pick the Manhattan mode from the dominant axis (Shift+L). |
+| `stretch` | boolean | `false` | Plain moves stretch attached wires (xschem `enable_stretch`, `y`). |
+| `persistent` | boolean | `false` | Wire and line modes continue from each committed segment. |
+| `auto_trim` | boolean | `false` | Join and trim wires after every wire edit. |
+| `auto_highlight` | boolean | `false` | Every selection change highlights the selection's nets. |
+| `highlight_insts` | boolean | `false` | Instances with a pin on a highlighted net are outlined. |
+| `only_probes` | boolean | `false` | Everything but the highlight is dimmed. |
+| `incr_color` | boolean | `false` | Each highlighted net gets its own colour. |
+| `highlight_plotted` | boolean | `false` | The nets plotted in the waves dock are highlighted. |
+| `toolbar` | boolean | `true` | The toolbar is shown. |
+| `fullscreen` | boolean | `false` | Canvas-only view: menus, toolbar, tabs and status hidden. |
+| `flat` | boolean | `false` | Netlists are flat (SPICE dialects). |
+| `symbol_width` | number in [10, 10000] | `150` | Box width Make symbol draws, schematic units. |
+| `export_color` | boolean | `true` | Exports use layer colours (else black on white). |
+| `export_transparent` | boolean | `false` | SVG exports have no background rectangle. |
+| `export_page` | `"a4"`, `"a3"`, `"a5"`, `"letter"`, `"legal"`, `"tabloid"` | `"a4"` | Paper PDF and EPS exports are fitted to. |
+| `export_portrait` | boolean | `false` | PDF and EPS pages are portrait (else landscape). |
+| `png_scale` | number in [0.1, 16] | `1` | PNG export scale; 1 is one image pixel per logical pixel (96 dpi), stored in percent. |
+| `simulator` | `"ngspice"`, `"espice"`, `"xyce"`, `"ltspice"`, `"spectre"` or `nil` | `nil` | The simulator Simulate and `schemify run` start, and the dialect `schemify netlist` and the editor's netlist dialect default to (run.md §5). `--dialect`, the Netlist dialect menu and a PDK's pinned simulator override it; unset, the first installed simulator is used (espice first), else espice. |
+| `check_app_updates` | boolean | `false` | Ask for a new Schemify release once a day at startup (update.md §3). Off, the app asks only from Help → Check for updates; it never contacts anything at startup. Only the user's own `init.lua` sets it. |
+<!-- /options -->
 
-Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width in the editor lasts for the session (put it in `init.lua` to keep it).
+Steps are stored in milli-units (D33), rounded to the nearest; a step that rounds to 0 or exceeds 10^6 units is an error. A layer outside `0`–`21`, a colour that is not six hex digits, or a number out of its range is an error. The editor reads the options once, at startup; changing a colour, the dim factor or the line width in the editor lasts for the session (put it in `init.lua` to keep it). The view state is the exception: `theme`, `theme_mode`, `light` and `ui_zoom` as last picked in the editor are kept in `<state>/view` (§1; one `<key> <value>` line each, values as Lua would write them) and applied at the next start to each of them the init files did not assign.
 
-Functions (keymap targets, hooks) run under the same sandbox and limits as the init file (§4), one budget per call. A function's error is reported as `<file>:<line>: <message>` and the editor carries on.
+Functions (keymap targets, hooks, user commands) run under the same sandbox and limits as the init file (§4), one budget per call. A function's error is reported as `<file>:<line>: <message>` and the editor carries on.
+
+### 3.1 Editor reads
+
+**When Lua runs.** The init file (and a trusted project file) runs once, before the editor has a document: it declares options, keymaps, hooks and commands. Everything else runs later, as a **call**: a hook, a keymap function, a user command. The editor queues each call and runs it at its next plugin delivery, right after it fills the plugin snapshot tables (plugin-abi §4), in the same frame; so a call reads exactly what the plugins of that delivery read. Reads are valid only inside a call: at the top level of an init file they raise `schemify.api.<name>: the editor is readable only inside a hook, a keymap function or a user command`. A read never changes anything and costs the call no budget beyond building its result.
+
+```lua
+schemify.api.create_user_command("Selected", function()
+  for _, o in ipairs(schemify.api.doc_get_objects()) do
+    if o.kind == "instance" then schemify.notify(o.name .. " " .. o.cell) end
+  end
+end)
+```
+
+| Call | Neovim | Returns |
+|---|---|---|
+| `schemify.api.list_docs()` | `nvim_list_bufs` | The open documents' ids (`Docs.handle`), in `Docs` order. |
+| `schemify.api.get_current_doc()` | `nvim_get_current_buf` | The active document's id, or `nil` with none open. |
+| `schemify.api.doc_get_info(doc?)` | `nvim_buf_get_name` and buffer options | `{ id, kind, dirty, path, cell }`: `kind` the plugin-abi `Docs.kind` number, `dirty` a boolean, `path` under the project root when inside it, `cell` the file's stem. |
+| `schemify.api.doc_get_objects(doc?, kind?)` | `nvim_buf_get_lines` | Every instance, then wire, then label of the document, or only those of `kind` (`"instance"`, `"wire"`, `"label"`): each a table with `kind` and its plugin-abi columns but `doc` (`id, x, y, orient, cell, name`; `id, x1, y1, x2, y2, net`; `id, x, y, net, text`). Coordinates are integer milli-units (D33), as plugins read them; `net` is absent for an object on no net. |
+| `schemify.api.get_selection()` | (visual selection) | The selected object ids of the active document. |
+
+`doc` is a document id; `nil` (or absent) is the active document. An id not in `list_docs()` is an error (`invalid document id N`), as is a document other than the active one for `doc_get_objects`: only the active document's objects are in the snapshot. Options are read through `schemify.opt` (§3), the value the config holds.
+
+### 3.2 User commands
+
+```lua
+schemify.api.create_user_command("Netlist2", function(o)
+  schemify.cmd("sim.dialect", o.fargs[1])
+  schemify.cmd("sim.netlist")
+end, { nargs = 1, desc = "netlist in another dialect" })
+```
+
+`schemify.api.create_user_command(name, fn, opts?)` adds a row to the D27 command table, so a keymap (`schemify.keymap.set("F6", "Netlist2")`), a menu or UI node's `command`, `schemify.cmd` and the command stream run it like any other command; `del_user_command(name)` removes it (an error when there is none). `fn` gets `{ name, args, fargs }`: `args` the argument string, `fargs` its whitespace-separated words, or `args` whole for `nargs` `1` and `"?"` (Neovim's rule).
+
+- **Names.** An uppercase ASCII letter, then letters, digits or `_`, at most 64 bytes (Neovim's rule). Core and plugin commands are lowercase `<menu>.<action>` words, so a user command never collides with a core command and never takes the reserved `core.` prefix; over a plugin command of the same name it wins (it applies last, §6).
+- **`opts`:** `desc` (a string), `nargs` (`0` default, `1`, `"?"`, `"*"`, `"+"`; arguments that do not fit fail the call with an error), `force` (default `true`: a later create replaces the row; `false`: an existing name is an error). Another key is an error.
+- **Consent.** A command queued by Lua (`schemify.cmd` from any call, or from the init file) never runs a command that stands for the user's consent (accepting staged edits, installing updates, trusting a project or a PDK host, deleting files): it is refused with `<name>: needs you (a click or a key), not a Lua call`. Only the user's own click or key runs those; a key bound to a user command does not lend it that consent.
+
+### 3.3 Autocommands
+
+```lua
+local g = schemify.api.create_augroup("my_tb", { clear = true })
+schemify.api.create_autocmd({ "saved", "doc_opened" }, {
+  group = g, pattern = { "*_tb", "amp?" }, once = false,
+  callback = function(ev) schemify.notify(ev.event .. " " .. ev.match) end,
+})
+```
+
+| Call | Effect |
+|---|---|
+| `create_augroup(name, { clear = true })` | Returns the group's id (≥ 1). An existing group keeps its id; unless `clear = false` it loses its autocommands first, so re-running a config does not stack hooks. |
+| `create_autocmd(event \| { event, … }, opts)` | One hook per event, all under the returned id. `opts`: `callback` (a function, required), `group` (a name or id from `create_augroup`), `pattern` (a cell-name glob or a list of them), `once`, `desc`. Another key is an error. |
+| `del_autocmd(id)` | Removes every hook of autocommand `id`; an unknown id is an error. |
+
+- **Patterns** match the whole cell name of the event's document (its `doc` field; for `selection_changed`, `run_done` and `load`, the active document): `*` any run, `?` one character, everything else itself. A hook with a pattern does not run when there is no document or no cell name. `ev.match` is that cell name.
+- **`once`** deletes the autocommand (all its events) just before its first run.
+- A hook another hook of the same event deleted does not run. Ids are never reused within a session.
 
 ## 4. Sandbox
 
@@ -149,6 +243,23 @@ A package directory holds the module and, optionally, its manifest:
 
 `schemify.project` is the project-manifest format with a single `plugin <name> path <file>.wasm` record whose `grant` attributes are the capabilities the plugin **requests** and whose `fuel` is its suggested budget (the spec's `fuel` wins). Without a manifest the module is `<name>.wasm` and it requests exactly what the user grants. A `url` package is a single `.wasm` file installed as `<data>/pack/<name>/<name>.wasm`.
 
+### Themes
+
+A **theme package** is records only: nothing in it runs, so it is as inert as a design file. Its manifest holds one record instead of `plugin`:
+
+```
+schemify 1 project
+theme <id> <dark|light> path <file>.records
+```
+
+`<id>` is one word of `A–Z a–z 0–9 . _ -`; the file lies inside the package (no `..`, not absolute) and is installed, locked and hashed like a module. Its body is ordinary UI records (plugin-abi §7: `node`, `set`, `remove`, `style`, and the tokens `color <name> <hex>` and `size <name> <px>`), so a theme may restyle and rearrange the whole UI. The editor composes the active theme after every plugin and before the user's keymaps (D8 last wins); any edit of it that touches `core.*` is dropped and counted, as a plugin's is (plugin-abi §1). A theme grants nothing and requests nothing.
+
+- **Bundled:** `default` (the default UI alone) and `modern` (`ui/themes/modern/`, the same package layout).
+- **Choice:** `schemify.opt.theme = "<id>"` (§3), or View → Modern theme (`view.theme.<id>`; picking the active theme again goes back to `default`). An id no theme has leaves `default` and says so on the status line.
+- **Tokens:** a style value `@<name>` takes the value of the last `color`/`size` token of that name in any contribution, parsed for the prop that references it, once when the UI is composed; an unknown token, or a colour token on a length, leaves the prop as it was and is a health row.
+- **Light chrome:** while the canvas is light (`light`, `theme_mode`), every selector `X.light` lays its props over `X`.
+- **Canvas roles:** `canvas.bg`, `canvas.wire`, `canvas.text`, `canvas.symbol`, `canvas.pin`, `canvas.grid` and `canvas.select` (`fg`, with `.light` variants) colour layers 0, 1, 3, 4 and 5, the grid and the selection over the numbered `canvas.<dark|light>.<layer>` selectors.
+
 ### Capabilities
 
 A loaded package gets the **intersection** of what it requests and what the user grants (D7). `schemify pack status` reports both differences, requested but not granted (`denied`) and granted but not requested (`unused`); the editor's load notes name the denied ones.
@@ -173,9 +284,7 @@ Fetching: `git` sources by running `git` (`clone`, `fetch`, `checkout`, `rev-par
 
 ### Updates (`outdated`)
 
-The editor window asks for updates when it starts (headless runs, `schemify cmd` and the JSON-RPC server never do). For each installed `git` package, the user's and those of a trusted project init file (§2), one `git ls-remote` (no clone) compares the remote with the lock row: a spec without `rev`, or whose `rev` names a branch, has an update when that head moved; a `rev` naming a tag (`version`) is the user's pin, and a newer version tag (same text before the first digit, numerically greater, no pre-release part) is reported but not applied; a commit `rev` never moves. `url` and `path` packages have no upstream to ask. Each (repository, `rev`) is checked at most once a day, recorded in `<state>/update-checks` (§1); an unreachable remote is skipped silently.
-
-When a check finds something, the **updates dialog** lists each package with its scope (the user's, or the project's, whose `schemify-pack.lock` is shared with the project) and `<from> → <to>`, each a tag where one names the commit and the short commit otherwise, or the newer tag to put in the spec. *Update* runs `update` on the packages it can move, trusts the project's new modules (the user approved them; §2), and reopens the project; *Not now* waits for the next day's check.
+Nothing checks packages at startup (decision 2026-11-06). `pack::outdated` is the query a caller runs on demand (the marketplace marks an installed item *Update available*, marketplace Phase 3): for each `git` package, one `git ls-remote` (no clone) compares the remote with the lock row. A spec without `rev`, or whose `rev` names a branch, has an update when that head moved; a `rev` naming a tag (`version`) is the user's pin, and a newer version tag (same text before the first digit, numerically greater, no pre-release part) is reported but not applied; a commit `rev` never moves. `url` and `path` packages have no upstream to ask; an unreachable remote is skipped silently. `update` (above) is what moves a package.
 
 ## 6. Load order and the user-config table
 
@@ -187,12 +296,14 @@ The user-config table (owner: `crates/model/config`; readers: both binaries):
 
 | Table | Rows | Capacity |
 |---|---|---|
-| options | the eight keys of §3 | fixed |
+| options | the nine keys of §3 | fixed |
 | keymaps | chord, target (command name or function id), description | 4096 |
 | sims | `ngspice`, `openvaf`, `iverilog`, `espice`: path, args, env (≤ 64 each) | 4 |
 | hosts | simulator, ssh destination, path, args, env (`sim` rows with a `host`) | 64 |
 | packages | the specs of §5, each marked user or project (§2) | 128 |
-| hooks | event word, function id | 1024 |
+| hooks | autocommand id, event word, function id, group, cell patterns (≤ 64 of ≤ 256 bytes), once | 1024 |
+| groups | autocommand group name | 256 |
+| commands | user command name, function id, description, nargs | 1024 |
 | requests (output of each call) | queued commands, notifications, errors | 256 per call |
 
 ## 7. Binaries

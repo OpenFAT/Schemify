@@ -10,7 +10,8 @@
 //! - `pub enum Output<'chunk>`,
 //!   `Output::parse(chunk: &'chunk str) -> Result<Output<'chunk>, Code>`
 //! - `pub struct Out`: `new`, `as_str`, `into_string`, `contribute`, `contribute_scoped`,
-//!   `contribute_ui`, `contribute_commands`, `edit`, `stage`, `run`, `timer`, `log`, `log_at`
+//!   `contribute_ui`, `contribute_commands`, `edit`, `stage`, `run`, `timer`, `log`, `log_at`,
+//!   `state`, `command`
 
 use std::borrow::Cow;
 use std::fmt::Arguments;
@@ -66,6 +67,21 @@ pub enum Output<'chunk> {
         level: Level,
         /// Message.
         text: Cow<'chunk, str>,
+    },
+    /// `state` + verbatim body: replace this plugin's projection of the session-state
+    /// tables (UI `node style remove set` records, composed after every `ui` set). The
+    /// first one subscribes the plugin to `Event::StateChanged`.
+    State {
+        /// Line-record text of the projection (verbatim lines joined with LF); may be empty.
+        body: String,
+    },
+    /// `command <name> [<arg>]`: run a command as if the user had invoked it (needs the
+    /// `commands` grant; never a consent or `core.` command).
+    Command {
+        /// Command name (`file.save`).
+        name: Cow<'chunk, str>,
+        /// Its argument, unescaped; empty when absent.
+        arg: Cow<'chunk, str>,
     },
 }
 
@@ -173,6 +189,23 @@ impl<'chunk> Output<'chunk> {
                 values.end()?;
                 each_attr(body, |_, _| Err(Code::Parse))?;
                 Output::Log { level, text }
+            }
+            "state" => {
+                values.end()?;
+                Output::State {
+                    body: text::verbatim_body(body)?,
+                }
+            }
+            "command" => {
+                let name = values.need_plain()?;
+                if !text::is_bare(name) {
+                    return Err(Code::Parse);
+                }
+                let name = Cow::Borrowed(name);
+                let arg = values.next().transpose()?.unwrap_or(Cow::Borrowed(""));
+                values.end()?;
+                each_attr(body, |_, _| Err(Code::Parse))?;
+                Output::Command { name, arg }
             }
             _ => return Err(Code::Parse),
         };
@@ -295,6 +328,31 @@ impl Out {
         self.text.push('\n');
         self.debug_check_record(start);
     }
+
+    /// Replaces this plugin's state projection with `body` (UI records over the
+    /// session-state tables); the first call subscribes it to `Event::StateChanged`.
+    /// Immediate mode, like a contribution: write the whole projection every time.
+    pub fn state(&mut self, body: &str) {
+        let start = self.text.len();
+        self.text.push_str("state\n");
+        text::push_verbatim(&mut self.text, body);
+        self.debug_check_record(start);
+    }
+
+    /// Requests command `name` with `arg` (empty: none), run as the user's own input would
+    /// run it. The host rejects it with `E_DENIED` without the `commands` grant, and the
+    /// editor refuses consent commands and `core.` commands.
+    pub fn command(&mut self, name: &str, arg: &str) {
+        let start = self.text.len();
+        self.text.push_str("command ");
+        text::push_value(&mut self.text, name);
+        if !arg.is_empty() {
+            self.text.push(' ');
+            text::push_value(&mut self.text, arg);
+        }
+        self.text.push('\n');
+        self.debug_check_record(start);
+    }
 }
 
 // ---- private ----
@@ -389,9 +447,34 @@ mod tests {
         );
         out.timer(7, 250);
         out.log_at(Level::Warn, "line\nbreak \"q\"");
+        out.state("set tab.0 label \"a b\"\n");
+        out.state("");
+        out.command("file.save", "");
+        out.command("cell.set", "cell.hdr.doc two words");
         let got = parse_all(out.as_str());
         let got: Vec<Output<'_>> = got.into_iter().map(Result::unwrap).collect();
-        assert_eq!(got.len(), 8);
+        assert_eq!(got.len(), 12);
+        assert_eq!(
+            got[8],
+            Output::State {
+                body: "set tab.0 label \"a b\"".into()
+            }
+        );
+        assert_eq!(got[9], Output::State { body: "".into() });
+        assert_eq!(
+            got[10],
+            Output::Command {
+                name: "file.save".into(),
+                arg: "".into()
+            }
+        );
+        assert_eq!(
+            got[11],
+            Output::Command {
+                name: "cell.set".into(),
+                arg: "cell.hdr.doc two words".into()
+            }
+        );
         assert_eq!(
             got[0],
             Output::Contribute {
@@ -451,6 +534,12 @@ mod tests {
             "log info",
             "log info \"open",
             "  orphan",
+            "state extra",
+            "state\n  attr x",
+            "command",
+            "command \"a b\"",
+            "command x a b",
+            "command x\n  | body",
         ] {
             assert_eq!(Output::parse(bad), Err(Code::Parse), "{bad:?}");
         }

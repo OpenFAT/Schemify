@@ -1,185 +1,198 @@
-# Schemify "Modern" preset: style overrides appended after ui.records while View → Modern theme
-# is checked (the default-UI plugin re-contributes `UI + MODERN`; later edits win). Nodes, keys
-# and accelerators are untouched (D25): only colours, borders and spacing change.
-# Tokens and the gate: docs/dev/skills/schemify-theme (check_theme.py ui.records modern.records).
-# ponytail: one chrome palette (dark) for both canvas themes; per-theme chrome needs the app to
-# pick `<selector>.light` the way it picks canvas.<theme>.
+# Schemify "Modern": a records-only theme (config spec §5 Themes), bundled with the editor and
+# picked with View → Modern theme or `schemify.opt.theme = "modern"`. It restyles; nodes, keys
+# and accelerators are untouched (D25).
+# ponytail: one chrome palette (dark) for both canvas themes; add `<selector>.light` variants to
+# give the light canvas a light chrome.
 
-set view.theme_modern checked 1
+# --- tokens: one accent (4c8dff) over neutral greys ----------------------------------------------
+
+color bg 15171b
+color surface 1e2127
+color raised 23262c
+color hover 2a2e35
+color active 2f343c
+color line 3a3f48
+color text d4d7dc
+color text-2 c9cdd3
+color muted 8b919a
+color bright ffffff
+color accent-bg 2f4a7a
+color accent-fg 7fb0ff
+color error ff6b6b
 
 # --- chrome: neutral greys, one accent (4c8dff) -----------------------------------------------------
 
 style *
-  fg d4d7dc
-  accel-fg 8b919a
-  hover-bg 2a2e35
-  active-bg 2f343c
-  border-color 3a3f48
+  fg @text
+  accel-fg @muted
+  hover-bg @hover
+  active-bg @active
+  border-color @line
 
 style window
-  bg 15171b
+  bg @bg
 
 style menubar
-  bg 1e2127
+  bg @surface
 
 style menu-title
-  hover-bg 2a2e35
-  active-bg 2f343c
+  hover-bg @hover
+  active-bg @active
 
 style menubar-dash
   fg 5a606a
 
 style menubar-button
-  bg 1e2127
-  hover-bg 2a2e35
+  bg @surface
+  hover-bg @hover
 
 style menu
-  bg 23262c
-  border-color 3a3f48
+  bg @raised
+  border-color @line
 
 style item
-  hover-bg 2f343c
+  hover-bg @active
 
 style separator
-  fg 3a3f48
+  fg @line
 
 style toolbar
-  bg 1e2127
+  bg @surface
 
 style button
-  hover-bg 2f343c
+  hover-bg @active
   radius 4
 
 style tabs
-  bg 1e2127
+  bg @surface
 
 style tab
-  bg 1e2127
-  fg 8b919a
-  active-bg 2f343c
-  active-fg ffffff
+  bg @surface
+  fg @muted
+  active-bg @active
+  active-fg @bright
   border 0
 
 style tab-new
-  bg 1e2127
-  fg 8b919a
+  bg @surface
+  fg @muted
   border 0
 
 style canvas
-  bg 15171b
+  bg @bg
 
 style status
-  bg 1e2127
+  bg @surface
 
 style status-field
-  bg 15171b
-  border-color 3a3f48
+  bg @bg
+  border-color @line
 
 style text_input
-  bg 15171b
-  border-color 3a3f48
+  bg @bg
+  border-color @line
 
 style text_area
-  bg 15171b
-  border-color 3a3f48
+  bg @bg
+  border-color @line
 
 style dialog
-  bg 23262c
-  border-color 3a3f48
+  bg @raised
+  border-color @line
   radius 6
 
 style dialog-button
-  bg 2f343c
-  hover-bg 3a3f48
+  bg @active
+  hover-bg @line
   radius 4
 
 style ctx-menu
-  bg 23262c
-  border-color 3a3f48
+  bg @raised
+  border-color @line
 
 style list-row
-  hover-bg 2f343c
-  active-bg 2f4a7a
+  hover-bg @active
+  active-bg @accent-bg
 
 style keys-panel
-  bg 23262c
+  bg @raised
 
 style view-switch
-  bg 23262c
-  border-color 3a3f48
+  bg @raised
+  border-color @line
   radius 6
 
 style viewsw
-  bg 23262c
-  fg 8b919a
-  hover-bg 2f343c
-  hover-fg ffffff
+  bg @raised
+  fg @muted
+  hover-bg @active
+  hover-fg @bright
 
 style viewsw-on
-  bg 2f4a7a
-  fg ffffff
-  hover-bg 2f4a7a
+  bg @accent-bg
+  fg @bright
+  hover-bg @accent-bg
 
 style viewsw-off
   fg 4a4f57
-  hover-bg 23262c
+  hover-bg @raised
 
 # --- docs pane -----------------------------------------------------------------------------------
 
 style docs-pane
-  bg 1e2127
-  border-color 3a3f48
+  bg @surface
+  border-color @line
 
 style docs-bar
-  bg 23262c
+  bg @raised
 
 style docs-block-sel
   bg 2a3550
 
 style prose
-  fg d4d7dc
+  fg @text
 
 style docs-var
-  bg 23262c
+  bg @raised
 
 style docs-var-name
-  fg 7fb0ff
+  fg @accent-fg
 
 style docs-expr
-  bg 15171b
-  border-color 3a3f48
+  bg @bg
+  border-color @line
 
 style docs-hint
-  fg 8b919a
+  fg @muted
 
 style docs-plot
-  bg 15171b
-  fg c9cdd3
+  bg @bg
+  fg @text-2
 
 style docs-toggle
-  border-color 3a3f48
+  border-color @line
 
 style docs-toggle-on
-  bg 2f4a7a
-  fg ffffff
-  hover-bg 2f4a7a
-  border-color 2f4a7a
+  bg @accent-bg
+  fg @bright
+  hover-bg @accent-bg
+  border-color @accent-bg
 
 style docs-preview-cap
-  fg 8b919a
+  fg @muted
 
 style docs-preview
   bg 191b20
-  border-color 3a3f48
+  border-color @line
 
 style docs-source
-  border-color 3a3f48
+  border-color @line
 
 style text-view
-  bg 15171b
+  bg @bg
 
 style text-view-body
-  fg d4d7dc
+  fg @text
 
 # --- status colours (meaning, exempt from the accent budget; retuned for dark panels) ----------
 
@@ -187,7 +200,7 @@ style docs-value
   fg 6fcf7f
 
 style docs-value-bad
-  fg ff6b6b
+  fg @error
 
 style docs-unverified
   fg e0a040
@@ -199,15 +212,41 @@ style docs-staged-bar
 style docs-staged
   fg 7fd18f
 
-style bottom-pane
-  bg 1e2127
-  border-color 3a3f48
+style activity
+  bg @surface
+
+style activity-button
+  fg @muted
+  hover-bg @hover
+  active-bg @active
+  active-fg @bright
+
+style dock-hsplit
+  bg @hover
+
+style dock-vsplit
+  bg @hover
+
+style dock
+  bg @surface
+
+style dock-bar
+  bg @surface
+
+style dock-title
+  fg @muted
+
+style dock-pane
+  bg @surface
+
+style dock-note
+  fg @muted
 
 style bottom-bar
-  bg 23262c
+  bg @raised
 
 style check-error
-  fg ff6b6b
+  fg @error
   hover-bg 3a2226
 
 style check-warning
@@ -215,43 +254,43 @@ style check-warning
   hover-bg 3a3020
 
 style check-info
-  fg 7fb0ff
+  fg @accent-fg
 
 style results-key
-  fg 8b919a
+  fg @muted
 
 style results-wide
-  fg d4d7dc
+  fg @text
 
 style results-pass
   fg 6fcf7f
 
 style results-fail
-  fg ff6b6b
+  fg @error
 
 style results-dim
   fg 6b717a
 
 style results-yield
-  fg 7fb0ff
+  fg @accent-fg
 
 style results-log
-  fg c9cdd3
+  fg @text-2
 
 style results-pick
-  bg 23262c
+  bg @raised
 
 style results-pick-sel
-  bg 2f4a7a
+  bg @accent-bg
 
 # --- canvas: schemify-theme baseline (gate-checked) ------------------------------------------------
 
 style canvas.dark.0
-  fg 15171b
+  fg @bg
 style canvas.dark.1
   fg 5aaeea
 style canvas.dark.3
-  fg c9cdd3
+  fg @text-2
 style canvas.dark.4
   fg 8fc35f
 style canvas.dark.5
@@ -259,7 +298,7 @@ style canvas.dark.5
 style canvas.dark.grid
   fg 2c3036
 style canvas.dark.sel
-  fg ffffff
+  fg @bright
 style canvas.dark.8
   fg 9406f9
 style canvas.dark.9
@@ -311,22 +350,22 @@ style canvas.light.21
 # --- cell settings panel --------------------------------------------------------------------------
 
 style cell-pane
-  bg 1e2127
-  border-color 3a3f48
+  bg @surface
+  border-color @line
 
 style cell-section
-  fg 7fb0ff
+  fg @accent-fg
 
 style cell-block
-  bg 23262c
+  bg @raised
 
 style cell-key
-  fg 8b919a
+  fg @muted
 
 style cell-input
-  bg 15171b
-  border-color 3a3f48
+  bg @bg
+  border-color @line
 
 style cell-body
-  bg 15171b
-  border-color 3a3f48
+  bg @bg
+  border-color @line

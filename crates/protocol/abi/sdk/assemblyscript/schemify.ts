@@ -54,6 +54,13 @@ export enum Table {
   Results = 12,
   Selection = 13,
   UiNodes = 14,
+  Tabs = 15,
+  Tool = 16,
+  Status = 17,
+  Options = 18,
+  Camera = 19,
+  Dialog = 20,
+  DialogRows = 21,
 }
 
 /** Column ids, <TABLE>_<COLUMN>. */
@@ -121,6 +128,32 @@ export const UI_NODES_ID: u32 = 0; // str
 export const UI_NODES_KIND: u32 = 1; // u8
 export const UI_NODES_PARENT: u32 = 2; // str
 export const UI_NODES_OWNER: u32 = 3; // u16
+export const TABS_DOC: u32 = 0; // u32
+export const TABS_TITLE: u32 = 1; // str
+export const TABS_ACTIVE: u32 = 2; // u8
+export const TABS_DIRTY: u32 = 3; // u8
+export const TABS_SYMBOL: u32 = 4; // u8
+export const TABS_TEXT: u32 = 5; // u8
+export const TOOL_NAME: u32 = 0; // str
+export const TOOL_OWNER: u32 = 1; // u32
+export const STATUS_X: u32 = 0; // i32
+export const STATUS_Y: u32 = 1; // i32
+export const STATUS_SELECTED: u32 = 2; // u32
+export const STATUS_PATH: u32 = 3; // str
+export const STATUS_MESSAGE: u32 = 4; // str
+export const OPTIONS_NAME: u32 = 0; // str
+export const OPTIONS_VALUE: u32 = 1; // str
+export const CAMERA_X: u32 = 0; // i32
+export const CAMERA_Y: u32 = 1; // i32
+export const CAMERA_SCALE: u32 = 2; // u32
+export const DIALOG_KIND: u32 = 0; // str
+export const DIALOG_PURPOSE: u32 = 1; // str
+export const DIALOG_TITLE: u32 = 2; // str
+export const DIALOG_TEXT: u32 = 3; // str
+export const DIALOG_NOTE: u32 = 4; // str
+export const DIALOG_ROWS_LABEL: u32 = 0; // str
+export const DIALOG_ROWS_VALUE: u32 = 1; // str
+export const DIALOG_ROWS_EDITABLE: u32 = 2; // u8
 
 /** Log levels. */
 export enum Level {

@@ -108,6 +108,9 @@ named_enum! {
         /// `fs_read` / `fs_list` under the directory an environment variable names, as
         /// `${NAME}/…` paths; the grant is written `read:<NAME>` (a PDK, a tool's library).
         ReadEnv = "read",
+        /// `command` output records: run editor commands without a click (§7). Never
+        /// reaches a consent command (`Cmd::needs_user`) or a `core.` command.
+        Commands = "commands",
     }
 }
 
@@ -222,9 +225,11 @@ impl Cap {
         let well_formed = match cap {
             Cap::Spawn => !arg.is_empty() && !arg.contains(['/', '\\']) && text::is_bare(arg),
             Cap::ReadEnv => Cap::env_name(arg),
-            Cap::ReadProject | Cap::WriteProject | Cap::Network | Cap::Clipboard => {
-                arg.is_empty() && !grant.contains(':')
-            }
+            Cap::ReadProject
+            | Cap::WriteProject
+            | Cap::Network
+            | Cap::Clipboard
+            | Cap::Commands => arg.is_empty() && !grant.contains(':'),
         };
         if well_formed && matches!(cap, Cap::Spawn | Cap::ReadEnv) {
             debug_assert!(!arg.is_empty());
@@ -264,7 +269,7 @@ impl Kind {
     #[must_use]
     pub const fn words(self) -> &'static [&'static str] {
         match self {
-            Kind::Ui => &["node", "style", "remove", "set"],
+            Kind::Ui => &["node", "style", "remove", "set", "color", "size", "pane"],
             Kind::Commands => &["command"],
             Kind::Keymap => &["key"],
             Kind::Annotations => &["mark"],
@@ -343,6 +348,8 @@ mod tests {
             Some((Cap::ReadEnv, "PDK_ROOT"))
         );
         assert_eq!(Cap::parse_grant("read:_X9"), Some((Cap::ReadEnv, "_X9")));
+        assert_eq!(Cap::parse_grant("commands"), Some((Cap::Commands, "")));
+        assert_eq!(Cap::parse_grant("commands:x"), None);
         assert!(Cap::env_name(&"A".repeat(64)));
         assert!(!Cap::env_name(&"A".repeat(65)));
     }
