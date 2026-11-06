@@ -1,0 +1,38 @@
+# The SDK's checks: the format and ABI crates, and the guests built from them. GitHub-hosted
+# runners are free on a public repository. Actions are pinned by commit SHA.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: "1.95"
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+  guests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: "1.95"
+          targets: wasm32-unknown-unknown
+      - name: default UI pack
+        working-directory: ui
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: Rust example plugin
+        working-directory: examples/plugins/rust
+        run: cargo build --release --target wasm32-unknown-unknown
