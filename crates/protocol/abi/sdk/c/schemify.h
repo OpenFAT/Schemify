@@ -74,6 +74,13 @@ enum sch_table {
     SCH_RESULTS = 12,
     SCH_SELECTION = 13,
     SCH_UI_NODES = 14,
+    SCH_TABS = 15,
+    SCH_TOOL = 16,
+    SCH_STATUS = 17,
+    SCH_OPTIONS = 18,
+    SCH_CAMERA = 19,
+    SCH_DIALOG = 20,
+    SCH_DIALOG_ROWS = 21,
 };
 
 /* Column ids, SCH_<TABLE>_<COLUMN>, with their element types. */
@@ -142,6 +149,32 @@ enum sch_column {
     SCH_UI_NODES_KIND = 1, /* u8 */
     SCH_UI_NODES_PARENT = 2, /* str */
     SCH_UI_NODES_OWNER = 3, /* u16 */
+    SCH_TABS_DOC = 0, /* u32 */
+    SCH_TABS_TITLE = 1, /* str */
+    SCH_TABS_ACTIVE = 2, /* u8 */
+    SCH_TABS_DIRTY = 3, /* u8 */
+    SCH_TABS_SYMBOL = 4, /* u8 */
+    SCH_TABS_TEXT = 5, /* u8 */
+    SCH_TOOL_NAME = 0, /* str */
+    SCH_TOOL_OWNER = 1, /* u32 */
+    SCH_STATUS_X = 0, /* i32 */
+    SCH_STATUS_Y = 1, /* i32 */
+    SCH_STATUS_SELECTED = 2, /* u32 */
+    SCH_STATUS_PATH = 3, /* str */
+    SCH_STATUS_MESSAGE = 4, /* str */
+    SCH_OPTIONS_NAME = 0, /* str */
+    SCH_OPTIONS_VALUE = 1, /* str */
+    SCH_CAMERA_X = 0, /* i32 */
+    SCH_CAMERA_Y = 1, /* i32 */
+    SCH_CAMERA_SCALE = 2, /* u32 */
+    SCH_DIALOG_KIND = 0, /* str */
+    SCH_DIALOG_PURPOSE = 1, /* str */
+    SCH_DIALOG_TITLE = 2, /* str */
+    SCH_DIALOG_TEXT = 3, /* str */
+    SCH_DIALOG_NOTE = 4, /* str */
+    SCH_DIALOG_ROWS_LABEL = 0, /* str */
+    SCH_DIALOG_ROWS_VALUE = 1, /* str */
+    SCH_DIALOG_ROWS_EDITABLE = 2, /* u8 */
 };
 
 /* Log levels. */

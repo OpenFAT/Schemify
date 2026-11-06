@@ -87,6 +87,23 @@ pub enum Event<'buf> {
         /// Document handle.
         doc: u32,
     },
+    /// One of the session-state tables (`Tabs`, `Tool`, `Status`, `Options`, `Camera`,
+    /// `Dialog`, `DialogRows`) changed. Sent only to a plugin that has written a `state`
+    /// record (§7), so a plugin built before this event never sees it.
+    StateChanged,
+    /// A canvas pointer event while this plugin's tool is active (`tool.plugin`, §7).
+    Pointer {
+        /// `down`, `move` or `up`.
+        phase: &'buf str,
+        /// `left`, `middle`, `right`, or `none` (a move).
+        button: &'buf str,
+        /// Snapped pointer x in world milli-units.
+        x: i32,
+        /// Snapped pointer y in world milli-units (y down).
+        y: i32,
+        /// Modifier bits: 1 Ctrl, 2 Shift, 4 Alt, 8 Super.
+        mods: u32,
+    },
     /// An output record of this plugin was rejected (§8).
     Rejected {
         /// Why.
@@ -114,6 +131,8 @@ impl<'buf> Event<'buf> {
             Event::IoDone { .. } => "io_done",
             Event::Timer { .. } => "timer",
             Event::Saved { .. } => "saved",
+            Event::StateChanged => "state_changed",
+            Event::Pointer { .. } => "pointer",
             Event::Rejected { .. } => "rejected",
         }
     }
@@ -178,6 +197,14 @@ impl<'buf> Event<'buf> {
             ("load", None) => Event::Load,
             ("unload", None) => Event::Unload,
             ("selection_changed", None) => Event::SelectionChanged,
+            ("state_changed", None) => Event::StateChanged,
+            ("pointer", None) => Event::Pointer {
+                phase: values.need_plain()?,
+                button: values.need_plain()?,
+                x: values.need_num()?,
+                y: values.need_num()?,
+                mods: values.need_num()?,
+            },
             ("command", None) => {
                 let name = values.need_plain()?;
                 let args = values.rest();
@@ -245,7 +272,21 @@ impl Event<'_> {
         out.extend_from_slice(b"event ");
         out.extend_from_slice(self.kind_name().as_bytes());
         let payload = match *self {
-            Event::Load | Event::Unload | Event::SelectionChanged => None,
+            Event::Load | Event::Unload | Event::SelectionChanged | Event::StateChanged => None,
+            Event::Pointer {
+                phase,
+                button,
+                x,
+                y,
+                mods,
+            } => {
+                push_ident(out, phase)?;
+                push_ident(out, button)?;
+                push_num(out, i64::from(x));
+                push_num(out, i64::from(y));
+                push_num(out, i64::from(mods));
+                None
+            }
             Event::Command { name, args } => {
                 push_ident(out, name)?;
                 if args.contains(['\n', '\r', '\0'])
@@ -381,6 +422,14 @@ mod tests {
             },
             Event::Timer { id: 2 },
             Event::Saved { doc: 5 },
+            Event::StateChanged,
+            Event::Pointer {
+                phase: "down",
+                button: "left",
+                x: -2500,
+                y: 10_000,
+                mods: 3,
+            },
             Event::Rejected {
                 code: Code::Gone,
                 record: b"edit 9 commit x",
@@ -403,6 +452,9 @@ mod tests {
             b"event timer",
             b"event timer x",
             b"event timer -1",
+            b"event state_changed 1",
+            b"event pointer down left 1 2",
+            b"event pointer down left 1 2 -1",
             b"event load\0payload",
             b"event io_done 1 0",
             b"event rejected E_NOPE\0",
@@ -462,6 +514,17 @@ mod tests {
             buf
         };
         assert_eq!(wire(Event::Load), b"event load\n");
+        assert_eq!(wire(Event::StateChanged), b"event state_changed\n");
+        assert_eq!(
+            wire(Event::Pointer {
+                phase: "move",
+                button: "none",
+                x: -1,
+                y: 2,
+                mods: 0
+            }),
+            b"event pointer move none -1 2 0\n"
+        );
         assert_eq!(
             wire(Event::DocChanged { doc: 1, epoch: 9 }),
             b"event doc_changed 1 9\n"

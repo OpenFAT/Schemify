@@ -66,6 +66,13 @@ const (
 	Results Table = 12
 	Selection Table = 13
 	UiNodes Table = 14
+	Tabs Table = 15
+	Tool Table = 16
+	Status Table = 17
+	Options Table = 18
+	Camera Table = 19
+	Dialog Table = 20
+	DialogRows Table = 21
 )
 
 // Column ids, <Table><Column>.
@@ -134,6 +141,32 @@ const (
 	UiNodesKind uint32 = 1 // u8
 	UiNodesParent uint32 = 2 // str
 	UiNodesOwner uint32 = 3 // u16
+	TabsDoc uint32 = 0 // u32
+	TabsTitle uint32 = 1 // str
+	TabsActive uint32 = 2 // u8
+	TabsDirty uint32 = 3 // u8
+	TabsSymbol uint32 = 4 // u8
+	TabsText uint32 = 5 // u8
+	ToolName uint32 = 0 // str
+	ToolOwner uint32 = 1 // u32
+	StatusX uint32 = 0 // i32
+	StatusY uint32 = 1 // i32
+	StatusSelected uint32 = 2 // u32
+	StatusPath uint32 = 3 // str
+	StatusMessage uint32 = 4 // str
+	OptionsName uint32 = 0 // str
+	OptionsValue uint32 = 1 // str
+	CameraX uint32 = 0 // i32
+	CameraY uint32 = 1 // i32
+	CameraScale uint32 = 2 // u32
+	DialogKind uint32 = 0 // str
+	DialogPurpose uint32 = 1 // str
+	DialogTitle uint32 = 2 // str
+	DialogText uint32 = 3 // str
+	DialogNote uint32 = 4 // str
+	DialogRowsLabel uint32 = 0 // str
+	DialogRowsValue uint32 = 1 // str
+	DialogRowsEditable uint32 = 2 // u8
 )
 
 // Level is a log level.

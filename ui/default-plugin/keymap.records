@@ -233,6 +233,15 @@ key Ctrl+Left tab.prev
 key Down view.pan_down
 key Up view.pan_up
 
+# Mouse chords (canvas gestures): middle-drag pans; right-drag zooms a box (a right click
+# opens the context menu); the wheel zooms, Shift+wheel and Ctrl+wheel pan. Bind a chord to
+# any other command to run it instead.
+key MouseMiddle canvas.pan
+key MouseRight canvas.zoom_box
+key Wheel canvas.zoom
+key Shift+Wheel canvas.pan_x
+key Ctrl+Wheel canvas.pan_y
+
 # BackSpace: back to the parent schematic
 key BackSpace edit.pop
 
@@ -272,3 +281,9 @@ key Ctrl+# highlight.rename_duplicate_instance_names
 # !: break wires at the selected instance pins; Ctrl+!: remove wires running through them
 key ! tools.break_wires_at_selected_instance_pins
 key Ctrl+! tools.remove_wires_running_through_selected_in
+
+# Docks (not xschem): the left sidebar, the agent sidebar, the bottom
+# panel. Ctrl+B and Ctrl+J are xschem's, so the VS Code keys move to Ctrl+Shift.
+key Ctrl+Shift+B view.toggle_left
+key Ctrl+Shift+L view.toggle_right
+key Ctrl+Shift+J view.toggle_bottom

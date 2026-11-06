@@ -234,15 +234,76 @@ style docs-source
   pad 4
   pad-y 2
 
-style bottom
-  dir column
+# --- docks: the left icon bar, and the left, right and bottom docks
+# around the canvas. The app shows a pane's content (`<id>.pane`, class dock-pane) in its dock
+# under a header (dock-bar, dock-title, dock-button) and removes a hidden dock.
 
-style bottom-pane
+style body
+  dir row
+  grow 1
+  stretch 1
+
+style activity
+  bg d9d9d9
+  dir column
+  width 36
+  pad 4
+  pad-y 4
+  gap 2
+
+style activity-button
+  pad 5
+  height 28
+  width 28
+  hover-bg ececec
+  active-bg c3c3c3
+  radius 3
+
+style dock-hsplit
+  bg a0a0a0
+  dir row
+  grow 1
+  stretch 1
+
+style dock-vsplit
+  bg a0a0a0
+  dir column
+  grow 1
+
+style center
+  dir column
+  grow 1
+
+style dock
   bg f4f4f4
   dir column
-  height 150
-  border 1
-  border-color a0a0a0
+
+style dock-bar
+  bg e0e0e0
+  dir row
+  height 26
+  pad 3
+  gap 4
+
+style dock-title
+  pad 4
+  font 12
+
+style dock-button
+  pad 5
+  height 20
+  hover-bg cfcfcf
+  radius 3
+
+style dock-pane
+  bg f4f4f4
+  dir column
+  grow 1
+
+style dock-note
+  fg 555555
+  pad 8
+  pad-y 8
 
 style bottom-bar
   bg e0e0e0
@@ -870,6 +931,21 @@ node view.cell item
   parent menu.view
   label "Cell settings"
   command view.cell
+node view.toggle_left item
+  parent menu.view
+  label "Left sidebar"
+  command view.toggle_left
+  accel Ctrl+Shift+B
+node view.toggle_right item
+  parent menu.view
+  label "Agent sidebar"
+  command view.toggle_right
+  accel Ctrl+Shift+L
+node view.toggle_bottom item
+  parent menu.view
+  label "Bottom panel"
+  command view.toggle_bottom
+  accel Ctrl+Shift+J
 node view.fullscreen item
   parent menu.view
   label Fullscreen
@@ -908,11 +984,23 @@ node view.toggle_colorscheme item
   label "Toggle colorscheme"
   command view.toggle_colorscheme
   accel Shift+O
-node view.theme_modern item
+node view.theme.modern item
   parent menu.view
   label "Modern theme"
-  command view.theme_modern
+  command view.theme.modern
   checked 0
+node view.ui_zoom_in item
+  parent menu.view
+  label "Zoom UI in"
+  command view.ui_zoom_in
+node view.ui_zoom_out item
+  parent menu.view
+  label "Zoom UI out"
+  command view.ui_zoom_out
+node view.ui_zoom_reset item
+  parent menu.view
+  label "Reset UI zoom"
+  command view.ui_zoom_reset
 node view.dim_colors item
   parent menu.view
   label "Dim colors"
@@ -1512,6 +1600,10 @@ node help.keys item
   label "Key bindings"
   command help.keys
   accel /
+node help.check_updates item
+  parent menu.help
+  label "Check for updates"
+  command help.check_updates
 node help.about item
   parent menu.help
   label "About Schemify"
@@ -1716,8 +1808,75 @@ node tb.waves button
 
 # --- tabs -------------------------------------------------------------------------------------------
 
-node tabs tabs
+# --- body: the icon bar, then the left dock | (tabs + work over the bottom dock) | right dock -----
+# Each dock is the kept side of its `dock.<side>.split` (the divider drags its size).
+
+node body panel
   parent window
+  style body
+node activity panel
+  parent body
+  style activity
+node activity.explorer button
+  parent activity
+  label Explorer
+  command view.pane.explorer
+  tooltip "Explorer: the project's cells"
+  icon "M3 1.5 L9.5 1.5 L13 5 L13 14.5 L3 14.5 Z M9.5 1.5 L9.5 5 L13 5"
+  style activity-button
+node activity.packages button
+  parent activity
+  label Packages
+  command view.pane.packages
+  tooltip "Packages: plugins, themes, PDKs, simulators"
+  icon "M2 2 H7 V7 H2 Z M9 2 H14 V7 H9 Z M2 9 H7 V14 H2 Z M9 9 H14 V14 H9 Z"
+  style activity-button
+node activity.pdk button
+  parent activity
+  label PDKs
+  command view.pane.pdk
+  tooltip "PDKs: install, pin and switch kits"
+  icon "M8 1.5 L14.5 5 L8 8.5 L1.5 5 Z M1.5 8 L8 11.5 L14.5 8 M1.5 11 L8 14.5 L14.5 11"
+  style activity-button
+node activity.checks button
+  parent activity
+  label Checks
+  command view.pane.checks
+  tooltip "Checks: violations of the shown level"
+  icon "M8 1.5 L15 14 L1 14 Z M8 6 L8 10 M8 11.5 L8 12.5"
+  style activity-button
+node activity.results button
+  parent activity
+  label Results
+  command view.pane.results
+  tooltip "Results: the last run's jobs and specs"
+  icon "M2 1.5 L2 14 L14.5 14 M5 11 L5 8 M8 11 L8 4 M11 11 L11 6.5"
+  style activity-button
+node activity.agent button
+  parent activity
+  label Agent
+  command view.pane.agent
+  tooltip "Agent (Ctrl+Shift+L)"
+  icon "M8 1.5 C8.5 5.5 10.5 7.5 14.5 8 C10.5 8.5 8.5 10.5 8 14.5 C7.5 10.5 5.5 8.5 1.5 8 C5.5 7.5 7.5 5.5 8 1.5 Z"
+  style activity-button
+node dock.left.split split
+  parent body
+  style dock-hsplit
+node dock.left panel
+  parent dock.left.split
+  style dock
+node dock.right.split split
+  parent dock.left.split
+  style dock-hsplit
+node dock.bottom.split split
+  parent dock.right.split
+  style dock-vsplit
+node center panel
+  parent dock.bottom.split
+  style center
+
+node tabs tabs
+  parent center
 node tab.0 tab
   parent tabs
   label poweramp.sch
@@ -1734,7 +1893,7 @@ node tab.new button
 # tab's docs are hidden (`view.docs`, Alt+D).
 
 node work split
-  parent window
+  parent center
   style work
 node canvas canvas
   parent work
@@ -1837,10 +1996,13 @@ node cell.page scroll
   parent cell.pane
   style cell-page
 
-# The app puts the checks panel (`view.checks`) or the results table (`view.results`) here.
-node bottom panel
-  parent window
-  style bottom
+# The docks the panes open in (`pane` records; the core declares its own panes).
+node dock.bottom panel
+  parent dock.bottom.split
+  style dock
+node dock.right panel
+  parent dock.right.split
+  style dock
 
 # --- status bar (SNAP / GRID / MODE as in xschem) ---------------------------------------------------
 
@@ -2049,53 +2211,7 @@ node dialog.recover.discard button
   command dialog.recover.discard
   style dialog-button
 
-# --- project trust: the project's init file and its plugins wait for the user (config §2). --
-
-node dialog.plugins dialog
-  label "Trust this project?"
-node dialog.plugins.title label
-  parent dialog.plugins
-  label "This project runs its init file and loads plugins"
-node dialog.plugins.list panel
-  parent dialog.plugins
-  style dialog-list
-node dialog.plugins.buttons panel
-  parent dialog.plugins
-  style dialog-buttons
-node dialog.plugins.ok button
-  parent dialog.plugins.buttons
-  label "Trust & download"
-  command dialog.plugins.ok
-  style dialog-button
-node dialog.plugins.skip button
-  parent dialog.plugins.buttons
-  label Skip
-  command dialog.plugins.skip
-  style dialog-button
-
-# --- package updates: the startup check found newer versions (config §5 `outdated`). -------
-
-node dialog.updates dialog
-  label "Plugin updates"
-node dialog.updates.title label
-  parent dialog.updates
-  label "Plugin updates are available"
-node dialog.updates.list panel
-  parent dialog.updates
-  style dialog-list
-node dialog.updates.buttons panel
-  parent dialog.updates
-  style dialog-buttons
-node dialog.updates.ok button
-  parent dialog.updates.buttons
-  label Update
-  command dialog.updates.ok
-  style dialog-button
-node dialog.updates.skip button
-  parent dialog.updates.buttons
-  label "Not now"
-  command dialog.updates.skip
-  style dialog-button
+# --- project trust: drawn by the core layer (`core.trust`), never by a plugin (shell `CORE_LAYER`). --
 
 style dialog-list
   dir column

@@ -68,6 +68,13 @@ Table :: enum u32 {
 	Results,
 	Selection,
 	Ui_Nodes,
+	Tabs,
+	Tool,
+	Status,
+	Options,
+	Camera,
+	Dialog,
+	Dialog_Rows,
 }
 
 // Column ids per table: `u32(Nets_Col.Pin_Count)`.
@@ -164,6 +171,46 @@ Ui_Nodes_Col :: enum u32 {
 	Kind, // u8
 	Parent, // str
 	Owner, // u16
+}
+Tabs_Col :: enum u32 {
+	Doc, // u32
+	Title, // str
+	Active, // u8
+	Dirty, // u8
+	Symbol, // u8
+	Text, // u8
+}
+Tool_Col :: enum u32 {
+	Name, // str
+	Owner, // u32
+}
+Status_Col :: enum u32 {
+	X, // i32
+	Y, // i32
+	Selected, // u32
+	Path, // str
+	Message, // str
+}
+Options_Col :: enum u32 {
+	Name, // str
+	Value, // str
+}
+Camera_Col :: enum u32 {
+	X, // i32
+	Y, // i32
+	Scale, // u32
+}
+Dialog_Col :: enum u32 {
+	Kind, // str
+	Purpose, // str
+	Title, // str
+	Text, // str
+	Note, // str
+}
+Dialog_Rows_Col :: enum u32 {
+	Label, // str
+	Value, // str
+	Editable, // u8
 }
 
 // Log levels.

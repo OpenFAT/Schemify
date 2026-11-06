@@ -20,6 +20,7 @@ Schemify's editor and core are now developed privately. This repository, which u
 | `crates/protocol/abi/sdk` | Guest SDKs for C, Zig, Go, Odin and AssemblyScript, each with a conformance suite. |
 | `examples/plugins` | A small working plugin in each of ten languages. Copy one to start. |
 | `ui/default-plugin` | The editor's default UI as a reference UI pack: every node id and style a theme can change. |
+| `ui/themes/modern` | A complete theme package: records only, with `color`/`size` tokens and `.light` variants. Copy it to start a theme. |
 | `docs/plugins` | How to lay out, test and publish a plugin. |
 | `docs/spec` | The file format, the plugin ABI, the Lua config API, edit operations, expressions and docs pages. |
 | `docs/examples/init.lua` | An example user config. |

@@ -64,6 +64,13 @@ pub const Table = enum(u32) {
     results,
     selection,
     ui_nodes,
+    tabs,
+    tool,
+    status,
+    options,
+    camera,
+    dialog,
+    dialog_rows,
 };
 
 /// Column ids per table: `col.nets.pin_count`.
@@ -161,6 +168,46 @@ pub const col = struct {
         pub const kind: u32 = 1; // u8
         pub const parent: u32 = 2; // str
         pub const owner: u32 = 3; // u16
+    };
+    pub const tabs = struct {
+        pub const doc: u32 = 0; // u32
+        pub const title: u32 = 1; // str
+        pub const active: u32 = 2; // u8
+        pub const dirty: u32 = 3; // u8
+        pub const symbol: u32 = 4; // u8
+        pub const text: u32 = 5; // u8
+    };
+    pub const tool = struct {
+        pub const name: u32 = 0; // str
+        pub const owner: u32 = 1; // u32
+    };
+    pub const status = struct {
+        pub const x: u32 = 0; // i32
+        pub const y: u32 = 1; // i32
+        pub const selected: u32 = 2; // u32
+        pub const path: u32 = 3; // str
+        pub const message: u32 = 4; // str
+    };
+    pub const options = struct {
+        pub const name: u32 = 0; // str
+        pub const value: u32 = 1; // str
+    };
+    pub const camera = struct {
+        pub const x: u32 = 0; // i32
+        pub const y: u32 = 1; // i32
+        pub const scale: u32 = 2; // u32
+    };
+    pub const dialog = struct {
+        pub const kind: u32 = 0; // str
+        pub const purpose: u32 = 1; // str
+        pub const title: u32 = 2; // str
+        pub const text: u32 = 3; // str
+        pub const note: u32 = 4; // str
+    };
+    pub const dialog_rows = struct {
+        pub const label: u32 = 0; // str
+        pub const value: u32 = 1; // str
+        pub const editable: u32 = 2; // u8
     };
 };
 
